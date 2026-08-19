@@ -4,6 +4,9 @@
   "private": true,
   "description": "Personal AI agent for indie development, built on Pi.",
   "type": "module",
+  "pi": {
+    "extensions": ["./src/extension.ts"]
+  },
   "engines": {
     "node": ">=22.19.0"
   },

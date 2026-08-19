@@ -136,9 +136,9 @@ Do not persist these in Pindie State when they can be re-observed:
 
 Pi sessions provide interaction history; Git/files/environment provide reality.
 
-## 7. Core Extension target
+## 7. Core Extension
 
-The eventual v0.1 Core Extension will provide:
+The implemented v0.1 Core Extension provides:
 
 - State loading and persistence
 - Core Policy + Current State injection
@@ -148,7 +148,7 @@ The eventual v0.1 Core Extension will provide:
 - runtime safety checks
 - custom tools `pindie_state` and `pindie_gate`
 
-The implemented model-facing State mutation path is:
+The model-facing State mutation path is:
 
 ```text
 Tool
@@ -162,16 +162,34 @@ State Store
 
 Tools never bypass `PindieRuntime`. The runtime persists a successful reducer result before publishing it as current in-memory State.
 
-Expected Pi hooks:
+The implemented Pi lifecycle path is:
 
 ```text
-session_start       → resolve project + load State
-before_agent_start  → inject Core Policy + Current State
-tool_call           → safety interception
-tool_result         → detect known mutation / invalidate verification
-agent_settled       → lightweight consistency check
-session_shutdown    → flush / cleanup
+session_start
+  → canonical project resolver
+  → Runtime.load
+
+before_agent_start
+  → snapshot pre-existing Human Gate / completed-task identity
+  → append one Core Policy + Current State block
+
+tool_call
+  → enforce unavailable-State, Human Gate, terminal-task, and same-run guards
+
+tool_result
+  → successful edit/write
+  → Runtime.dispatch(invalidate_verification)
+
+agent_settled
+  → consistency validation only; never auto-complete
+
+session_shutdown
+  → unload transient Runtime context
 ```
+
+The Agent-run snapshot is extension-local and resets at each `before_agent_start`. It records only object identity for a gate or completed task that already existed at the run boundary; it is neither persisted State nor a second state machine. This lets a later run consume persisted consequential State while preventing a gate opened, or task completed, during the current run from being immediately consumed by sibling or follow-up tool calls.
+
+Generic `bash` results are not treated as known project mutation in v0.1. The Extension does not parse shell commands or implement a second Agent Loop.
 
 ## 8. Persistence target
 
@@ -183,7 +201,7 @@ canonical project root
 ~/.pindie/projects/<project-id>/state.json
 ```
 
-A later runtime layer resolves the canonical project root (the canonical Git root when available, otherwise canonical cwd). `FileStateStore` assumes the provided project root is already canonical and only hashes it to derive the project ID.
+The Core Extension resolves the canonical project root (the canonical Git root when available, otherwise canonical cwd). `FileStateStore` assumes the provided project root is already canonical and only hashes it to derive the project ID.
 
 Pi session history may retain snapshots, but it is not the authoritative current-work State.
 
