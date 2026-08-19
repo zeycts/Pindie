@@ -28,6 +28,9 @@ At most one Human Gate may be open.
 ### I8 — Done requires current evidence
 `task.completed === true` implies derived verification status is `passed`.
 
+### I9 — Task Contract requires success criteria
+Every active or completed task must contain at least one success criterion.
+
 ## 2. Soft invariants
 
 These guide model behavior but cannot be fully proven by the State machine:
@@ -104,11 +107,12 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 
 ## 5. Custom Tool behavior contract (implemented in PR 4)
 
-- T36 `pindie_gate(open)` persists `waiting_human` State before terminating the current Agent run.
+- T36 `pindie_gate(open)` persists `waiting_human` State before returning a terminating tool result.
 - `pindie_state` exposes only `start_task`, `refine_task`, `set_open_loops`, `record_verification`, and `complete_task`; no arbitrary state patch API.
 - `pindie_gate` exposes only `open` and `resolve`.
 - `complete_task` is a request to the validator, never direct permission to set `completed`.
-- Successful `complete_task` persists completed State before returning a terminating tool result; PR 5 verifies that result in the integrated Pi runtime.
+- Successful `complete_task` persists completed State before returning a terminating tool result.
+- A terminating tool result is Pi's early-termination hint for its tool batch; automatic follow-up is skipped only when every finalized result in that batch is terminating. PR 5 verifies this behavior in the integrated Pi runtime.
 - Tool mutation must be sequential when multiple calls affect the same State.
 - Error results must be actionable and explain why a transition was rejected.
 
@@ -171,7 +175,7 @@ Act
 active task
 → gate opened
 → waiting_human persisted
-→ current run terminates
+→ terminating tool result returned
 → user answers later
 → State reloads
 → task contract refined

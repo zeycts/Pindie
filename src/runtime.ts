@@ -24,6 +24,9 @@ export class PindieRuntime {
   }
 
   async load(projectRoot: string): Promise<void> {
+    this.currentProjectRoot = null;
+    this.currentState = EMPTY_STATE;
+
     const state = await this.store.load(projectRoot);
 
     this.currentProjectRoot = projectRoot;

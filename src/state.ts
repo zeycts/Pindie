@@ -106,6 +106,10 @@ export function validateState(state: PindieState): StateValidationResult {
   const criterionIdSet = new Set(criterionIds);
   const checkNames = task.verification.checks.map((check) => check.name);
 
+  if (task.successCriteria.length === 0) {
+    errors.push("A task requires at least one success criterion.");
+  }
+
   if (criterionIdSet.size !== criterionIds.length) {
     errors.push("Success criterion IDs must be unique.");
   }

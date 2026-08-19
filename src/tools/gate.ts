@@ -61,6 +61,16 @@ function result(message: string, state: PindieState, terminate = false) {
   };
 }
 
+function openGateMessage(question: string, options?: string[]): string {
+  const lines = ["Human input required:", "", question];
+
+  if (options && options.length > 0) {
+    lines.push("", "Options:", ...options.map((option) => `- ${option}`));
+  }
+
+  return lines.join("\n");
+}
+
 export function createPindieGateTool(runtime: PindieRuntime) {
   return defineTool({
     name: "pindie_gate",
@@ -93,7 +103,11 @@ export function createPindieGateTool(runtime: PindieRuntime) {
             type: "open_human_gate",
             gate,
           });
-          return result("Human Gate opened and persisted.", state, true);
+          return result(
+            openGateMessage(gate.question, gate.options),
+            state,
+            true,
+          );
         }
 
         case "resolve": {

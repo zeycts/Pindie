@@ -215,6 +215,22 @@ test("S08 reducer transition failures surface code and actionable message", asyn
   assert.deepEqual(store.saves, []);
 });
 
+test("refine_task with no success criteria surfaces the Core State rejection", async () => {
+  const initialState = activeState();
+  const { runtime, store, stateTool } = await createHarness(initialState);
+
+  await assert.rejects(
+    stateTool.execute("call", {
+      action: "refine_task",
+      successCriteria: [],
+    }),
+    /invalid_state.*at least one success criterion/i,
+  );
+
+  assert.equal(runtime.state, initialState);
+  assert.deepEqual(store.saves, []);
+});
+
 test("S09 successful pindie_state results include current State details", async () => {
   const { runtime, stateTool } = await createHarness(activeState());
 
@@ -261,6 +277,8 @@ test("G01 opening a gate persists waiting_human before terminating", async () =>
 
   assert.equal(getTaskStatus(runtime.state), "waiting_human");
   assert.equal(store.persistedState.task?.humanGate?.kind, "decision");
+  assert.match(textOf(result), /Which tool wording should we use\?/);
+  assert.match(textOf(result), /Options:\s*\n- Short\s*\n- Detailed/);
   assert.equal(result.terminate, true);
 });
 

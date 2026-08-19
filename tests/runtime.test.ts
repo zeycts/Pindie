@@ -9,11 +9,13 @@ class FakeStateStore implements PindieStateStore {
   readonly loads: string[] = [];
   readonly saves: Array<{ projectRoot: string; state: PindieState }> = [];
   loadState: PindieState = EMPTY_STATE;
+  loadError: Error | null = null;
   saveError: Error | null = null;
   beforeSave: (() => Promise<void>) | null = null;
 
   async load(projectRoot: string): Promise<PindieState> {
     this.loads.push(projectRoot);
+    if (this.loadError) throw this.loadError;
     return this.loadState;
   }
 
@@ -113,4 +115,38 @@ test("R05 dispatch before load fails without persistence", async () => {
 
   assert.deepEqual(store.saves, []);
   assert.equal(runtime.projectRoot, null);
+});
+
+test("R06 a failed project switch invalidates the previous runtime context", async () => {
+  const store = new FakeStateStore();
+  const runtime = new PindieRuntime(store);
+  await runtime.load("/workspace/project-a");
+  const started = await runtime.dispatch(START_EVENT);
+  assert.equal(started.ok, true);
+  assert.notEqual(runtime.state.task, null);
+  store.saves.length = 0;
+
+  store.loadError = new Error("Project B State is unreadable");
+  await assert.rejects(
+    runtime.load("/workspace/project-b"),
+    /Project B State is unreadable/,
+  );
+
+  assert.equal(runtime.projectRoot, null);
+  assert.deepEqual(runtime.state, EMPTY_STATE);
+  await assert.rejects(runtime.dispatch(START_EVENT), /load.*before dispatch/i);
+  assert.deepEqual(store.saves, []);
+
+  store.loadError = null;
+  store.loadState = EMPTY_STATE;
+  await runtime.load("/workspace/project-b");
+  const recovered = await runtime.dispatch(START_EVENT);
+
+  assert.equal(recovered.ok, true);
+  assert.equal(runtime.projectRoot, "/workspace/project-b");
+  assert.equal(runtime.state.task?.goal, START_EVENT.goal);
+  assert.deepEqual(
+    store.saves.map(({ projectRoot }) => projectRoot),
+    ["/workspace/project-b"],
+  );
 });
