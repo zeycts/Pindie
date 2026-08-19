@@ -127,7 +127,7 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - T49 `agent_settled` never auto-completes a task.
 - T50 Successful `complete_task` terminates the current run.
 
-## 7. Store cases (planned PR 3)
+## 7. State Store behavior contract (implemented in PR 3)
 
 - T51 Missing State file loads empty State.
 - T52 Malformed JSON fails loudly and preserves the corrupted file.
