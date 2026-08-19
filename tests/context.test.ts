@@ -45,8 +45,15 @@ test("C01 the Pindie Core Policy is included", () => {
 test("D04 Core Policy explains durable success-criterion semantics", () => {
   assert.match(PINDIE_CORE_POLICY, /final, durable Definition of Done/i);
   assert.match(PINDIE_CORE_POLICY, /meaningful across sessions/i);
-  assert.match(PINDIE_CORE_POLICY, /session-local sequencing/i);
-  assert.match(PINDIE_CORE_POLICY, /nextIntent, not success criteria/i);
+  assert.match(
+    PINDIE_CORE_POLICY,
+    /session-local sequencing.*checkpoint instructions.*as success criteria/i,
+  );
+  assert.match(PINDIE_CORE_POLICY, /nextIntent only for continuation intent/i);
+  assert.match(
+    PINDIE_CORE_POLICY,
+    /unfinished work.*persisted next meaningful step/i,
+  );
 });
 
 test("C02 persisted Current State is rendered deterministically", () => {

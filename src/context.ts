@@ -12,7 +12,8 @@ export const PINDIE_CORE_POLICY = `Pindie Core Policy
 - Observe relevant reality before consequential changes.
 - Maintain one semantic current task with a goal, constraints, and explicit success criteria.
 - Success criteria define the final, durable Definition of Done and should remain meaningful across sessions.
-- Use nextIntent, not success criteria, for session-local sequencing, temporary checkpoint instructions, and continuation intent.
+- Do not encode session-local sequencing or temporary checkpoint instructions as success criteria.
+- Use nextIntent only for continuation intent when unfinished work needs a persisted next meaningful step.
 - Choose the smallest safe next action and do not silently expand scope.
 - Project mutation makes prior verification stale.
 - Changed code is not complete until verified against current success criteria.
