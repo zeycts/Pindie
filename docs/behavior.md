@@ -102,11 +102,13 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - T34 Resolving a Human Gate returns to the derived non-gate status.
 - T35 Resolving a missing Human Gate is rejected.
 
-## 5. Tool behavior cases (planned PR 4)
+## 5. Custom Tool behavior contract (implemented in PR 4)
 
 - T36 `pindie_gate(open)` persists `waiting_human` State before terminating the current Agent run.
-- `pindie_state` exposes only approved semantic actions; no arbitrary state patch API.
+- `pindie_state` exposes only `start_task`, `refine_task`, `set_open_loops`, `record_verification`, and `complete_task`; no arbitrary state patch API.
+- `pindie_gate` exposes only `open` and `resolve`.
 - `complete_task` is a request to the validator, never direct permission to set `completed`.
+- Successful `complete_task` persists completed State before returning a terminating tool result; PR 5 verifies that result in the integrated Pi runtime.
 - Tool mutation must be sequential when multiple calls affect the same State.
 - Error results must be actionable and explain why a transition was rejected.
 
@@ -125,7 +127,7 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - T47 `read` does not invalidate verification.
 - T48 Generic `bash` calls are not blindly treated as project mutation.
 - T49 `agent_settled` never auto-completes a task.
-- T50 Successful `complete_task` terminates the current run.
+- T50 The integrated Pi runtime honors the terminating result from successful `complete_task`.
 
 ## 7. State Store behavior contract (implemented in PR 3)
 

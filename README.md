@@ -49,23 +49,24 @@ The repository is intentionally being implemented in small slices.
 Implemented:
 
 - State Model
-- State Machine / Reducer
+- State Machine
 - State Store
+- Pindie Runtime
+- `pindie_state`
+- `pindie_gate`
 
 Next:
 
-- Pindie custom tools
+- Pi Core Extension wiring
 
 Still not implemented:
 
-- `pindie_state` tool
-- `pindie_gate` tool
 - Pi Extension hooks
 - plan / review / ship skills
 
 ## Commands
 
-Requires Node.js 22.6+.
+Requires Node.js 22.19+.
 
 ```bash
 pnpm install
