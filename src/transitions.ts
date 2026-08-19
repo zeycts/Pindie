@@ -237,9 +237,12 @@ export function reduceState(
         (criterionId) => !criterionIds.has(criterionId),
       );
       if (unknownIds.length > 0) {
+        const validCriterionIds = task.successCriteria.map(
+          (criterion) => criterion.id,
+        );
         return failed(
           TransitionErrorCode.UNKNOWN_SUCCESS_CRITERION,
-          `Verification check '${event.check.name}' references unknown success criterion ${unknownIds.map((id) => `'${id}'`).join(", ")}. Use only IDs from the current task contract.`,
+          `Verification check '${event.check.name}' references unknown success criterion ${unknownIds.map((id) => `'${id}'`).join(", ")}. Use criterion IDs from the current task contract. Valid criterion IDs: ${validCriterionIds.join(", ")}.`,
         );
       }
 

@@ -18,7 +18,10 @@ const VerificationCheckSchema = Type.Object(
   {
     name: Type.String(),
     status: StringEnum(["passed", "failed"] as const),
-    covers: Type.Array(Type.String()),
+    covers: Type.Array(Type.String(), {
+      description:
+        "Success criterion IDs from the current Task Contract, for example ['c1', 'c2']. Use the IDs returned by start_task or refine_task, not criterion descriptions.",
+    }),
     evidence: Type.String(),
   },
   { additionalProperties: false },
@@ -79,6 +82,15 @@ function result(message: string, state: PindieState, terminate = false) {
   };
 }
 
+function formatSuccessCriteria(state: PindieState): string {
+  const criteria = state.task?.successCriteria ?? [];
+
+  return [
+    "Success criteria:",
+    ...criteria.map(({ id, description }) => `- ${id}: ${description}`),
+  ].join("\n");
+}
+
 export function createPindieStateTool(runtime: PindieRuntime) {
   return defineTool({
     name: "pindie_state",
@@ -113,7 +125,10 @@ export function createPindieStateTool(runtime: PindieRuntime) {
             successCriteria: params.successCriteria,
             nextIntent: params.nextIntent ?? null,
           });
-          return result("Current task started.", state);
+          return result(
+            `Current task started.\n\n${formatSuccessCriteria(state)}`,
+            state,
+          );
         }
 
         case "refine_task": {
@@ -144,7 +159,10 @@ export function createPindieStateTool(runtime: PindieRuntime) {
               : { successCriteria: params.successCriteria }),
           };
           const state = await dispatchOrThrow(runtime, event);
-          return result("Task contract refined.", state);
+          return result(
+            `Task contract refined.\n\n${formatSuccessCriteria(state)}`,
+            state,
+          );
         }
 
         case "set_open_loops": {

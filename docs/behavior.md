@@ -115,6 +115,9 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - A terminating tool result is Pi's early-termination hint for its tool batch; automatic follow-up is skipped only when every finalized result in that batch is terminating. PR 5 verifies this behavior in the integrated Pi runtime.
 - Tool mutation must be sequential when multiple calls affect the same State.
 - Error results must be actionable and explain why a transition was rejected.
+- Successful `start_task` results expose every generated success criterion ID and description.
+- Successful `refine_task` results expose the current criterion mapping, including regenerated IDs when success criteria change.
+- `record_verification.check.covers` accepts current success criterion IDs, not criterion descriptions; unknown-ID rejections list the valid current IDs.
 
 ## 6. Pi integration behavior contract (implemented in PR 5)
 

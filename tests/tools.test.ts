@@ -113,6 +113,24 @@ test("S01 pindie_state maps start_task with defaults", async () => {
   assert.deepEqual(result.details, { state: runtime.state });
 });
 
+test("D01 start_task exposes the generated success criterion IDs", async () => {
+  const { runtime, store, stateTool } = await createHarness();
+
+  const result = await stateTool.execute("call", {
+    action: "start_task",
+    goal: "Expose criterion IDs",
+    successCriteria: ["First criterion", "Second criterion"],
+  });
+  const criteria = [
+    { id: "c1", description: "First criterion" },
+    { id: "c2", description: "Second criterion" },
+  ];
+
+  assert.deepEqual(runtime.state.task?.successCriteria, criteria);
+  assert.deepEqual(store.persistedState.task?.successCriteria, criteria);
+  assert.match(textOf(result), /Success criteria:\s*\n- c1: First criterion\s*\n- c2: Second criterion/);
+});
+
 test("S02 pindie_state maps refine_task", async () => {
   const { runtime, stateTool } = await createHarness(activeState());
 
@@ -124,6 +142,28 @@ test("S02 pindie_state maps refine_task", async () => {
 
   assert.equal(runtime.state.task?.goal, "Implement current Pi custom tools");
   assert.deepEqual(runtime.state.task?.constraints, ["Use sequential execution"]);
+});
+
+test("D02 refine_task exposes regenerated success criteria", async () => {
+  const initialState = verifiedState();
+  const { runtime, store, stateTool } = await createHarness(initialState);
+
+  const result = await stateTool.execute("call", {
+    action: "refine_task",
+    successCriteria: ["New first criterion", "New second criterion"],
+  });
+  const criteria = [
+    { id: "c1", description: "New first criterion" },
+    { id: "c2", description: "New second criterion" },
+  ];
+
+  assert.deepEqual(runtime.state.task?.successCriteria, criteria);
+  assert.deepEqual(runtime.state.task?.verification, { stale: true, checks: [] });
+  assert.deepEqual(store.persistedState.task?.successCriteria, criteria);
+  assert.match(
+    textOf(result),
+    /Success criteria:\s*\n- c1: New first criterion\s*\n- c2: New second criterion/,
+  );
 });
 
 test("S03 pindie_state maps one atomic set_open_loops event", async () => {
@@ -156,6 +196,36 @@ test("S04 pindie_state maps one record_verification check", async () => {
   assert.deepEqual(runtime.state.task?.verification.checks, [check]);
 });
 
+test("D03 unknown criterion rejection lists valid IDs without mutation", async () => {
+  const initialState: PindieState = {
+    task: {
+      ...activeState().task!,
+      successCriteria: [
+        { id: "c1", description: "First criterion" },
+        { id: "c2", description: "Second criterion" },
+      ],
+    },
+  };
+  const { runtime, store, stateTool } = await createHarness(initialState);
+
+  await assert.rejects(
+    stateTool.execute("call", {
+      action: "record_verification",
+      check: {
+        name: "docs",
+        status: "passed",
+        covers: ["Documentation is correct"],
+        evidence: "Documentation was reviewed.",
+      },
+    }),
+    /unknown_success_criterion.*Documentation is correct.*Valid criterion IDs: c1, c2/is,
+  );
+
+  assert.equal(runtime.state, initialState);
+  assert.equal(store.persistedState, initialState);
+  assert.deepEqual(store.saves, []);
+});
+
 test("S05 and S10 complete_task persists completion and terminates", async () => {
   const { runtime, store, stateTool } = await createHarness(verifiedState());
 
@@ -182,6 +252,15 @@ test("S06 pindie_state exposes only approved semantic actions", async () => {
   const serialized = JSON.stringify(stateTool.parameters);
   assert.doesNotMatch(serialized, /patch_state|replace_state|set_completed/);
   assert.doesNotMatch(serialized, /invalidate_verification|human_gate/);
+});
+
+test("record_verification schema explains that covers uses criterion IDs", async () => {
+  const { stateTool } = await createHarness();
+
+  assert.match(
+    JSON.stringify(stateTool.parameters),
+    /Success criterion IDs.*start_task or refine_task.*not criterion descriptions/i,
+  );
 });
 
 test("S07 invalid action-specific parameters are rejected", async () => {
