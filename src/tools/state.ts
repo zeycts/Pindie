@@ -34,8 +34,14 @@ const PindieStateParameters = Type.Object(
     }),
     goal: Type.Optional(Type.String()),
     constraints: Type.Optional(Type.Array(Type.String())),
-    successCriteria: Type.Optional(Type.Array(Type.String())),
-    nextIntent: Type.Optional(Type.String()),
+    successCriteria: Type.Optional(Type.Array(Type.String(), {
+      description:
+        "Final, durable Definition of Done. Each criterion must remain meaningful across sessions and true at final completion, not describe temporary current-run sequencing.",
+    })),
+    nextIntent: Type.Optional(Type.String({
+      description:
+        "Continuation intent or likely next meaningful step for unfinished work, including cross-session continuation; not part of the Definition of Done.",
+    })),
     blockers: Type.Optional(Type.Array(Type.String())),
     questions: Type.Optional(Type.Array(Type.String())),
     check: Type.Optional(VerificationCheckSchema),

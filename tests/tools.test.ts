@@ -263,6 +263,33 @@ test("record_verification schema explains that covers uses criterion IDs", async
   );
 });
 
+test("D05 pindie_state schema distinguishes durable completion from continuation", async () => {
+  const { stateTool } = await createHarness();
+  const schema = stateTool.parameters as {
+    properties: {
+      successCriteria: { description?: string };
+      nextIntent: { description?: string };
+    };
+  };
+
+  assert.match(
+    schema.properties.successCriteria.description ?? "",
+    /final, durable Definition of Done/i,
+  );
+  assert.match(
+    schema.properties.successCriteria.description ?? "",
+    /across sessions.*not.*temporary current-run sequencing/i,
+  );
+  assert.match(
+    schema.properties.nextIntent.description ?? "",
+    /continuation intent.*next meaningful step/i,
+  );
+  assert.match(
+    schema.properties.nextIntent.description ?? "",
+    /unfinished.*cross-session/i,
+  );
+});
+
 test("S07 invalid action-specific parameters are rejected", async () => {
   const { stateTool } = await createHarness();
 

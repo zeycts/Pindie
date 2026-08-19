@@ -101,6 +101,8 @@ PindieState
     └── completed
 ```
 
+The durable Task Contract is `goal + constraints + successCriteria`; `openLoops.nextIntent` carries continuation intent for unfinished work.
+
 Task status is derived from facts rather than stored directly:
 
 ```text
