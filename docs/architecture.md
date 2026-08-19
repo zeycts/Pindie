@@ -217,13 +217,18 @@ Observe, Understand, Decide, Act, Verify, and Update State are not six Skills. T
 
 ## 10. Implementation sequence
 
-Approved implementation order:
+Implemented Core v0.1 sequence:
 
 1. State Model
 2. State Machine / Reducer
 3. State Store
 4. Pindie custom tools
 5. Pi Core Extension wiring
-6. Skills + real-world dogfooding
+
+Current phase:
+
+6. Real-world dogfooding of the existing Pindie Core
+
+Specialized Skills are not assumed to be the immediate next implementation step. They should only be added later if repeated real usage shows that a specialized procedure is needed.
 
 Each slice should remain testable without prematurely implementing later layers.

@@ -44,7 +44,7 @@ See `docs/architecture.md` and `docs/behavior.md` for the approved v0.1 design.
 
 ## Current status
 
-The repository is intentionally being implemented in small slices.
+The Pindie Core v0.1 has been implemented through the Pi Core Extension.
 
 Implemented:
 
@@ -58,11 +58,13 @@ Implemented:
 
 Next:
 
-- Skills + dogfooding
+- Real-world dogfooding of the existing Pindie Core
 
-Still not implemented:
+Not currently implemented or assumed next:
 
 - plan / review / ship skills
+
+New specialized skills should only be added later if repeated real usage shows that a specialized procedure is needed.
 
 ## Commands
 

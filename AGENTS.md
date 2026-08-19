@@ -42,6 +42,8 @@ Work in small slices. For each task:
 3. State Store
 4. Pindie custom tools
 5. Pi Core Extension wiring
-6. Skills + real-world dogfooding
+6. Real-world dogfooding of the existing Pindie Core
+
+Specialized Skills should only be added later if repeated real usage shows that a specialized procedure is needed.
 
 Implement only the current approved slice. Do not prematurely implement capabilities from later slices.
