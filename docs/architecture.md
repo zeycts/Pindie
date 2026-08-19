@@ -148,6 +148,20 @@ The eventual v0.1 Core Extension will provide:
 - runtime safety checks
 - custom tools `pindie_state` and `pindie_gate`
 
+The implemented model-facing State mutation path is:
+
+```text
+Tool
+  ↓
+PindieRuntime
+  ↓
+Reducer
+  ↓
+State Store
+```
+
+Tools never bypass `PindieRuntime`. The runtime persists a successful reducer result before publishing it as current in-memory State.
+
 Expected Pi hooks:
 
 ```text

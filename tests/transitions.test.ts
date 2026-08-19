@@ -129,6 +129,21 @@ test("T06 replacing success criteria regenerates IDs and invalidates verificatio
   assert.deepEqual(state.task?.verification, { stale: true, checks: [] });
 });
 
+test("refining success criteria to an empty set is rejected without mutation", () => {
+  const state = startTask();
+  const snapshot = structuredClone(state);
+  const result = reduceState(state, {
+    type: "refine_task",
+    successCriteria: [],
+  });
+
+  failure(result, TransitionErrorCode.INVALID_STATE);
+  if (!result.ok) {
+    assert.match(result.error.message, /at least one success criterion/i);
+  }
+  assert.deepEqual(state, snapshot);
+});
+
 test("T07 a no-op refinement preserves semantic State", () => {
   const state = fullyVerifiedState();
   const result = reduceState(state, {

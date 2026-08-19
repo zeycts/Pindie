@@ -183,6 +183,17 @@ test("validateState accepts a valid active task", () => {
   assert.deepEqual(validateState(stateWith(createTask())), { ok: true });
 });
 
+test("validateState rejects a task without success criteria", () => {
+  const result = validateState(
+    stateWith(createTask({ successCriteria: [] })),
+  );
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.match(result.errors.join("\n"), /at least one success criterion/i);
+  }
+});
+
 test("validateState rejects duplicate criterion IDs", () => {
   const task = createTask({
     successCriteria: [
