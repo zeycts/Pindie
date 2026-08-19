@@ -54,14 +54,14 @@ Implemented:
 - Pindie Runtime
 - `pindie_state`
 - `pindie_gate`
+- Pi Core Extension wiring
 
 Next:
 
-- Pi Core Extension wiring
+- Skills + dogfooding
 
 Still not implemented:
 
-- Pi Extension hooks
 - plan / review / ship skills
 
 ## Commands
@@ -73,6 +73,12 @@ pnpm install
 pnpm run typecheck
 pnpm test
 pnpm run check
+```
+
+Load the local extension in Pi 0.84.2 with:
+
+```bash
+pi -e ./src/extension.ts
 ```
 
 The scripts themselves are package-manager agnostic; pnpm is the recommended package manager for Pindie.

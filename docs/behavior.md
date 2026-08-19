@@ -116,7 +116,7 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - Tool mutation must be sequential when multiple calls affect the same State.
 - Error results must be actionable and explain why a transition was rejected.
 
-## 6. Pi integration cases (planned PR 5)
+## 6. Pi integration behavior contract (implemented in PR 5)
 
 - T37 `session_start` loads project State.
 - T38 `/new` in the same project preserves the same current Pindie task.
@@ -131,7 +131,9 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - T47 `read` does not invalidate verification.
 - T48 Generic `bash` calls are not blindly treated as project mutation.
 - T49 `agent_settled` never auto-completes a task.
-- T50 The integrated Pi runtime honors the terminating result from successful `complete_task`.
+- T50 Successful integrated `complete_task` persists completed State, returns a terminating result, and terminal-task guards block later consequential mutation while allowing `pindie_state(start_task)`.
+
+`terminate: true` remains Pi's tool-batch early-termination hint. Human Gate and completed-task safety do not depend on that hint alone: `tool_call` also blocks consequential work while a gate is open or the current task is completed. Successful `edit` and `write` results invalidate verification through `PindieRuntime.dispatch()`; failed edits, observation tools, and generic `bash` results do not.
 
 ## 7. State Store behavior contract (implemented in PR 3)
 

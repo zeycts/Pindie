@@ -150,3 +150,19 @@ test("R06 a failed project switch invalidates the previous runtime context", asy
     ["/workspace/project-b"],
   );
 });
+
+test("unload clears transient Runtime context without persistence", async () => {
+  const store = new FakeStateStore();
+  const runtime = new PindieRuntime(store);
+  await runtime.load("/workspace/pindie");
+  const started = await runtime.dispatch(START_EVENT);
+  assert.equal(started.ok, true);
+  store.saves.length = 0;
+
+  runtime.unload();
+
+  assert.equal(runtime.projectRoot, null);
+  assert.deepEqual(runtime.state, EMPTY_STATE);
+  assert.deepEqual(store.saves, []);
+  await assert.rejects(runtime.dispatch(START_EVENT), /load.*before dispatch/i);
+});
