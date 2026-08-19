@@ -35,6 +35,8 @@ Every active or completed task must contain at least one success criterion.
 
 These guide model behavior but cannot be fully proven by the State machine:
 
+Success criteria are the final, durable Definition of Done: each criterion describes an outcome that must be true at task completion and remain meaningful across sessions. Session-local sequencing and checkpoint instructions are not success criteria; `openLoops.nextIntent` carries continuation intent for unfinished work.
+
 - Observe relevant reality before consequential action.
 - Understand the problem before changing it.
 - Choose the smallest safe next action.
