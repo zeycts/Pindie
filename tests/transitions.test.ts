@@ -143,21 +143,32 @@ test("T07 a no-op refinement preserves semantic State", () => {
 
 test("T08 adding a blocker derives blocked status", () => {
   const state = apply(startTask(), {
-    type: "add_blocker",
-    blocker: "Test environment is unavailable",
+    type: "set_open_loops",
+    blockers: ["Test environment is unavailable"],
+    questions: [],
+    nextIntent: "Retry when the environment is available",
   });
 
   assert.equal(getTaskStatus(state), "blocked");
+  assert.deepEqual(state.task?.openLoops, {
+    blockers: ["Test environment is unavailable"],
+    questions: [],
+    nextIntent: "Retry when the environment is available",
+  });
 });
 
 test("T09 removing the final blocker derives active status without a gate", () => {
   let state = apply(startTask(), {
-    type: "add_blocker",
-    blocker: "Test environment is unavailable",
+    type: "set_open_loops",
+    blockers: ["Test environment is unavailable"],
+    questions: [],
+    nextIntent: "Retry when the environment is available",
   });
   state = apply(state, {
-    type: "remove_blocker",
-    blocker: "Test environment is unavailable",
+    type: "set_open_loops",
+    blockers: [],
+    questions: [],
+    nextIntent: "Continue implementation",
   });
 
   assert.equal(getTaskStatus(state), "active");
@@ -165,8 +176,10 @@ test("T09 removing the final blocker derives active status without a gate", () =
 
 test("T10 unresolved questions permit active status but prevent completion", () => {
   const state = apply(fullyVerifiedState(), {
-    type: "add_question",
-    question: "Which release note format should be used?",
+    type: "set_open_loops",
+    blockers: [],
+    questions: ["Which release note format should be used?"],
+    nextIntent: "Ask the user",
   });
 
   assert.equal(getTaskStatus(state), "active");
@@ -334,8 +347,10 @@ test("T22 completion with stale verification is rejected", () => {
 
 test("T23 completion with blockers is rejected", () => {
   const state = apply(fullyVerifiedState(), {
-    type: "add_blocker",
-    blocker: "Deployment access is unavailable",
+    type: "set_open_loops",
+    blockers: ["Deployment access is unavailable"],
+    questions: [],
+    nextIntent: "Wait for deployment access",
   });
 
   failure(
@@ -346,8 +361,10 @@ test("T23 completion with blockers is rejected", () => {
 
 test("T24 completion with unresolved questions is rejected", () => {
   const state = apply(fullyVerifiedState(), {
-    type: "add_question",
-    question: "Which release note format should be used?",
+    type: "set_open_loops",
+    blockers: [],
+    questions: ["Which release note format should be used?"],
+    nextIntent: "Ask the user",
   });
 
   failure(
@@ -385,17 +402,15 @@ test("T27 refining a completed task is rejected", () => {
 
 test("T28 altering open loops on a completed task is rejected", () => {
   const state = completedState();
-  const events: PindieEvent[] = [
-    { type: "add_blocker", blocker: "New blocker" },
-    { type: "remove_blocker", blocker: "New blocker" },
-    { type: "add_question", question: "New question?" },
-    { type: "resolve_question", question: "New question?" },
-    { type: "set_next_intent", nextIntent: "Do more work" },
-  ];
-
-  for (const event of events) {
-    failure(reduceState(state, event), TransitionErrorCode.TASK_COMPLETED);
-  }
+  failure(
+    reduceState(state, {
+      type: "set_open_loops",
+      blockers: ["New blocker"],
+      questions: ["New question?"],
+      nextIntent: "Do more work",
+    }),
+    TransitionErrorCode.TASK_COMPLETED,
+  );
 });
 
 test("T29 recording verification on a completed task is rejected", () => {
@@ -463,8 +478,10 @@ test("T33 opening a Human Gate without a task is rejected", () => {
 
 test("T34 resolving a Human Gate returns to the derived non-gate status", () => {
   let state = apply(startTask(), {
-    type: "add_blocker",
-    blocker: "External service is unavailable",
+    type: "set_open_loops",
+    blockers: ["External service is unavailable"],
+    questions: [],
+    nextIntent: "Wait or choose a fallback",
   });
   state = apply(state, {
     type: "open_human_gate",
@@ -487,7 +504,32 @@ test("successful transitions do not mutate their input State", () => {
   const state = startTask();
   const snapshot = structuredClone(state);
 
-  apply(state, { type: "add_blocker", blocker: "A blocker" });
+  apply(state, {
+    type: "set_open_loops",
+    blockers: ["A blocker"],
+    questions: [],
+    nextIntent: "Resolve the blocker",
+  });
+
+  assert.deepEqual(state, snapshot);
+});
+
+test("rejected transitions do not mutate their input State", () => {
+  const state = startTask();
+  const snapshot = structuredClone(state);
+
+  failure(
+    reduceState(state, {
+      type: "record_verification",
+      check: {
+        name: "mystery",
+        status: "passed",
+        covers: ["c99"],
+        evidence: "Invalid criterion reference.",
+      },
+    }),
+    TransitionErrorCode.UNKNOWN_SUCCESS_CRITERION,
+  );
 
   assert.deepEqual(state, snapshot);
 });

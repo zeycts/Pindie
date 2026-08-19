@@ -46,19 +46,19 @@ See `docs/architecture.md` and `docs/behavior.md` for the approved v0.1 design.
 
 The repository is intentionally being implemented in small slices.
 
-**PR 1 / reference implementation:** State Model
-
 Implemented:
 
-- Pindie State types
-- derived task status
-- derived verification status
-- State invariant validation
-- unit tests for the State Model
+- State Model
+- State Machine / Reducer
+- transition errors
+- State Machine tests
 
-Not implemented yet:
+Next:
 
-- reducer / transition events
+- State Store
+
+Still not implemented:
+
 - persistent State Store
 - `pindie_state` tool
 - `pindie_gate` tool

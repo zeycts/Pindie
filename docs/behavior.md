@@ -62,7 +62,9 @@ all success criteria covered by passed checks → passed
 otherwise                                   → pending
 ```
 
-## 4. Reducer behavior cases (planned PR 2)
+## 4. State Machine behavior contract (implemented in PR 2)
+
+Open Loops are updated through one semantic `set_open_loops` event that atomically replaces `blockers`, `questions`, and `nextIntent`.
 
 - T01 Start first task.
 - T02 Reject starting a second active task.

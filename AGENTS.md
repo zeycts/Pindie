@@ -35,11 +35,13 @@ Work in small slices. For each task:
 4. Implement the smallest change that makes those tests pass.
 5. Run `pnpm run check` before declaring the task complete.
 
-## Current implementation boundary
+## Approved implementation sequence
 
-PR 1 implements only the pure State Model:
+1. State Model
+2. State Machine / Reducer
+3. State Store
+4. Pindie custom tools
+5. Pi Core Extension wiring
+6. Skills + real-world dogfooding
 
-- `src/state.ts`
-- `tests/state.test.ts`
-
-Do not introduce Pi integration, persistence, reducers, custom tools, skills, or runtime hooks into this slice.
+Implement only the current approved slice. Do not prematurely implement capabilities from later slices.
