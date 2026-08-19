@@ -21,11 +21,12 @@ export type PindieEvent =
       constraints?: string[];
       successCriteria?: string[];
     }
-  | { type: "add_blocker"; blocker: string }
-  | { type: "remove_blocker"; blocker: string }
-  | { type: "add_question"; question: string }
-  | { type: "resolve_question"; question: string }
-  | { type: "set_next_intent"; nextIntent: string | null }
+  | {
+      type: "set_open_loops";
+      blockers: string[];
+      questions: string[];
+      nextIntent: string | null;
+    }
   | { type: "record_verification"; check: VerificationCheck }
   | { type: "invalidate_verification" }
   | { type: "complete_task" }
@@ -128,25 +129,6 @@ function withTask(state: PindieState, task: PindieTask): TransitionResult {
   return succeeded(nextState);
 }
 
-function alterOpenLoops(
-  state: PindieState,
-  update: (task: PindieTask) => PindieTask["openLoops"],
-): TransitionResult {
-  const task = mutableTaskRequired(state);
-  if (isFailure(task)) return task;
-
-  const openLoops = update(task);
-  if (
-    sameStrings(openLoops.blockers, task.openLoops.blockers) &&
-    sameStrings(openLoops.questions, task.openLoops.questions) &&
-    openLoops.nextIntent === task.openLoops.nextIntent
-  ) {
-    return succeeded(state);
-  }
-
-  return withTask(state, { ...task, openLoops });
-}
-
 /**
  * Applies one semantic event to Pindie State without mutating the input.
  * Expected invalid transitions are returned as actionable errors.
@@ -222,39 +204,27 @@ export function reduceState(
       });
     }
 
-    case "add_blocker":
-      return alterOpenLoops(state, (task) => ({
-        ...task.openLoops,
-        blockers: [...task.openLoops.blockers, event.blocker],
-      }));
+    case "set_open_loops": {
+      const task = mutableTaskRequired(state);
+      if (isFailure(task)) return task;
 
-    case "remove_blocker":
-      return alterOpenLoops(state, (task) => ({
-        ...task.openLoops,
-        blockers: task.openLoops.blockers.filter(
-          (blocker) => blocker !== event.blocker,
-        ),
-      }));
+      if (
+        sameStrings(event.blockers, task.openLoops.blockers) &&
+        sameStrings(event.questions, task.openLoops.questions) &&
+        event.nextIntent === task.openLoops.nextIntent
+      ) {
+        return succeeded(state);
+      }
 
-    case "add_question":
-      return alterOpenLoops(state, (task) => ({
-        ...task.openLoops,
-        questions: [...task.openLoops.questions, event.question],
-      }));
-
-    case "resolve_question":
-      return alterOpenLoops(state, (task) => ({
-        ...task.openLoops,
-        questions: task.openLoops.questions.filter(
-          (question) => question !== event.question,
-        ),
-      }));
-
-    case "set_next_intent":
-      return alterOpenLoops(state, (task) => ({
-        ...task.openLoops,
-        nextIntent: event.nextIntent,
-      }));
+      return withTask(state, {
+        ...task,
+        openLoops: {
+          blockers: [...event.blockers],
+          questions: [...event.questions],
+          nextIntent: event.nextIntent,
+        },
+      });
+    }
 
     case "record_verification": {
       const task = mutableTaskRequired(state);
