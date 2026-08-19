@@ -50,16 +50,14 @@ Implemented:
 
 - State Model
 - State Machine / Reducer
-- transition errors
-- State Machine tests
+- State Store
 
 Next:
 
-- State Store
+- Pindie custom tools
 
 Still not implemented:
 
-- persistent State Store
 - `pindie_state` tool
 - `pindie_gate` tool
 - Pi Extension hooks

@@ -164,10 +164,12 @@ session_shutdown    → flush / cleanup
 Primary Pindie State should be project-scoped and independent of a single Pi session:
 
 ```text
+canonical project root
+        ↓ SHA-256
 ~/.pindie/projects/<project-id>/state.json
 ```
 
-The canonical Git root should identify a project; canonical cwd is the fallback for non-Git projects.
+A later runtime layer resolves the canonical project root (the canonical Git root when available, otherwise canonical cwd). `FileStateStore` assumes the provided project root is already canonical and only hashes it to derive the project ID.
 
 Pi session history may retain snapshots, but it is not the authoritative current-work State.
 
