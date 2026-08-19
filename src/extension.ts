@@ -10,7 +10,11 @@ import {
 import { injectPindieCore } from "./context.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
 import { PindieRuntime } from "./runtime.ts";
-import { validateState } from "./state.ts";
+import {
+  validateState,
+  type HumanGate,
+  type PindieTask,
+} from "./state.ts";
 import { FileStateStore, type PindieStateStore } from "./store.ts";
 import { createPindieGateTool } from "./tools/gate.ts";
 import { createPindieStateTool } from "./tools/state.ts";
@@ -63,10 +67,18 @@ export function registerPindieExtension(
   const resolveProjectRoot =
     options.resolveProjectRoot ?? defaultResolveProjectRoot;
   let stateUnavailableReason: string | null = null;
+  let gateAtAgentRunStart: HumanGate | null = null;
+  let completedTaskAtAgentRunStart: PindieTask | null = null;
+
+  const clearAgentRunSnapshot = (): void => {
+    gateAtAgentRunStart = null;
+    completedTaskAtAgentRunStart = null;
+  };
 
   const markUnavailable = (reason: string): void => {
     runtime.unload();
     stateUnavailableReason = reason;
+    clearAgentRunSnapshot();
   };
 
   pi.registerTool(createPindieStateTool(runtime));
@@ -75,6 +87,7 @@ export function registerPindieExtension(
   pi.on("session_start", async (_event, ctx) => {
     runtime.unload();
     stateUnavailableReason = null;
+    clearAgentRunSnapshot();
 
     try {
       const projectRoot = await resolveProjectRoot(ctx.cwd);
@@ -89,10 +102,14 @@ export function registerPindieExtension(
   pi.on("session_shutdown", () => {
     runtime.unload();
     stateUnavailableReason = null;
+    clearAgentRunSnapshot();
   });
 
   pi.on("before_agent_start", (event) => {
     const state = runtime.projectRoot === null ? null : runtime.state;
+    const task = stateUnavailableReason === null ? state?.task ?? null : null;
+    gateAtAgentRunStart = task?.humanGate ?? null;
+    completedTaskAtAgentRunStart = task?.completed ? task : null;
     const unavailableReason =
       stateUnavailableReason ??
       (state === null ? "No project State has been loaded for this session." : null);
@@ -122,7 +139,13 @@ export function registerPindieExtension(
         hasAction(event, "pindie_state", "refine_task") ||
         hasAction(event, "pindie_gate", "resolve")
       ) {
-        return;
+        if (task.humanGate === gateAtAgentRunStart) return;
+
+        return {
+          block: true,
+          reason:
+            "This Human Gate was opened during the current Agent run. Wait for new human input before refining the Task Contract or resolving the gate.",
+        };
       }
 
       return {
@@ -132,7 +155,15 @@ export function registerPindieExtension(
     }
 
     if (task?.completed) {
-      if (hasAction(event, "pindie_state", "start_task")) return;
+      if (hasAction(event, "pindie_state", "start_task")) {
+        if (task === completedTaskAtAgentRunStart) return;
+
+        return {
+          block: true,
+          reason:
+            "The current task completed during this Agent run. Start a new task only after a new user-driven Agent run begins.",
+        };
+      }
 
       return {
         block: true,

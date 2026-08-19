@@ -131,9 +131,20 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - T47 `read` does not invalidate verification.
 - T48 Generic `bash` calls are not blindly treated as project mutation.
 - T49 `agent_settled` never auto-completes a task.
-- T50 Successful integrated `complete_task` persists completed State, returns a terminating result, and terminal-task guards block later consequential mutation while allowing `pindie_state(start_task)`.
+- T50 Successful integrated `complete_task` persists completed State, returns a terminating result, and terminal-task guards block later consequential mutation and same-run `pindie_state(start_task)` calls.
 
 `terminate: true` remains Pi's tool-batch early-termination hint. Human Gate and completed-task safety do not depend on that hint alone: `tool_call` also blocks consequential work while a gate is open or the current task is completed. Successful `edit` and `write` results invalidate verification through `PindieRuntime.dispatch()`; failed edits, observation tools, and generic `bash` results do not.
+
+`before_agent_start` is the Agent-run boundary for transient guard permissions. These permissions are not persisted in `PindieState`:
+
+- RG01-RG02 A Human Gate opened during the current Agent run cannot be refined away or resolved during that same run.
+- RG03-RG04 A Human Gate already present when the Agent run begins permits `pindie_state(refine_task)` and `pindie_gate(resolve)`.
+- RG05 Resolving a pre-existing Gate A and opening Gate B does not permit Gate B to be refined or resolved in the same run.
+- RC01-RC02 A task completed during the current Agent run cannot be replaced or followed by consequential mutation during that same run.
+- RC03 A completed task already present when the Agent run begins may be replaced by one new task.
+- RC04 Replacing completed Task A and completing Task B does not permit Task C to start in the same run.
+
+Read-only observation remains available throughout these boundaries. A later Agent run may consume a persisted Human Gate or replace a completed task because the consequential state was already present at that run's start.
 
 ## 7. State Store behavior contract (implemented in PR 3)
 

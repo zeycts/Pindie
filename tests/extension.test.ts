@@ -175,6 +175,23 @@ async function startSession(
   );
 }
 
+async function beginAgentRun(
+  harness: ReturnType<typeof createHarness>,
+  cwd = "/repo",
+): Promise<string> {
+  const result = await harness.api.handler("before_agent_start")(
+    {
+      type: "before_agent_start",
+      prompt: "Continue",
+      systemPrompt: "Pi system prompt",
+      systemPromptOptions: {},
+    },
+    context(cwd),
+  ) as { systemPrompt: string };
+
+  return result.systemPrompt;
+}
+
 async function callGuard(
   harness: ReturnType<typeof createHarness>,
   event: Record<string, unknown>,
@@ -406,6 +423,7 @@ test("T48 bash does not blindly invalidate verification", async () => {
 test("H01-H04 Human Gate blocks edit, write, bash, and unknown tools", async () => {
   const harness = createHarness([["/repo", gatedState()]]);
   await startSession(harness, "/repo");
+  await beginAgentRun(harness);
 
   for (const name of ["edit", "write", "bash", "deploy_custom"]) {
     assertBlocked(await callGuard(harness, toolCall(name)), /Human Gate is open/i);
@@ -415,6 +433,7 @@ test("H01-H04 Human Gate blocks edit, write, bash, and unknown tools", async () 
 test("H05 Human Gate allows read-only observation tools", async () => {
   const harness = createHarness([["/repo", gatedState()]]);
   await startSession(harness, "/repo");
+  await beginAgentRun(harness);
 
   for (const name of ["read", "grep", "find", "ls"]) {
     assert.equal(await callGuard(harness, toolCall(name)), undefined);
@@ -424,6 +443,7 @@ test("H05 Human Gate allows read-only observation tools", async () => {
 test("H06-H07 Human Gate allows task refinement and gate resolution", async () => {
   const harness = createHarness([["/repo", gatedState()]]);
   await startSession(harness, "/repo");
+  await beginAgentRun(harness);
 
   assert.equal(
     await callGuard(
@@ -441,6 +461,7 @@ test("H06-H07 Human Gate allows task refinement and gate resolution", async () =
 test("H08 Human Gate blocks other pindie_state actions", async () => {
   const harness = createHarness([["/repo", gatedState()]]);
   await startSession(harness, "/repo");
+  await beginAgentRun(harness);
 
   assertBlocked(
     await callGuard(
@@ -454,6 +475,7 @@ test("H08 Human Gate blocks other pindie_state actions", async () => {
 test("H09 completed task blocks edit, write, and bash", async () => {
   const harness = createHarness([["/repo", completedState()]]);
   await startSession(harness, "/repo");
+  await beginAgentRun(harness);
 
   for (const name of ["edit", "write", "bash"]) {
     assertBlocked(await callGuard(harness, toolCall(name)), /completed and terminal/i);
@@ -463,6 +485,7 @@ test("H09 completed task blocks edit, write, and bash", async () => {
 test("H10 completed task allows pindie_state start_task", async () => {
   const harness = createHarness([["/repo", completedState()]]);
   await startSession(harness, "/repo");
+  await beginAgentRun(harness);
 
   assert.equal(
     await callGuard(
@@ -500,6 +523,7 @@ test("T49 agent_settled never auto-completes a verified task", async () => {
 test("T50 integrated completion terminates and terminal guard blocks mutation", async () => {
   const harness = createHarness([["/repo", verifiedState()]]);
   await startSession(harness, "/repo");
+  await beginAgentRun(harness);
 
   const result = await harness.api
     .tool("pindie_state")
@@ -509,11 +533,178 @@ test("T50 integrated completion terminates and terminal guard blocks mutation", 
   assert.equal(harness.integration.runtime.state.task?.completed, true);
   assert.equal(harness.store.states.get("/repo")?.task?.completed, true);
   assertBlocked(await callGuard(harness, toolCall("edit")), /completed and terminal/i);
+  assertBlocked(
+    await callGuard(
+      harness,
+      toolCall("pindie_state", { action: "start_task" }),
+    ),
+    /completed during this Agent run/i,
+  );
+});
+
+test("RG01 a gate opened during the run blocks same-run refinement", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  await harness.api.tool("pindie_gate").execute("open", {
+    action: "open",
+    kind: "decision",
+    question: "Which release strategy should we use?",
+  });
+
+  assertBlocked(
+    await callGuard(
+      harness,
+      toolCall("pindie_state", { action: "refine_task", goal: "Refined" }),
+    ),
+    /opened during the current Agent run/i,
+  );
+});
+
+test("RG02 a gate opened during the run blocks same-run resolution", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  await harness.api.tool("pindie_gate").execute("open", {
+    action: "open",
+    kind: "decision",
+    question: "Which release strategy should we use?",
+  });
+
+  assertBlocked(
+    await callGuard(harness, toolCall("pindie_gate", { action: "resolve" })),
+    /opened during the current Agent run/i,
+  );
+});
+
+test("RG03 a gate present at run start permits task refinement", async () => {
+  const harness = createHarness([["/repo", gatedState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  assert.equal(
+    await callGuard(
+      harness,
+      toolCall("pindie_state", { action: "refine_task", goal: "Refined" }),
+    ),
+    undefined,
+  );
+});
+
+test("RG04 a gate present at run start permits gate resolution", async () => {
+  const harness = createHarness([["/repo", gatedState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  assert.equal(
+    await callGuard(harness, toolCall("pindie_gate", { action: "resolve" })),
+    undefined,
+  );
+});
+
+test("RG05 resolving Gate A then opening Gate B does not consume Gate B in the same run", async () => {
+  const harness = createHarness([["/repo", gatedState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  await harness.api.tool("pindie_gate").execute("resolve-a", {
+    action: "resolve",
+  });
+  await harness.api.tool("pindie_gate").execute("open-b", {
+    action: "open",
+    kind: "approval",
+    question: "Approve the release?",
+  });
+
+  assertBlocked(
+    await callGuard(harness, toolCall("pindie_gate", { action: "resolve" })),
+    /opened during the current Agent run/i,
+  );
+  assertBlocked(
+    await callGuard(
+      harness,
+      toolCall("pindie_state", { action: "refine_task", goal: "Approved" }),
+    ),
+    /opened during the current Agent run/i,
+  );
+});
+
+test("RC01 a task completed during the run blocks same-run replacement", async () => {
+  const harness = createHarness([["/repo", verifiedState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  await harness.api.tool("pindie_state").execute("complete", {
+    action: "complete_task",
+  });
+
+  assertBlocked(
+    await callGuard(
+      harness,
+      toolCall("pindie_state", { action: "start_task" }),
+    ),
+    /completed during this Agent run/i,
+  );
+});
+
+test("RC02 a task completed during the run blocks same-run mutation", async () => {
+  const harness = createHarness([["/repo", verifiedState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  await harness.api.tool("pindie_state").execute("complete", {
+    action: "complete_task",
+  });
+
+  for (const name of ["edit", "write", "bash"]) {
+    assertBlocked(await callGuard(harness, toolCall(name)), /completed and terminal/i);
+  }
+});
+
+test("RC03 a completed task present at run start permits one replacement", async () => {
+  const harness = createHarness([["/repo", completedState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
   assert.equal(
     await callGuard(
       harness,
       toolCall("pindie_state", { action: "start_task" }),
     ),
     undefined,
+  );
+});
+
+test("RC04 replacing Task A then completing Task B does not permit Task C in the same run", async () => {
+  const harness = createHarness([["/repo", completedState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  await harness.api.tool("pindie_state").execute("start-b", {
+    action: "start_task",
+    goal: "Task B",
+    successCriteria: ["Task B works"],
+  });
+  await harness.api.tool("pindie_state").execute("verify-b", {
+    action: "record_verification",
+    check: {
+      name: "tests",
+      status: "passed",
+      covers: ["c1"],
+      evidence: "Task B tests passed.",
+    },
+  });
+  await harness.api.tool("pindie_state").execute("complete-b", {
+    action: "complete_task",
+  });
+
+  assertBlocked(
+    await callGuard(
+      harness,
+      toolCall("pindie_state", { action: "start_task" }),
+    ),
+    /completed during this Agent run/i,
   );
 });

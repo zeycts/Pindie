@@ -170,10 +170,11 @@ session_start
   → Runtime.load
 
 before_agent_start
+  → snapshot pre-existing Human Gate / completed-task identity
   → append one Core Policy + Current State block
 
 tool_call
-  → enforce unavailable-State, Human Gate, and terminal-task guards
+  → enforce unavailable-State, Human Gate, terminal-task, and same-run guards
 
 tool_result
   → successful edit/write
@@ -185,6 +186,8 @@ agent_settled
 session_shutdown
   → unload transient Runtime context
 ```
+
+The Agent-run snapshot is extension-local and resets at each `before_agent_start`. It records only object identity for a gate or completed task that already existed at the run boundary; it is neither persisted State nor a second state machine. This lets a later run consume persisted consequential State while preventing a gate opened, or task completed, during the current run from being immediately consumed by sibling or follow-up tool calls.
 
 Generic `bash` results are not treated as known project mutation in v0.1. The Extension does not parse shell commands or implement a second Agent Loop.
 
