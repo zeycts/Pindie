@@ -11,6 +11,7 @@ export const PINDIE_CORE_POLICY = `Pindie Core Policy
 - Latest user intent and observed project reality override stale Pindie State.
 - Observe relevant reality before consequential changes.
 - Maintain one semantic current task with a goal, constraints, and explicit success criteria.
+- Constraints are durable task-wide boundaries governing execution; success criteria are final observable outcomes required for completion.
 - Success criteria define the final, durable Definition of Done and should remain meaningful across sessions.
 - Do not encode session-local sequencing or temporary checkpoint instructions as success criteria.
 - Use nextIntent only for continuation intent when unfinished work needs a persisted next meaningful step.

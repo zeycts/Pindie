@@ -35,7 +35,13 @@ Every active or completed task must contain at least one success criterion.
 
 These guide model behavior but cannot be fully proven by the State machine:
 
-Success criteria are the final, durable Definition of Done: each criterion describes an outcome that must be true at task completion and remain meaningful across sessions. Session-local sequencing and checkpoint instructions are not success criteria and should not be persisted merely for that reason. When unfinished work needs a persisted continuation direction, `openLoops.nextIntent` carries the likely next meaningful step.
+The Task Contract fields have distinct responsibilities:
+
+- `goal` is the intended durable outcome.
+- `constraints` are durable task-wide execution boundaries or requirements.
+- `successCriteria` are final observable outcomes: the final, durable Definition of Done that must be true at task completion and remain meaningful across sessions.
+
+Session-local choreography, sequencing, and checkpoint instructions are not automatically persisted merely because they appear in the current run. When unfinished work needs a persisted continuation direction, `openLoops.nextIntent` carries only the likely next meaningful step.
 
 - Observe relevant reality before consequential action.
 - Understand the problem before changing it.

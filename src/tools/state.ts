@@ -37,14 +37,16 @@ const PindieStateParameters = Type.Object(
         "Action contract: start_task: goal + successCriteria required; constraints + nextIntent optional. refine_task: goal / constraints / successCriteria only; at least one required. set_open_loops: blockers + questions required; nextIntent optional. record_verification: check required. complete_task: action only.",
     }),
     goal: Type.Optional(Type.String({
-      description: "Task goal; used by start_task and refine_task.",
+      description:
+        "Durable outcome the task is trying to achieve; used by start_task and refine_task.",
     })),
     constraints: Type.Optional(Type.Array(Type.String(), {
-      description: "Task constraints; used by start_task and refine_task.",
+      description:
+        "Durable task-wide boundaries or execution requirements used by start_task and refine_task, such as scope limits, prohibited actions, fixed human decisions, or technical constraints. Constraints are boundaries, not completion outcomes.",
     })),
     successCriteria: Type.Optional(Type.Array(Type.String(), {
       description:
-        "Final, durable Definition of Done used by start_task and refine_task. Each criterion must remain meaningful across sessions and true at final completion, not describe temporary current-run sequencing.",
+        "Final observable outcomes required for completion; the final, durable Definition of Done used by start_task and refine_task. Each criterion must remain meaningful across sessions and true at final completion. Do not use success criteria for execution rules, prohibited actions, process sequencing, or temporary current-run choreography that belongs in constraints or current-run context.",
     })),
     nextIntent: Type.Optional(Type.String({
       description:
