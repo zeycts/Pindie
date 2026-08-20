@@ -122,10 +122,11 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
   - `refine_task`: only `goal`, `constraints`, and `successCriteria`; at least one required.
   - `set_open_loops`: `blockers` and `questions` required; `nextIntent` optional.
   - `record_verification`: `check` required; no other semantic fields.
-  - `complete_task`: `action` only.
+  - `complete_task`: `summary` required; no other semantic fields.
 - `pindie_gate` exposes only `open` and `resolve`.
 - `complete_task` is a request to the validator, never direct permission to set `completed`.
-- Successful `complete_task` persists completed State before returning a terminating tool result.
+- `complete_task.summary` is an ephemeral, user-facing summary of the completed outcome. It is not persisted in Pindie State.
+- Successful `complete_task` persists completed State before returning a terminating tool result that includes the supplied summary and recorded verification evidence from current State.
 - A terminating tool result is Pi's early-termination hint for its tool batch; automatic follow-up is skipped only when every finalized result in that batch is terminating. PR 5 verifies this behavior in the integrated Pi runtime.
 - Tool mutation must be sequential when multiple calls affect the same State.
 - Error results must be actionable and explain why a transition was rejected.
