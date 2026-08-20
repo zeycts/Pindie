@@ -101,7 +101,7 @@ PindieState
     └── completed
 ```
 
-The durable Task Contract is `goal + constraints + successCriteria`; `openLoops.nextIntent` carries continuation intent for unfinished work.
+The durable Task Contract is `goal + constraints + successCriteria`: goal is the intended outcome, constraints are task-wide execution boundaries, and success criteria are final observable completion outcomes. `openLoops.nextIntent` carries continuation intent for unfinished work.
 
 Task status is derived from facts rather than stored directly:
 

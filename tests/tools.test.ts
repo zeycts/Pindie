@@ -278,7 +278,7 @@ test("D05 pindie_state schema distinguishes durable completion from continuation
   );
   assert.match(
     schema.properties.successCriteria.description ?? "",
-    /across sessions.*not.*temporary current-run sequencing/i,
+    /across sessions.*Do not.*temporary current-run/i,
   );
   assert.match(
     schema.properties.nextIntent.description ?? "",
@@ -287,6 +287,40 @@ test("D05 pindie_state schema distinguishes durable completion from continuation
   assert.match(
     schema.properties.nextIntent.description ?? "",
     /unfinished.*cross-session/i,
+  );
+});
+
+test("D09 pindie_state schema distinguishes Task Contract fields", async () => {
+  const { stateTool } = await createHarness();
+  const schema = stateTool.parameters as {
+    properties: {
+      goal: { description?: string };
+      constraints: { description?: string };
+      successCriteria: { description?: string };
+    };
+  };
+  const goalDescription = schema.properties.goal.description ?? "";
+  const constraintsDescription = schema.properties.constraints.description ?? "";
+  const successCriteriaDescription = schema.properties.successCriteria.description ?? "";
+
+  assert.match(goalDescription, /durable outcome.*trying to achieve/i);
+  assert.match(
+    constraintsDescription,
+    /durable task-wide boundaries.*execution requirements/i,
+  );
+  assert.match(
+    constraintsDescription,
+    /scope limits.*prohibited actions.*fixed human decisions.*technical constraints/i,
+  );
+  assert.doesNotMatch(constraintsDescription, /final Definition of Done/i);
+  assert.match(
+    successCriteriaDescription,
+    /final observable outcomes required for completion/i,
+  );
+  assert.match(successCriteriaDescription, /final, durable Definition of Done/i);
+  assert.match(
+    successCriteriaDescription,
+    /Do not use success criteria for execution rules, prohibited actions, process sequencing/i,
   );
 });
 

@@ -56,6 +56,17 @@ test("D04 Core Policy explains durable success-criterion semantics", () => {
   );
 });
 
+test("D08 Core Policy distinguishes constraints from success criteria", () => {
+  assert.match(
+    PINDIE_CORE_POLICY,
+    /Constraints are durable task-wide boundaries governing execution/i,
+  );
+  assert.match(
+    PINDIE_CORE_POLICY,
+    /success criteria are final observable outcomes required for completion/i,
+  );
+});
+
 test("C02 persisted Current State is rendered deterministically", () => {
   const first = renderPindieCore(verifiedState());
   const second = renderPindieCore(verifiedState());
