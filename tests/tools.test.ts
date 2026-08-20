@@ -290,6 +290,63 @@ test("D05 pindie_state schema distinguishes durable completion from continuation
   );
 });
 
+test("D06 pindie_state action guidance exposes action-specific fields", async () => {
+  const { stateTool } = await createHarness();
+  const schema = stateTool.parameters as {
+    properties: { action: { description?: string } };
+  };
+  const description = schema.properties.action.description ?? "";
+
+  assert.match(description, /start_task.*goal.*successCriteria.*required/is);
+  assert.match(
+    description,
+    /refine_task.*goal.*constraints.*successCriteria.*at least one/is,
+  );
+  assert.match(
+    description,
+    /set_open_loops.*blockers.*questions.*required.*nextIntent.*optional/is,
+  );
+  assert.match(description, /record_verification.*check.*required/is);
+  assert.match(description, /complete_task.*action only/is);
+});
+
+test("D07 nextIntent schema guidance excludes refine_task", async () => {
+  const { stateTool } = await createHarness();
+  const schema = stateTool.parameters as {
+    properties: { nextIntent: { description?: string } };
+  };
+  const description = schema.properties.nextIntent.description ?? "";
+
+  assert.match(description, /only.*start_task.*set_open_loops/is);
+  assert.doesNotMatch(description, /refine_task/i);
+});
+
+test("refine_task rejects nextIntent with allowed fields and no mutation", async () => {
+  const initialState = activeState();
+  const { runtime, store, stateTool } = await createHarness(initialState);
+
+  await assert.rejects(
+    stateTool.execute("call", {
+      action: "refine_task",
+      constraints: ["Use option A"],
+      nextIntent: "Continue implementation",
+    }),
+    (error: Error) => {
+      assert.match(String(error), /unexpected field\(s\).*nextIntent/is);
+      assert.match(String(error), /refine_task/is);
+      assert.match(
+        String(error),
+        /Allowed fields: action, goal, constraints, successCriteria/is,
+      );
+      return true;
+    },
+  );
+
+  assert.equal(runtime.state, initialState);
+  assert.equal(store.persistedState, initialState);
+  assert.deepEqual(store.saves, []);
+});
+
 test("S07 invalid action-specific parameters are rejected", async () => {
   const { stateTool } = await createHarness();
 

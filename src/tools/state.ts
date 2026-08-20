@@ -24,26 +24,38 @@ const VerificationCheckSchema = Type.Object(
     }),
     evidence: Type.String(),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    description: "Verification check; used only by record_verification.",
+  },
 );
 
 const PindieStateParameters = Type.Object(
   {
     action: StringEnum(STATE_ACTIONS, {
-      description: "The semantic State action to perform",
+      description:
+        "Action contract: start_task: goal + successCriteria required; constraints + nextIntent optional. refine_task: goal / constraints / successCriteria only; at least one required. set_open_loops: blockers + questions required; nextIntent optional. record_verification: check required. complete_task: action only.",
     }),
-    goal: Type.Optional(Type.String()),
-    constraints: Type.Optional(Type.Array(Type.String())),
+    goal: Type.Optional(Type.String({
+      description: "Task goal; used by start_task and refine_task.",
+    })),
+    constraints: Type.Optional(Type.Array(Type.String(), {
+      description: "Task constraints; used by start_task and refine_task.",
+    })),
     successCriteria: Type.Optional(Type.Array(Type.String(), {
       description:
-        "Final, durable Definition of Done. Each criterion must remain meaningful across sessions and true at final completion, not describe temporary current-run sequencing.",
+        "Final, durable Definition of Done used by start_task and refine_task. Each criterion must remain meaningful across sessions and true at final completion, not describe temporary current-run sequencing.",
     })),
     nextIntent: Type.Optional(Type.String({
       description:
-        "Continuation intent or likely next meaningful step for unfinished work, including cross-session continuation; not part of the Definition of Done.",
+        "Continuation intent or likely next meaningful step for unfinished work, including cross-session continuation. Accepted only by start_task and set_open_loops; not part of the Definition of Done.",
     })),
-    blockers: Type.Optional(Type.Array(Type.String())),
-    questions: Type.Optional(Type.Array(Type.String())),
+    blockers: Type.Optional(Type.Array(Type.String(), {
+      description: "Current blockers; used only by set_open_loops.",
+    })),
+    questions: Type.Optional(Type.Array(Type.String(), {
+      description: "Unresolved questions; used only by set_open_loops.",
+    })),
     check: Type.Optional(VerificationCheckSchema),
   },
   { additionalProperties: false },
@@ -61,7 +73,7 @@ function assertOnlyFields(
   const unexpected = Object.keys(params).filter((key) => !allowed.includes(key));
   if (unexpected.length > 0) {
     throw new Error(
-      `Invalid pindie_state input for '${action}': unexpected field(s) ${unexpected.join(", ")}.`,
+      `Invalid pindie_state input for '${action}': unexpected field(s) ${unexpected.join(", ")}. Allowed fields: ${allowed.join(", ")}.`,
     );
   }
 }
