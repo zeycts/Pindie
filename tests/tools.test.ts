@@ -74,7 +74,10 @@ function gatedState(): PindieState {
   };
 }
 
-async function createHarness(initialState: PindieState = EMPTY_STATE) {
+async function createHarness(
+  initialState: PindieState = EMPTY_STATE,
+  getRunDuration?: () => number | null,
+) {
   const store = new ToolTestStore(initialState);
   const runtime = new PindieRuntime(store);
   await runtime.load("/workspace/pindie");
@@ -82,7 +85,7 @@ async function createHarness(initialState: PindieState = EMPTY_STATE) {
   return {
     store,
     runtime,
-    stateTool: createPindieStateTool(runtime),
+    stateTool: createPindieStateTool(runtime, { getRunDuration }),
     gateTool: createPindieGateTool(runtime),
   };
 }
@@ -278,6 +281,17 @@ test("D12 successful completion renders summary and verification", async () => {
   assert.match(text, /Current task completed\./);
   assert.match(text, /Summary:\s*\nImplemented the focused completion UX fix\./);
   assert.match(text, /Verification:\s*\n- tests: Tool tests passed\./);
+});
+
+test("D14 completion output renders the supplied Run duration", async () => {
+  const { stateTool } = await createHarness(verifiedState(), () => 522_000);
+
+  const result = await stateTool.execute("call", {
+    action: "complete_task",
+    summary: "Completed the verified task.",
+  });
+
+  assert.match(textOf(result), /Duration: 8m 42s/);
 });
 
 test("D13 completion summary is ephemeral", async () => {

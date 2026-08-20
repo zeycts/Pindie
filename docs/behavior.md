@@ -151,6 +151,14 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - T49 `agent_settled` never auto-completes a task.
 - T50 Successful integrated `complete_task` persists completed State, returns a terminating result, and terminal-task guards block later consequential mutation and same-run `pindie_state(start_task)` calls.
 
+### Run Timer v0.1
+
+- RT01 `before_agent_start` starts one runtime-only Run timer from a monotonic clock; it is independent of the persistent Pindie Task and State.
+- RT02 While an interactive Run is active, the Extension updates its footer status approximately once per second as `⏱ <duration>` without model calls or persistence.
+- RT03 `agent_settled` finalizes the current Run, clears its ticker, and retains `last <duration>` in the footer. Session shutdown/reload clears transient timer state and footer status.
+- RT04 A later Agent Run replaces any prior transient timing, so consecutive Runs cannot share a start time.
+- RT05 Successful `complete_task` output includes `Duration: <duration>` from the Run timer's authoritative elapsed duration; the completion renderer does not calculate timing independently.
+
 `terminate: true` remains Pi's tool-batch early-termination hint. Human Gate and completed-task safety do not depend on that hint alone: `tool_call` also blocks consequential work while a gate is open or the current task is completed. Successful `edit` and `write` results invalidate verification through `PindieRuntime.dispatch()`; failed edits, observation tools, and generic `bash` results do not.
 
 `before_agent_start` is the Agent-run boundary for transient guard permissions. These permissions are not persisted in `PindieState`:

@@ -2,6 +2,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { formatDuration } from "../run-timer.ts";
 import type { PindieRuntime } from "../runtime.ts";
 import type { PindieState, VerificationCheck } from "../state.ts";
 import type { PindieEvent } from "../transitions.ts";
@@ -71,6 +72,10 @@ export interface PindieStateToolDetails {
   state: PindieState;
 }
 
+export interface PindieStateToolOptions {
+  getRunDuration?: () => number | null;
+}
+
 function assertOnlyFields(
   params: Record<string, unknown>,
   action: string,
@@ -115,7 +120,11 @@ function formatSuccessCriteria(state: PindieState): string {
   ].join("\n");
 }
 
-function formatCompletionResult(state: PindieState, summary: string): string {
+function formatCompletionResult(
+  state: PindieState,
+  summary: string,
+  runDuration: number | null,
+): string {
   const checks = state.task?.verification.checks ?? [];
 
   return [
@@ -123,13 +132,17 @@ function formatCompletionResult(state: PindieState, summary: string): string {
     "",
     "Summary:",
     summary,
+    ...(runDuration === null ? [] : ["", `Duration: ${formatDuration(runDuration)}`]),
     "",
     "Verification:",
     ...checks.map((check) => `- ${check.name}: ${check.evidence}`),
   ].join("\n");
 }
 
-export function createPindieStateTool(runtime: PindieRuntime) {
+export function createPindieStateTool(
+  runtime: PindieRuntime,
+  options: PindieStateToolOptions = {},
+) {
   return defineTool({
     name: "pindie_state",
     label: "Pindie State",
@@ -249,7 +262,15 @@ export function createPindieStateTool(runtime: PindieRuntime) {
           }
 
           const state = await dispatchOrThrow(runtime, { type: "complete_task" });
-          return result(formatCompletionResult(state, params.summary), state, true);
+          return result(
+            formatCompletionResult(
+              state,
+              params.summary,
+              options.getRunDuration?.() ?? null,
+            ),
+            state,
+            true,
+          );
         }
 
         default:

@@ -125,6 +125,20 @@ function context(cwd: string): Record<string, unknown> {
   return { cwd, hasUI: false };
 }
 
+function interactiveContext(
+  cwd: string,
+  statuses: Array<{ id: string; text: string | undefined }>,
+): Record<string, unknown> {
+  return {
+    cwd,
+    hasUI: true,
+    ui: {
+      theme: { fg: (_color: string, text: string) => text },
+      setStatus: (id: string, text: string | undefined) => statuses.push({ id, text }),
+    },
+  };
+}
+
 function toolCall(
   toolName: string,
   input: Record<string, unknown> = {},
@@ -197,6 +211,13 @@ async function callGuard(
   event: Record<string, unknown>,
 ): Promise<any> {
   return harness.api.handler("tool_call")(event, context("/repo"));
+}
+
+function textOf(result: { content: Array<{ type: string; text?: string }> }): string {
+  return result.content
+    .filter((item) => item.type === "text")
+    .map((item) => item.text ?? "")
+    .join("\n");
 }
 
 function assertBlocked(result: any, reason: RegExp): void {
@@ -507,6 +528,36 @@ test("H11 unavailable Pindie State blocks consequential tools", async () => {
   assert.equal(await callGuard(harness, toolCall("read")), undefined);
 });
 
+test("Run Timer publishes active and final footer status and clears it on shutdown", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses);
+
+  await harness.api.handler("before_agent_start")(
+    {
+      type: "before_agent_start",
+      prompt: "Continue",
+      systemPrompt: "Pi system prompt",
+      systemPromptOptions: {},
+    },
+    uiContext,
+  );
+  assert.deepEqual(statuses.at(-1), { id: "pindie-run-timer", text: "⏱ 0s" });
+
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    uiContext,
+  );
+  assert.deepEqual(statuses.at(-1), { id: "pindie-run-timer", text: "last 0s" });
+
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "reload" },
+    uiContext,
+  );
+  assert.deepEqual(statuses.at(-1), { id: "pindie-run-timer", text: undefined });
+});
+
 test("T49 agent_settled never auto-completes a verified task", async () => {
   const harness = createHarness([["/repo", verifiedState()]]);
   await startSession(harness, "/repo");
@@ -531,6 +582,8 @@ test("T50 integrated completion terminates and terminal guard blocks mutation", 
   });
 
   assert.equal(result.terminate, true);
+  assert.match(textOf(result), /Duration: 0s/);
+  assert.equal(harness.integration.runTimer.active, true);
   assert.equal(harness.integration.runtime.state.task?.completed, true);
   assert.equal(harness.store.states.get("/repo")?.task?.completed, true);
   assertBlocked(await callGuard(harness, toolCall("edit")), /completed and terminal/i);
@@ -541,6 +594,13 @@ test("T50 integrated completion terminates and terminal guard blocks mutation", 
     ),
     /completed during this Agent run/i,
   );
+
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    context("/repo"),
+  );
+  assert.equal(harness.integration.runTimer.active, false);
+  assert.notEqual(harness.integration.runTimer.durationMs, null);
 });
 
 test("RG01 a gate opened during the run blocks same-run refinement", async () => {
