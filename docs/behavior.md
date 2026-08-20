@@ -111,6 +111,12 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 
 - T36 `pindie_gate(open)` persists `waiting_human` State before returning a terminating tool result.
 - `pindie_state` exposes only `start_task`, `refine_task`, `set_open_loops`, `record_verification`, and `complete_task`; no arbitrary state patch API.
+- The public `pindie_state` action contract is:
+  - `start_task`: `goal` and `successCriteria` required; `constraints` and `nextIntent` optional.
+  - `refine_task`: only `goal`, `constraints`, and `successCriteria`; at least one required.
+  - `set_open_loops`: `blockers` and `questions` required; `nextIntent` optional.
+  - `record_verification`: `check` required; no other semantic fields.
+  - `complete_task`: `action` only.
 - `pindie_gate` exposes only `open` and `resolve`.
 - `complete_task` is a request to the validator, never direct permission to set `completed`.
 - Successful `complete_task` persists completed State before returning a terminating tool result.
