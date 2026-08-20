@@ -525,9 +525,10 @@ test("T50 integrated completion terminates and terminal guard blocks mutation", 
   await startSession(harness, "/repo");
   await beginAgentRun(harness);
 
-  const result = await harness.api
-    .tool("pindie_state")
-    .execute("complete", { action: "complete_task" });
+  const result = await harness.api.tool("pindie_state").execute("complete", {
+    action: "complete_task",
+    summary: "Completed the verified task.",
+  });
 
   assert.equal(result.terminate, true);
   assert.equal(harness.integration.runtime.state.task?.completed, true);
@@ -638,6 +639,7 @@ test("RC01 a task completed during the run blocks same-run replacement", async (
 
   await harness.api.tool("pindie_state").execute("complete", {
     action: "complete_task",
+    summary: "Completed the verified task.",
   });
 
   assertBlocked(
@@ -656,6 +658,7 @@ test("RC02 a task completed during the run blocks same-run mutation", async () =
 
   await harness.api.tool("pindie_state").execute("complete", {
     action: "complete_task",
+    summary: "Completed the verified task.",
   });
 
   for (const name of ["edit", "write", "bash"]) {
@@ -698,6 +701,7 @@ test("RC04 replacing Task A then completing Task B does not permit Task C in the
   });
   await harness.api.tool("pindie_state").execute("complete-b", {
     action: "complete_task",
+    summary: "Completed Task B.",
   });
 
   assertBlocked(

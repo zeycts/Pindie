@@ -229,11 +229,71 @@ test("D03 unknown criterion rejection lists valid IDs without mutation", async (
 test("S05 and S10 complete_task persists completion and terminates", async () => {
   const { runtime, store, stateTool } = await createHarness(verifiedState());
 
-  const result = await stateTool.execute("call", { action: "complete_task" });
+  const result = await stateTool.execute("call", {
+    action: "complete_task",
+    summary: "Completed the verified task.",
+  });
 
   assert.equal(runtime.state.task?.completed, true);
   assert.equal(store.persistedState.task?.completed, true);
   assert.equal(result.terminate, true);
+});
+
+test("D12 successful completion renders summary and verification", async () => {
+  const harness = await createHarness(verifiedState());
+  let releaseSave!: () => void;
+  let markSaveStarted!: () => void;
+  const saveStarted = new Promise<void>((resolve) => {
+    markSaveStarted = resolve;
+  });
+  harness.store.beforeSave = () =>
+    new Promise<void>((resolve) => {
+      releaseSave = resolve;
+      markSaveStarted();
+    });
+  let settled = false;
+
+  const execution = harness.stateTool
+    .execute("call", {
+      action: "complete_task",
+      summary: "Implemented the focused completion UX fix.",
+    })
+    .then((result) => {
+      settled = true;
+      return result;
+    });
+  await saveStarted;
+
+  assert.equal(settled, false);
+  assert.equal(harness.runtime.state.task?.completed, false);
+  assert.equal(harness.store.persistedState.task?.completed, false);
+
+  releaseSave();
+  const result = await execution;
+  const text = textOf(result);
+
+  assert.equal(harness.runtime.state.task?.completed, true);
+  assert.equal(harness.store.persistedState.task?.completed, true);
+  assert.equal(result.terminate, true);
+  assert.match(text, /Current task completed\./);
+  assert.match(text, /Summary:\s*\nImplemented the focused completion UX fix\./);
+  assert.match(text, /Verification:\s*\n- tests: Tool tests passed\./);
+});
+
+test("D13 completion summary is ephemeral", async () => {
+  const { runtime, store, stateTool } = await createHarness(verifiedState());
+
+  const result = await stateTool.execute("call", {
+    action: "complete_task",
+    summary: "Implemented the focused completion UX fix.",
+  });
+
+  assert.match(textOf(result), /Implemented the focused completion UX fix\./);
+  assert.equal("summary" in runtime.state, false);
+  assert.equal("summary" in runtime.state.task!, false);
+  assert.equal("summary" in store.persistedState, false);
+  assert.equal("summary" in store.persistedState.task!, false);
+  assert.doesNotMatch(JSON.stringify(store.persistedState), /summary/i);
 });
 
 test("S06 pindie_state exposes only approved semantic actions", async () => {
@@ -341,7 +401,26 @@ test("D06 pindie_state action guidance exposes action-specific fields", async ()
     /set_open_loops.*blockers.*questions.*required.*nextIntent.*optional/is,
   );
   assert.match(description, /record_verification.*check.*required/is);
-  assert.match(description, /complete_task.*action only/is);
+  assert.match(description, /complete_task.*summary.*required/is);
+});
+
+test("D10 complete_task contract requires summary", async () => {
+  const { stateTool } = await createHarness();
+  const schema = stateTool.parameters as {
+    properties: {
+      action: { description?: string };
+      summary: { description?: string };
+    };
+  };
+  const actionDescription = schema.properties.action.description ?? "";
+  const summaryDescription = schema.properties.summary.description ?? "";
+
+  assert.match(actionDescription, /complete_task.*summary required/is);
+  assert.match(summaryDescription, /Used only by complete_task/i);
+  assert.match(summaryDescription, /user-facing summary.*completed outcome/i);
+  assert.match(summaryDescription, /meaningful changes/i);
+  assert.match(summaryDescription, /Verification evidence.*rendered separately/i);
+  assert.match(summaryDescription, /recorded Pindie verification/i);
 });
 
 test("D07 nextIntent schema guidance excludes refine_task", async () => {
@@ -445,7 +524,10 @@ test("S11 rejected complete_task does not terminate or persist", async () => {
   const { runtime, store, stateTool } = await createHarness(activeState());
 
   const error = await stateTool
-    .execute("call", { action: "complete_task" })
+    .execute("call", {
+      action: "complete_task",
+      summary: "Completed the verified task.",
+    })
     .then(
       () => assert.fail("Expected complete_task to reject"),
       (failure: unknown) => failure,
@@ -455,6 +537,26 @@ test("S11 rejected complete_task does not terminate or persist", async () => {
   assert.equal((error as { terminate?: boolean }).terminate, undefined);
   assert.equal(runtime.state.task?.completed, false);
   assert.deepEqual(store.saves, []);
+});
+
+test("D11 missing or blank complete_task summary is rejected", async () => {
+  for (const params of [
+    { action: "complete_task" },
+    { action: "complete_task", summary: "   " },
+  ]) {
+    const initialState = verifiedState();
+    const { runtime, store, stateTool } = await createHarness(initialState);
+    const error = await stateTool.execute("call", params).then(
+      () => assert.fail("Expected complete_task to reject"),
+      (failure: unknown) => failure,
+    );
+
+    assert.match(String(error), /non-empty summary is required/i);
+    assert.equal((error as { terminate?: boolean }).terminate, undefined);
+    assert.equal(runtime.state, initialState);
+    assert.equal(store.persistedState, initialState);
+    assert.deepEqual(store.saves, []);
+  }
 });
 
 test("S12 pindie_state execution is sequential", async () => {

@@ -34,7 +34,7 @@ const PindieStateParameters = Type.Object(
   {
     action: StringEnum(STATE_ACTIONS, {
       description:
-        "Action contract: start_task: goal + successCriteria required; constraints + nextIntent optional. refine_task: goal / constraints / successCriteria only; at least one required. set_open_loops: blockers + questions required; nextIntent optional. record_verification: check required. complete_task: action only.",
+        "Action contract: start_task: goal + successCriteria required; constraints + nextIntent optional. refine_task: goal / constraints / successCriteria only; at least one required. set_open_loops: blockers + questions required; nextIntent optional. record_verification: check required. complete_task: summary required; no other semantic fields.",
     }),
     goal: Type.Optional(Type.String({
       description:
@@ -59,6 +59,10 @@ const PindieStateParameters = Type.Object(
       description: "Unresolved questions; used only by set_open_loops.",
     })),
     check: Type.Optional(VerificationCheckSchema),
+    summary: Type.Optional(Type.String({
+      description:
+        "Concise user-facing summary of the completed outcome and meaningful changes, grounded in observed project reality. Used only by complete_task. Verification evidence is rendered separately from recorded Pindie verification.",
+    })),
   },
   { additionalProperties: false },
 );
@@ -108,6 +112,20 @@ function formatSuccessCriteria(state: PindieState): string {
   return [
     "Success criteria:",
     ...criteria.map(({ id, description }) => `- ${id}: ${description}`),
+  ].join("\n");
+}
+
+function formatCompletionResult(state: PindieState, summary: string): string {
+  const checks = state.task?.verification.checks ?? [];
+
+  return [
+    "Current task completed.",
+    "",
+    "Summary:",
+    summary,
+    "",
+    "Verification:",
+    ...checks.map((check) => `- ${check.name}: ${check.evidence}`),
   ].join("\n");
 }
 
@@ -223,9 +241,15 @@ export function createPindieStateTool(runtime: PindieRuntime) {
         }
 
         case "complete_task": {
-          assertOnlyFields(params, params.action, ["action"]);
+          assertOnlyFields(params, params.action, ["action", "summary"]);
+          if (typeof params.summary !== "string" || params.summary.trim() === "") {
+            throw new Error(
+              "Invalid pindie_state complete_task input: non-empty summary is required.",
+            );
+          }
+
           const state = await dispatchOrThrow(runtime, { type: "complete_task" });
-          return result("Current task completed with passing verification.", state, true);
+          return result(formatCompletionResult(state, params.summary), state, true);
         }
 
         default:
