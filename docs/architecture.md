@@ -148,6 +148,7 @@ The implemented v0.1 Core Extension provides:
 - verification invalidation on known project mutation
 - Human Gate lifecycle
 - runtime safety checks
+- runtime-only Agent Run timing in the footer and completion output
 - custom tools `pindie_state` and `pindie_gate`
 
 The model-facing State mutation path is:
@@ -172,6 +173,7 @@ session_start
   → Runtime.load
 
 before_agent_start
+  → start runtime-only Run timer
   → snapshot pre-existing Human Gate / completed-task identity
   → append one Core Policy + Current State block
 
@@ -183,9 +185,11 @@ tool_result
   → Runtime.dispatch(invalidate_verification)
 
 agent_settled
+  → finalize runtime-only Run timer
   → consistency validation only; never auto-complete
 
 session_shutdown
+  → clear runtime-only Run timer
   → unload transient Runtime context
 ```
 
