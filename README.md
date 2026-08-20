@@ -1,8 +1,8 @@
 # Pindie
 
-> Pindie is my personal AI agent for indie development.
+> Pindie is a personal AI agent for indie development, built on Pi.
 
-Pindie is built on top of the Pi agent harness. Pi remains responsible for the low-level model/tool agent loop; Pindie adds a minimal operating model for carrying an indie-development task from intent to verified completion.
+Pindie helps carry one development task from intent to verified completion while keeping human judgment explicit for consequential choices. Pi remains responsible for the low-level model/tool agent loop; Pindie adds the minimal operating model above it.
 
 ## Core model
 
