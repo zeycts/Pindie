@@ -10,6 +10,7 @@ import {
 
 import { injectPindieCore } from "./context.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
+import { RunActivityTracker } from "./run-activity.ts";
 import { RunCostTracker } from "./run-cost.ts";
 import { RunTimer } from "./run-timer.ts";
 import { PindieRuntime } from "./runtime.ts";
@@ -47,6 +48,7 @@ export interface PindieExtensionOptions {
 
 export interface PindieExtensionIntegration {
   readonly runtime: PindieRuntime;
+  readonly runActivity: RunActivityTracker;
   readonly runCost: RunCostTracker;
   readonly runTimer: RunTimer;
   readonly stateUnavailableReason: string | null;
@@ -83,6 +85,7 @@ export function registerPindieExtension(
   options: PindieExtensionOptions = {},
 ): PindieExtensionIntegration {
   const runtime = new PindieRuntime(options.store ?? new FileStateStore());
+  const runActivity = new RunActivityTracker();
   const runCost = new RunCostTracker();
   const runTimer = new RunTimer();
   const resolveProjectRoot =
@@ -123,6 +126,7 @@ export function registerPindieExtension(
             ? null
             : { durationMs: runTimer.durationMs, active: runTimer.active },
         runCost: runCost.snapshot(ctx!.sessionManager.getEntries()),
+        activity: runActivity.activity,
         state: runtime.projectRoot === null ? null : runtime.state,
         stateUnavailableReason,
         subscriptionUsage,
@@ -164,6 +168,7 @@ export function registerPindieExtension(
 
   pi.on("session_start", async (_event, ctx) => {
     statusContext = ctx;
+    runActivity.reset();
     runCost.reset();
     runTimer.reset();
     clearPindieStatus(ctx);
@@ -186,6 +191,7 @@ export function registerPindieExtension(
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    runActivity.reset();
     runCost.reset();
     runTimer.reset();
     clearPindieStatus(ctx);
@@ -197,6 +203,7 @@ export function registerPindieExtension(
 
   pi.on("before_agent_start", (event, ctx) => {
     statusContext = ctx;
+    runActivity.start();
     runCost.start(ctx.sessionManager.getEntries());
     runTimer.start(ctx.hasUI ? () => refreshStatus(ctx) : undefined);
     const state = runtime.projectRoot === null ? null : runtime.state;
@@ -214,6 +221,16 @@ export function registerPindieExtension(
         unavailableReason,
       ),
     };
+  });
+
+  pi.on("tool_execution_start", (event, ctx) => {
+    runActivity.toolExecutionStart(event.toolCallId, event.toolName);
+    refreshStatus(ctx);
+  });
+
+  pi.on("tool_execution_end", (event, ctx) => {
+    runActivity.toolExecutionEnd(event.toolCallId);
+    refreshStatus(ctx);
   });
 
   pi.on("tool_call", (event): ToolCallEventResult | void => {
@@ -300,6 +317,7 @@ export function registerPindieExtension(
 
   pi.on("agent_settled", (_event, ctx) => {
     statusContext = ctx;
+    runActivity.settle();
     runCost.finish(ctx.sessionManager.getEntries());
     runTimer.finish();
     refreshStatus(ctx);
@@ -316,6 +334,7 @@ export function registerPindieExtension(
 
   return {
     runtime,
+    runActivity,
     runCost,
     runTimer,
     get stateUnavailableReason() {

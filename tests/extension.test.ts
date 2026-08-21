@@ -164,6 +164,14 @@ function toolCall(
   return { type: "tool_call", toolCallId: `call-${toolName}`, toolName, input };
 }
 
+function toolExecution(
+  type: "tool_execution_start" | "tool_execution_end",
+  toolCallId: string,
+  toolName: string,
+): Record<string, unknown> {
+  return { type, toolCallId, toolName, args: {}, result: undefined, isError: false };
+}
+
 function toolResult(
   toolName: string,
   isError = false,
@@ -257,6 +265,8 @@ test("the Extension registers the two existing Pindie tools and required hooks",
     "session_shutdown",
     "session_start",
     "tool_call",
+    "tool_execution_end",
+    "tool_execution_start",
     "tool_result",
   ]);
 });
@@ -768,13 +778,58 @@ test("Run Cost measures public session usage from the Run baseline and resets pe
     },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /⏱ 0s • \$0.000 • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /⏱ 0s • \$0.000 • thinking • verify 0\/1/);
 
   await harness.api.handler("session_shutdown")(
     { type: "session_shutdown", reason: "new" },
     uiContext,
   );
   assert.equal(harness.integration.runCost.snapshot(entries as any), null);
+});
+
+test("Current Activity refreshes status from public tool execution lifecycle and clears on settlement", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses);
+  await startSession(harness, "/repo");
+  await harness.api.handler("before_agent_start")(
+    {
+      type: "before_agent_start",
+      prompt: "Continue",
+      systemPrompt: "Pi system prompt",
+      systemPromptOptions: {},
+    },
+    uiContext,
+  );
+  assert.equal(harness.integration.runActivity.activity, "thinking");
+  assert.match(statuses.at(-1)?.text ?? "", /\$0.000 • thinking • verify 0\/1/);
+
+  await harness.api.handler("tool_execution_start")(
+    toolExecution("tool_execution_start", "read-a", "read"),
+    uiContext,
+  );
+  assert.equal(harness.integration.runActivity.activity, "reading");
+  assert.match(statuses.at(-1)?.text ?? "", /• reading •/);
+
+  await harness.api.handler("tool_execution_start")(
+    toolExecution("tool_execution_start", "edit-b", "edit"),
+    uiContext,
+  );
+  assert.equal(harness.integration.runActivity.activity, "working");
+  assert.match(statuses.at(-1)?.text ?? "", /• working •/);
+
+  await harness.api.handler("tool_execution_end")(
+    toolExecution("tool_execution_end", "edit-b", "edit"),
+    uiContext,
+  );
+  assert.equal(harness.integration.runActivity.activity, "reading");
+
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    uiContext,
+  );
+  assert.equal(harness.integration.runActivity.activity, null);
+  assert.doesNotMatch(statuses.at(-1)?.text ?? "", /thinking|reading|editing|running|updating|working/);
 });
 
 test("unified Pindie status publishes active and final timing, then clears on shutdown", async () => {
@@ -794,7 +849,7 @@ test("unified Pindie status publishes active and final timing, then clears on sh
   );
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • verify 0/1",
+    text: "⏱ 0s • $0.000 • thinking • verify 0/1",
   });
 
   await harness.api.handler("agent_settled")(
@@ -840,7 +895,7 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   });
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • ✓ 1/1",
+    text: "⏱ 0s • $0.000 • thinking • ✓ 1/1",
   });
 
   await harness.api.tool("pindie_gate").execute("gate", {
@@ -850,7 +905,7 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   });
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • ✓ 1/1 • ⚠ gate: approval",
+    text: "⏱ 0s • $0.000 • thinking • ✓ 1/1 • ⚠ gate: approval",
   });
 
   await harness.api.handler("agent_settled")(

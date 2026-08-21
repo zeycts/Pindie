@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
+import type { RunActivity } from "./run-activity.ts";
 import { formatRunCost, type RunCost } from "./run-cost.ts";
 import { formatDuration, type RunTiming } from "./run-timer.ts";
 import {
@@ -36,6 +37,7 @@ export interface VerificationProgress {
 export interface PindieStatusSnapshot {
   timing: RunTiming | null;
   runCost?: RunCost | null;
+  activity?: RunActivity | null;
   state: PindieState | null;
   stateUnavailableReason: string | null;
   subscriptionUsage?: SubscriptionUsageSnapshot | null;
@@ -104,6 +106,10 @@ export function deriveStatusSegments(
 
   if (snapshot.runCost) {
     segments.push({ text: formatRunCost(snapshot.runCost.cost), tone: "dim" });
+  }
+
+  if (snapshot.activity) {
+    segments.push({ text: snapshot.activity, tone: "accent" });
   }
 
   const task = snapshot.state?.task;
