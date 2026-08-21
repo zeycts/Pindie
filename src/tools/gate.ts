@@ -42,6 +42,7 @@ function assertOnlyFields(
 async function dispatchOrThrow(
   runtime: PindieRuntime,
   event: PindieEvent,
+  onStateChange?: () => void,
 ): Promise<PindieState> {
   const result = await runtime.dispatch(event);
   if (!result.ok) {
@@ -50,6 +51,7 @@ async function dispatchOrThrow(
     );
   }
 
+  onStateChange?.();
   return runtime.state;
 }
 
@@ -71,7 +73,10 @@ function openGateMessage(question: string, options?: string[]): string {
   return lines.join("\n");
 }
 
-export function createPindieGateTool(runtime: PindieRuntime) {
+export function createPindieGateTool(
+  runtime: PindieRuntime,
+  options: { onStateChange?: () => void } = {},
+) {
   return defineTool({
     name: "pindie_gate",
     label: "Pindie Human Gate",
@@ -99,10 +104,11 @@ export function createPindieGateTool(runtime: PindieRuntime) {
             question: params.question,
             ...(params.options === undefined ? {} : { options: params.options }),
           };
-          const state = await dispatchOrThrow(runtime, {
-            type: "open_human_gate",
-            gate,
-          });
+          const state = await dispatchOrThrow(
+            runtime,
+            { type: "open_human_gate", gate },
+            options.onStateChange,
+          );
           return result(
             openGateMessage(gate.question, gate.options),
             state,
@@ -112,9 +118,11 @@ export function createPindieGateTool(runtime: PindieRuntime) {
 
         case "resolve": {
           assertOnlyFields(params, params.action, ["action"]);
-          const state = await dispatchOrThrow(runtime, {
-            type: "resolve_human_gate",
-          });
+          const state = await dispatchOrThrow(
+            runtime,
+            { type: "resolve_human_gate" },
+            options.onStateChange,
+          );
           return result(
             "Human Gate resolved. Re-observe relevant project reality before continuing.",
             state,

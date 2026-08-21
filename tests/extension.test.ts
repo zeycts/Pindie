@@ -528,7 +528,7 @@ test("H11 unavailable Pindie State blocks consequential tools", async () => {
   assert.equal(await callGuard(harness, toolCall("read")), undefined);
 });
 
-test("Run Timer publishes active and final footer status and clears it on shutdown", async () => {
+test("unified Pindie status publishes active and final timing, then clears on shutdown", async () => {
   const harness = createHarness([["/repo", activeState()]]);
   await startSession(harness, "/repo");
   const statuses: Array<{ id: string; text: string | undefined }> = [];
@@ -543,19 +543,71 @@ test("Run Timer publishes active and final footer status and clears it on shutdo
     },
     uiContext,
   );
-  assert.deepEqual(statuses.at(-1), { id: "pindie-run-timer", text: "⏱ 0s" });
+  assert.deepEqual(statuses.at(-1), {
+    id: "pindie-status",
+    text: "⏱ 0s • verify 0/1",
+  });
 
   await harness.api.handler("agent_settled")(
     { type: "agent_settled" },
     uiContext,
   );
-  assert.deepEqual(statuses.at(-1), { id: "pindie-run-timer", text: "last 0s" });
+  assert.deepEqual(statuses.at(-1), {
+    id: "pindie-status",
+    text: "last 0s • verify 0/1",
+  });
 
   await harness.api.handler("session_shutdown")(
     { type: "session_shutdown", reason: "reload" },
     uiContext,
   );
-  assert.deepEqual(statuses.at(-1), { id: "pindie-run-timer", text: undefined });
+  assert.deepEqual(statuses.at(-1), { id: "pindie-status", text: undefined });
+  assert.deepEqual([...new Set(statuses.map(({ id }) => id))], ["pindie-status"]);
+});
+
+test("semantic State transitions refresh the one Pindie status entry", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses);
+  await startSession(harness, "/repo");
+  await harness.api.handler("before_agent_start")(
+    {
+      type: "before_agent_start",
+      prompt: "Continue",
+      systemPrompt: "Pi system prompt",
+      systemPromptOptions: {},
+    },
+    uiContext,
+  );
+
+  await harness.api.tool("pindie_state").execute("verify", {
+    action: "record_verification",
+    check: {
+      name: "tests",
+      status: "passed",
+      covers: ["c1"],
+      evidence: "passed",
+    },
+  });
+  assert.deepEqual(statuses.at(-1), {
+    id: "pindie-status",
+    text: "⏱ 0s • ✓ 1/1",
+  });
+
+  await harness.api.tool("pindie_gate").execute("gate", {
+    action: "open",
+    kind: "approval",
+    question: "Approve release?",
+  });
+  assert.deepEqual(statuses.at(-1), {
+    id: "pindie-status",
+    text: "⏱ 0s • ✓ 1/1 • ⚠ gate: approval",
+  });
+
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    uiContext,
+  );
 });
 
 test("T49 agent_settled never auto-completes a verified task", async () => {

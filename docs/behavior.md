@@ -154,10 +154,20 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 ### Run Timer v0.1
 
 - RT01 `before_agent_start` starts one runtime-only Run timer from a monotonic clock; it is independent of the persistent Pindie Task and State.
-- RT02 While an interactive Run is active, the Extension updates its footer status approximately once per second as `⏱ <duration>` without model calls or persistence.
-- RT03 `agent_settled` finalizes the current Run, clears its ticker, and retains `last <duration>` in the footer. Session shutdown/reload clears transient timer state and footer status.
+- RT02 While an interactive Run is active, the timer updates the unified Pindie status line approximately once per second as `⏱ <duration>` without model calls or persistence.
+- RT03 `agent_settled` finalizes the current Run, clears its ticker, and retains `last <duration>` in the Pindie status line. Session shutdown/reload clears transient timer state and status presentation.
 - RT04 A later Agent Run replaces any prior transient timing, so consecutive Runs cannot share a start time.
 - RT05 Successful `complete_task` output includes `Duration: <duration>` from the Run timer's authoritative elapsed duration; the completion renderer does not calculate timing independently.
+
+### Pindie Status Line v0.1 — Verification + Alerts
+
+- SL01 Pi owns the infrastructure footer; Pindie owns exactly one semantic current-work status entry (`pindie-status`) beneath it. Pindie does not replace Pi's footer.
+- SL02 The status line orders available segments as Run timing, verification, then one actionable attention condition. Segments are derived from runtime timing, State, and direct runtime availability—not persisted display state.
+- SL03 Verification progress is distinct passed-criterion coverage over total success criteria. Overlapping passed checks do not double-count; failed checks do not add coverage.
+- SL04 Pending verification renders `verify <covered>/<total>`; stale renders `verify stale` without historical progress; failed renders `verify failed <covered>/<total>`; passed renders `✓ <covered>/<total>`; no task omits verification.
+- SL05 Attention is absent normally. State-unavailable is an error alert. Otherwise an open Human Gate takes precedence over blockers and renders its kind; a blocker renders `⚠ blocked`.
+- SL06 Semantic segments use the active Pi theme individually: `dim` for timing and separators, `text` for normal verification, `success` for passed verification, `warning` for stale/gate/blocked, and `error` for failed verification or State-unavailable. `accent` is reserved for future current activity / Run Phase.
+- SL07 Successful Pindie State/Human Gate transitions and known verification invalidation refresh the status after persistence. Timer ticks are the only periodic refresh. Session shutdown clears the one status entry.
 
 `terminate: true` remains Pi's tool-batch early-termination hint. Human Gate and completed-task safety do not depend on that hint alone: `tool_call` also blocks consequential work while a gate is open or the current task is completed. Successful `edit` and `write` results invalidate verification through `PindieRuntime.dispatch()`; failed edits, observation tools, and generic `bash` results do not.
 

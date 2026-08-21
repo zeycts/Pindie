@@ -33,6 +33,23 @@ Pi executes model/tool interactions needed to make it happen.
 
 Pindie must not implement a second agent loop.
 
+### Status presentation ownership
+
+Pi's built-in footer presents infrastructure and runtime information (project, branch, token/context use, model, and thinking). Pindie presents semantic current-work information through one extension status line beneath it. Pindie never replaces or customizes Pi's footer for this purpose.
+
+The Pindie status line derives its compact segments from runtime-only Run timing, semantic current-task State, and directly available runtime alerts. It does not persist display fields or create independent status entries for each fact.
+
+Semantic colors follow the active Pi theme:
+
+```text
+dim      → informational
+text     → normal state
+accent   → current activity (reserved for future Run Phase)
+success  → successful state
+warning  → attention / human intervention
+error    → failure / runtime problem
+```
+
 ## 3. Pindie Core Loop
 
 The logical loop is:
@@ -148,7 +165,8 @@ The implemented v0.1 Core Extension provides:
 - verification invalidation on known project mutation
 - Human Gate lifecycle
 - runtime safety checks
-- runtime-only Agent Run timing in the footer and completion output
+- runtime-only Agent Run timing in the unified Pindie semantic status line and completion output
+- one theme-aware Pindie status line for verification progress and actionable Human Gate, blocker, and State-unavailable conditions
 - custom tools `pindie_state` and `pindie_gate`
 
 The model-facing State mutation path is:
@@ -174,6 +192,7 @@ session_start
 
 before_agent_start
   → start runtime-only Run timer
+  → derive and publish one Pindie semantic status line
   → snapshot pre-existing Human Gate / completed-task identity
   → append one Core Policy + Current State block
 
@@ -183,15 +202,18 @@ tool_call
 tool_result
   → successful edit/write
   → Runtime.dispatch(invalidate_verification)
+  → refresh the derived Pindie status line
 
 agent_settled
   → finalize runtime-only Run timer
   → consistency validation only; never auto-complete
 
 session_shutdown
-  → clear runtime-only Run timer
+  → clear runtime-only Run timer and Pindie status presentation
   → unload transient Runtime context
 ```
+
+Successful Pindie State and Human Gate tool transitions also refresh the status line after persistence. Run timer ticks are the only periodic trigger; they re-read current runtime State and do not persist timing or presentation.
 
 The Agent-run snapshot is extension-local and resets at each `before_agent_start`. It records only object identity for a gate or completed task that already existed at the run boundary; it is neither persisted State nor a second state machine. This lets a later run consume persisted consequential State while preventing a gate opened, or task completed, during the current run from being immediately consumed by sibling or follow-up tool calls.
 

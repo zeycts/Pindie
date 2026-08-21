@@ -74,6 +74,7 @@ export interface PindieStateToolDetails {
 
 export interface PindieStateToolOptions {
   getRunDuration?: () => number | null;
+  onStateChange?: () => void;
 }
 
 function assertOnlyFields(
@@ -92,6 +93,7 @@ function assertOnlyFields(
 async function dispatchOrThrow(
   runtime: PindieRuntime,
   event: PindieEvent,
+  onStateChange?: () => void,
 ): Promise<PindieState> {
   const result = await runtime.dispatch(event);
   if (!result.ok) {
@@ -100,6 +102,7 @@ async function dispatchOrThrow(
     );
   }
 
+  onStateChange?.();
   return runtime.state;
 }
 
@@ -169,13 +172,17 @@ export function createPindieStateTool(
             );
           }
 
-          const state = await dispatchOrThrow(runtime, {
-            type: "start_task",
-            goal: params.goal,
-            constraints: params.constraints ?? [],
-            successCriteria: params.successCriteria,
-            nextIntent: params.nextIntent ?? null,
-          });
+          const state = await dispatchOrThrow(
+            runtime,
+            {
+              type: "start_task",
+              goal: params.goal,
+              constraints: params.constraints ?? [],
+              successCriteria: params.successCriteria,
+              nextIntent: params.nextIntent ?? null,
+            },
+            options.onStateChange,
+          );
           return result(
             `Current task started.\n\n${formatSuccessCriteria(state)}`,
             state,
@@ -209,7 +216,11 @@ export function createPindieStateTool(
               ? {}
               : { successCriteria: params.successCriteria }),
           };
-          const state = await dispatchOrThrow(runtime, event);
+          const state = await dispatchOrThrow(
+            runtime,
+            event,
+            options.onStateChange,
+          );
           return result(
             `Task contract refined.\n\n${formatSuccessCriteria(state)}`,
             state,
@@ -229,12 +240,16 @@ export function createPindieStateTool(
             );
           }
 
-          const state = await dispatchOrThrow(runtime, {
-            type: "set_open_loops",
-            blockers: params.blockers,
-            questions: params.questions,
-            nextIntent: params.nextIntent ?? null,
-          });
+          const state = await dispatchOrThrow(
+            runtime,
+            {
+              type: "set_open_loops",
+              blockers: params.blockers,
+              questions: params.questions,
+              nextIntent: params.nextIntent ?? null,
+            },
+            options.onStateChange,
+          );
           return result("Open loops updated.", state);
         }
 
@@ -246,10 +261,14 @@ export function createPindieStateTool(
             );
           }
 
-          const state = await dispatchOrThrow(runtime, {
-            type: "record_verification",
-            check: params.check as VerificationCheck,
-          });
+          const state = await dispatchOrThrow(
+            runtime,
+            {
+              type: "record_verification",
+              check: params.check as VerificationCheck,
+            },
+            options.onStateChange,
+          );
           return result(`Verification check '${params.check.name}' recorded.`, state);
         }
 
@@ -261,7 +280,11 @@ export function createPindieStateTool(
             );
           }
 
-          const state = await dispatchOrThrow(runtime, { type: "complete_task" });
+          const state = await dispatchOrThrow(
+            runtime,
+            { type: "complete_task" },
+            options.onStateChange,
+          );
           return result(
             formatCompletionResult(
               state,
