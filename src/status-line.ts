@@ -9,7 +9,7 @@ import {
   type PindieTask,
 } from "./state.ts";
 import {
-  formatResetTime,
+  formatResetCountdown,
   getRemainingPercent,
   selectWeeklyWindow,
   type SubscriptionUsageSnapshot,
@@ -122,15 +122,18 @@ export function deriveStatusSegments(
 
 export function deriveStatusLayout(
   snapshot: PindieStatusSnapshot,
-  formatTime: (date: Date) => string = (date) => formatResetTime(date.getTime()),
+  now = Date.now(),
 ): PindieStatusLayout {
   const weekly = selectWeeklyWindow(snapshot.subscriptionUsage ?? null);
+  const resetCountdown = weekly?.resetsAt === undefined
+    ? null
+    : formatResetCountdown(weekly.resetsAt, now);
   const right = weekly
     ? [
         { text: `w${getRemainingPercent(weekly.usedPercent)}%`, tone: "dim" as const },
-        ...(weekly.resetsAt === undefined
+        ...(resetCountdown === null
           ? []
-          : [{ text: `↻${formatTime(new Date(weekly.resetsAt))}`, tone: "dim" as const }]),
+          : [{ text: `↻${resetCountdown}`, tone: "dim" as const }]),
       ]
     : [];
   return { left: deriveStatusSegments(snapshot), right };

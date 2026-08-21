@@ -126,7 +126,7 @@ export function registerPindieExtension(
         state: runtime.projectRoot === null ? null : runtime.state,
         stateUnavailableReason,
         subscriptionUsage,
-      });
+      }, now());
       return renderStatusLayout(ctx!.ui.theme, layout, getStatusWidth());
     });
   };

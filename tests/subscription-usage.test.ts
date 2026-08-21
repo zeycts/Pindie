@@ -5,7 +5,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
   createChatGptSubscriptionUsageProvider,
-  formatResetTime,
+  formatResetCountdown,
   getRemainingPercent,
   parseSubscriptionUsage,
   selectWeeklyWindow,
@@ -87,13 +87,39 @@ test("remaining subscription percentage clamps and rounds used percentage", () =
   assert.equal(getRemainingPercent(110), 0);
 });
 
-test("real reset_at timestamps are converted from seconds before local formatting", () => {
+test("real reset_at timestamps are converted from seconds", () => {
   const snapshot = parseSubscriptionUsage(realUsagePayload(18_000, 604_800))!;
   assert.equal(selectWeeklyWindow(snapshot)?.resetsAt, 1_700_100_000_000);
-  assert.equal(
-    formatResetTime(1_700_000_000_000, () => "18:29"),
-    "18:29",
-  );
+});
+
+test("reset countdown uses compact floor-based, timezone-independent units", () => {
+  const now = 1_700_000_000_000;
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  assert.equal(formatResetCountdown(now + 6 * day + 23 * hour + 59 * minute, now), "6d23h");
+  assert.equal(formatResetCountdown(now + day, now), "1d0h");
+  assert.equal(formatResetCountdown(now + 23 * hour + 42 * minute, now), "23h42m");
+  assert.equal(formatResetCountdown(now + 3 * hour + 8 * minute, now), "3h8m");
+  assert.equal(formatResetCountdown(now + 42 * minute, now), "42m");
+  assert.equal(formatResetCountdown(now + 17_000, now), "<1m");
+});
+
+test("reset countdown handles boundaries and expired timestamps", () => {
+  const now = 1_700_000_000_000;
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  assert.equal(formatResetCountdown(now + day, now), "1d0h");
+  assert.equal(formatResetCountdown(now + day - 1, now), "23h59m");
+  assert.equal(formatResetCountdown(now + hour, now), "1h0m");
+  assert.equal(formatResetCountdown(now + hour - 1, now), "59m");
+  assert.equal(formatResetCountdown(now + minute, now), "1m");
+  assert.equal(formatResetCountdown(now + minute - 1, now), "<1m");
+  assert.equal(formatResetCountdown(now, now), null);
+  assert.equal(formatResetCountdown(now - 1, now), null);
 });
 
 test("injected transport fetches a real-shaped payload with bounded canonical headers", async () => {
