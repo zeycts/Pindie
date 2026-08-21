@@ -55,9 +55,10 @@ test("active Run presents dim timing and neutral pending verification", () => {
   ]);
 });
 
-test("Run Cost is dim and follows the timer before verification and attention", () => {
+test("Run Cost and accent Activity follow the timer before verification and attention", () => {
   assert.deepEqual(segments({
     runCost: { cost: 0.14, active: true },
+    activity: "editing",
     state: {
       task: task({
         openLoops: { blockers: ["Waiting"], questions: [], nextIntent: null },
@@ -66,14 +67,17 @@ test("Run Cost is dim and follows the timer before verification and attention", 
   }), [
     { text: "⏱ 2m 14s", tone: "dim" },
     { text: "$0.14", tone: "dim" },
+    { text: "editing", tone: "accent" },
     { text: "verify 0/4", tone: "text" },
     { text: "⚠ blocked", tone: "warning" },
   ]);
 });
 
-test("settled Run presents final duration and passed verification", () => {
+test("settled Run omits cleared Activity and presents final duration and passed verification", () => {
   const result = segments({
     timing: { durationMs: 291_000, active: false },
+    runCost: { cost: 0.41, active: false },
+    activity: null,
     state: {
       task: task({
         verification: {
@@ -88,6 +92,7 @@ test("settled Run presents final duration and passed verification", () => {
 
   assert.deepEqual(result, [
     { text: "last 4m 51s", tone: "dim" },
+    { text: "$0.41", tone: "dim" },
     { text: "✓ 4/4", tone: "success" },
   ]);
 });
@@ -179,13 +184,14 @@ test("weekly account status is dim and derives its reset countdown at render tim
   }, now).right, [{ text: "w52%", tone: "dim" }]);
 });
 
-test("Run Cost preserves right-aligned weekly usage", () => {
+test("Current Activity preserves right-aligned weekly usage", () => {
   const layout = deriveStatusLayout({
     ...snapshot({
-      timing: { durationMs: 9_000, active: false },
+      timing: { durationMs: 42_000, active: true },
       state: { task: task({ verification: { stale: true, checks: [] } }) },
     }),
-    runCost: { cost: 0.008, active: false },
+    runCost: { cost: 0.14, active: true },
+    activity: "editing",
     subscriptionUsage: {
       fetchedAt: 1,
       windows: [{ usedPercent: 3, windowMinutes: 10_080, resetsAt: countdownReset }],
@@ -194,7 +200,7 @@ test("Run Cost preserves right-aligned weekly usage", () => {
   const rendered = renderStatusLayout({ fg: (_tone, text) => text }, layout, 70)!;
 
   assert.equal(visibleWidth(rendered), 70);
-  assert.match(rendered, /last 9s • \$0.008 • verify stale/);
+  assert.match(rendered, /⏱ 42s • \$0.14 • editing • verify stale/);
   assert.match(rendered, /w97% • ↻6d23h$/);
 });
 

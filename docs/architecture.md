@@ -37,14 +37,15 @@ Pindie must not implement a second agent loop.
 
 Pi's built-in footer presents infrastructure and runtime information (project, branch, token/context use, model, and thinking). Pindie presents semantic current-work information through one extension status line beneath it. Pindie never replaces or customizes Pi's footer for this purpose.
 
-The Pindie status line derives its compact segments from runtime-only Run timing and Run Cost, semantic current-task State, directly available runtime alerts, and optional runtime-only account observations. It does not persist display fields or create independent status entries for each fact.
+The Pindie status line derives its compact segments from runtime-only Run timing, Run Cost, and Current Activity, semantic current-task State, directly available runtime alerts, and optional runtime-only account observations. It does not persist display fields or create independent status entries for each fact. Current Activity is a runtime-only observable Pi execution hint for compact presentation, not Pindie State and not a Core Loop phase.
 
-Its left region is Pindie current-work information (Run timing, Run Cost, verification, and attention). Its right region is account/environment resource information. Run Cost is the incremental Pi-reported `usage.cost.total` for the same Agent Run as Run Timer, not Pi's cumulative session cost and not necessarily an amount charged to a subscription user's credit card. ChatGPT subscription usage, when available from Pi's public resolved OpenAI Codex auth, is a best-effort runtime observation only: `w52%` means 52% weekly allowance remains and `↻6d23h` is the time remaining until its weekly reset. The countdown is derived at render time from the runtime `resetsAt` timestamp: days render as `d+h`, hours as `h+m`, minutes as `m`, and less than one minute as `<1m`; expired timestamps omit the reset segment. Pindie selects the weekly window by its declared seven-day duration; the Codex backend may declare that duration as `limit_window_seconds`. The request uses Pi's runtime global fetch, which honors the standard proxy environment/configuration Pi establishes, but usage remains runtime-only and is never Pindie State or allowed to affect semantic/runtime correctness.
+Its left region is Pindie current-work information (Run timing, Run Cost, Current Activity, verification, and attention). Its right region is account/environment resource information. Run Cost is the incremental Pi-reported `usage.cost.total` for the same Agent Run as Run Timer, not Pi's cumulative session cost and not necessarily an amount charged to a subscription user's credit card. ChatGPT subscription usage, when available from Pi's public resolved OpenAI Codex auth, is a best-effort runtime observation only: `w52%` means 52% weekly allowance remains and `↻6d23h` is the time remaining until its weekly reset. The countdown is derived at render time from the runtime `resetsAt` timestamp: days render as `d+h`, hours as `h+m`, minutes as `m`, and less than one minute as `<1m`; expired timestamps omit the reset segment. Pindie selects the weekly window by its declared seven-day duration; the Codex backend may declare that duration as `limit_window_seconds`. The request uses Pi's runtime global fetch, which honors the standard proxy environment/configuration Pi establishes, but usage remains runtime-only and is never Pindie State or allowed to affect semantic/runtime correctness.
 
 | Metric | Scope |
 | --- | --- |
 | Run Timer | one Agent Run elapsed time |
 | Run Cost | one Agent Run Pi-reported model-equivalent cost |
+| Current Activity | instantaneous observable active Run execution activity |
 | Verification | current Task |
 | Weekly Usage | ChatGPT account |
 
@@ -53,7 +54,7 @@ Semantic colors follow the active Pi theme:
 ```text
 dim      → informational
 text     → normal state
-accent   → current activity (reserved for future Run Phase)
+accent   → Current Activity
 success  → successful state
 warning  → attention / human intervention
 error    → failure / runtime problem
@@ -81,7 +82,7 @@ Goal satisfied?
   └─ Yes → Done
 ```
 
-The six stages are semantic phases, not six mandatory model calls and not persisted workflow states.
+Observe / Understand / Decide / Act / Verify / Update State are semantic phases, not six mandatory model calls and not persisted workflow states. They are distinct from Current Activity, which is a runtime-only presentation hint derived from observable Pi lifecycle and tool execution events; it does not report or infer a semantic Core Loop phase.
 
 ### Observe
 Gather relevant evidence from the user, project, Git, environment, and tool results.
@@ -174,8 +175,8 @@ The implemented v0.1 Core Extension provides:
 - verification invalidation on known project mutation
 - Human Gate lifecycle
 - runtime safety checks
-- runtime-only Agent Run timing in the unified Pindie semantic status line and completion output
-- one theme-aware Pindie status line for verification progress and actionable Human Gate, blocker, and State-unavailable conditions
+- runtime-only Agent Run timing, cost, and observable Current Activity in the unified Pindie semantic status line (with timing also in completion output)
+- one theme-aware Pindie status line for Current Activity, verification progress, and actionable Human Gate, blocker, and State-unavailable conditions
 - custom tools `pindie_state` and `pindie_gate`
 
 The model-facing State mutation path is:
@@ -200,8 +201,12 @@ session_start
   → Runtime.load
 
 before_agent_start
-  → start runtime-only Run timer
+  → start runtime-only Run timer, Run Cost, and Current Activity (thinking)
   → derive and publish one Pindie semantic status line
+
+tool_execution_start / tool_execution_end
+  → update runtime-only Current Activity from public tool execution lifecycle
+  → immediately refresh the one Pindie semantic status line
   → snapshot pre-existing Human Gate / completed-task identity
   → append one Core Policy + Current State block
 
@@ -214,15 +219,15 @@ tool_result
   → refresh the derived Pindie status line
 
 agent_settled
-  → finalize runtime-only Run timer
+  → finalize runtime-only Run timer and clear Current Activity
   → consistency validation only; never auto-complete
 
 session_shutdown
-  → clear runtime-only Run timer and Pindie status presentation
+  → clear runtime-only Run timer, Run Cost, Current Activity, and Pindie status presentation
   → unload transient Runtime context
 ```
 
-Successful Pindie State and Human Gate tool transitions also refresh the status line after persistence. Run timer ticks are the only periodic trigger; they re-read current runtime State and do not persist timing or presentation.
+Successful Pindie State and Human Gate tool transitions also refresh the status line after persistence. Tool execution start/end events refresh Current Activity immediately. Run timer ticks remain the only periodic trigger; they re-read current runtime State and do not persist timing or presentation.
 
 The Agent-run snapshot is extension-local and resets at each `before_agent_start`. It records only object identity for a gate or completed task that already existed at the run boundary; it is neither persisted State nor a second state machine. This lets a later run consume persisted consequential State while preventing a gate opened, or task completed, during the current run from being immediately consumed by sibling or follow-up tool calls.
 
