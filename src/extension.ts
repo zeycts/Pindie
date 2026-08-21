@@ -10,6 +10,7 @@ import {
 
 import { injectPindieCore } from "./context.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
+import { RunCostTracker } from "./run-cost.ts";
 import { RunTimer } from "./run-timer.ts";
 import { PindieRuntime } from "./runtime.ts";
 import {
@@ -46,6 +47,7 @@ export interface PindieExtensionOptions {
 
 export interface PindieExtensionIntegration {
   readonly runtime: PindieRuntime;
+  readonly runCost: RunCostTracker;
   readonly runTimer: RunTimer;
   readonly stateUnavailableReason: string | null;
 }
@@ -81,6 +83,7 @@ export function registerPindieExtension(
   options: PindieExtensionOptions = {},
 ): PindieExtensionIntegration {
   const runtime = new PindieRuntime(options.store ?? new FileStateStore());
+  const runCost = new RunCostTracker();
   const runTimer = new RunTimer();
   const resolveProjectRoot =
     options.resolveProjectRoot ?? defaultResolveProjectRoot;
@@ -119,6 +122,7 @@ export function registerPindieExtension(
           runTimer.durationMs === null
             ? null
             : { durationMs: runTimer.durationMs, active: runTimer.active },
+        runCost: runCost.snapshot(ctx!.sessionManager.getEntries()),
         state: runtime.projectRoot === null ? null : runtime.state,
         stateUnavailableReason,
         subscriptionUsage,
@@ -160,6 +164,7 @@ export function registerPindieExtension(
 
   pi.on("session_start", async (_event, ctx) => {
     statusContext = ctx;
+    runCost.reset();
     runTimer.reset();
     clearPindieStatus(ctx);
     subscriptionUsage = null;
@@ -181,6 +186,7 @@ export function registerPindieExtension(
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    runCost.reset();
     runTimer.reset();
     clearPindieStatus(ctx);
     runtime.unload();
@@ -191,6 +197,7 @@ export function registerPindieExtension(
 
   pi.on("before_agent_start", (event, ctx) => {
     statusContext = ctx;
+    runCost.start(ctx.sessionManager.getEntries());
     runTimer.start(ctx.hasUI ? () => refreshStatus(ctx) : undefined);
     const state = runtime.projectRoot === null ? null : runtime.state;
     const task = stateUnavailableReason === null ? state?.task ?? null : null;
@@ -293,6 +300,7 @@ export function registerPindieExtension(
 
   pi.on("agent_settled", (_event, ctx) => {
     statusContext = ctx;
+    runCost.finish(ctx.sessionManager.getEntries());
     runTimer.finish();
     refreshStatus(ctx);
     void refreshSubscriptionUsage(ctx);
@@ -308,6 +316,7 @@ export function registerPindieExtension(
 
   return {
     runtime,
+    runCost,
     runTimer,
     get stateUnavailableReason() {
       return stateUnavailableReason;

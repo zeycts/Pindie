@@ -159,10 +159,16 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - RT04 A later Agent Run replaces any prior transient timing, so consecutive Runs cannot share a start time.
 - RT05 Successful `complete_task` output includes `Duration: <duration>` from the Run timer's authoritative elapsed duration; the completion renderer does not calculate timing independently.
 
+### Run Cost v0.1
+
+- RC01 `before_agent_start` captures the cumulative public-session `usage.cost.total` baseline at the same boundary that starts Run Timer. `agent_settled` freezes the non-negative incremental difference after all follow-up work has settled; a later Run replaces it and session shutdown/reload clears it.
+- RC02 Session cost mirrors Pi's footer aggregation: assistant-message, tool-result, compaction, and branch-summary usage costs are included when present and finite. Run Cost never reimplements pricing, persists data, or changes State/runtime behavior.
+- RC03 Run Cost is informational runtime-only presentation. It may update when authoritative entries arrive, uses Pi-reported model-equivalent cost even for subscription-backed models, and is not necessarily an invoice charge.
+
 ### Pindie Status Line v0.1 — Verification + Alerts
 
 - SL01 Pi owns the infrastructure footer; Pindie owns exactly one semantic current-work status entry (`pindie-status`) beneath it. Pindie does not replace Pi's footer.
-- SL02 The status line orders available segments as Run timing, verification, then one actionable attention condition. Segments are derived from runtime timing, State, and direct runtime availability—not persisted display state.
+- SL02 The status line orders available segments as Run timing, Run Cost, verification, then one actionable attention condition. Segments are derived from runtime timing, State, and direct runtime availability—not persisted display state.
 - SL03 Verification progress is distinct passed-criterion coverage over total success criteria. Overlapping passed checks do not double-count; failed checks do not add coverage.
 - SL04 Pending verification renders `verify <covered>/<total>`; stale renders `verify stale` without historical progress; failed renders `verify failed <covered>/<total>`; passed renders `✓ <covered>/<total>`; no task omits verification.
 - SL05 Attention is absent normally. State-unavailable is an error alert. Otherwise an open Human Gate takes precedence over blockers and renders its kind; a blocker renders `⚠ blocked`.

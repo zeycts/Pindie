@@ -51,6 +51,22 @@ test("active Run presents dim timing and neutral pending verification", () => {
   ]);
 });
 
+test("Run Cost is dim and follows the timer before verification and attention", () => {
+  assert.deepEqual(segments({
+    runCost: { cost: 0.14, active: true },
+    state: {
+      task: task({
+        openLoops: { blockers: ["Waiting"], questions: [], nextIntent: null },
+      }),
+    },
+  }), [
+    { text: "⏱ 2m 14s", tone: "dim" },
+    { text: "$0.14", tone: "dim" },
+    { text: "verify 0/4", tone: "text" },
+    { text: "⚠ blocked", tone: "warning" },
+  ]);
+});
+
 test("settled Run presents final duration and passed verification", () => {
   const result = segments({
     timing: { durationMs: 291_000, active: false },
@@ -153,6 +169,22 @@ test("weekly account status is dim and omits missing weekly/reset facts", () => 
     ...snapshot(),
     subscriptionUsage: { fetchedAt: 1, windows: [{ usedPercent: 48, windowMinutes: 10_080 }] },
   }).right, [{ text: "w52%", tone: "dim" }]);
+});
+
+test("Run Cost preserves right-aligned weekly usage", () => {
+  const layout = deriveStatusLayout({
+    ...snapshot(),
+    runCost: { cost: 0.14, active: true },
+    subscriptionUsage: {
+      fetchedAt: 1,
+      windows: [{ usedPercent: 57, windowMinutes: 10_080, resetsAt: 1 }],
+    },
+  }, () => "18:29");
+  const rendered = renderStatusLayout({ fg: (_tone, text) => text }, layout, 60)!;
+
+  assert.equal(visibleWidth(rendered), 60);
+  assert.match(rendered, /⏱ 2m 14s.*\$0.14.*verify 0\/4/);
+  assert.match(rendered, /w43% • ↻18:29$/);
 });
 
 test("ANSI-aware layout aligns right usage, degrades narrowly, and falls back without width", () => {
