@@ -44,6 +44,10 @@ function segments(overrides: Partial<Parameters<typeof deriveStatusSegments>[0]>
   return deriveStatusSegments(snapshot(overrides));
 }
 
+const now = 1_700_000_000_000;
+const day = 24 * 60 * 60 * 1_000;
+const countdownReset = now + 6 * day + 23 * 60 * 60 * 1_000 + 59 * 60 * 1_000;
+
 test("active Run presents dim timing and neutral pending verification", () => {
   assert.deepEqual(segments(), [
     { text: "⏱ 2m 14s", tone: "dim" },
@@ -152,46 +156,53 @@ test("no task omits verification and preserves timing only", () => {
   ]);
 });
 
-test("weekly account status is dim and omits missing weekly/reset facts", () => {
+test("weekly account status is dim and derives its reset countdown at render time", () => {
   const withUsage = deriveStatusLayout({
     ...snapshot(),
     subscriptionUsage: {
       fetchedAt: 1,
-      windows: [{ usedPercent: 48, windowMinutes: 10_080, resetsAt: 1 }],
+      windows: [{ usedPercent: 48, windowMinutes: 10_080, resetsAt: countdownReset }],
     },
-  }, () => "18:29");
+  }, now);
   assert.deepEqual(withUsage.right, [
     { text: "w52%", tone: "dim" },
-    { text: "↻18:29", tone: "dim" },
+    { text: "↻6d23h", tone: "dim" },
   ]);
-  assert.deepEqual(deriveStatusLayout({ ...snapshot(), subscriptionUsage: null }).right, []);
+  assert.deepEqual(deriveStatusLayout({ ...snapshot(), subscriptionUsage: null }, now).right, []);
   assert.deepEqual(deriveStatusLayout({
     ...snapshot(),
     subscriptionUsage: { fetchedAt: 1, windows: [{ usedPercent: 48, windowMinutes: 10_080 }] },
-  }).right, [{ text: "w52%", tone: "dim" }]);
+  }, now).right, [{ text: "w52%", tone: "dim" }]);
+  assert.deepEqual(deriveStatusLayout({
+    ...snapshot(),
+    subscriptionUsage: { fetchedAt: 1, windows: [{ usedPercent: 48, windowMinutes: 10_080, resetsAt: now }] },
+  }, now).right, [{ text: "w52%", tone: "dim" }]);
 });
 
 test("Run Cost preserves right-aligned weekly usage", () => {
   const layout = deriveStatusLayout({
-    ...snapshot(),
-    runCost: { cost: 0.14, active: true },
+    ...snapshot({
+      timing: { durationMs: 9_000, active: false },
+      state: { task: task({ verification: { stale: true, checks: [] } }) },
+    }),
+    runCost: { cost: 0.008, active: false },
     subscriptionUsage: {
       fetchedAt: 1,
-      windows: [{ usedPercent: 57, windowMinutes: 10_080, resetsAt: 1 }],
+      windows: [{ usedPercent: 3, windowMinutes: 10_080, resetsAt: countdownReset }],
     },
-  }, () => "18:29");
-  const rendered = renderStatusLayout({ fg: (_tone, text) => text }, layout, 60)!;
+  }, now);
+  const rendered = renderStatusLayout({ fg: (_tone, text) => text }, layout, 70)!;
 
-  assert.equal(visibleWidth(rendered), 60);
-  assert.match(rendered, /⏱ 2m 14s.*\$0.14.*verify 0\/4/);
-  assert.match(rendered, /w43% • ↻18:29$/);
+  assert.equal(visibleWidth(rendered), 70);
+  assert.match(rendered, /last 9s • \$0.008 • verify stale/);
+  assert.match(rendered, /w97% • ↻6d23h$/);
 });
 
 test("ANSI-aware layout aligns right usage, degrades narrowly, and falls back without width", () => {
   const theme = { fg: (tone: string, text: string) => `\u001b[${tone}m${text}\u001b[0m` } as any;
   const layout = {
     left: [{ text: "⏱ 4m 27s", tone: "dim" as const }, { text: "verify 3/4", tone: "text" as const }],
-    right: [{ text: "w52%", tone: "dim" as const }, { text: "↻18:29", tone: "dim" as const }],
+    right: [{ text: "w52%", tone: "dim" as const }, { text: "↻6d23h", tone: "dim" as const }],
   };
   const wide = renderStatusLayout(theme, layout, 50)!;
   assert.equal(visibleWidth(wide), 50);

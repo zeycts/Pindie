@@ -120,16 +120,32 @@ function accountIdFromAccessToken(accessToken: string): string | null {
   }
 }
 
-export function formatResetTime(
+/** Formats a future reset timestamp as a compact, floor-based countdown. */
+export function formatResetCountdown(
   resetsAt: number,
-  format: (date: Date) => string = (date) =>
-    new Intl.DateTimeFormat(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    }).format(date),
-): string {
-  return format(new Date(resetsAt));
+  now = Date.now(),
+): string | null {
+  if (!Number.isFinite(resetsAt) || !Number.isFinite(now) || resetsAt <= now) {
+    return null;
+  }
+
+  const remainingMs = resetsAt - now;
+  const minuteMs = 60_000;
+  const hourMs = 60 * minuteMs;
+  const dayMs = 24 * hourMs;
+
+  if (remainingMs >= dayMs) {
+    const days = Math.floor(remainingMs / dayMs);
+    const hours = Math.floor((remainingMs % dayMs) / hourMs);
+    return `${days}d${hours}h`;
+  }
+  if (remainingMs >= hourMs) {
+    const hours = Math.floor(remainingMs / hourMs);
+    const minutes = Math.floor((remainingMs % hourMs) / minuteMs);
+    return `${hours}h${minutes}m`;
+  }
+  if (remainingMs >= minuteMs) return `${Math.floor(remainingMs / minuteMs)}m`;
+  return "<1m";
 }
 
 /** Uses Pi's public resolved provider auth; credentials stay in memory only. */
