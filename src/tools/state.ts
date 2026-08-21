@@ -4,6 +4,7 @@ import { Type } from "typebox";
 
 import { formatDuration } from "../run-timer.ts";
 import type { PindieRuntime } from "../runtime.ts";
+import { notifyStateChangeBestEffort } from "./state-observer.ts";
 import type { PindieState, VerificationCheck } from "../state.ts";
 import type { PindieEvent } from "../transitions.ts";
 
@@ -102,7 +103,7 @@ async function dispatchOrThrow(
     );
   }
 
-  onStateChange?.();
+  notifyStateChangeBestEffort(onStateChange);
   return runtime.state;
 }
 

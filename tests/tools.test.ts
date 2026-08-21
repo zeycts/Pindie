@@ -77,6 +77,7 @@ function gatedState(): PindieState {
 async function createHarness(
   initialState: PindieState = EMPTY_STATE,
   getRunDuration?: () => number | null,
+  onStateChange?: () => void,
 ) {
   const store = new ToolTestStore(initialState);
   const runtime = new PindieRuntime(store);
@@ -85,8 +86,11 @@ async function createHarness(
   return {
     store,
     runtime,
-    stateTool: createPindieStateTool(runtime, { getRunDuration }),
-    gateTool: createPindieGateTool(runtime),
+    stateTool: createPindieStateTool(runtime, {
+      getRunDuration,
+      onStateChange,
+    }),
+    gateTool: createPindieGateTool(runtime, { onStateChange }),
   };
 }
 
@@ -197,6 +201,41 @@ test("S04 pindie_state maps one record_verification check", async () => {
   await stateTool.execute("call", { action: "record_verification", check });
 
   assert.deepEqual(runtime.state.task?.verification.checks, [check]);
+});
+
+test("State and Gate commits survive a status observer failure", async () => {
+  let observerCalls = 0;
+  const { runtime, store, stateTool, gateTool } = await createHarness(
+    activeState(),
+    undefined,
+    () => {
+      observerCalls += 1;
+      throw new Error("Status renderer unavailable");
+    },
+  );
+
+  const verification = await stateTool.execute("verify", {
+    action: "record_verification",
+    check: {
+      name: "tests",
+      status: "passed",
+      covers: ["c1"],
+      evidence: "Tests passed.",
+    },
+  });
+  const gate = await gateTool.execute("gate", {
+    action: "open",
+    kind: "approval",
+    question: "Approve release?",
+  });
+
+  assert.match(textOf(verification), /Verification check 'tests' recorded/);
+  assert.equal(gate.terminate, true);
+  assert.equal(observerCalls, 2);
+  assert.equal(runtime.state.task?.verification.checks[0]?.name, "tests");
+  assert.equal(runtime.state.task?.humanGate?.kind, "approval");
+  assert.equal(store.persistedState.task?.verification.checks[0]?.name, "tests");
+  assert.equal(store.persistedState.task?.humanGate?.kind, "approval");
 });
 
 test("D03 unknown criterion rejection lists valid IDs without mutation", async () => {
