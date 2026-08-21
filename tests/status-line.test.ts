@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { visibleWidth } from "@earendil-works/pi-tui";
+
 import type { PindieState, PindieTask } from "../src/state.ts";
 import {
+  deriveStatusLayout,
   deriveStatusSegments,
   getVerificationProgress,
+  renderStatusLayout,
   renderStatusSegments,
   type StatusTone,
 } from "../src/status-line.ts";
@@ -130,6 +134,39 @@ test("no task omits verification and preserves timing only", () => {
   assert.deepEqual(segments({ state: { task: null } }), [
     { text: "⏱ 2m 14s", tone: "dim" },
   ]);
+});
+
+test("weekly account status is dim and omits missing weekly/reset facts", () => {
+  const withUsage = deriveStatusLayout({
+    ...snapshot(),
+    subscriptionUsage: {
+      fetchedAt: 1,
+      windows: [{ usedPercent: 48, windowMinutes: 10_080, resetsAt: 1 }],
+    },
+  }, () => "18:29");
+  assert.deepEqual(withUsage.right, [
+    { text: "w52%", tone: "dim" },
+    { text: "↻18:29", tone: "dim" },
+  ]);
+  assert.deepEqual(deriveStatusLayout({ ...snapshot(), subscriptionUsage: null }).right, []);
+  assert.deepEqual(deriveStatusLayout({
+    ...snapshot(),
+    subscriptionUsage: { fetchedAt: 1, windows: [{ usedPercent: 48, windowMinutes: 10_080 }] },
+  }).right, [{ text: "w52%", tone: "dim" }]);
+});
+
+test("ANSI-aware layout aligns right usage, degrades narrowly, and falls back without width", () => {
+  const theme = { fg: (tone: string, text: string) => `\u001b[${tone}m${text}\u001b[0m` } as any;
+  const layout = {
+    left: [{ text: "⏱ 4m 27s", tone: "dim" as const }, { text: "verify 3/4", tone: "text" as const }],
+    right: [{ text: "w52%", tone: "dim" as const }, { text: "↻18:29", tone: "dim" as const }],
+  };
+  const wide = renderStatusLayout(theme, layout, 50)!;
+  assert.equal(visibleWidth(wide), 50);
+  const narrow = renderStatusLayout(theme, layout, 18)!;
+  assert.ok(visibleWidth(narrow) <= 18);
+  assert.match(narrow, /w52%/);
+  assert.match(renderStatusLayout(theme, layout), /verify.*w52%/);
 });
 
 test("theme rendering styles individual segments and dim separators without ANSI assertions", () => {

@@ -18,9 +18,14 @@ import {
   type PindieTask,
 } from "./state.ts";
 import {
-  deriveStatusSegments,
-  renderStatusSegments,
+  deriveStatusLayout,
+  renderStatusLayout,
 } from "./status-line.ts";
+import {
+  chatGptSubscriptionUsageProvider,
+  type SubscriptionUsageProvider,
+  type SubscriptionUsageSnapshot,
+} from "./subscription-usage.ts";
 import { FileStateStore, type PindieStateStore } from "./store.ts";
 import { createPindieGateTool } from "./tools/gate.ts";
 import { createPindieStateTool } from "./tools/state.ts";
@@ -34,6 +39,9 @@ interface ActionInput extends Record<string, unknown> {
 export interface PindieExtensionOptions {
   store?: PindieStateStore;
   resolveProjectRoot?: ProjectRootResolver;
+  subscriptionUsageProvider?: SubscriptionUsageProvider;
+  getStatusWidth?: () => number | undefined;
+  now?: () => number;
 }
 
 export interface PindieExtensionIntegration {
@@ -76,6 +84,12 @@ export function registerPindieExtension(
   const runTimer = new RunTimer();
   const resolveProjectRoot =
     options.resolveProjectRoot ?? defaultResolveProjectRoot;
+  const subscriptionUsageProvider =
+    options.subscriptionUsageProvider ?? chatGptSubscriptionUsageProvider;
+  const now = options.now ?? Date.now;
+  const getStatusWidth = options.getStatusWidth ?? (() => process.stdout.columns);
+  let subscriptionUsage: SubscriptionUsageSnapshot | null = null;
+  let lastUsageFetchAt: number | null = null;
   let stateUnavailableReason: string | null = null;
   let statusContext: ExtensionContext | null = null;
   let gateAtAgentRunStart: HumanGate | null = null;
@@ -100,22 +114,33 @@ export function registerPindieExtension(
 
   const refreshStatus = (ctx = statusContext): void => {
     presentStatusBestEffort(ctx, () => {
-      const segments = deriveStatusSegments({
+      const layout = deriveStatusLayout({
         timing:
           runTimer.durationMs === null
             ? null
             : { durationMs: runTimer.durationMs, active: runTimer.active },
         state: runtime.projectRoot === null ? null : runtime.state,
         stateUnavailableReason,
+        subscriptionUsage,
       });
-      return segments.length === 0
-        ? undefined
-        : renderStatusSegments(ctx!.ui.theme, segments);
+      return renderStatusLayout(ctx!.ui.theme, layout, getStatusWidth());
     });
   };
 
   const clearPindieStatus = (ctx: ExtensionContext): void => {
     presentStatusBestEffort(ctx, () => undefined);
+  };
+
+  const refreshSubscriptionUsage = async (ctx: ExtensionContext): Promise<void> => {
+    if (lastUsageFetchAt !== null && now() - lastUsageFetchAt < 5 * 60_000) return;
+    lastUsageFetchAt = now();
+    try {
+      const next = await subscriptionUsageProvider.fetchUsage(ctx);
+      if (next) subscriptionUsage = next;
+    } catch {
+      // Account observation is runtime-only and intentionally silent.
+    }
+    refreshStatus(ctx);
   };
 
   const markUnavailable = (reason: string): void => {
@@ -137,6 +162,8 @@ export function registerPindieExtension(
     statusContext = ctx;
     runTimer.reset();
     clearPindieStatus(ctx);
+    subscriptionUsage = null;
+    lastUsageFetchAt = null;
     runtime.unload();
     stateUnavailableReason = null;
     clearAgentRunSnapshot();
@@ -150,6 +177,7 @@ export function registerPindieExtension(
       );
     }
     refreshStatus(ctx);
+    void refreshSubscriptionUsage(ctx);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
@@ -267,6 +295,7 @@ export function registerPindieExtension(
     statusContext = ctx;
     runTimer.finish();
     refreshStatus(ctx);
+    void refreshSubscriptionUsage(ctx);
     if (runtime.projectRoot === null) return;
 
     const validation = validateState(runtime.state);

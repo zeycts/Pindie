@@ -4,7 +4,10 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { PINDIE_CORE_START } from "../src/context.ts";
-import { registerPindieExtension } from "../src/extension.ts";
+import {
+  registerPindieExtension,
+  type PindieExtensionOptions,
+} from "../src/extension.ts";
 import { EMPTY_STATE, type PindieState } from "../src/state.ts";
 import type { PindieStateStore } from "../src/store.ts";
 
@@ -170,12 +173,14 @@ function toolResult(
 function createHarness(
   entries: Array<[string, PindieState]> = [],
   resolvedRoots: Record<string, string> = {},
+  options: Omit<PindieExtensionOptions, "store" | "resolveProjectRoot"> = {},
 ) {
   const api = new CapturedExtensionAPI();
   const store = new ExtensionTestStore(entries);
   const integration = registerPindieExtension(
     api as unknown as ExtensionAPI,
     {
+      ...options,
       store,
       resolveProjectRoot: async (cwd) => resolvedRoots[cwd] ?? cwd,
     },
@@ -590,6 +595,33 @@ test("H11 unavailable Pindie State blocks consequential tools", async () => {
     assertBlocked(await callGuard(harness, toolCall(name)), /State is unavailable/i);
   }
   assert.equal(await callGuard(harness, toolCall("read")), undefined);
+});
+
+test("subscription usage is runtime-only, cached, and does not affect State on fetch failure", async () => {
+  let fetches = 0;
+  const harness = createHarness(
+    [["/repo", activeState()]],
+    {},
+    {
+      now: () => 1_000_000,
+      subscriptionUsageProvider: {
+        async fetchUsage() {
+          fetches += 1;
+          throw new Error("usage network unavailable");
+        },
+      },
+    },
+  );
+  await startSession(harness, "/repo");
+  await new Promise((resolve) => setImmediate(resolve));
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    context("/repo"),
+  );
+
+  assert.equal(fetches, 1);
+  assert.equal(harness.integration.stateUnavailableReason, null);
+  assert.equal(harness.integration.runtime.state.task?.verification.stale, false);
 });
 
 test("unified Pindie status publishes active and final timing, then clears on shutdown", async () => {

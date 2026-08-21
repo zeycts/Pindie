@@ -37,7 +37,9 @@ Pindie must not implement a second agent loop.
 
 Pi's built-in footer presents infrastructure and runtime information (project, branch, token/context use, model, and thinking). Pindie presents semantic current-work information through one extension status line beneath it. Pindie never replaces or customizes Pi's footer for this purpose.
 
-The Pindie status line derives its compact segments from runtime-only Run timing, semantic current-task State, and directly available runtime alerts. It does not persist display fields or create independent status entries for each fact.
+The Pindie status line derives its compact segments from runtime-only Run timing, semantic current-task State, directly available runtime alerts, and optional runtime-only account observations. It does not persist display fields or create independent status entries for each fact.
+
+Its left region is Pindie current-work information (Run timing, verification, and attention). Its right region is account/environment resource information. ChatGPT subscription usage, when available from Pi's public resolved OpenAI Codex auth, is a best-effort runtime observation only: `w52%` means 52% weekly allowance remains and `↻18:29` is its local `HH:mm` reset time. It is never Pindie State and cannot affect semantic/runtime correctness.
 
 Semantic colors follow the active Pi theme:
 
