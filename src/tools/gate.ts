@@ -4,7 +4,6 @@ import { Type } from "typebox";
 
 import type { PindieRuntime } from "../runtime.ts";
 import type { PindieState } from "../state.ts";
-import { notifyStateChangeBestEffort } from "./state-observer.ts";
 import type { PindieEvent } from "../transitions.ts";
 
 const GATE_ACTIONS = ["open", "resolve"] as const;
@@ -52,7 +51,7 @@ async function dispatchOrThrow(
     );
   }
 
-  notifyStateChangeBestEffort(onStateChange);
+  onStateChange?.();
   return runtime.state;
 }
 

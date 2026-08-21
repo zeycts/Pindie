@@ -44,6 +44,7 @@ class ExtensionTestStore implements PindieStateStore {
   readonly loadErrors = new Map<string, Error>();
   readonly loads: string[] = [];
   readonly saves: Array<{ projectRoot: string; state: PindieState }> = [];
+  saveError: Error | null = null;
 
   constructor(entries: Array<[string, PindieState]> = []) {
     for (const [root, state] of entries) this.states.set(root, state);
@@ -58,6 +59,7 @@ class ExtensionTestStore implements PindieStateStore {
 
   async save(projectRoot: string, state: PindieState): Promise<void> {
     this.saves.push({ projectRoot, state });
+    if (this.saveError) throw this.saveError;
     this.states.set(projectRoot, state);
   }
 }
@@ -128,13 +130,17 @@ function context(cwd: string): Record<string, unknown> {
 function interactiveContext(
   cwd: string,
   statuses: Array<{ id: string; text: string | undefined }>,
+  throwOnSetStatus = false,
 ): Record<string, unknown> {
   return {
     cwd,
     hasUI: true,
     ui: {
       theme: { fg: (_color: string, text: string) => text },
-      setStatus: (id: string, text: string | undefined) => statuses.push({ id, text }),
+      setStatus: (id: string, text: string | undefined) => {
+        if (throwOnSetStatus) throw new Error("Status renderer unavailable");
+        statuses.push({ id, text });
+      },
     },
   };
 }
@@ -402,6 +408,64 @@ test("T45 successful write invalidates verification and persists it", async () =
   assert.equal(harness.store.saves.length, 1);
 });
 
+test("verification invalidation commits when status presentation throws", async () => {
+  const harness = createHarness([["/repo", verifiedState()]]);
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses, true);
+  await startSession(harness, "/repo");
+  await harness.api.handler("before_agent_start")(
+    {
+      type: "before_agent_start",
+      prompt: "Continue",
+      systemPrompt: "Pi system prompt",
+      systemPromptOptions: {},
+    },
+    uiContext,
+  );
+
+  await harness.api.handler("tool_result")(toolResult("edit"), uiContext);
+
+  assert.equal(harness.integration.runtime.state.task?.verification.stale, true);
+  assert.equal(harness.store.states.get("/repo")?.task?.verification.stale, true);
+  assert.equal(harness.integration.stateUnavailableReason, null);
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    uiContext,
+  );
+});
+
+test("runtime failure remains authoritative when status presentation throws", async () => {
+  const harness = createHarness([["/repo", verifiedState()]]);
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses, true);
+  await startSession(harness, "/repo");
+  await harness.api.handler("before_agent_start")(
+    {
+      type: "before_agent_start",
+      prompt: "Continue",
+      systemPrompt: "Pi system prompt",
+      systemPromptOptions: {},
+    },
+    uiContext,
+  );
+  harness.store.saveError = new Error("disk unavailable");
+
+  await assert.rejects(
+    harness.api.handler("tool_result")(toolResult("edit"), uiContext),
+    /disk unavailable/,
+  );
+
+  assert.match(
+    harness.integration.stateUnavailableReason ?? "",
+    /could not persist verification invalidation.*disk unavailable/i,
+  );
+  assert.equal(harness.integration.runtime.projectRoot, null);
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    uiContext,
+  );
+});
+
 test("T46 failed edit does not invalidate verification", async () => {
   const harness = createHarness([["/repo", verifiedState()]]);
   await startSession(harness, "/repo");
@@ -604,6 +668,48 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
     text: "⏱ 0s • ✓ 1/1 • ⚠ gate: approval",
   });
 
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    uiContext,
+  );
+});
+
+test("State and Gate commits survive a status presentation failure", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses, true);
+  await startSession(harness, "/repo");
+  await harness.api.handler("before_agent_start")(
+    {
+      type: "before_agent_start",
+      prompt: "Continue",
+      systemPrompt: "Pi system prompt",
+      systemPromptOptions: {},
+    },
+    uiContext,
+  );
+
+  const verification = await harness.api.tool("pindie_state").execute("verify", {
+    action: "record_verification",
+    check: {
+      name: "tests",
+      status: "passed",
+      covers: ["c1"],
+      evidence: "passed",
+    },
+  });
+  const gate = await harness.api.tool("pindie_gate").execute("gate", {
+    action: "open",
+    kind: "approval",
+    question: "Approve release?",
+  });
+
+  assert.match(textOf(verification), /Verification check 'tests' recorded/);
+  assert.equal(gate.terminate, true);
+  assert.equal(harness.integration.runtime.state.task?.verification.checks[0]?.name, "tests");
+  assert.equal(harness.integration.runtime.state.task?.humanGate?.kind, "approval");
+  assert.equal(harness.store.states.get("/repo")?.task?.verification.checks[0]?.name, "tests");
+  assert.equal(harness.store.states.get("/repo")?.task?.humanGate?.kind, "approval");
   await harness.api.handler("agent_settled")(
     { type: "agent_settled" },
     uiContext,

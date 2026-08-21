@@ -48,10 +48,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function clearPindieStatus(ctx: ExtensionContext): void {
-  if (ctx.hasUI) ctx.ui.setStatus(PINDIE_STATUS_ID, undefined);
-}
-
 function isReadOnlyObservation(event: ToolCallEvent): boolean {
   return (
     isToolCallEventType("read", event) ||
@@ -90,23 +86,36 @@ export function registerPindieExtension(
     completedTaskAtAgentRunStart = null;
   };
 
-  const refreshStatus = (ctx = statusContext): void => {
-    if (!ctx?.hasUI) return;
+  const presentStatusBestEffort = (
+    ctx: ExtensionContext | null,
+    getStatus: () => string | undefined,
+  ): void => {
+    try {
+      if (!ctx?.hasUI) return;
+      ctx.ui.setStatus(PINDIE_STATUS_ID, getStatus());
+    } catch {
+      // Status presentation must not alter semantic or runtime behavior.
+    }
+  };
 
-    const segments = deriveStatusSegments({
-      timing:
-        runTimer.durationMs === null
-          ? null
-          : { durationMs: runTimer.durationMs, active: runTimer.active },
-      state: runtime.projectRoot === null ? null : runtime.state,
-      stateUnavailableReason,
-    });
-    ctx.ui.setStatus(
-      PINDIE_STATUS_ID,
-      segments.length === 0
+  const refreshStatus = (ctx = statusContext): void => {
+    presentStatusBestEffort(ctx, () => {
+      const segments = deriveStatusSegments({
+        timing:
+          runTimer.durationMs === null
+            ? null
+            : { durationMs: runTimer.durationMs, active: runTimer.active },
+        state: runtime.projectRoot === null ? null : runtime.state,
+        stateUnavailableReason,
+      });
+      return segments.length === 0
         ? undefined
-        : renderStatusSegments(ctx.ui.theme, segments),
-    );
+        : renderStatusSegments(ctx!.ui.theme, segments);
+    });
+  };
+
+  const clearPindieStatus = (ctx: ExtensionContext): void => {
+    presentStatusBestEffort(ctx, () => undefined);
   };
 
   const markUnavailable = (reason: string): void => {
