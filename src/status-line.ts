@@ -136,10 +136,10 @@ export function deriveStatusLayout(
     : formatResetCountdown(weekly.resetsAt, now);
   const right = weekly
     ? [
-        { text: `w${getRemainingPercent(weekly.usedPercent)}%`, tone: "dim" as const },
+        { text: `◉ ${getRemainingPercent(weekly.usedPercent)}%`, tone: "dim" as const },
         ...(resetCountdown === null
           ? []
-          : [{ text: `↻${resetCountdown}`, tone: "dim" as const }]),
+          : [{ text: `↻ ${resetCountdown}`, tone: "dim" as const }]),
       ]
     : [];
   return { left: deriveStatusSegments(snapshot), right };
