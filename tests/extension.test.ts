@@ -624,6 +624,95 @@ test("subscription usage is runtime-only, cached, and does not affect State on f
   assert.equal(harness.integration.runtime.state.task?.verification.stale, false);
 });
 
+test("failed usage refresh retains the previous runtime-only snapshot", async () => {
+  let calls = 0;
+  let currentTime = 1_000_000;
+  const harness = createHarness(
+    [["/repo", activeState()]],
+    {},
+    {
+      now: () => currentTime,
+      subscriptionUsageProvider: {
+        async fetchUsage() {
+          calls += 1;
+          if (calls === 1) {
+            return {
+              fetchedAt: currentTime,
+              windows: [{ usedPercent: 48, windowMinutes: 10_080, resetsAt: 1_700_100_000_000 }],
+            };
+          }
+          throw new Error("proxy request failed");
+        },
+      },
+    },
+  );
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses);
+
+  await startSession(harness, "/repo");
+  await new Promise((resolve) => setImmediate(resolve));
+  await harness.api.handler("before_agent_start")(
+    {
+      type: "before_agent_start",
+      prompt: "Continue",
+      systemPrompt: "Pi system prompt",
+      systemPromptOptions: {},
+    },
+    uiContext,
+  );
+  assert.match(statuses.at(-1)?.text ?? "", /w52%/);
+
+  currentTime += 5 * 60_000;
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    uiContext,
+  );
+
+  assert.equal(calls, 2);
+  assert.match(statuses.at(-1)?.text ?? "", /w52%/);
+});
+
+test("RunTimer status ticks render cached usage without fetching again", async () => {
+  let fetches = 0;
+  const harness = createHarness(
+    [["/repo", activeState()]],
+    {},
+    {
+      subscriptionUsageProvider: {
+        async fetchUsage() {
+          fetches += 1;
+          return {
+            fetchedAt: 1,
+            windows: [{ usedPercent: 48, windowMinutes: 10_080, resetsAt: 1_700_100_000_000 }],
+          };
+        },
+      },
+    },
+  );
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses);
+
+  await startSession(harness, "/repo");
+  await new Promise((resolve) => setImmediate(resolve));
+  await harness.api.handler("before_agent_start")(
+    {
+      type: "before_agent_start",
+      prompt: "Continue",
+      systemPrompt: "Pi system prompt",
+      systemPromptOptions: {},
+    },
+    uiContext,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+  assert.equal(fetches, 1);
+  assert.match(statuses.at(-1)?.text ?? "", /w52%/);
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    uiContext,
+  );
+});
+
 test("unified Pindie status publishes active and final timing, then clears on shutdown", async () => {
   const harness = createHarness([["/repo", activeState()]]);
   await startSession(harness, "/repo");

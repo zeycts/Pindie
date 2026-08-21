@@ -39,7 +39,7 @@ Pi's built-in footer presents infrastructure and runtime information (project, b
 
 The Pindie status line derives its compact segments from runtime-only Run timing, semantic current-task State, directly available runtime alerts, and optional runtime-only account observations. It does not persist display fields or create independent status entries for each fact.
 
-Its left region is Pindie current-work information (Run timing, verification, and attention). Its right region is account/environment resource information. ChatGPT subscription usage, when available from Pi's public resolved OpenAI Codex auth, is a best-effort runtime observation only: `w52%` means 52% weekly allowance remains and `↻18:29` is its local `HH:mm` reset time. It is never Pindie State and cannot affect semantic/runtime correctness.
+Its left region is Pindie current-work information (Run timing, verification, and attention). Its right region is account/environment resource information. ChatGPT subscription usage, when available from Pi's public resolved OpenAI Codex auth, is a best-effort runtime observation only: `w52%` means 52% weekly allowance remains and `↻18:29` is its local `HH:mm` reset time. Pindie selects the weekly window by its declared seven-day duration; the Codex backend may declare that duration as `limit_window_seconds`. The request uses Pi's runtime global fetch, which honors the standard proxy environment/configuration Pi establishes, but usage remains runtime-only and is never Pindie State or allowed to affect semantic/runtime correctness.
 
 Semantic colors follow the active Pi theme:
 
