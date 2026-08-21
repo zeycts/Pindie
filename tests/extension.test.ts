@@ -126,18 +126,27 @@ function completedState(): PindieState {
   };
 }
 
-function context(cwd: string): Record<string, unknown> {
-  return { cwd, hasUI: false };
+function context(
+  cwd: string,
+  sessionEntries: unknown[] = [],
+): Record<string, unknown> {
+  return {
+    cwd,
+    hasUI: false,
+    sessionManager: { getEntries: () => sessionEntries },
+  };
 }
 
 function interactiveContext(
   cwd: string,
   statuses: Array<{ id: string; text: string | undefined }>,
   throwOnSetStatus = false,
+  sessionEntries: unknown[] = [],
 ): Record<string, unknown> {
   return {
     cwd,
     hasUI: true,
+    sessionManager: { getEntries: () => sessionEntries },
     ui: {
       theme: { fg: (_color: string, text: string) => text },
       setStatus: (id: string, text: string | undefined) => {
@@ -193,16 +202,18 @@ async function startSession(
   harness: ReturnType<typeof createHarness>,
   cwd: string,
   reason = "startup",
+  sessionEntries: unknown[] = [],
 ): Promise<void> {
   await harness.api.handler("session_start")(
     { type: "session_start", reason },
-    context(cwd),
+    context(cwd, sessionEntries),
   );
 }
 
 async function beginAgentRun(
   harness: ReturnType<typeof createHarness>,
   cwd = "/repo",
+  sessionEntries: unknown[] = [],
 ): Promise<string> {
   const result = await harness.api.handler("before_agent_start")(
     {
@@ -211,7 +222,7 @@ async function beginAgentRun(
       systemPrompt: "Pi system prompt",
       systemPromptOptions: {},
     },
-    context(cwd),
+    context(cwd, sessionEntries),
   ) as { systemPrompt: string };
 
   return result.systemPrompt;
@@ -713,6 +724,59 @@ test("RunTimer status ticks render cached usage without fetching again", async (
   );
 });
 
+test("Run Cost measures public session usage from the Run baseline and resets per session", async () => {
+  const entries: unknown[] = [{
+    type: "message",
+    message: { role: "assistant", usage: { cost: { total: 4.8 } } },
+  }];
+  const harness = createHarness([["/repo", activeState()]]);
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses, false, entries);
+
+  await startSession(harness, "/repo", "startup", entries);
+  await harness.api.handler("before_agent_start")(
+    {
+      type: "before_agent_start",
+      prompt: "Continue",
+      systemPrompt: "Pi system prompt",
+      systemPromptOptions: {},
+    },
+    uiContext,
+  );
+  assert.match(statuses.at(-1)?.text ?? "", /\$0.000/);
+
+  entries.push({
+    type: "message",
+    message: { role: "toolResult", usage: { cost: { total: 0.31 } } },
+  });
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    uiContext,
+  );
+  assert.match(statuses.at(-1)?.text ?? "", /last 0s • \$0.31 • verify 0\/1/);
+  assert.deepEqual(harness.integration.runCost.snapshot(entries as any), {
+    cost: 0.31,
+    active: false,
+  });
+
+  await harness.api.handler("before_agent_start")(
+    {
+      type: "before_agent_start",
+      prompt: "Next",
+      systemPrompt: "Pi system prompt",
+      systemPromptOptions: {},
+    },
+    uiContext,
+  );
+  assert.match(statuses.at(-1)?.text ?? "", /⏱ 0s • \$0.000 • verify 0\/1/);
+
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "new" },
+    uiContext,
+  );
+  assert.equal(harness.integration.runCost.snapshot(entries as any), null);
+});
+
 test("unified Pindie status publishes active and final timing, then clears on shutdown", async () => {
   const harness = createHarness([["/repo", activeState()]]);
   await startSession(harness, "/repo");
@@ -730,7 +794,7 @@ test("unified Pindie status publishes active and final timing, then clears on sh
   );
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • verify 0/1",
+    text: "⏱ 0s • $0.000 • verify 0/1",
   });
 
   await harness.api.handler("agent_settled")(
@@ -739,7 +803,7 @@ test("unified Pindie status publishes active and final timing, then clears on sh
   );
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "last 0s • verify 0/1",
+    text: "last 0s • $0.000 • verify 0/1",
   });
 
   await harness.api.handler("session_shutdown")(
@@ -776,7 +840,7 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   });
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • ✓ 1/1",
+    text: "⏱ 0s • $0.000 • ✓ 1/1",
   });
 
   await harness.api.tool("pindie_gate").execute("gate", {
@@ -786,7 +850,7 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   });
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • ✓ 1/1 • ⚠ gate: approval",
+    text: "⏱ 0s • $0.000 • ✓ 1/1 • ⚠ gate: approval",
   });
 
   await harness.api.handler("agent_settled")(

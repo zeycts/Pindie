@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
+import { formatRunCost, type RunCost } from "./run-cost.ts";
 import { formatDuration, type RunTiming } from "./run-timer.ts";
 import {
   getVerificationStatus,
@@ -34,6 +35,7 @@ export interface VerificationProgress {
 
 export interface PindieStatusSnapshot {
   timing: RunTiming | null;
+  runCost?: RunCost | null;
   state: PindieState | null;
   stateUnavailableReason: string | null;
   subscriptionUsage?: SubscriptionUsageSnapshot | null;
@@ -98,6 +100,10 @@ export function deriveStatusSegments(
       text: `${prefix} ${formatDuration(snapshot.timing.durationMs)}`,
       tone: "dim",
     });
+  }
+
+  if (snapshot.runCost) {
+    segments.push({ text: formatRunCost(snapshot.runCost.cost), tone: "dim" });
   }
 
   const task = snapshot.state?.task;

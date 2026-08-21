@@ -37,9 +37,16 @@ Pindie must not implement a second agent loop.
 
 Pi's built-in footer presents infrastructure and runtime information (project, branch, token/context use, model, and thinking). Pindie presents semantic current-work information through one extension status line beneath it. Pindie never replaces or customizes Pi's footer for this purpose.
 
-The Pindie status line derives its compact segments from runtime-only Run timing, semantic current-task State, directly available runtime alerts, and optional runtime-only account observations. It does not persist display fields or create independent status entries for each fact.
+The Pindie status line derives its compact segments from runtime-only Run timing and Run Cost, semantic current-task State, directly available runtime alerts, and optional runtime-only account observations. It does not persist display fields or create independent status entries for each fact.
 
-Its left region is Pindie current-work information (Run timing, verification, and attention). Its right region is account/environment resource information. ChatGPT subscription usage, when available from Pi's public resolved OpenAI Codex auth, is a best-effort runtime observation only: `w52%` means 52% weekly allowance remains and `↻18:29` is its local `HH:mm` reset time. Pindie selects the weekly window by its declared seven-day duration; the Codex backend may declare that duration as `limit_window_seconds`. The request uses Pi's runtime global fetch, which honors the standard proxy environment/configuration Pi establishes, but usage remains runtime-only and is never Pindie State or allowed to affect semantic/runtime correctness.
+Its left region is Pindie current-work information (Run timing, Run Cost, verification, and attention). Its right region is account/environment resource information. Run Cost is the incremental Pi-reported `usage.cost.total` for the same Agent Run as Run Timer, not Pi's cumulative session cost and not necessarily an amount charged to a subscription user's credit card. ChatGPT subscription usage, when available from Pi's public resolved OpenAI Codex auth, is a best-effort runtime observation only: `w52%` means 52% weekly allowance remains and `↻18:29` is its local `HH:mm` reset time. Pindie selects the weekly window by its declared seven-day duration; the Codex backend may declare that duration as `limit_window_seconds`. The request uses Pi's runtime global fetch, which honors the standard proxy environment/configuration Pi establishes, but usage remains runtime-only and is never Pindie State or allowed to affect semantic/runtime correctness.
+
+| Metric | Scope |
+| --- | --- |
+| Run Timer | one Agent Run elapsed time |
+| Run Cost | one Agent Run Pi-reported model-equivalent cost |
+| Verification | current Task |
+| Weekly Usage | ChatGPT account |
 
 Semantic colors follow the active Pi theme:
 
