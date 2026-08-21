@@ -1,4 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import { formatDuration, type RunTiming } from "./run-timer.ts";
 import {
@@ -6,6 +7,12 @@ import {
   type PindieState,
   type PindieTask,
 } from "./state.ts";
+import {
+  formatResetTime,
+  getRemainingPercent,
+  selectWeeklyWindow,
+  type SubscriptionUsageSnapshot,
+} from "./subscription-usage.ts";
 
 export type StatusTone =
   | "dim"
@@ -29,6 +36,12 @@ export interface PindieStatusSnapshot {
   timing: RunTiming | null;
   state: PindieState | null;
   stateUnavailableReason: string | null;
+  subscriptionUsage?: SubscriptionUsageSnapshot | null;
+}
+
+export interface PindieStatusLayout {
+  left: StatusSegment[];
+  right: StatusSegment[];
 }
 
 /** Counts distinct success criteria covered by current passing checks. */
@@ -101,6 +114,22 @@ export function deriveStatusSegments(
   return segments;
 }
 
+export function deriveStatusLayout(
+  snapshot: PindieStatusSnapshot,
+  formatTime: (date: Date) => string = (date) => formatResetTime(date.getTime()),
+): PindieStatusLayout {
+  const weekly = selectWeeklyWindow(snapshot.subscriptionUsage ?? null);
+  const right = weekly
+    ? [
+        { text: `w${getRemainingPercent(weekly.usedPercent)}%`, tone: "dim" as const },
+        ...(weekly.resetsAt === undefined
+          ? []
+          : [{ text: `↻${formatTime(new Date(weekly.resetsAt))}`, tone: "dim" as const }]),
+      ]
+    : [];
+  return { left: deriveStatusSegments(snapshot), right };
+}
+
 /** Renders semantic status segments with the active Pi theme. */
 export function renderStatusSegments(
   theme: Pick<Theme, "fg">,
@@ -109,4 +138,41 @@ export function renderStatusSegments(
   return segments
     .map((segment) => theme.fg(segment.tone, segment.text))
     .join(theme.fg("dim", " • "));
+}
+
+function isCritical(segments: readonly StatusSegment[]): boolean {
+  return segments.some((segment) =>
+    segment.tone === "warning" || segment.tone === "error",
+  );
+}
+
+/** Composes one single-line status using ANSI-aware widths and NBSP padding. */
+export function renderStatusLayout(
+  theme: Pick<Theme, "fg">,
+  layout: PindieStatusLayout,
+  width?: number,
+): string | undefined {
+  const left = renderStatusSegments(theme, layout.left);
+  const right = renderStatusSegments(theme, layout.right);
+  if (!left && !right) return undefined;
+  if (!right) return left;
+  if (!left) {
+    return width && width > 0
+      ? "\u00a0".repeat(Math.max(0, width - visibleWidth(right))) + truncateToWidth(right, width)
+      : right;
+  }
+  if (!width || width <= 0) return `${left}${theme.fg("dim", " • ")}${right}`;
+
+  const minimumGap = 2;
+  const leftWidth = visibleWidth(left);
+  const rightWidth = visibleWidth(right);
+  if (leftWidth + minimumGap + rightWidth <= width) {
+    return left + "\u00a0".repeat(width - leftWidth - rightWidth) + right;
+  }
+  if (isCritical(layout.left)) return truncateToWidth(left, width);
+  if (rightWidth >= width) return truncateToWidth(right, width);
+
+  const availableLeft = width - rightWidth - minimumGap;
+  if (availableLeft <= 0) return truncateToWidth(right, width);
+  return truncateToWidth(left, availableLeft) + "\u00a0".repeat(minimumGap) + right;
 }

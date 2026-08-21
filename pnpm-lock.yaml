@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@earendil-works/pi-tui':
+        specifier: 0.84.2
+        version: 0.84.2
     devDependencies:
       '@earendil-works/pi-ai':
         specifier: 0.84.2
