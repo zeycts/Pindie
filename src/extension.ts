@@ -10,13 +10,17 @@ import {
 
 import { injectPindieCore } from "./context.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
-import { formatDuration, RunTimer, type RunTiming } from "./run-timer.ts";
+import { RunTimer } from "./run-timer.ts";
 import { PindieRuntime } from "./runtime.ts";
 import {
   validateState,
   type HumanGate,
   type PindieTask,
 } from "./state.ts";
+import {
+  deriveStatusSegments,
+  renderStatusSegments,
+} from "./status-line.ts";
 import { FileStateStore, type PindieStateStore } from "./store.ts";
 import { createPindieGateTool } from "./tools/gate.ts";
 import { createPindieStateTool } from "./tools/state.ts";
@@ -38,23 +42,10 @@ export interface PindieExtensionIntegration {
   readonly stateUnavailableReason: string | null;
 }
 
-const RUN_TIMER_STATUS_ID = "pindie-run-timer";
+const PINDIE_STATUS_ID = "pindie-status";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function updateRunTimerStatus(ctx: ExtensionContext, timing: RunTiming): void {
-  if (!ctx.hasUI) return;
-
-  const text = timing.active
-    ? `⏱ ${formatDuration(timing.durationMs)}`
-    : `last ${formatDuration(timing.durationMs)}`;
-  ctx.ui.setStatus(RUN_TIMER_STATUS_ID, ctx.ui.theme.fg("dim", text));
-}
-
-function clearRunTimerStatus(ctx: ExtensionContext): void {
-  if (ctx.hasUI) ctx.ui.setStatus(RUN_TIMER_STATUS_ID, undefined);
 }
 
 function isReadOnlyObservation(event: ToolCallEvent): boolean {
@@ -86,6 +77,7 @@ export function registerPindieExtension(
   const resolveProjectRoot =
     options.resolveProjectRoot ?? defaultResolveProjectRoot;
   let stateUnavailableReason: string | null = null;
+  let statusContext: ExtensionContext | null = null;
   let gateAtAgentRunStart: HumanGate | null = null;
   let completedTaskAtAgentRunStart: PindieTask | null = null;
 
@@ -94,22 +86,57 @@ export function registerPindieExtension(
     completedTaskAtAgentRunStart = null;
   };
 
+  const presentStatusBestEffort = (
+    ctx: ExtensionContext | null,
+    getStatus: () => string | undefined,
+  ): void => {
+    try {
+      if (!ctx?.hasUI) return;
+      ctx.ui.setStatus(PINDIE_STATUS_ID, getStatus());
+    } catch {
+      // Status presentation must not alter semantic or runtime behavior.
+    }
+  };
+
+  const refreshStatus = (ctx = statusContext): void => {
+    presentStatusBestEffort(ctx, () => {
+      const segments = deriveStatusSegments({
+        timing:
+          runTimer.durationMs === null
+            ? null
+            : { durationMs: runTimer.durationMs, active: runTimer.active },
+        state: runtime.projectRoot === null ? null : runtime.state,
+        stateUnavailableReason,
+      });
+      return segments.length === 0
+        ? undefined
+        : renderStatusSegments(ctx!.ui.theme, segments);
+    });
+  };
+
+  const clearPindieStatus = (ctx: ExtensionContext): void => {
+    presentStatusBestEffort(ctx, () => undefined);
+  };
+
   const markUnavailable = (reason: string): void => {
     runtime.unload();
     stateUnavailableReason = reason;
     clearAgentRunSnapshot();
+    refreshStatus();
   };
 
   pi.registerTool(
     createPindieStateTool(runtime, {
       getRunDuration: () => runTimer.durationMs,
+      onStateChange: refreshStatus,
     }),
   );
-  pi.registerTool(createPindieGateTool(runtime));
+  pi.registerTool(createPindieGateTool(runtime, { onStateChange: refreshStatus }));
 
   pi.on("session_start", async (_event, ctx) => {
+    statusContext = ctx;
     runTimer.reset();
-    clearRunTimerStatus(ctx);
+    clearPindieStatus(ctx);
     runtime.unload();
     stateUnavailableReason = null;
     clearAgentRunSnapshot();
@@ -122,20 +149,21 @@ export function registerPindieExtension(
         `Could not load Pindie State for '${ctx.cwd}': ${errorMessage(error)} Restore or repair the project State, then reload the session.`,
       );
     }
+    refreshStatus(ctx);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
     runTimer.reset();
-    clearRunTimerStatus(ctx);
+    clearPindieStatus(ctx);
     runtime.unload();
     stateUnavailableReason = null;
     clearAgentRunSnapshot();
+    statusContext = null;
   });
 
   pi.on("before_agent_start", (event, ctx) => {
-    runTimer.start(
-      ctx.hasUI ? (timing) => updateRunTimerStatus(ctx, timing) : undefined,
-    );
+    statusContext = ctx;
+    runTimer.start(ctx.hasUI ? () => refreshStatus(ctx) : undefined);
     const state = runtime.projectRoot === null ? null : runtime.state;
     const task = stateUnavailableReason === null ? state?.task ?? null : null;
     gateAtAgentRunStart = task?.humanGate ?? null;
@@ -231,10 +259,14 @@ export function registerPindieExtension(
       );
       throw error;
     }
+
+    refreshStatus();
   });
 
-  pi.on("agent_settled", () => {
+  pi.on("agent_settled", (_event, ctx) => {
+    statusContext = ctx;
     runTimer.finish();
+    refreshStatus(ctx);
     if (runtime.projectRoot === null) return;
 
     const validation = validateState(runtime.state);
