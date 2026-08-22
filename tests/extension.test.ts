@@ -681,7 +681,7 @@ test("failed usage refresh retains the previous runtime-only snapshot", async ()
     },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /w52%/);
+  assert.match(statuses.at(-1)?.text ?? "", /◉ 52%/);
 
   currentTime += 5 * 60_000;
   await harness.api.handler("agent_settled")(
@@ -690,7 +690,7 @@ test("failed usage refresh retains the previous runtime-only snapshot", async ()
   );
 
   assert.equal(calls, 2);
-  assert.match(statuses.at(-1)?.text ?? "", /w52%/);
+  assert.match(statuses.at(-1)?.text ?? "", /◉ 52%/);
 });
 
 test("RunTimer status ticks render cached usage without fetching again", async () => {
@@ -727,7 +727,7 @@ test("RunTimer status ticks render cached usage without fetching again", async (
   await new Promise((resolve) => setTimeout(resolve, 1_100));
 
   assert.equal(fetches, 1);
-  assert.match(statuses.at(-1)?.text ?? "", /w52%/);
+  assert.match(statuses.at(-1)?.text ?? "", /◉ 52%/);
   await harness.api.handler("agent_settled")(
     { type: "agent_settled" },
     uiContext,

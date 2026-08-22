@@ -29,9 +29,10 @@ Pi executes model/tool interactions needed to make it happen.
 - State transitions and hard invariants
 - verification semantics
 - Human Gate semantics
-- optional specialized development skills
+- the semantic contract for optional specialized Skills
+- bundled Skill resources exposed to Pi
 
-Pindie must not implement a second agent loop.
+Pindie must not implement a second agent loop or a second Skill runtime.
 
 ### Status presentation ownership
 
@@ -162,8 +163,9 @@ Do not persist these in Pindie State when they can be re-observed:
 - raw tool-call history
 - complete build/test logs
 - loop phase such as `deciding` or `testing`
+- Skill selection, lifecycle, or Skill-local workflow progress
 
-Pi sessions provide interaction history; Git/files/environment provide reality.
+Pi sessions provide interaction history; Git/files/environment provide reality. Pi Skill context provides reconstructable Skill information.
 
 ## 7. Core Extension
 
@@ -202,13 +204,13 @@ session_start
 
 before_agent_start
   → start runtime-only Run timer, Run Cost, and Current Activity (thinking)
+  → snapshot pre-existing Human Gate / completed-task identity
+  → append one Core Policy + Current State block
   → derive and publish one Pindie semantic status line
 
 tool_execution_start / tool_execution_end
   → update runtime-only Current Activity from public tool execution lifecycle
   → immediately refresh the one Pindie semantic status line
-  → snapshot pre-existing Human Gate / completed-task identity
-  → append one Core Policy + Current State block
 
 tool_call
   → enforce unavailable-State, Human Gate, terminal-task, and same-run guards
@@ -247,15 +249,35 @@ The Core Extension resolves the canonical project root (the canonical Git root w
 
 Pi session history may retain snapshots, but it is not the authoritative current-work State.
 
-## 9. Skills target
+## 9. Skill Integration v0.1
 
-v0.1 may eventually include only three optional specialized skills:
+```text
+Pindie
+├── Core Policy
+├── State / Verification / Human Gate
+├── Skill semantic contract
+└── bundled Skills
+        │
+        ▼
+Pi Skill Runtime
+├── discovery
+├── validation
+├── Skill index
+├── progressive disclosure
+├── Skill loading
+├── explicit invocation
+└── source/trust handling
+```
 
-- `plan` — complex/multi-system work
-- `review` — systematic implementation review
-- `ship` — delivery workflow
+Skills specialize the Pindie Core Loop. Skills do not replace the Pindie Core Loop. Pindie does not implement a second Skill runtime.
 
-Observe, Understand, Decide, Act, Verify, and Update State are not six Skills. They are the semantics of the Core Loop.
+Pi owns Skill discovery and directory scanning, metadata parsing and validation, index construction, progressive disclosure, loading `SKILL.md`, explicit `/skill:<name>` invocation, source resolution, collisions, project trust, and Skill reload/runtime mechanics. Pindie exposes bundled resources through `pi.skills: ["./skills"]`; it does not scan, load, select, validate, resolve, or invoke Skills itself.
+
+Pindie owns only the Skill semantic contract: a Skill is an optional specialized procedure, subordinate to runtime and safety constraints, latest user intent, observed project reality, Core invariants, the current Task Contract, Verification, and Human Gates. A Skill cannot bypass guards, change completed-task rules, silently expand scope, or treat stale State as more authoritative than reality. Skill-guided calls use the ordinary Pi tool path and existing Pindie guards.
+
+Skills have no Pindie lifecycle or persistent State. Pindie does not infer an active Skill from reading `SKILL.md`, add Skill status presentation, or create Skill-specific verification logic. Reading is observational; existing successful `edit` and `write` invalidation remains authoritative. Skill configuration failures remain Pi resource/configuration failures and never make Pindie State unavailable.
+
+Pindie creates no parallel Skill locations or source/trust policy. A specialized Skill is added only after dogfooding demonstrates a stable, narrow, reusable procedure; no catalog is preselected. Observe, Understand, Decide, Act, Verify, and Update State are Core Loop semantics, not Skills.
 
 ## 10. Implementation sequence
 

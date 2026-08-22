@@ -170,18 +170,18 @@ test("weekly account status is dim and derives its reset countdown at render tim
     },
   }, now);
   assert.deepEqual(withUsage.right, [
-    { text: "w52%", tone: "dim" },
-    { text: "↻6d23h", tone: "dim" },
+    { text: "◉ 52%", tone: "dim" },
+    { text: "↻ 6d23h", tone: "dim" },
   ]);
   assert.deepEqual(deriveStatusLayout({ ...snapshot(), subscriptionUsage: null }, now).right, []);
   assert.deepEqual(deriveStatusLayout({
     ...snapshot(),
     subscriptionUsage: { fetchedAt: 1, windows: [{ usedPercent: 48, windowMinutes: 10_080 }] },
-  }, now).right, [{ text: "w52%", tone: "dim" }]);
+  }, now).right, [{ text: "◉ 52%", tone: "dim" }]);
   assert.deepEqual(deriveStatusLayout({
     ...snapshot(),
     subscriptionUsage: { fetchedAt: 1, windows: [{ usedPercent: 48, windowMinutes: 10_080, resetsAt: now }] },
-  }, now).right, [{ text: "w52%", tone: "dim" }]);
+  }, now).right, [{ text: "◉ 52%", tone: "dim" }]);
 });
 
 test("Current Activity preserves right-aligned weekly usage", () => {
@@ -201,21 +201,21 @@ test("Current Activity preserves right-aligned weekly usage", () => {
 
   assert.equal(visibleWidth(rendered), 70);
   assert.match(rendered, /⏱ 42s • \$0.14 • editing • verify stale/);
-  assert.match(rendered, /w97% • ↻6d23h$/);
+  assert.match(rendered, /◉ 97% • ↻ 6d23h$/);
 });
 
 test("ANSI-aware layout aligns right usage, degrades narrowly, and falls back without width", () => {
   const theme = { fg: (tone: string, text: string) => `\u001b[${tone}m${text}\u001b[0m` } as any;
   const layout = {
     left: [{ text: "⏱ 4m 27s", tone: "dim" as const }, { text: "verify 3/4", tone: "text" as const }],
-    right: [{ text: "w52%", tone: "dim" as const }, { text: "↻6d23h", tone: "dim" as const }],
+    right: [{ text: "◉ 52%", tone: "dim" as const }, { text: "↻ 6d23h", tone: "dim" as const }],
   };
   const wide = renderStatusLayout(theme, layout, 50)!;
   assert.equal(visibleWidth(wide), 50);
   const narrow = renderStatusLayout(theme, layout, 18)!;
   assert.ok(visibleWidth(narrow) <= 18);
-  assert.match(narrow, /w52%/);
-  assert.match(renderStatusLayout(theme, layout), /verify.*w52%/);
+  assert.match(narrow, /◉ 52%/);
+  assert.match(renderStatusLayout(theme, layout), /verify.*◉ 52%/);
 });
 
 test("theme rendering styles individual segments and dim separators without ANSI assertions", () => {

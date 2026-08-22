@@ -182,7 +182,7 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - SL05 Attention is absent normally. State-unavailable is an error alert. Otherwise an open Human Gate takes precedence over blockers and renders its kind; a blocker renders `⚠ blocked`.
 - SL06 Semantic segments use the active Pi theme individually: `dim` for timing, Run Cost, account usage, and separators; `accent` for Current Activity; `text` for normal verification; `success` for passed verification; `warning` for stale/gate/blocked; and `error` for failed verification or State-unavailable.
 - SL07 Successful Pindie State/Human Gate transitions and known verification invalidation refresh the status after persistence. Tool execution start/end refresh Current Activity immediately. All status presentation is best-effort and cannot alter semantic or runtime behavior, including the result of an already committed State transition. Timer ticks remain the only periodic refresh. Session shutdown clears the one status entry.
-- SL08 The status line has a left current-work region and an optional right account-resource region. ChatGPT Codex usage is runtime-only and best-effort: a declared-duration-identified 7-day window (including backend `limit_window_seconds`) renders remaining percentage as `w<remaining>%` and optional reset countdown as `↻<countdown>`, both dim. The countdown is derived at status render time from `resetsAt`: at least 24 hours renders `d+h`, at least one hour renders `h+m`, at least one minute renders `m`, and less than one minute renders `<1m`; an expired timestamp omits the reset segment. It is fetched through Pi's runtime global fetch—therefore follows Pi's standard proxy environment/configuration—at session start and no more than once per five minutes thereafter; it is never persisted or allowed to affect Pindie State/runtime behavior.
+- SL08 The status line has a left current-work region and an optional right account-resource region. ChatGPT Codex usage is runtime-only and best-effort: a declared-duration-identified 7-day window (including backend `limit_window_seconds`) renders remaining percentage as `◉ <remaining>%` and optional reset countdown as `↻ <countdown>`, both dim. The countdown is derived at status render time from `resetsAt`: at least 24 hours renders `d+h`, at least one hour renders `h+m`, at least one minute renders `m`, and less than one minute renders `<1m`; an expired timestamp omits the reset segment. It is fetched through Pi's runtime global fetch—therefore follows Pi's standard proxy environment/configuration—at session start and no more than once per five minutes thereafter; it is never persisted or allowed to affect Pindie State/runtime behavior.
 
 `terminate: true` remains Pi's tool-batch early-termination hint. Human Gate and completed-task safety do not depend on that hint alone: `tool_call` also blocks consequential work while a gate is open or the current task is completed. Successful `edit` and `write` results invalidate verification through `PindieRuntime.dispatch()`; failed edits, observation tools, and generic `bash` results do not.
 
@@ -286,3 +286,49 @@ The eventual v0.1 core is accepted when it can:
 - keep completed tasks terminal
 - avoid a second Agent Loop
 - avoid task queues, history systems, and memory databases
+
+## 10. Pindie Skill Integration v0.1
+
+### SR01 — Pi owns Skill runtime mechanics
+
+Pi is the only Skill runtime. Pindie does not implement a Skill registry, loader, selector, discovery, validation, collision resolver, lifecycle manager, or command system. It introduces no `SkillRuntime`, `SkillRegistry`, `SkillLoader`, `SkillResolver`, or `SkillSelector` abstraction.
+
+### SR02 — Pindie exposes bundled Skills through Pi
+
+`package.json` declares `./skills` in `pi.skills` while preserving `./src/extension.ts` in `pi.extensions`. Pi discovers that package resource; Pindie does not scan it. v0.1 provides only `skills/README.md`, not an actual Skill.
+
+### SR03 — Progressive disclosure is preserved
+
+Pindie does not inject complete Skill bodies into Agent Runs. Pi continues to provide discovery metadata/index in the system prompt and loads `SKILL.md` on demand. `injectPindieCore()` preserves every incoming Pi-generated Skill metadata block unchanged and replaces only its own `<PINDIE_CORE>...</PINDIE_CORE>` block.
+
+### SR04 — Skills are subordinate to Pindie Core
+
+A Skill is an optional specialized procedure, not policy authority. It cannot override, in order: runtime/safety constraints, latest user intent, observed project reality, Pindie Core invariants, the current Task Contract, Verification requirements, or Human Gates. A Skill cannot bypass an open Gate or verification, illegally mutate a completed task, silently expand scope, or prefer stale State to observed reality.
+
+### SR05 — Skills own no persistent Pindie State
+
+`PindieState`, the reducer, and persistence schema contain no Skill lifecycle data. Pindie does not persist `activeSkill`, `skillsUsed`, `skillProgress`, `skillStep`, `skillHistory`, `skillState`, or a separate Skill state file. Skill selection and local progress remain reconstructable runtime/context information.
+
+### SR06 — Skills receive no privileged execution path
+
+A Skill may guide use of ordinary Pi or extension tools, including `read`, `edit`, `write`, `bash`, `pindie_state`, and `pindie_gate`. Every resulting call follows the same Pi execution, `tool_call` guards, State transitions, completed-task rules, Human Gate rules, and verification invalidation rules as any other call.
+
+### SR07 — Skills do not change Verification semantics
+
+Loading or reading a Skill is observational and does not invalidate Verification. Existing mutation behavior remains authoritative: successful `edit` or `write` invalidates Verification; failed edits, reads, and unsupported generic mutation inference do not. T47 already proves the read-only behavior, so no Skill-specific duplicate test is required.
+
+### SR08 — Explicit Skill invocation remains Pi-owned
+
+Pi owns explicit `/skill:<name>` invocation. Pindie adds no `pindie_skill` tool and no `activate_skill`, `deactivate_skill`, `use_skill`, or other Pindie Skill command system.
+
+### SR09 — Skill configuration failure is not State failure
+
+A malformed, unavailable, conflicting, or invalid Skill is a Pi Skill resource/configuration problem. It must not unload the Pindie runtime, mark Pindie State unavailable, corrupt State, or block consequential work through the State-unavailable path.
+
+### SR10 — No inferred active Skill lifecycle
+
+Pindie creates no inferred `skill_started`, `skill_active`, or `skill_finished` lifecycle and no Skill status-line segment. Reading `SKILL.md` proves only that it was read. Without a future authoritative Pi Skill lifecycle event, Pindie does not infer semantic activity.
+
+### SR11 — Skill source and trust remain Pi-owned
+
+Pindie creates no parallel `~/.pindie/skills` or `.pindie/skills` location. Pi remains responsible for global, project, package, and configured Skill resolution; priority; project trust; collisions; and reload behavior.
