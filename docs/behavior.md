@@ -347,7 +347,7 @@ Modified, untracked, and staged files do not automatically belong to the current
 
 ### GW03 — One Task uses one focused working branch
 
-For code-changing PR delivery, move from `main`/`master` to one focused task branch. Reuse a branch that clearly belongs to the Task; do not create another branch merely to make the procedure appear complete.
+For code-changing PR delivery, move from `main`/`master` to one focused task branch. Reuse a branch that clearly belongs to the Task; do not create another branch merely to make the procedure appear complete. When uncommitted changes on `main`/`master` are confirmed to belong to the Task, create or switch to that focused branch while preserving them and commit there rather than on `main`/`master`.
 
 ### GW04 — Repository convention outranks Skill defaults
 
@@ -355,7 +355,7 @@ Observe repository branch names, commit-message style, PR template, and delivery
 
 ### GW05 — Prepare the branch before normal implementation when practical
 
-For a new code-changing Task on clean `main`/`master`, prefer inspect → create focused branch → implement. Do not implement on main first merely to create a branch later, but never destroy or rewrite existing work to force this sequence.
+For a new code-changing Task on clean `main`/`master`, prefer inspect → create focused branch → implement. If confirmed current-Task changes already exist on `main`/`master`, preserve them while creating or switching to the focused branch, then continue the normal pre-commit workflow. Do not implement on main first merely to create a branch later, and never destroy, rewrite, stash, or discard existing work to force this sequence; ambiguous ownership follows GW02.
 
 ### GW06 — The Skill does not orchestrate implementation
 
@@ -412,3 +412,4 @@ Branch prepared, commit created, pushed, PR opened/updated, and Git-delivery-rea
 - **GD07 — Existing PR review feedback:** With a Task branch and PR, “Fix the review comments” reads the actual focused feedback, makes a targeted change, re-verifies, inspects the diff, commits, and pushes the existing branch without creating a second PR.
 - **GD08 — PR without merge authorization:** “Implement this and open a PR” ends with a PR opened/ready for review and does not merge automatically.
 - **GD09 — Diverged remote / force-push temptation:** When normal push is rejected because the remote diverged, inspect divergence first. Never immediately force-push; use a Human Gate if proceeding could overwrite unknown remote work.
+- **GD10 — Confirmed Task changes already exist on main:** From dirty `main` with all relevant uncommitted changes confirmed as current-Task work, “Submit the completed changes through the normal branch/PR workflow” inspects the actual state and diff, creates or switches to a focused branch while preserving the changes, verifies, stages intended changes, commits, pushes, and opens or updates the PR. It must not commit directly to `main`, reset, restore, blindly stash, or discard the changes.

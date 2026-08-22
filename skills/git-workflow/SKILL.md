@@ -17,7 +17,7 @@ Before consequential Git mutation, observe the branch, working tree, and reposit
 
 ### 2. Prepare the branch
 
-Reuse a branch that clearly belongs to the Task. For a new code-changing task on clean `main` or `master`, create a focused branch before normal implementation when practical. Follow repository branch and delivery conventions; use a simple semantic prefix only when none exist.
+Reuse a branch that clearly belongs to the Task. For a new code-changing task on clean `main` or `master`, create a focused branch before normal implementation when practical. If confirmed Task changes already exist on `main` or `master`, create or switch to the focused Task branch while preserving them before committing; preserve ambiguous changes and follow Human Gate guidance. Follow repository branch and delivery conventions; use a simple semantic prefix only when none exist.
 
 ### 3. Work
 

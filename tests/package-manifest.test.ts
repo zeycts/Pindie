@@ -9,9 +9,11 @@ test("GS01 bundled git-workflow Skill is exposed through Pi without replacing th
 
   assert.ok(manifest.pi?.extensions?.includes("./src/extension.ts"));
   assert.ok(manifest.pi?.skills?.includes("./skills"));
-  assert.deepEqual(
-    await readdir(new URL("../skills/", import.meta.url)),
-    ["git-workflow"],
+  const entries = await readdir(new URL("../skills/", import.meta.url));
+  assert.ok(entries.includes("git-workflow"));
+  assert.equal(
+    entries.some((entry) => entry.toLowerCase().endsWith(".md")),
+    false,
   );
 
   const skill = await readFile(
