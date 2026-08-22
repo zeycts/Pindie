@@ -257,8 +257,9 @@ Pindie
 ├── State / Verification / Human Gate
 ├── Skill semantic contract
 └── bundled Skills
-        │
-        ▼
+    └── git-workflow
+          │
+          ▼
 Pi Skill Runtime
 ├── discovery
 ├── validation
@@ -277,7 +278,7 @@ Pindie owns only the Skill semantic contract: a Skill is an optional specialized
 
 Skills have no Pindie lifecycle or persistent State. Pindie does not infer an active Skill from reading `SKILL.md`, add Skill status presentation, or create Skill-specific verification logic. Reading is observational; existing successful `edit` and `write` invalidation remains authoritative. Skill configuration failures remain Pi resource/configuration failures and never make Pindie State unavailable.
 
-Pindie creates no parallel Skill locations or source/trust policy. A specialized Skill is added only after dogfooding demonstrates a stable, narrow, reusable procedure; no catalog is preselected. Observe, Understand, Decide, Act, Verify, and Update State are Core Loop semantics, not Skills.
+Pindie creates no parallel Skill locations or source/trust policy. `git-workflow` is the first bundled Skill: a narrow procedure for safe branch → commit → push → PR delivery of one code-changing task. A specialized Skill is added only after dogfooding demonstrates a stable, narrow, reusable procedure; no catalog is preselected. Observe, Understand, Decide, Act, Verify, and Update State are Core Loop semantics, not Skills.
 
 ### Skill authoring
 
@@ -301,8 +302,8 @@ Implemented Core v0.1 sequence:
 
 Current phase:
 
-6. Real-world dogfooding of the existing Pindie Core
+6. Real-world dogfooding of the existing Pindie Core and its first bundled `git-workflow` Skill
 
-Specialized Skills are not assumed to be the immediate next implementation step. They should only be added later if repeated real usage shows that a specialized procedure is needed.
+`git-workflow` was added after repeated dogfooding established a stable, narrow delivery procedure. Further Skills remain unplanned until the same evidence exists.
 
 Each slice should remain testable without prematurely implementing later layers.
