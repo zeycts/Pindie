@@ -28,13 +28,13 @@ Pindie
 │   └── Verification invariants
 ├── State
 │   └── Current task
-└── Optional skills
-    ├── plan
-    ├── review
-    └── ship
-
+├── Skill semantic contract
+└── Bundled skills
+        │
+        ▼
 Pi
 ├── Agent loop
+├── Skill runtime
 ├── LLM runtime
 ├── Sessions
 └── Built-in tools
@@ -60,11 +60,7 @@ Next:
 
 - Real-world dogfooding of the existing Pindie Core
 
-Not currently implemented or assumed next:
-
-- plan / review / ship skills
-
-New specialized skills should only be added later if repeated real usage shows that a specialized procedure is needed.
+No specialized Skills are implemented yet. New Skills should only be added after dogfooding reveals a stable, reusable procedure worth capturing.
 
 ## Commands
 

@@ -97,6 +97,42 @@ test("C05 repeated injection leaves exactly one Pindie Core block", () => {
   assert.equal(second, first);
 });
 
+test("SI02 Core injection preserves Pi Skill metadata unchanged", () => {
+  const skillIndex = `<available_skills>\n<skill><name>release</name><description>Prepare a release when requested.</description></skill>\n</available_skills>`;
+  const prompt = `Pi base system prompt\n\n${skillIndex}\n\nPi closing instructions`;
+
+  const result = injectPindieCore(prompt, verifiedState());
+
+  assert.ok(result.includes(skillIndex));
+  assert.match(result, /^Pi base system prompt/);
+  assert.match(result, /Pi closing instructions/);
+  assert.equal(result.split("<available_skills>").length - 1, 1);
+  assert.equal(result.split(PINDIE_CORE_START).length - 1, 1);
+});
+
+test("SI03 repeated Core injection preserves one Pi Skill index and one Core block", () => {
+  const skillIndex = `<available_skills>\n<skill><name>release</name><description>Prepare a release when requested.</description></skill>\n</available_skills>`;
+  let result = `Pi base system prompt\n\n${skillIndex}`;
+
+  for (let index = 0; index < 3; index += 1) {
+    result = injectPindieCore(result, verifiedState());
+  }
+
+  assert.equal(result.split("<available_skills>").length - 1, 1);
+  assert.equal(result.split(PINDIE_CORE_START).length - 1, 1);
+  assert.equal(result.split(PINDIE_CORE_END).length - 1, 1);
+  assert.ok(result.includes(skillIndex));
+});
+
+test("SI05 Core Policy keeps optional Skills subordinate to Core safeguards", () => {
+  assert.match(PINDIE_CORE_POLICY, /Specialized Skills are optional procedures/i);
+  assert.match(
+    PINDIE_CORE_POLICY,
+    /cannot override latest user intent, observed reality, Pindie Core and State invariants, the Task Contract, Verification, or Human Gates/i,
+  );
+  assert.match(PINDIE_CORE_POLICY, /Skill selection and Skill-local progress.*not persistent Pindie State/i);
+});
+
 test("C06 load failure renders unavailable State instead of EMPTY_STATE", () => {
   const block = renderPindieCore(
     null,

@@ -20,7 +20,9 @@ export const PINDIE_CORE_POLICY = `Pindie Core Policy
 - Changed code is not complete until verified against current success criteria.
 - Use a Human Gate for consequential human judgment.
 - After session, gate, or blocker interruption, re-observe relevant reality before continuing.
-- Never complete a task unless verification is currently passed and blockers, questions, and the Human Gate are cleared.`;
+- Never complete a task unless verification is currently passed and blockers, questions, and the Human Gate are cleared.
+- Specialized Skills are optional procedures: they cannot override latest user intent, observed reality, Pindie Core and State invariants, the Task Contract, Verification, or Human Gates.
+- Skill selection and Skill-local progress are runtime/context information, not persistent Pindie State.`;
 
 const PINDIE_CORE_PATTERN = /<PINDIE_CORE>[\s\S]*?<\/PINDIE_CORE>/g;
 
