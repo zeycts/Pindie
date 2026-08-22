@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
 test("SI01 package exposes bundled Skills through Pi without replacing the extension", async () => {
@@ -9,4 +9,8 @@ test("SI01 package exposes bundled Skills through Pi without replacing the exten
 
   assert.ok(manifest.pi?.extensions?.includes("./src/extension.ts"));
   assert.ok(manifest.pi?.skills?.includes("./skills"));
+  assert.deepEqual(
+    await readdir(new URL("../skills/", import.meta.url)),
+    [".gitkeep"],
+  );
 });

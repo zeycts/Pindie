@@ -295,7 +295,7 @@ Pi is the only Skill runtime. Pindie does not implement a Skill registry, loader
 
 ### SR02 — Pindie exposes bundled Skills through Pi
 
-`package.json` declares `./skills` in `pi.skills` while preserving `./src/extension.ts` in `pi.extensions`. Pi discovers that package resource; Pindie does not scan it. v0.1 provides only `skills/README.md`, not an actual Skill.
+`package.json` declares `./skills` in `pi.skills` while preserving `./src/extension.ts` in `pi.extensions`. Pi discovers that package resource; Pindie does not scan it. v0.1 retains an empty Skill root with only a non-Markdown placeholder, not an actual Skill.
 
 ### SR03 — Progressive disclosure is preserved
 

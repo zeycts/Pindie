@@ -279,6 +279,16 @@ Skills have no Pindie lifecycle or persistent State. Pindie does not infer an ac
 
 Pindie creates no parallel Skill locations or source/trust policy. A specialized Skill is added only after dogfooding demonstrates a stable, narrow, reusable procedure; no catalog is preselected. Observe, Understand, Decide, Act, Verify, and Update State are Core Loop semantics, not Skills.
 
+### Skill authoring
+
+- Use Pi-compatible `SKILL.md`.
+- Add a Skill only after repeated dogfooding reveals a stable, narrow, reusable procedure.
+- Skills specialize the Pindie Core Loop; they do not reproduce or replace it.
+- Skills remain subordinate to current user intent, observed project reality, the Task Contract, Verification, Human Gates, and Pindie hard invariants.
+- Skill-local workflow progress is not persistent Pindie State.
+- Optional `references/`, `scripts/`, and other supporting resources should be loaded only when needed.
+- A Skill description should clearly state what it does and when to use it.
+
 ## 10. Implementation sequence
 
 Implemented Core v0.1 sequence:
