@@ -15,6 +15,7 @@
   "engines": {
     "node": ">=22.19.0"
   },
+  "packageManager": "pnpm@11.22.0",
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
