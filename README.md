@@ -30,8 +30,9 @@ Pindie
 │   └── Current task
 ├── Skill semantic contract
 └── Bundled skills
-        │
-        ▼
+    └── git-workflow
+          │
+          ▼
 Pi
 ├── Agent loop
 ├── Skill runtime
@@ -56,11 +57,11 @@ Implemented:
 - `pindie_gate`
 - Pi Core Extension wiring
 
-Next:
+Bundled Skills:
 
-- Real-world dogfooding of the existing Pindie Core
+- `git-workflow` — safe branch → commit → push → PR delivery for one development task
 
-No specialized Skills are implemented yet. New Skills should only be added after dogfooding reveals a stable, reusable procedure worth capturing.
+New Skills are added only when dogfooding reveals a stable, reusable procedure worth capturing.
 
 ## Commands
 

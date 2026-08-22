@@ -295,7 +295,7 @@ Pi is the only Skill runtime. Pindie does not implement a Skill registry, loader
 
 ### SR02 — Pindie exposes bundled Skills through Pi
 
-`package.json` declares `./skills` in `pi.skills` while preserving `./src/extension.ts` in `pi.extensions`. Pi discovers that package resource; Pindie does not scan it. v0.1 retains an empty Skill root with only a non-Markdown placeholder, not an actual Skill.
+`package.json` declares `./skills` in `pi.skills` while preserving `./src/extension.ts` in `pi.extensions`. Pi discovers that package resource; Pindie does not scan it. v0.1 bundles one approved directory Skill, `git-workflow`, and keeps the configured Skill root free of root-level Markdown candidates.
 
 ### SR03 — Progressive disclosure is preserved
 
@@ -332,3 +332,84 @@ Pindie creates no inferred `skill_started`, `skill_active`, or `skill_finished` 
 ### SR11 — Skill source and trust remain Pi-owned
 
 Pindie creates no parallel `~/.pindie/skills` or `.pindie/skills` location. Pi remains responsible for global, project, package, and configured Skill resolution; priority; project trust; collisions; and reload behavior.
+
+## 11. git-workflow Skill v0.1
+
+`git-workflow` is a narrow delivery procedure for a code-changing task that should reach a reviewable branch or pull request. Pi remains responsible for selection: intended routing includes requests to implement/fix and open a PR, commit and push changes, continue a task branch/PR, or use the repository's normal branch/PR workflow. It is not intended for read/explain/inspection tasks, Git knowledge questions, or a bare `git status` request.
+
+### GW01 — Observe Git reality before mutation
+
+Before the first consequential Git action, observe the smallest relevant set of current branch, working tree status, and repository context. Inspect remote, upstream, recent commits, or existing PR context only when needed; do not mechanically run every Git command.
+
+### GW02 — Do not assume local changes belong to the Task
+
+Modified, untracked, and staged files do not automatically belong to the current Task. Never automatically reset, restore, clean, or stash them. When ownership cannot be determined reliably and proceeding would be consequential, use the existing Pindie Human Gate rather than a Git-specific confirmation mechanism.
+
+### GW03 — One Task uses one focused working branch
+
+For code-changing PR delivery, move from `main`/`master` to one focused task branch. Reuse a branch that clearly belongs to the Task; do not create another branch merely to make the procedure appear complete. When uncommitted changes on `main`/`master` are confirmed to belong to the Task, create or switch to that focused branch while preserving them and commit there rather than on `main`/`master`.
+
+### GW04 — Repository convention outranks Skill defaults
+
+Observe repository branch names, commit-message style, PR template, and delivery workflow before using a default. Respect conventions such as `feature/foo` or `bugfix/foo`; only absent clear convention may use a simple `feat/`, `fix/`, `refactor/`, `docs/`, or `chore/` fallback.
+
+### GW05 — Prepare the branch before normal implementation when practical
+
+For a new code-changing Task on clean `main`/`master`, prefer inspect → create focused branch → implement. If confirmed current-Task changes already exist on `main`/`master`, preserve them while creating or switching to the focused branch, then continue the normal pre-commit workflow. Do not implement on main first merely to create a branch later, and never destroy, rewrite, stash, or discard existing work to force this sequence; ambiguous ownership follows GW02.
+
+### GW06 — The Skill does not orchestrate implementation
+
+After branch preparation, Pindie Core owns implementation and Verification. Do not require status after each edit, commits after each implementation step, or Git checkpoints after every Core Loop iteration; use delivery boundaries such as task start, pre-commit, pre-PR, and review update.
+
+### GW07 — Inspect the actual diff before staging
+
+Before committing, re-observe the real change set with appropriate status, unstaged diff, and staged-diff inspection. The pending diff—not agent memory—is the source of truth for what will be submitted.
+
+### GW08 — Exclude unrelated changes
+
+Commit only changes intended for the current Task. Do not silently commit, discard, or restore unrelated work; leave it untouched unless current user intent includes it.
+
+### GW09 — Inspect before broad staging
+
+Use inspect change set → identify intended Task changes → stage. Broad staging is acceptable only after verifying the full working tree belongs to the Task; this is not a universal ban on valid Git commands.
+
+### GW10 — Commit message follows repository reality
+
+Prefer the repository's commit-message convention. When none is clear, use a concise semantic message such as `feat: ...`, `fix: ...`, `docs: ...`, `refactor: ...`, `test: ...`, or `chore: ...` that describes the actual commit rather than copying a large Task description.
+
+### GW11 — Normal push is default; history rewrite is exceptional
+
+A new task branch may use `git push -u origin <branch>` and an existing upstream branch `git push`. Force pushes, force-with-lease, published-history rewrites, and remote-branch deletion are exceptional: observe consequences first and use the existing Human Gate when unknown remote work could be overwritten or consequential judgment is needed.
+
+### GW12 — PRs are focused and evidence-based
+
+Use an existing PR template when present; otherwise keep PR content minimal with `## Summary` and `## Verification`. Verification names only checks actually run—never invent tests, builds, or manual evidence. Do not create a generic PR-template system.
+
+### GW13 — PR creation is not merge authorization
+
+A request to implement and open a PR normally ends with the PR opened, updated, or ready for review. Do not merge merely because the PR exists or checks are green; merge requires explicit current user intent and existing Pindie safety constraints. This Skill adds no merge automation.
+
+### GW14 — Review feedback begins from current reality
+
+For review updates: read actual feedback → inspect current branch/code → make targeted changes → re-verify → inspect diff → commit → push. Feedback remains subordinate to current user intent, Task Contract, project reality, Verification, Human Gates, and Core invariants; do not mechanically implement scope-expanding or consequential suggestions.
+
+### GW15 — Destructive Git operations are outside the normal happy path
+
+Do not use `git reset --hard`, `git clean -fd`, discarding unknown local work, rewriting published history, force pushing, or deleting potentially unmerged branches as shortcuts. Observe the consequence, prefer safer options, and use the existing Human Gate for consequential human judgment. No separate destructive-command policy engine exists.
+
+### GW16 — The Skill never decides Pindie Task completion
+
+Branch prepared, commit created, pushed, PR opened/updated, and Git-delivery-ready are delivery milestones only. Task completion remains exclusively the Task Contract plus current Verification and cleared blockers, questions, and Human Gate under existing completion invariants; the Skill never calls completion because a PR milestone was reached.
+
+### Dogfood cases
+
+- **GD01 — New delivery task from main:** From clean `main`, “Implement X and open a PR” inspects Git, creates a focused branch, implements, verifies, inspects the diff, stages intended changes, commits, pushes, and opens a PR; it must not commit directly to main.
+- **GD02 — Existing Task branch:** From `feat/foo` that clearly belongs to the Task, “Continue implementing X and update the PR” reuses `feat/foo` and does not create a redundant branch.
+- **GD03 — Unknown dirty working tree:** From `main` with pre-existing modified/untracked files, “Implement X and submit a PR” observes and preserves unknown work; it must not reset, restore, clean, blindly stash, or blindly include it. Use a Human Gate if safe ownership cannot be determined.
+- **GD04 — Pure observation task:** “Explain how `PindieRuntime.dispatch()` works” must not route to `git-workflow` merely because the repository uses Git.
+- **GD05 — Git knowledge question:** “What does `git rebase --onto` do?” must not route to `git-workflow` merely because it mentions Git.
+- **GD06 — Unrelated changes before commit:** With Task changes A/B and unrelated pre-existing C, commit A/B and leave C untouched; do not silently commit or discard C.
+- **GD07 — Existing PR review feedback:** With a Task branch and PR, “Fix the review comments” reads the actual focused feedback, makes a targeted change, re-verifies, inspects the diff, commits, and pushes the existing branch without creating a second PR.
+- **GD08 — PR without merge authorization:** “Implement this and open a PR” ends with a PR opened/ready for review and does not merge automatically.
+- **GD09 — Diverged remote / force-push temptation:** When normal push is rejected because the remote diverged, inspect divergence first. Never immediately force-push; use a Human Gate if proceeding could overwrite unknown remote work.
+- **GD10 — Confirmed Task changes already exist on main:** From dirty `main` with all relevant uncommitted changes confirmed as current-Task work, “Submit the completed changes through the normal branch/PR workflow” inspects the actual state and diff, creates or switches to a focused branch while preserving the changes, verifies, stages intended changes, commits, pushes, and opens or updates the PR. It must not commit directly to `main`, reset, restore, blindly stash, or discard the changes.
