@@ -1,0 +1,229 @@
+import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
+import { lstat, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const DEFAULT_TIMEOUT_MS = 30_000;
+const TERMINATION_GRACE_MS = 1_000;
+const STALE_WORKSPACE_MS = 24 * 60 * 60 * 1_000;
+const OUTPUT_TAIL_BYTES = 32 * 1024;
+const SAFE_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+export interface OwnedSmokeOptions {
+  label: string;
+  command: string;
+  args?: string[];
+  timeoutMs?: number;
+  baseTempDir?: string;
+  now?: () => number;
+  keepArtifacts?: boolean;
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface OwnedSmokeResult {
+  workspace: string;
+  retainedWorkspace: string | null;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  timedOut: boolean;
+  stdoutTail: string;
+  stderrTail: string;
+}
+
+function appendTail(current: Buffer, chunk: Buffer): Buffer {
+  const combined = Buffer.concat([current, chunk]);
+  return combined.length > OUTPUT_TAIL_BYTES
+    ? combined.subarray(combined.length - OUTPUT_TAIL_BYTES)
+    : combined;
+}
+
+function isGone(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
+}
+
+function assertPosix(): void {
+  if (process.platform === "win32") {
+    throw new Error("pi-smoke v0.1 requires POSIX/WSL; Windows is not supported.");
+  }
+}
+
+export function validateLabel(label: string): void {
+  if (!SAFE_LABEL.test(label)) {
+    throw new Error("Smoke label must be 1–64 characters, start alphanumeric, and use only letters, digits, ., _, or -.");
+  }
+}
+
+export function smokeRoot(baseTempDir = tmpdir(), uid = process.getuid?.()): string {
+  if (uid === undefined) throw new Error("pi-smoke v0.1 requires a POSIX user ID.");
+  return join(baseTempDir, `pindie-${uid}`, "smoke");
+}
+
+export async function scavengeStaleWorkspaces(options: {
+  baseTempDir?: string;
+  now?: () => number;
+  staleAfterMs?: number;
+} = {}): Promise<void> {
+  assertPosix();
+  const root = smokeRoot(options.baseTempDir);
+  const now = options.now ?? Date.now;
+  const staleAfterMs = options.staleAfterMs ?? STALE_WORKSPACE_MS;
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const workspace = join(root, entry.name);
+    let stat;
+    try {
+      stat = await lstat(workspace);
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") continue;
+      throw error;
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink() || now() - stat.mtimeMs <= staleAfterMs) continue;
+    await rm(workspace, { recursive: true, force: true });
+  }
+}
+
+async function terminateOwnedGroup(pid: number, exited: Promise<void>): Promise<void> {
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch (error) {
+    if (!isGone(error)) throw error;
+  }
+  let stopped = false;
+  let graceTimer: ReturnType<typeof setTimeout>;
+  const grace = new Promise<void>((resolve) => {
+    graceTimer = setTimeout(resolve, TERMINATION_GRACE_MS);
+  });
+  await Promise.race([
+    exited.then(() => { stopped = true; }),
+    grace,
+  ]);
+  clearTimeout(graceTimer!);
+  if (stopped) return;
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if (!isGone(error)) throw error;
+  }
+  await exited;
+}
+
+export async function runOwnedSmoke(options: OwnedSmokeOptions): Promise<OwnedSmokeResult> {
+  assertPosix();
+  validateLabel(options.label);
+  if (!options.command) throw new Error("Smoke command is required.");
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || !Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("Smoke timeout must be a positive finite integer in milliseconds.");
+  }
+
+  const baseTempDir = options.baseTempDir ?? tmpdir();
+  await scavengeStaleWorkspaces({ baseTempDir, now: options.now });
+  const root = smokeRoot(baseTempDir);
+  await mkdir(root, { recursive: true });
+  const workspace = await mkdtemp(join(root, `${options.label}-`));
+  const keepArtifacts = options.keepArtifacts ?? process.env.PINDIE_KEEP_ARTIFACTS === "1";
+
+  let result: OwnedSmokeResult | undefined;
+  try {
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    const spawnOptions: SpawnOptionsWithoutStdio = {
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, ...options.env, PINDIE_SMOKE_DIR: workspace },
+    };
+    const child = spawn(options.command, options.args ?? [], spawnOptions);
+    child.stdout?.on("data", (chunk: Buffer) => { stdout = appendTail(stdout, chunk); });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr = appendTail(stderr, chunk); });
+
+    let settle!: (value: { exitCode: number | null; signal: NodeJS.Signals | null; error?: Error }) => void;
+    const settled = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null; error?: Error }>((resolve) => { settle = resolve; });
+    child.once("error", (error) => settle({ exitCode: null, signal: null, error }));
+    child.once("close", (exitCode, signal) => settle({ exitCode, signal }));
+    const exited = settled.then(() => undefined);
+    let timeoutHandle: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<{ kind: "timeout" }>((resolve) => {
+      timeoutHandle = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+    });
+    const outcome = await Promise.race([
+      settled.then((value) => ({ kind: "exit" as const, value })),
+      timeout,
+    ]);
+    clearTimeout(timeoutHandle!);
+
+    if (outcome.kind === "timeout") {
+      if (child.pid !== undefined) await terminateOwnedGroup(child.pid, exited);
+      const final = await settled;
+      result = { workspace, retainedWorkspace: null, exitCode: final.exitCode, signal: final.signal, timedOut: true, stdoutTail: stdout.toString(), stderrTail: stderr.toString() };
+    } else {
+      if (outcome.value.error) throw outcome.value.error;
+      result = { workspace, retainedWorkspace: null, exitCode: outcome.value.exitCode, signal: outcome.value.signal, timedOut: false, stdoutTail: stdout.toString(), stderrTail: stderr.toString() };
+    }
+  } finally {
+    if (keepArtifacts) {
+      if (result) result.retainedWorkspace = workspace;
+    } else {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }
+  return result!;
+}
+
+export function usage(): string {
+  return "Usage: pnpm smoke -- <label> [--timeout-ms <ms>] -- <command> [args...]";
+}
+
+export function parseCli(argv: string[]): { label: string; command: string; args: string[]; timeoutMs: number } {
+  const args = argv[0] === "--" ? argv.slice(1) : argv;
+  const [label, ...rest] = args;
+  if (!label) throw new Error("Smoke label is required.");
+  let timeoutMs = DEFAULT_TIMEOUT_MS;
+  let index = 0;
+  while (index < rest.length && rest[index] !== "--") {
+    if (rest[index] !== "--timeout-ms" || index + 1 >= rest.length) throw new Error("Invalid smoke arguments.");
+    const value = Number(rest[index + 1]);
+    if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) throw new Error("Smoke timeout must be a positive finite integer in milliseconds.");
+    timeoutMs = value;
+    index += 2;
+  }
+  if (rest[index] !== "--" || !rest[index + 1]) throw new Error("Smoke command is required.");
+  validateLabel(label);
+  return { label, timeoutMs, command: rest[index + 1], args: rest.slice(index + 2) };
+}
+
+async function main(): Promise<void> {
+  try {
+    const parsed = parseCli(process.argv.slice(2));
+    const result = await runOwnedSmoke(parsed);
+    if (result.timedOut) {
+      console.error(`pi-smoke: command timed out after ${parsed.timeoutMs}ms (signal: ${result.signal ?? "none"})`);
+      if (result.stderrTail) console.error(result.stderrTail);
+      if (result.stdoutTail) console.error(result.stdoutTail);
+      console.error(result.retainedWorkspace ? `pi-smoke: artifacts retained at ${result.retainedWorkspace}` : "pi-smoke: artifacts cleaned");
+      process.exitCode = 124;
+    } else if (result.exitCode !== 0) {
+      console.error(`pi-smoke: command failed (exit code: ${result.exitCode ?? "unknown"}, signal: ${result.signal ?? "none"})`);
+      if (result.stderrTail) console.error(result.stderrTail);
+      if (result.stdoutTail) console.error(result.stdoutTail);
+      console.error(result.retainedWorkspace ? `pi-smoke: artifacts retained at ${result.retainedWorkspace}` : "pi-smoke: artifacts cleaned");
+      process.exitCode = result.exitCode && result.exitCode > 0 ? result.exitCode : 1;
+    } else {
+      console.log("pi-smoke: command succeeded");
+      if (result.retainedWorkspace) console.log(`pi-smoke: artifacts retained at ${result.retainedWorkspace}`);
+    }
+  } catch (error) {
+    console.error(`pi-smoke: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(usage());
+    process.exitCode = 1;
+  }
+}
+
+if (process.argv[1] && import.meta.url === new URL(process.argv[1], "file:").href) void main();

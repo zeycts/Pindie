@@ -313,6 +313,15 @@ The eventual v0.1 core is accepted when it can:
 - avoid a second Agent Loop
 - avoid task queues, history systems, and memory databases
 
+### Execution Hygiene v0.1
+
+- **EH01** Temporary execution and verification resources have explicit operation ownership.
+- **EH02** One interactive smoke invocation uses one unique, disposable owned workspace.
+- **EH03** Cleanup affects only resources created by that invocation.
+- **EH04** Owned process trees originate at spawn-time ownership; broad PID or name matching is forbidden.
+- **EH05** Success, failure, and timeout clean by default; explicit keep mode preserves files only.
+- **EH06** Stale recovery is namespace-bound and age-bound and cannot touch fresh or foreign resources.
+
 ## 10. Pindie Skill Integration v0.1
 
 ### SR01 — Pi owns Skill runtime mechanics

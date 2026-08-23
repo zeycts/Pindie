@@ -260,6 +260,8 @@ The Agent-run snapshot is extension-local and resets at each `before_agent_start
 
 Generic `bash` results are not treated as known project mutation in v0.1. The Extension does not parse shell commands or implement a second Agent Loop.
 
+Execution Hygiene is a Core execution invariant. `pi-smoke` is narrow tooling for repeated Pindie dogfood verification, not State, Runtime, Skill lifecycle, bash parsing, or a second Agent Loop.
+
 Adaptive reasoning is runtime-only and never enters `PindieState`, the State Store, project files, or Pi session entries. Its controller requests a level with Pi's public `setThinkingLevel()` then reads the effective level from public `getThinkingLevel()`; Pi remains authoritative for model support and clamping. Auto starts each Agent Run at Medium and only requests Low, Medium, or High. Fixed mode is selected only through `/reasoning` and may request Pi's supported `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` levels. The controller does not route models, infer Core Loop phases, classify with an LLM, or retain history.
 
 ## 8. Persistence target
