@@ -377,10 +377,10 @@ test("EI20-EI30 /efficiency is registered and reads runtime facts without mutati
   assert.deepEqual(harness.store.saves, []);
 });
 
-test("the Extension registers the two existing Pindie tools and required hooks", () => {
+test("the Extension registers exactly three Pindie tools and required hooks", () => {
   const { api } = createHarness();
 
-  assert.deepEqual([...api.tools.keys()].sort(), ["pindie_gate", "pindie_state"]);
+  assert.deepEqual([...api.tools.keys()].sort(), ["pindie_gate", "pindie_git_observe", "pindie_state"]);
   assert.deepEqual([...api.handlers.keys()].sort(), [
     "agent_end",
     "agent_settled",
@@ -865,7 +865,7 @@ test("H05 Human Gate allows read-only observation tools", async () => {
   await startSession(harness, "/repo");
   await beginAgentRun(harness);
 
-  for (const name of ["read", "grep", "find", "ls"]) {
+  for (const name of ["read", "grep", "find", "ls", "pindie_git_observe"]) {
     assert.equal(await callGuard(harness, toolCall(name)), undefined);
   }
 });
@@ -902,6 +902,14 @@ test("H08 Human Gate blocks other pindie_state actions", async () => {
   );
 });
 
+test("SO-E02 completed task allows Git observation while bash remains blocked", async () => {
+  const harness = createHarness([["/repo", completedState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  assert.equal(await callGuard(harness, toolCall("pindie_git_observe", { action: "status" })), undefined);
+  assertBlocked(await callGuard(harness, toolCall("bash")), /completed and terminal/i);
+});
+
 test("H09 completed task blocks edit, write, and bash", async () => {
   const harness = createHarness([["/repo", completedState()]]);
   await startSession(harness, "/repo");
@@ -935,6 +943,9 @@ test("H11 unavailable Pindie State blocks consequential tools", async () => {
     assertBlocked(await callGuard(harness, toolCall(name)), /State is unavailable/i);
   }
   assert.equal(await callGuard(harness, toolCall("read")), undefined);
+  const loadsBeforeObserve = harness.store.loads.length;
+  assert.equal(await callGuard(harness, toolCall("pindie_git_observe", { action: "status" })), undefined);
+  assert.equal(harness.store.loads.length, loadsBeforeObserve);
 });
 
 test("subscription usage is runtime-only, cached, and does not affect State on fetch failure", async () => {
@@ -1448,9 +1459,15 @@ test("PSC-A01-A07 run-start refresh snapshots authority and stale Runs are read-
   for (const name of ["write", "bash", "pindie_state", "pindie_gate", "unknown"]) {
     assertBlocked(await callGuard(harness, toolCall(name)), /changed outside this Agent Run/i);
   }
-  for (const name of ["read", "grep", "find", "ls"]) {
-    assert.equal(await callGuard(harness, toolCall(name)), undefined);
+  for (const name of ["read", "grep", "find", "ls", "pindie_git_observe"]) {
+    assert.equal(await callGuard(harness, toolCall(name, name === "pindie_git_observe" ? { action: "status" } : {})), undefined);
   }
+  const stateBeforeObserve = structuredClone(harness.integration.runtime.state);
+  const epochBeforeObserve = harness.integration.runtime.externalStateEpoch;
+  assert.equal(await callGuard(harness, toolCall("pindie_git_observe", { action: "diff" })), undefined);
+  assert.deepEqual(harness.integration.runtime.state, stateBeforeObserve);
+  assert.equal(harness.integration.runtime.externalStateEpoch, epochBeforeObserve);
+  assertBlocked(await callGuard(harness, toolCall("edit")), /changed outside this Agent Run/i);
   await beginAgentRun(harness);
   assert.equal(await callGuard(harness, toolCall("edit")), undefined);
 });

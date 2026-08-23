@@ -183,7 +183,7 @@ The implemented v0.1 Core Extension provides:
 - runtime-only Agent Run timing, cost, observable Current Activity, and adaptive reasoning control in the unified Pindie semantic status line (with timing also in completion output)
 - an on-demand read-only `/efficiency` Inspector derived from current Pi public session/context facts, runtime reasoning, and existing Run Cost without persistence or background collection
 - one theme-aware Pindie status line for Current Activity, verification progress, and actionable Human Gate, blocker, and State-unavailable conditions
-- custom tools `pindie_state` and `pindie_gate`
+- custom tools `pindie_state`, `pindie_gate`, and `pindie_git_observe`
 
 The model-facing State mutation path is:
 
@@ -231,7 +231,7 @@ agent_end
   → Pi's existing follow-up queue and `agent.continue()` machinery execute that continuation; Pindie creates no second Agent Loop
 
 tool_call
-  → allow only existing read-only observation without freshness preflight
+  → allow only existing read-only observation, including `pindie_git_observe`, without freshness preflight
   → otherwise enforce unavailable-State, stale-Run freshness, Human Gate, terminal-task, and same-run guards
 
 turn_end (only turns with tool results)
@@ -260,6 +260,8 @@ session_shutdown
 Successful Pindie State and Human Gate tool transitions also refresh the status line after persistence. Tool execution start/end events refresh Current Activity immediately. Run timer ticks remain the only periodic trigger; they re-read current runtime State and do not persist timing or presentation.
 
 The Agent-run snapshot is extension-local and resets at each `before_agent_start`. It records only object identity for an unfinished replaceable Task, gate, or completed task that already existed at the run boundary plus a one-shot active-Task continuation fuse; it is neither persisted State nor a second state machine. `replace_task` may replace only that untouched run-start unfinished Task, once: a Task started, replaced, or semantically mutated during the Run is not replaceable. This permits abandoning a pre-existing Gate with a clearly different Task while preventing a Gate opened during the Run from being bypassed. The fuse permits at most one hidden Pi-native follow-up for one user-driven Agent Run and is not reset by that follow-up.
+
+`pindie_git_observe` provides exactly eight fixed semantic read-only Git actions (`status`, `branch`, `root`, `diff`, `diff_cached`, `diff_check`, `log`, and `remote`). It invokes fixed `git` argv directly without a shell, disables prompts, optional locks, lazy fetch, fsmonitor, external diff/textconv, and pager behavior, and cannot mutate Pindie State. It is read-only for guards; generic `bash` remains consequential and is never parsed for Git exceptions.
 
 Generic `bash` results are not treated as known project mutation in v0.1. The Extension does not parse shell commands or implement a second Agent Loop.
 

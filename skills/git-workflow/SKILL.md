@@ -13,7 +13,7 @@ Deliver one code-changing Pindie task through a focused, reviewable Git branch a
 
 ### 1. Inspect
 
-Pindie Core owns Task establishment and reconciliation. When latest user intent begins or replaces a code-changing Task, establish the correct current Pindie Task before consequential Git action; minimal read-only observation may precede that reconciliation when needed. Then, before consequential Git mutation, observe the branch, working tree, and repository context. “Inspect before consequential Git mutation” does not require Git inspection before Pindie Task establishment/reconciliation. Inspect remote, upstream, recent commits, or PR context only when needed. Do not assume existing modified, untracked, or staged changes belong to this Task.
+Pindie Core owns Task establishment and reconciliation. When latest user intent begins or replaces a code-changing Task, establish the correct current Pindie Task before consequential Git action; minimal read-only observation may precede that reconciliation when needed. Then, before consequential Git mutation, observe the branch, working tree, and repository context. Prefer `pindie_git_observe` for its supported read-only Git inspection; ordinary Git mutations use consequential `bash`, and unsupported inspection through `bash` remains subject to current Pindie Core guards. “Inspect before consequential Git mutation” does not require Git inspection before Pindie Task establishment/reconciliation. Inspect remote, upstream, recent commits, or PR context only when needed. Do not assume existing modified, untracked, or staged changes belong to this Task.
 
 ### 2. Prepare the branch
 
