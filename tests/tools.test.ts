@@ -116,6 +116,52 @@ test("S01 pindie_state maps start_task with defaults", async () => {
   assert.deepEqual(result.details, { state: runtime.state });
 });
 
+test("TB11-TB17 replace_task validates, persists before reporting, and exposes fresh criteria", async () => {
+  const harness = await createHarness(activeState());
+  await assert.rejects(harness.stateTool.execute("call", {
+    action: "replace_task", successCriteria: ["Works"],
+  }), /goal is required/i);
+  await assert.rejects(harness.stateTool.execute("call", {
+    action: "replace_task", goal: "Replacement", successCriteria: [],
+  }), /at least one success criterion/i);
+  await assert.rejects(harness.stateTool.execute("call", {
+    action: "replace_task", goal: "Replacement", successCriteria: ["Works"], summary: "Nope",
+  }), /unexpected field\(s\).*summary/i);
+
+  let releaseSave!: () => void;
+  let markSaveStarted!: () => void;
+  const saveStarted = new Promise<void>((resolve) => { markSaveStarted = resolve; });
+  harness.store.beforeSave = () => new Promise<void>((resolve) => {
+    releaseSave = resolve;
+    markSaveStarted();
+  });
+  let settled = false;
+  const execution = harness.stateTool.execute("call", {
+    action: "replace_task", goal: "Replacement", constraints: ["Focused"],
+    successCriteria: ["First", "Second"], nextIntent: "Implement it",
+  }).then((value) => { settled = true; return value; });
+  await saveStarted;
+  assert.equal(settled, false);
+  assert.equal(harness.runtime.state.task?.goal, "Implement Pindie tools");
+  releaseSave();
+  const result = await execution;
+  assert.equal(result.terminate, undefined);
+  assert.equal(harness.store.persistedState.task?.goal, "Replacement");
+  assert.deepEqual(harness.runtime.state.task?.constraints, ["Focused"]);
+  assert.equal(harness.runtime.state.task?.openLoops.nextIntent, "Implement it");
+  assert.match(textOf(result), /Current unfinished task replaced\./);
+  assert.match(textOf(result), /- c1: First\s*\n- c2: Second/);
+});
+
+test("TB13 replace_task defaults optional fields", async () => {
+  const { runtime, stateTool } = await createHarness(activeState());
+  await stateTool.execute("call", {
+    action: "replace_task", goal: "Replacement", successCriteria: ["Works"],
+  });
+  assert.deepEqual(runtime.state.task?.constraints, []);
+  assert.equal(runtime.state.task?.openLoops.nextIntent, null);
+});
+
 test("D01 start_task exposes the generated success criterion IDs", async () => {
   const { runtime, store, stateTool } = await createHarness();
 
@@ -318,6 +364,7 @@ test("S06 pindie_state exposes only approved semantic actions", async () => {
 
   assert.deepEqual(schema.properties.action.enum, [
     "start_task",
+    "replace_task",
     "refine_task",
     "set_open_loops",
     "record_verification",
@@ -406,6 +453,7 @@ test("D06 pindie_state action guidance exposes action-specific fields", async ()
   const description = schema.properties.action.description ?? "";
 
   assert.match(description, /start_task.*goal.*successCriteria.*required/is);
+  assert.match(description, /replace_task.*different.*goal.*successCriteria.*required/is);
   assert.match(
     description,
     /refine_task.*goal.*constraints.*successCriteria.*at least one/is,

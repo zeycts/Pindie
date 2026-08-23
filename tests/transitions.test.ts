@@ -515,6 +515,76 @@ test("T35 resolving a missing Human Gate is rejected", () => {
   );
 });
 
+test("TB01-TB05 replace_task atomically creates a fresh unfinished task", () => {
+  let state = apply(fullyVerifiedState(), {
+    type: "set_open_loops",
+    blockers: ["Waiting for deployment"],
+    questions: ["Which region?"],
+    nextIntent: "Deploy when approved",
+  });
+  state = apply(state, {
+    type: "open_human_gate",
+    gate: { kind: "approval", question: "Approve deployment?" },
+  });
+  const oldTask = state.task;
+  const replacement = apply(state, {
+    type: "replace_task",
+    goal: "Publish changelog",
+    constraints: ["Use release template"],
+    successCriteria: ["Changelog is published", "Links are verified"],
+    nextIntent: "Draft release notes",
+  });
+
+  assert.notEqual(replacement.task, oldTask);
+  assert.equal(replacement.task?.goal, "Publish changelog");
+  assert.deepEqual(replacement.task?.constraints, ["Use release template"]);
+  assert.deepEqual(replacement.task?.successCriteria, [
+    { id: "c1", description: "Changelog is published" },
+    { id: "c2", description: "Links are verified" },
+  ]);
+  assert.deepEqual(replacement.task?.openLoops, {
+    blockers: [], questions: [], nextIntent: "Draft release notes",
+  });
+  assert.deepEqual(replacement.task?.verification, { stale: false, checks: [] });
+  assert.equal(replacement.task?.humanGate, null);
+  assert.equal(replacement.task?.completed, false);
+  assert.equal(getVerificationStatus(replacement.task as PindieTask), "pending");
+});
+
+test("TB06-TB08 replace_task preserves start_task boundaries and rejects invalid states", () => {
+  const idle = structuredClone(EMPTY_STATE);
+  failure(
+    reduceState(idle, {
+      type: "replace_task", goal: "New", constraints: [], successCriteria: ["Works"],
+    }),
+    TransitionErrorCode.NO_CURRENT_TASK,
+  );
+  assert.deepEqual(idle, EMPTY_STATE);
+
+  const completed = completedState();
+  const snapshot = structuredClone(completed);
+  failure(
+    reduceState(completed, {
+      type: "replace_task", goal: "New", constraints: [], successCriteria: ["Works"],
+    }),
+    TransitionErrorCode.TASK_COMPLETED,
+  );
+  assert.deepEqual(completed, snapshot);
+  failure(reduceState(startTask(), { ...START_TASK, goal: "Different" }), TransitionErrorCode.TASK_ALREADY_ACTIVE);
+  assert.equal(success(reduceState(completed, {
+    type: "start_task", goal: "New", constraints: [], successCriteria: ["Works"],
+  })).task?.goal, "New");
+});
+
+test("TB09 replace_task does not mutate its input State", () => {
+  const state = startTask();
+  const snapshot = structuredClone(state);
+  apply(state, {
+    type: "replace_task", goal: "Different", constraints: [], successCriteria: ["Works"],
+  });
+  assert.deepEqual(state, snapshot);
+});
+
 test("successful transitions do not mutate their input State", () => {
   const state = startTask();
   const snapshot = structuredClone(state);

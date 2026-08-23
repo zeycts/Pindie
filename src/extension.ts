@@ -71,7 +71,7 @@ export interface PindieExtensionIntegration {
 
 const PINDIE_STATUS_ID = "pindie-status";
 const PINDIE_ACTIVE_TASK_CONTINUATION_TYPE = "pindie-active-task-continuation";
-const PINDIE_ACTIVE_TASK_CONTINUATION_MESSAGE = "The current Pindie Task is still unfinished. First re-evaluate the latest actual user intent. If it asks to stop, pause, return control, or only inspect, explain, or discuss without resuming consequential Task work, do not resume consequential Task work; allow this Agent Run to settle normally. Otherwise, if the latest user intent still calls for Task execution, continue the Task now. Re-observe only what is necessary, then take the smallest safe next action. Do not stop merely to summarize remaining work, restate next steps, re-plan, or because more implementation, test, or verification iterations are required. If consequential human judgment is genuinely required, use the existing Human Gate. If a real external blocker prevents progress, record it. Otherwise continue toward current verified completion. Persisting nextIntent records continuation context; it is not permission to yield.";
+const PINDIE_ACTIVE_TASK_CONTINUATION_MESSAGE = "The current Pindie Task is still unfinished. First re-evaluate whether the latest actual user intent calls for consequential execution of this current Task. If it clearly requests a different Task, reconcile it through replace_task when this Agent Run boundary permits, then continue only the new current Task. If it asks to stop, pause, return control, or only inspect, explain, or discuss, do not resume consequential Task work; allow this Agent Run to settle normally. If the Task boundary is consequentially ambiguous, use the existing Human Gate or return control appropriately. Otherwise continue this current Task now. Re-observe only what is necessary, then take the smallest safe next action. Do not stop merely to summarize remaining work, restate next steps, re-plan, or because more implementation, test, or verification iterations are required. If consequential human judgment is genuinely required, use the existing Human Gate. If a real external blocker prevents progress, record it. Otherwise continue toward current verified completion. Persisting nextIntent records continuation context; it is not permission to yield.";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -123,11 +123,13 @@ export function registerPindieExtension(
   let stateUnavailableReason: string | null = null;
   let statusContext: ExtensionContext | null = null;
   let gateAtAgentRunStart: HumanGate | null = null;
+  let replaceableTaskAtAgentRunStart: PindieTask | null = null;
   let completedTaskAtAgentRunStart: PindieTask | null = null;
   let activeTaskContinuationAttempted = false;
 
   const clearAgentRunSnapshot = (): void => {
     gateAtAgentRunStart = null;
+    replaceableTaskAtAgentRunStart = null;
     completedTaskAtAgentRunStart = null;
     activeTaskContinuationAttempted = false;
   };
@@ -298,6 +300,7 @@ export function registerPindieExtension(
     const state = runtime.projectRoot === null ? null : runtime.state;
     const task = stateUnavailableReason === null ? state?.task ?? null : null;
     gateAtAgentRunStart = task?.humanGate ?? null;
+    replaceableTaskAtAgentRunStart = task && !task.completed ? task : null;
     completedTaskAtAgentRunStart = task?.completed ? task : null;
     return { systemPrompt: injectPindieCore(event.systemPrompt) };
   });
@@ -369,6 +372,17 @@ export function registerPindieExtension(
     }
 
     const task = runtime.state.task;
+    if (hasAction(event, "pindie_state", "replace_task")) {
+      if (task && !task.completed && task !== replaceableTaskAtAgentRunStart) {
+        return {
+          block: true,
+          reason:
+            "This Agent run may only replace the unfinished Task that existed at the start of the run, before it was semantically mutated. Start or continue a new run before replacing this Task.",
+        };
+      }
+      if (!task || !task.completed) return;
+    }
+
     if (task?.humanGate) {
       if (
         hasAction(event, "pindie_state", "refine_task") ||

@@ -404,21 +404,23 @@ test("AC01-AC15 active executable tasks queue one hidden Pi-native follow-up per
 
   await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
 
-  assert.deepEqual(harness.api.sentMessages, [{
-    message: {
-      customType: "pindie-active-task-continuation",
-      content: "The current Pindie Task is still unfinished. First re-evaluate the latest actual user intent. If it asks to stop, pause, return control, or only inspect, explain, or discuss without resuming consequential Task work, do not resume consequential Task work; allow this Agent Run to settle normally. Otherwise, if the latest user intent still calls for Task execution, continue the Task now. Re-observe only what is necessary, then take the smallest safe next action. Do not stop merely to summarize remaining work, restate next steps, re-plan, or because more implementation, test, or verification iterations are required. If consequential human judgment is genuinely required, use the existing Human Gate. If a real external blocker prevents progress, record it. Otherwise continue toward current verified completion. Persisting nextIntent records continuation context; it is not permission to yield.",
-      display: false,
-    },
-    options: { deliverAs: "followUp" },
-  }]);
-  const continuationContent = (harness.api.sentMessages[0] as {
-    message: { content: string };
-  }).message.content;
-  assert.equal((continuationContent.match(/First re-evaluate the latest actual user intent\./g) ?? []).length, 1);
+  assert.equal(harness.api.sentMessages.length, 1);
+  assert.deepEqual((harness.api.sentMessages[0] as {
+    message: { customType: string; display: boolean };
+    options: unknown;
+  }).options, { deliverAs: "followUp" });
+  const continuationMessage = (harness.api.sentMessages[0] as {
+    message: { customType: string; content: string; display: boolean };
+  }).message;
+  assert.equal(continuationMessage.customType, "pindie-active-task-continuation");
+  assert.equal(continuationMessage.display, false);
+  const continuationContent = continuationMessage.content;
+  assert.match(continuationContent, /consequential execution of this current Task/i);
+  assert.match(continuationContent, /different Task.*replace_task/i);
+  assert.match(continuationContent, /stop, pause, return control, or only inspect, explain, or discuss/i);
   assert.ok(
-    continuationContent.indexOf("First re-evaluate the latest actual user intent.") <
-      continuationContent.indexOf("continue the Task now."),
+    continuationContent.indexOf("First re-evaluate") <
+      continuationContent.indexOf("Otherwise continue this current Task now."),
   );
   assert.deepEqual(harness.integration.runtime.state, stateBefore);
   assert.deepEqual(harness.integration.reasoning.snapshot, reasoningBefore);
@@ -1405,6 +1407,79 @@ test("T50 integrated completion terminates and terminal guard blocks mutation", 
   );
   assert.equal(harness.integration.runTimer.active, false);
   assert.notEqual(harness.integration.runTimer.durationMs, null);
+});
+
+test("TB18-TB28 replacement is limited to the untouched unfinished Task at Agent Run start", async () => {
+  const replacement = { action: "replace_task", goal: "Task B", successCriteria: ["Task B works"] };
+
+  for (const initial of [activeState(), { task: { ...activeState().task!, openLoops: { blockers: ["Blocked"], questions: [], nextIntent: null } } }, gatedState()]) {
+    const harness = createHarness([["/repo", initial]]);
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+    assert.equal(await callGuard(harness, toolCall("pindie_state", replacement)), undefined);
+    await harness.api.tool("pindie_state").execute("replace", replacement);
+    assert.equal(harness.integration.runtime.state.task?.goal, "Task B");
+    assert.equal(harness.integration.runtime.state.task?.humanGate, null);
+    assert.equal(await callGuard(harness, toolCall("edit")), undefined);
+    assertBlocked(await callGuard(harness, toolCall("pindie_state", {
+      action: "replace_task", goal: "Task C", successCriteria: ["Task C works"],
+    })), /only replace the unfinished Task that existed at the start/i);
+  }
+});
+
+test("TB21-TB25 same-run task creation or semantic mutation consumes replacement eligibility", async () => {
+  const created = createHarness();
+  await startSession(created, "/repo");
+  await beginAgentRun(created);
+  await created.api.tool("pindie_state").execute("start", {
+    action: "start_task", goal: "Task A", successCriteria: ["Task A works"],
+  });
+  assertBlocked(await callGuard(created, toolCall("pindie_state", {
+    action: "replace_task", goal: "Task B", successCriteria: ["Task B works"],
+  })), /only replace the unfinished Task that existed at the start/i);
+
+  for (const mutate of [
+    async (harness: ReturnType<typeof createHarness>) => harness.api.tool("pindie_state").execute("refine", { action: "refine_task", goal: "Refined A" }),
+    async (harness: ReturnType<typeof createHarness>) => harness.api.tool("pindie_state").execute("loops", { action: "set_open_loops", blockers: [], questions: ["Question"] }),
+    async (harness: ReturnType<typeof createHarness>) => harness.api.tool("pindie_gate").execute("gate", { action: "open", kind: "input", question: "Input?" }),
+    async (harness: ReturnType<typeof createHarness>) => harness.api.handler("tool_result")(toolResult("edit"), context("/repo")),
+  ]) {
+    const harness = createHarness([["/repo", activeState()]]);
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+    await mutate(harness);
+    assertBlocked(await callGuard(harness, toolCall("pindie_state", {
+      action: "replace_task", goal: "Task B", successCriteria: ["Task B works"],
+    })), /only replace the unfinished Task that existed at the start/i);
+  }
+});
+
+test("TB25 resolving a run-start Human Gate also consumes replacement eligibility", async () => {
+  const harness = createHarness([["/repo", gatedState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  await harness.api.tool("pindie_gate").execute("resolve", { action: "resolve" });
+  assertBlocked(await callGuard(harness, toolCall("pindie_state", {
+    action: "replace_task", goal: "Task B", successCriteria: ["Task B works"],
+  })), /only replace the unfinished Task that existed at the start/i);
+});
+
+test("TB26-TB27 completed Task start boundaries do not make a same-run Task replaceable", async () => {
+  const harness = createHarness([["/repo", completedState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  assertBlocked(await callGuard(harness, toolCall("pindie_state", {
+    action: "replace_task", goal: "Task B", successCriteria: ["Task B works"],
+  })), /completed and terminal/i);
+  assert.equal(await callGuard(harness, toolCall("pindie_state", {
+    action: "start_task", goal: "Task B", successCriteria: ["Task B works"],
+  })), undefined);
+  await harness.api.tool("pindie_state").execute("start", {
+    action: "start_task", goal: "Task B", successCriteria: ["Task B works"],
+  });
+  assertBlocked(await callGuard(harness, toolCall("pindie_state", {
+    action: "replace_task", goal: "Task C", successCriteria: ["Task C works"],
+  })), /only replace the unfinished Task that existed at the start/i);
 });
 
 test("RG01 a gate opened during the run blocks same-run refinement", async () => {
