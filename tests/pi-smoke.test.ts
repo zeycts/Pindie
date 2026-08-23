@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { access, mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -67,18 +67,21 @@ test("EH04 timeout terminates the owned child and removes workspace", { skip: sk
 test("EH05 timeout kills the spawn-owned descendant group without touching this test process", { skip: skipWindows }, async (t) => {
   const root = await fixture(t);
   const pidFile = join(root, "descendant.pid");
-  const program = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); writeFileSync(process.env.DESCENDANT_PID_FILE, String(child.pid)); setInterval(() => {}, 1000);`;
+  const termFile = join(root, "descendant-ignored-term");
+  const descendantProgram = `const { writeFileSync } = require('node:fs'); process.on('SIGTERM', () => writeFileSync(process.env.DESCENDANT_TERM_FILE, 'ignored')); setInterval(() => {}, 1000);`;
+  const program = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', process.env.DESCENDANT_PROGRAM], { stdio: 'ignore', env: process.env }); writeFileSync(process.env.DESCENDANT_PID_FILE, String(child.pid)); setInterval(() => {}, 1000);`;
   const result = await runOwnedSmoke({
     label: "descendant",
     command: process.execPath,
     args: ["-e", program],
-    timeoutMs: 100,
+    timeoutMs: 300,
     baseTempDir: root,
-    env: { DESCENDANT_PID_FILE: pidFile },
+    env: { DESCENDANT_PID_FILE: pidFile, DESCENDANT_TERM_FILE: termFile, DESCENDANT_PROGRAM: descendantProgram },
   });
   const descendantPid = Number(await (await import("node:fs/promises")).readFile(pidFile, "utf8"));
 
   assert.equal(result.timedOut, true);
+  assert.equal(await exists(termFile), true);
   await waitUntil(() => {
     try {
       process.kill(descendantPid, 0);
@@ -139,6 +142,42 @@ test("EH08-EH09 stale scavenging is age- and namespace-bound", { skip: skipWindo
   assert.equal(await exists(oldWorkspace), false);
   assert.equal(await exists(freshWorkspace), true);
   for (const foreign of [foreignFile, foreignDirectory, mcpDirectory, unrelated, linkedWorkspace]) assert.equal(await exists(foreign), true);
+});
+
+test("namespace root symlink fails closed without touching its foreign target", { skip: skipWindows }, async (t) => {
+  const root = await fixture(t);
+  const smoke = smokeRoot(root);
+  const pindieRoot = join(smoke, "..");
+  const foreign = join(root, "foreign-root");
+  const foreignChild = join(foreign, "old-workspace");
+  await mkdir(foreign, { recursive: true });
+  await writeFile(foreignChild, "foreign");
+  await symlink(foreign, pindieRoot);
+
+  await assert.rejects(scavengeStaleWorkspaces({ baseTempDir: root }), /real directory/i);
+  assert.equal(await exists(foreignChild), true);
+});
+
+test("smoke root symlink fails closed without touching its foreign target", { skip: skipWindows }, async (t) => {
+  const root = await fixture(t);
+  const smoke = smokeRoot(root);
+  const foreign = join(root, "foreign-smoke");
+  const foreignChild = join(foreign, "old-workspace");
+  await mkdir(join(smoke, ".."), { recursive: true });
+  await mkdir(foreign, { recursive: true });
+  await writeFile(foreignChild, "foreign");
+  await symlink(foreign, smoke);
+
+  await assert.rejects(scavengeStaleWorkspaces({ baseTempDir: root }), /real directory/i);
+  assert.equal(await exists(foreignChild), true);
+});
+
+test("keep-artifacts spawn failure cleans the unreported workspace", { skip: skipWindows }, async (t) => {
+  const root = await fixture(t);
+  await assert.rejects(
+    runOwnedSmoke({ label: "spawn-failure", command: "pindie-command-that-does-not-exist", baseTempDir: root, keepArtifacts: true }),
+  );
+  assert.deepEqual(await readdir(smokeRoot(root)), []);
 });
 
 test("CLI accepts pnpm's leading separator and rejects invalid input", () => {

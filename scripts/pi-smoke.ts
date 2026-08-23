@@ -1,7 +1,7 @@
 import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const TERMINATION_GRACE_MS = 1_000;
@@ -58,22 +58,41 @@ export function smokeRoot(baseTempDir = tmpdir(), uid = process.getuid?.()): str
   return join(baseTempDir, `pindie-${uid}`, "smoke");
 }
 
+async function ensureOwnedDirectory(path: string): Promise<void> {
+  try {
+    const entry = await lstat(path);
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      throw new Error(`pi-smoke namespace path must be a real directory: ${path}`);
+    }
+    return;
+  } catch (error) {
+    if (typeof error !== "object" || error === null || !("code" in error) || error.code !== "ENOENT") throw error;
+  }
+  try {
+    await mkdir(path);
+  } catch (error) {
+    if (typeof error !== "object" || error === null || !("code" in error) || error.code !== "EEXIST") throw error;
+  }
+  await ensureOwnedDirectory(path);
+}
+
+async function ensureSmokeRoot(baseTempDir = tmpdir()): Promise<string> {
+  const root = smokeRoot(baseTempDir);
+  await ensureOwnedDirectory(dirname(root));
+  await ensureOwnedDirectory(root);
+  return root;
+}
+
 export async function scavengeStaleWorkspaces(options: {
   baseTempDir?: string;
   now?: () => number;
   staleAfterMs?: number;
 } = {}): Promise<void> {
   assertPosix();
-  const root = smokeRoot(options.baseTempDir);
+  const root = await ensureSmokeRoot(options.baseTempDir);
   const now = options.now ?? Date.now;
   const staleAfterMs = options.staleAfterMs ?? STALE_WORKSPACE_MS;
-  let entries;
-  try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return;
-    throw error;
-  }
+  const entries = await readdir(root, { withFileTypes: true });
 
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
@@ -96,17 +115,16 @@ async function terminateOwnedGroup(pid: number, exited: Promise<void>): Promise<
   } catch (error) {
     if (!isGone(error)) throw error;
   }
-  let stopped = false;
-  let graceTimer: ReturnType<typeof setTimeout>;
-  const grace = new Promise<void>((resolve) => {
-    graceTimer = setTimeout(resolve, TERMINATION_GRACE_MS);
-  });
-  await Promise.race([
-    exited.then(() => { stopped = true; }),
-    grace,
-  ]);
-  clearTimeout(graceTimer!);
-  if (stopped) return;
+  await new Promise<void>((resolve) => setTimeout(resolve, TERMINATION_GRACE_MS));
+  try {
+    process.kill(-pid, 0);
+  } catch (error) {
+    if (isGone(error)) {
+      await exited;
+      return;
+    }
+    throw error;
+  }
   try {
     process.kill(-pid, "SIGKILL");
   } catch (error) {
@@ -126,8 +144,7 @@ export async function runOwnedSmoke(options: OwnedSmokeOptions): Promise<OwnedSm
 
   const baseTempDir = options.baseTempDir ?? tmpdir();
   await scavengeStaleWorkspaces({ baseTempDir, now: options.now });
-  const root = smokeRoot(baseTempDir);
-  await mkdir(root, { recursive: true });
+  const root = await ensureSmokeRoot(baseTempDir);
   const workspace = await mkdtemp(join(root, `${options.label}-`));
   const keepArtifacts = options.keepArtifacts ?? process.env.PINDIE_KEEP_ARTIFACTS === "1";
 
@@ -168,8 +185,8 @@ export async function runOwnedSmoke(options: OwnedSmokeOptions): Promise<OwnedSm
       result = { workspace, retainedWorkspace: null, exitCode: outcome.value.exitCode, signal: outcome.value.signal, timedOut: false, stdoutTail: stdout.toString(), stderrTail: stderr.toString() };
     }
   } finally {
-    if (keepArtifacts) {
-      if (result) result.retainedWorkspace = workspace;
+    if (keepArtifacts && result) {
+      result.retainedWorkspace = workspace;
     } else {
       await rm(workspace, { recursive: true, force: true });
     }
