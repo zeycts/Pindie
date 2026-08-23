@@ -184,6 +184,42 @@ test("weekly account status is dim and derives its reset countdown at render tim
   }, now).right, [{ text: "◉ 52%", tone: "dim" }]);
 });
 
+test("manual reset account status is dim, count-authoritative, and suppresses incomplete expiry", () => {
+  const creditExpiry = now + 29 * day + 8 * 60 * 60 * 1_000;
+  const base = {
+    ...snapshot(),
+    subscriptionUsage: {
+      fetchedAt: 1,
+      windows: [{ usedPercent: 32, windowMinutes: 10_080, resetsAt: countdownReset }],
+      resetCredits: {
+        availableCount: 1,
+        credits: [{ id: "credit", resetType: "codex_rate_limits", status: "available", expiresAt: creditExpiry }],
+      },
+    },
+  };
+  assert.deepEqual(deriveStatusLayout(base, now).right, [
+    { text: "◉ 68%", tone: "dim" },
+    { text: "↻ 6d23h", tone: "dim" },
+    { text: "⟳ 1 · 29d", tone: "dim" },
+  ]);
+  assert.deepEqual(deriveStatusLayout({
+    ...base,
+    subscriptionUsage: { ...base.subscriptionUsage, resetCredits: { availableCount: 1 } },
+  }, now).right.map(({ text }) => text), ["◉ 68%", "↻ 6d23h", "⟳ 1"]);
+  assert.deepEqual(deriveStatusLayout({
+    ...base,
+    subscriptionUsage: { ...base.subscriptionUsage, resetCredits: { availableCount: 3, credits: base.subscriptionUsage.resetCredits.credits } },
+  }, now).right.map(({ text }) => text), ["◉ 68%", "↻ 6d23h", "⟳ 3"]);
+  assert.deepEqual(deriveStatusLayout({
+    ...base,
+    subscriptionUsage: { ...base.subscriptionUsage, resetCredits: { availableCount: 0 } },
+  }, now).right.map(({ text }) => text), ["◉ 68%", "↻ 6d23h"]);
+
+  const compact = deriveStatusLayout(base, now);
+  assert.deepEqual(compact.compactRight?.map(({ text }) => text), ["◉ 68%", "↻ 6d23h", "⟳ 1"]);
+  assert.match(renderStatusLayout({ fg: (_tone, text) => text }, compact, 45)!, /⟳ 1$/);
+});
+
 test("Current Activity preserves right-aligned weekly usage", () => {
   const layout = deriveStatusLayout({
     ...snapshot({
