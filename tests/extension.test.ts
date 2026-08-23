@@ -97,6 +97,10 @@ class ExtensionTestStore implements PindieStateStore {
     if (this.saveError) throw this.saveError;
     this.states.set(projectRoot, state);
   }
+
+  async withProjectLock<T>(_projectRoot: string, operation: () => Promise<T>): Promise<T> {
+    return operation();
+  }
 }
 
 function activeState(goal = "Wire Pi extension"): PindieState {
@@ -1425,6 +1429,45 @@ test("TB18-TB28 replacement is limited to the untouched unfinished Task at Agent
       action: "replace_task", goal: "Task C", successCriteria: ["Task C works"],
     })), /only replace the unfinished Task that existed at the start/i);
   }
+});
+
+test("PSC-A01-A07 run-start refresh snapshots authority and stale Runs are read-only until next user Run", async () => {
+  const initial = activeState("Task A");
+  const harness = createHarness([["/repo", initial]]);
+  await startSession(harness, "/repo");
+  // Session cache is A; disk authority changes before the new Run starts.
+  harness.store.states.set("/repo", activeState("Task B"));
+  await beginAgentRun(harness);
+  assert.equal(harness.integration.runtime.state.task?.goal, "Task B");
+  assert.equal(await callGuard(harness, toolCall("edit")), undefined);
+  // Change authority during this Run. The first consequential preflight adopts it
+  // and blocks; every retry remains blocked even though refresh is now equal.
+  harness.store.states.set("/repo", activeState("Task C"));
+  assertBlocked(await callGuard(harness, toolCall("edit")), /changed outside this Agent Run/i);
+  assert.equal(harness.integration.runtime.state.task?.goal, "Task C");
+  for (const name of ["write", "bash", "pindie_state", "pindie_gate", "unknown"]) {
+    assertBlocked(await callGuard(harness, toolCall(name)), /changed outside this Agent Run/i);
+  }
+  for (const name of ["read", "grep", "find", "ls"]) {
+    assert.equal(await callGuard(harness, toolCall(name)), undefined);
+  }
+  await beginAgentRun(harness);
+  assert.equal(await callGuard(harness, toolCall("edit")), undefined);
+});
+
+test("PSC-A08-A09 stale Run suppresses continuation and equal refresh preserves replacement identity", async () => {
+  const harness = createHarness([["/repo", activeState("Task A")]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  harness.store.states.set("/repo", structuredClone(harness.integration.runtime.state));
+  assert.equal(await callGuard(harness, toolCall("edit")), undefined);
+  assert.equal(await callGuard(harness, toolCall("pindie_state", {
+    action: "replace_task", goal: "Task B", successCriteria: ["Works"],
+  })), undefined);
+  harness.store.states.set("/repo", activeState("External"));
+  assertBlocked(await callGuard(harness, toolCall("edit")), /changed outside this Agent Run/i);
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.deepEqual(harness.api.sentMessages, []);
 });
 
 test("TB21-TB25 same-run task creation or semantic mutation consumes replacement eligibility", async () => {

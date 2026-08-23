@@ -599,6 +599,33 @@ test("successful transitions do not mutate their input State", () => {
   assert.deepEqual(state, snapshot);
 });
 
+test("PSC-V01 completed verification invalidation reopens only for internal mutation safety", () => {
+  const invalidated = apply(completedState(), { type: "invalidate_verification" });
+  assert.equal(invalidated.task?.completed, false);
+  assert.deepEqual(invalidated.task?.verification, { stale: true, checks: [] });
+  assert.equal(invalidated.task?.humanGate, null);
+  assert.deepEqual(invalidated.task?.openLoops, { blockers: [], questions: [], nextIntent: null });
+});
+
+test("PSC-V02 unfinished invalidation remains stale and idempotent", () => {
+  const stale = apply(fullyVerifiedState(), { type: "invalidate_verification" });
+  assert.equal(stale.task?.completed, false);
+  assert.deepEqual(stale.task?.verification, { stale: true, checks: [] });
+  assert.equal(success(reduceState(stale, { type: "invalidate_verification" })), stale);
+});
+
+test("PSC-V03 completed public semantic actions remain terminal", () => {
+  const state = completedState();
+  for (const event of [
+    { type: "refine_task", goal: "Nope" },
+    { type: "set_open_loops", blockers: [], questions: [], nextIntent: null },
+    { type: "record_verification", check: { name: "late", status: "passed" as const, covers: ["c1"], evidence: "late" } },
+    { type: "open_human_gate", gate: { kind: "input" as const, question: "Nope?" } },
+  ] satisfies PindieEvent[]) {
+    failure(reduceState(state, event), TransitionErrorCode.TASK_COMPLETED);
+  }
+});
+
 test("rejected transitions do not mutate their input State", () => {
   const state = startTask();
   const snapshot = structuredClone(state);

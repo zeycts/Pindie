@@ -8,6 +8,7 @@ import { EMPTY_STATE, type PindieState } from "../src/state.ts";
 import {
   FileStateStore,
   getProjectId,
+  StateLockBusyError,
 } from "../src/store.ts";
 
 function activeState(): PindieState {
@@ -144,6 +145,127 @@ test("project IDs are deterministic and distinct roots use different paths", asy
   await fixture.store.save(secondRoot, EMPTY_STATE);
 
   assert.notEqual(fixture.statePath(firstRoot), fixture.statePath(secondRoot));
+});
+
+test("PSC-L01-L04 project locks serialize same-project operations, do not block other projects, and release on success or throw", async (t) => {
+  const fixture = await createTestStore();
+  t.after(() => rm(fixture.baseDir, { recursive: true, force: true }));
+  const second = new FileStateStore({ baseDir: fixture.baseDir, lockRetryMs: 2, lockTimeoutMs: 100 });
+  let release!: () => void;
+  const holding = fixture.store.withProjectLock("/workspace/a", () => new Promise<void>((resolve) => { release = resolve; }));
+  // The lock directory is proof A acquired; B cannot enter until it is released.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  let secondEntered = false;
+  const waiting = second.withProjectLock("/workspace/a", async () => { secondEntered = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(secondEntered, false);
+  let otherEntered = false;
+  await second.withProjectLock("/workspace/b", async () => { otherEntered = true; });
+  assert.equal(otherEntered, true);
+  release();
+  await holding;
+  await waiting;
+  assert.equal(secondEntered, true);
+  await assert.rejects(second.withProjectLock("/workspace/a", async () => { throw new Error("callback failure"); }), /callback failure/);
+  await assert.doesNotReject(second.withProjectLock("/workspace/a", async () => undefined));
+});
+
+function lockPath(baseDir: string, projectRoot: string): string {
+  return join(baseDir, getProjectId(projectRoot), "state.lock");
+}
+
+async function writeLockOwner(path: string, owner: object): Promise<void> {
+  await mkdir(path, { recursive: true });
+  await writeFile(join(path, "owner.json"), JSON.stringify(owner));
+}
+
+test("FIX-L01 two reclaimers serialize recovery of one valid dead-owner lock", async (t) => {
+  const fixture = await createTestStore();
+  t.after(() => rm(fixture.baseDir, { recursive: true, force: true }));
+  const projectRoot = "/workspace/two-reclaimers";
+  await writeLockOwner(lockPath(fixture.baseDir, projectRoot), { token: "dead", pid: 42, acquiredAt: 1 });
+  let reclaimClaimed!: () => void;
+  let releaseReclaim!: () => void;
+  const claimed = new Promise<void>((resolve) => { reclaimClaimed = resolve; });
+  const reclaimBarrier = new Promise<void>((resolve) => { releaseReclaim = resolve; });
+  const options = {
+    baseDir: fixture.baseDir,
+    lockRetryMs: 1,
+    lockTimeoutMs: 100,
+    // Only the seeded stale lock owner is dead; replacement owners use this
+    // process PID and must be treated as live by the competing reclaimer.
+    isProcessAlive: (pid: number) => pid !== 42,
+  };
+  const first = new FileStateStore({ ...options, onReclaimClaimed: async () => { reclaimClaimed(); await reclaimBarrier; } });
+  const second = new FileStateStore(options);
+  let active = 0;
+  let maximumActive = 0;
+  let releaseFirst!: () => void;
+  const firstCritical = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const enter = async () => {
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    await firstCritical;
+    active -= 1;
+  };
+  const firstAttempt = first.withProjectLock(projectRoot, enter);
+  await claimed;
+  const secondAttempt = second.withProjectLock(projectRoot, enter);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(active, 0, "the reclaim claim is not the State critical section");
+  releaseReclaim();
+  while (active === 0) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(maximumActive, 1);
+  releaseFirst();
+  await Promise.all([firstAttempt, secondAttempt]);
+  assert.equal(maximumActive, 1);
+});
+
+test("FIX-L02 and FIX-L05 ambiguous ownerless or corrupt locks are never age-stolen", async (t) => {
+  const fixture = await createTestStore();
+  t.after(() => rm(fixture.baseDir, { recursive: true, force: true }));
+  const store = new FileStateStore({ baseDir: fixture.baseDir, lockRetryMs: 1, lockTimeoutMs: 10 });
+  for (const [projectRoot, contents] of [["/workspace/ownerless", null], ["/workspace/corrupt", "not json"]] as const) {
+    const path = lockPath(fixture.baseDir, projectRoot);
+    await mkdir(path, { recursive: true });
+    if (contents) await writeFile(join(path, "owner.json"), contents);
+    await assert.rejects(store.withProjectLock(projectRoot, async () => undefined), StateLockBusyError);
+    if (contents === null) {
+      await assert.rejects(readFile(join(path, "owner.json"), "utf8"), { code: "ENOENT" });
+    } else {
+      assert.equal(await readFile(join(path, "owner.json"), "utf8"), contents);
+    }
+  }
+});
+
+test("FIX-L03-L04 valid dead owners recover while live owners remain busy", async (t) => {
+  const fixture = await createTestStore();
+  t.after(() => rm(fixture.baseDir, { recursive: true, force: true }));
+  const deadProject = "/workspace/dead";
+  await writeLockOwner(lockPath(fixture.baseDir, deadProject), { token: "dead", pid: 42, acquiredAt: 0 });
+  const deadStore = new FileStateStore({
+    baseDir: fixture.baseDir,
+    isProcessAlive: (pid) => pid !== 42,
+  });
+  let recovered = false;
+  await deadStore.withProjectLock(deadProject, async () => { recovered = true; });
+  assert.equal(recovered, true);
+  const liveProject = "/workspace/live";
+  await writeLockOwner(lockPath(fixture.baseDir, liveProject), { token: "live", pid: process.pid, acquiredAt: 0 });
+  const liveStore = new FileStateStore({ baseDir: fixture.baseDir, lockRetryMs: 1, lockTimeoutMs: 10 });
+  await assert.rejects(liveStore.withProjectLock(liveProject, async () => undefined), StateLockBusyError);
+});
+
+test("FIX-L06 former token release cannot remove a replacement owner", async (t) => {
+  const fixture = await createTestStore();
+  t.after(() => rm(fixture.baseDir, { recursive: true, force: true }));
+  const projectRoot = "/workspace/foreign-token";
+  const path = lockPath(fixture.baseDir, projectRoot);
+  await fixture.store.withProjectLock(projectRoot, async () => {
+    await writeFile(join(path, "owner.json"), JSON.stringify({ token: "replacement", pid: process.pid, acquiredAt: 2 }));
+  });
+  const owner = JSON.parse(await readFile(join(path, "owner.json"), "utf8"));
+  assert.equal(owner.token, "replacement");
 });
 
 test("invalid State passed to save does not overwrite existing State", async (t) => {

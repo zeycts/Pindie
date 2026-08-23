@@ -23,6 +23,11 @@ class FakeStateStore implements PindieStateStore {
     this.saves.push({ projectRoot, state });
     if (this.beforeSave) await this.beforeSave();
     if (this.saveError) throw this.saveError;
+    this.loadState = state;
+  }
+
+  async withProjectLock<T>(_projectRoot: string, operation: () => Promise<T>): Promise<T> {
+    return operation();
   }
 }
 
@@ -149,6 +154,71 @@ test("R06 a failed project switch invalidates the previous runtime context", asy
     store.saves.map(({ projectRoot }) => projectRoot),
     ["/workspace/project-b"],
   );
+});
+
+test("PSC-R01-R04 refresh preserves equal identity, adopts external State, and preserves snapshot on failure", async () => {
+  const store = new FakeStateStore();
+  store.loadState = {
+    task: {
+      goal: "Task A", constraints: [], successCriteria: [{ id: "c1", description: "Works" }],
+      openLoops: { blockers: [], questions: [], nextIntent: null }, verification: { stale: false, checks: [] }, humanGate: null, completed: false,
+    },
+  };
+  const runtime = new PindieRuntime(store);
+  await runtime.load("/workspace/pindie");
+  const stateBefore = runtime.state;
+  const taskBefore = runtime.state.task;
+  store.loadState = structuredClone(store.loadState);
+  assert.equal(await runtime.refresh(), false);
+  assert.equal(runtime.state, stateBefore);
+  assert.equal(runtime.state.task, taskBefore);
+  assert.equal(runtime.externalStateEpoch, 0);
+  store.loadState = { ...store.loadState, task: { ...store.loadState.task!, goal: "Task B" } };
+  assert.equal(await runtime.refresh(), true);
+  assert.equal(runtime.state.task?.goal, "Task B");
+  assert.equal(runtime.externalStateEpoch, 1);
+  const adopted = runtime.state;
+  assert.equal(await runtime.refresh(), false);
+  assert.equal(runtime.state, adopted);
+  store.loadError = new Error("unreadable");
+  await assert.rejects(runtime.refresh(), /unreadable/);
+  assert.equal(runtime.state, adopted);
+  assert.equal(runtime.externalStateEpoch, 1);
+});
+
+test("PSC-D02-D03 stale semantic events adopt authority and conflict without overwrite", async () => {
+  const store = new FakeStateStore();
+  const a = new PindieRuntime(store);
+  const b = new PindieRuntime(store);
+  await a.load("/workspace/pindie");
+  await b.load("/workspace/pindie");
+  await b.dispatch(START_EVENT);
+  await assert.rejects(a.dispatch(START_EVENT), { name: "PindieStateConflictError" });
+  assert.equal(a.state.task?.goal, START_EVENT.goal);
+  assert.equal(a.externalStateEpoch, 1);
+  assert.equal(store.loadState.task?.goal, START_EVENT.goal);
+});
+
+test("PSC-D08-D09 invalidation alone safely rebases and reopens concurrent completion", async () => {
+  const store = new FakeStateStore();
+  const a = new PindieRuntime(store);
+  const b = new PindieRuntime(store);
+  const verified: PindieState = {
+    task: {
+      goal: "Task", constraints: [], successCriteria: [{ id: "c1", description: "Works" }],
+      openLoops: { blockers: [], questions: [], nextIntent: null },
+      verification: { stale: false, checks: [{ name: "tests", status: "passed", covers: ["c1"], evidence: "pass" }] }, humanGate: null, completed: false,
+    },
+  };
+  store.loadState = verified;
+  await a.load("/workspace/pindie");
+  await b.load("/workspace/pindie");
+  await b.dispatch({ type: "complete_task" });
+  const result = await a.dispatch({ type: "invalidate_verification" });
+  assert.equal(result.ok, true);
+  assert.equal(a.externalStateEpoch, 1);
+  assert.equal(store.loadState.task?.completed, false);
+  assert.deepEqual(store.loadState.task?.verification, { stale: true, checks: [] });
 });
 
 test("unload clears transient Runtime context without persistence", async () => {

@@ -28,6 +28,7 @@ import { RunActivityTracker } from "./run-activity.ts";
 import { RunCostTracker } from "./run-cost.ts";
 import { RunTimer } from "./run-timer.ts";
 import { PindieRuntime } from "./runtime.ts";
+import { StateLockBusyError } from "./store.ts";
 import {
   validateState,
   type HumanGate,
@@ -126,12 +127,14 @@ export function registerPindieExtension(
   let replaceableTaskAtAgentRunStart: PindieTask | null = null;
   let completedTaskAtAgentRunStart: PindieTask | null = null;
   let activeTaskContinuationAttempted = false;
+  let externalStateEpochAtAgentRunStart = 0;
 
   const clearAgentRunSnapshot = (): void => {
     gateAtAgentRunStart = null;
     replaceableTaskAtAgentRunStart = null;
     completedTaskAtAgentRunStart = null;
     activeTaskContinuationAttempted = false;
+    externalStateEpochAtAgentRunStart = 0;
   };
 
   const presentStatusBestEffort = (
@@ -289,25 +292,39 @@ export function registerPindieExtension(
     statusContext = null;
   });
 
-  pi.on("before_agent_start", (event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     statusContext = ctx;
     clearAgentRunSnapshot();
-    reasoning.beforeAgentStart();
-    applyRequestedThinkingLevel();
-    runActivity.start();
-    runCost.start(ctx.sessionManager.getEntries());
-    runTimer.start(ctx.hasUI ? () => refreshStatus(ctx) : undefined);
+    if (runtime.projectRoot !== null && stateUnavailableReason === null) {
+      try {
+        await runtime.refresh();
+      } catch (error) {
+        markUnavailable(
+          `Could not refresh Pindie State before this Agent Run: ${errorMessage(error)} Restore or repair the project State, then reload the session.`,
+        );
+      }
+    }
+    // Refresh precedes all identity snapshots so a new Run always begins from
+    // authoritative project State rather than a previous session snapshot.
     const state = runtime.projectRoot === null ? null : runtime.state;
     const task = stateUnavailableReason === null ? state?.task ?? null : null;
     gateAtAgentRunStart = task?.humanGate ?? null;
     replaceableTaskAtAgentRunStart = task && !task.completed ? task : null;
     completedTaskAtAgentRunStart = task?.completed ? task : null;
+    externalStateEpochAtAgentRunStart = runtime.externalStateEpoch;
+    reasoning.beforeAgentStart();
+    applyRequestedThinkingLevel();
+    runActivity.start();
+    runCost.start(ctx.sessionManager.getEntries());
+    runTimer.start(ctx.hasUI ? () => refreshStatus(ctx) : undefined);
+    refreshStatus(ctx);
     return { systemPrompt: injectPindieCore(event.systemPrompt) };
   });
 
   pi.on("agent_end", (event, ctx) => {
     if (activeTaskContinuationAttempted || ctx.hasPendingMessages()) return;
     if (runtime.projectRoot === null || stateUnavailableReason !== null) return;
+    if (runtime.externalStateEpoch !== externalStateEpochAtAgentRunStart) return;
 
     const task = runtime.state.task;
     const finalAssistantMessage = [...event.messages]
@@ -361,13 +378,36 @@ export function registerPindieExtension(
     refreshStatus(ctx);
   });
 
-  pi.on("tool_call", (event): ToolCallEventResult | void => {
+  pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
     if (isReadOnlyObservation(event)) return;
 
     if (runtime.projectRoot === null || stateUnavailableReason !== null) {
       return {
         block: true,
         reason: `Pindie State is unavailable. ${stateUnavailableReason ?? "Reload the session to restore project State."} Only read-only observation tools are allowed until State is restored.`,
+      };
+    }
+    if (runtime.externalStateEpoch !== externalStateEpochAtAgentRunStart) {
+      return {
+        block: true,
+        reason: "Project State changed outside this Agent Run. Pindie refreshed to the latest authoritative State. Return control and begin a new user-driven Agent Run before consequential work. Read-only observation remains available.",
+      };
+    }
+    try {
+      if (await runtime.refresh()) {
+        refreshStatus();
+        return {
+          block: true,
+          reason: "Project State changed outside this Agent Run. Pindie refreshed to the latest authoritative State. Return control and begin a new user-driven Agent Run before consequential work. Read-only observation remains available.",
+        };
+      }
+    } catch (error) {
+      markUnavailable(
+        `Could not refresh Pindie State before consequential work: ${errorMessage(error)} Restore or repair the project State, then reload the session.`,
+      );
+      return {
+        block: true,
+        reason: `Pindie State is unavailable. ${stateUnavailableReason} Only read-only observation tools are allowed until State is restored.`,
       };
     }
 
@@ -433,7 +473,7 @@ export function registerPindieExtension(
     }
 
     const task = runtime.state.task;
-    if (!task || task.completed) return;
+    if (!task) return;
 
     try {
       const result = await runtime.dispatch({
@@ -445,6 +485,10 @@ export function registerPindieExtension(
         );
       }
     } catch (error) {
+      if (error instanceof StateLockBusyError) {
+        refreshStatus();
+        throw error;
+      }
       markUnavailable(
         `Pindie could not persist verification invalidation: ${errorMessage(error)} Reload the session after restoring State persistence.`,
       );

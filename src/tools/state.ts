@@ -3,7 +3,8 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { formatDuration } from "../run-timer.ts";
-import type { PindieRuntime } from "../runtime.ts";
+import { PindieStateConflictError, type PindieRuntime } from "../runtime.ts";
+import { StateLockBusyError } from "../store.ts";
 import type { PindieState, VerificationCheck } from "../state.ts";
 import type { PindieEvent } from "../transitions.ts";
 
@@ -96,7 +97,18 @@ async function dispatchOrThrow(
   event: PindieEvent,
   onStateChange?: () => void,
 ): Promise<PindieState> {
-  const result = await runtime.dispatch(event);
+  let result;
+  try {
+    result = await runtime.dispatch(event);
+  } catch (error) {
+    if (error instanceof PindieStateConflictError) {
+      throw new Error("Pindie project State changed externally; the latest authoritative State was adopted. Return control and begin a new Agent Run before reconciling this semantic action.");
+    }
+    if (error instanceof StateLockBusyError) {
+      throw new Error("Another Pindie process currently owns this project's State lock. Retry shortly.");
+    }
+    throw error;
+  }
   if (!result.ok) {
     throw new Error(
       `Pindie transition rejected (${result.error.code}): ${result.error.message}`,
