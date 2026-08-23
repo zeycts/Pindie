@@ -149,6 +149,7 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - T47 `read` does not invalidate verification.
 - T48 Generic `bash` calls are not blindly treated as project mutation.
 - T49 `agent_settled` never auto-completes a task.
+- T49a If Pi delivers an old Agent Run's final `agent_settled` after session replacement or reload invalidated its ExtensionContext, Pindie ignores only Pi's specific stale-context error before mutating runtime State or accessing UI; unrelated errors still propagate.
 - T50 Successful integrated `complete_task` persists completed State, returns a terminating result, and terminal-task guards block later consequential mutation and same-run `pindie_state(start_task)` calls.
 
 ### Run Timer v0.1
@@ -181,6 +182,13 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - AR04 At `turn_end`, only a turn with one or more tool results may adapt Auto. Priority is: any tool error or failed verification → High; passed verification → Low; clean current High → Medium; successful built-in edit/write → Low; otherwise → Medium.
 - AR05 Fixed ignores Auto evidence. Auto requests only Low, Medium, or High; Fixed may request `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
 - AR06 Reasoning is neither Pindie semantic State nor State Store/session/project persistence. It adds no model routing, phase inference, tool-set changes, history, cache behavior, or keyboard shortcut.
+
+### Efficiency Inspector v0.1
+
+- EI01 `/efficiency` is an on-demand, read-only command. With no arguments it reports the current runtime ReasoningController mode/requested/effective levels, `ctx.getContextUsage()`, and public `ctx.sessionManager.getEntries()` usage facts with existing Run Cost; it sends no model message, appends no session entry, and changes no Pindie State, State Store, reasoning request, Pi thinking level, model, tools, or status line.
+- EI02 Session totals mirror Pi footer semantics: assistant-message, usage-bearing tool-result, compaction, and branch-summary usage contribute input, output, cache read, and cache write. The report does not create independent Pindie usage/cache state or count synthetic Runtime Context separately.
+- EI03 Latest request means the latest assistant message usage. Its CH is `cacheRead / (input + cacheRead + cacheWrite) * 100` only when that denominator is positive; it never substitutes an older assistant request and does not expose session-wide cache metrics.
+- EI04 Context is only `ctx.getContextUsage()`: known tokens/percent render against the context window, temporarily unknown values render `? / <window>`, and unavailable context renders unavailable. `/efficiency` with arguments only shows `Usage: /efficiency` and is otherwise side-effect free.
 
 ### Pindie Status Line v0.1 — Verification + Alerts
 

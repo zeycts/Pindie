@@ -57,6 +57,7 @@ Implemented:
 - `pindie_gate`
 - Pi Core Extension wiring
 - Runtime-only adaptive reasoning (`/reasoning [auto|minimal|low|medium|high|xhigh|max|status]`); Auto starts each run at Medium and adapts only Pi's requested thinking level
+- Read-only on-demand efficiency inspection (`/efficiency`) combining runtime reasoning with Pi context/session/cache facts and Run Cost
 
 Bundled Skills:
 
