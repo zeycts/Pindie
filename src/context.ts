@@ -23,6 +23,7 @@ export const PINDIE_CORE_POLICY = `Pindie Core Policy
 - Choose the smallest safe next action and do not silently expand scope.
 - Project mutation makes prior verification stale.
 - Changed code is not complete until verified against current success criteria.
+- Temporary resources created during execution or verification are owned by that operation: scope them narrowly, clean only resources it created, and never use broad filesystem or process cleanup.
 - Use a Human Gate for consequential human judgment.
 - After session, gate, or blocker interruption, re-observe relevant reality before continuing.
 - Never complete a task unless verification is currently passed and blockers, questions, and the Human Gate are cleared.
