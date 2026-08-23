@@ -10,8 +10,10 @@ import {
   type PindieTask,
 } from "./state.ts";
 import {
+  formatCreditExpiryCountdown,
   formatResetCountdown,
   getRemainingPercent,
+  selectEarliestResetCreditExpiry,
   selectWeeklyWindow,
   type SubscriptionUsageSnapshot,
 } from "./subscription-usage.ts";
@@ -46,6 +48,7 @@ export interface PindieStatusSnapshot {
 export interface PindieStatusLayout {
   left: StatusSegment[];
   right: StatusSegment[];
+  compactRight?: StatusSegment[];
 }
 
 /** Counts distinct success criteria covered by current passing checks. */
@@ -134,15 +137,28 @@ export function deriveStatusLayout(
   const resetCountdown = weekly?.resetsAt === undefined
     ? null
     : formatResetCountdown(weekly.resetsAt, now);
+  const resetCredits = snapshot.subscriptionUsage?.resetCredits;
+  const creditExpiry = selectEarliestResetCreditExpiry(resetCredits, now);
+  const creditCountdown = creditExpiry === undefined
+    ? null
+    : formatCreditExpiryCountdown(creditExpiry, now);
+  const creditCount = resetCredits?.availableCount ?? 0;
+  const creditSegment = creditCount > 0
+    ? { text: `⟳ ${creditCount}${creditCountdown === null ? "" : ` · ${creditCountdown}`}`, tone: "dim" as const }
+    : null;
   const right = weekly
     ? [
         { text: `◉ ${getRemainingPercent(weekly.usedPercent)}%`, tone: "dim" as const },
         ...(resetCountdown === null
           ? []
           : [{ text: `↻ ${resetCountdown}`, tone: "dim" as const }]),
+        ...(creditSegment ? [creditSegment] : []),
       ]
     : [];
-  return { left: deriveStatusSegments(snapshot), right };
+  const compactRight = weekly && creditSegment && creditCountdown !== null
+    ? [...right.slice(0, -1), { text: `⟳ ${creditCount}`, tone: "dim" as const }]
+    : undefined;
+  return { left: deriveStatusSegments(snapshot), right, ...(compactRight ? { compactRight } : {}) };
 }
 
 /** Renders semantic status segments with the active Pi theme. */
@@ -168,7 +184,14 @@ export function renderStatusLayout(
   width?: number,
 ): string | undefined {
   const left = renderStatusSegments(theme, layout.left);
-  const right = renderStatusSegments(theme, layout.right);
+  const fullRight = renderStatusSegments(theme, layout.right);
+  const compactRight = layout.compactRight
+    ? renderStatusSegments(theme, layout.compactRight)
+    : fullRight;
+  const right = width && width > 0 && fullRight !== compactRight &&
+      visibleWidth(left) + 2 + visibleWidth(fullRight) > width
+    ? compactRight
+    : fullRight;
   if (!left && !right) return undefined;
   if (!right) return left;
   if (!left) {

@@ -693,6 +693,43 @@ test("failed usage refresh retains the previous runtime-only snapshot", async ()
   assert.match(statuses.at(-1)?.text ?? "", /◉ 52%/);
 });
 
+test("complete reset-credit observation renders through the single existing status key", async () => {
+  const harness = createHarness(
+    [["/repo", activeState()]],
+    {},
+    {
+      now: () => 1_700_000_000_000,
+      subscriptionUsageProvider: {
+        async fetchUsage() {
+          return {
+            fetchedAt: 1,
+            windows: [{ usedPercent: 32, windowMinutes: 10_080, resetsAt: 1_700_604_740_000 }],
+            resetCredits: {
+              availableCount: 1,
+              credits: [{
+                id: "credit-for-test",
+                resetType: "codex_rate_limits",
+                status: "available",
+                expiresAt: 1_702_505_600_000,
+              }],
+            },
+          };
+        },
+      },
+    },
+  );
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses);
+  await harness.api.handler("session_start")(
+    { type: "session_start", reason: "startup" },
+    uiContext,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.match(statuses.at(-1)?.text ?? "", /◉ 68% • ↻ 6d23h • ⟳ 1 · 29d$/);
+  assert.deepEqual([...new Set(statuses.map(({ id }) => id))], ["pindie-status"]);
+});
+
 test("RunTimer status ticks render cached usage without fetching again", async () => {
   let fetches = 0;
   const harness = createHarness(

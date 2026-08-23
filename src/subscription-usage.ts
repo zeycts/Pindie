@@ -6,8 +6,22 @@ export interface SubscriptionUsageWindow {
   resetsAt?: number;
 }
 
+export interface ResetCredit {
+  id: string;
+  resetType: string;
+  status: string;
+  grantedAt?: number;
+  expiresAt?: number;
+}
+
+export interface ResetCreditsSnapshot {
+  availableCount: number;
+  credits?: ResetCredit[];
+}
+
 export interface SubscriptionUsageSnapshot {
   windows: SubscriptionUsageWindow[];
+  resetCredits?: ResetCreditsSnapshot;
   fetchedAt: number;
 }
 
@@ -27,6 +41,7 @@ export interface SubscriptionUsageProviderOptions {
 const WEEKLY_MINUTES = 7 * 24 * 60;
 const WEEKLY_TOLERANCE_MINUTES = 60;
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const CODEX_RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const CODEX_ACCOUNT_CLAIM = "https://api.openai.com/auth";
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -37,6 +52,21 @@ function object(value: unknown): Record<string, unknown> | null {
 
 function number(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function nonNegativeInteger(value: unknown): number | undefined {
+  const parsed = number(value);
+  return parsed !== undefined && Number.isInteger(parsed) && parsed >= 0
+    ? parsed
+    : undefined;
+}
+
+function timestamp(value: unknown): number | undefined {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:?\d{2})$/.test(value)) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function windowFrom(value: unknown): SubscriptionUsageWindow | null {
@@ -79,6 +109,13 @@ function usageWindowsFrom(value: unknown): SubscriptionUsageWindow[] {
   return windows;
 }
 
+function resetCreditsSummaryFrom(value: Record<string, unknown>): ResetCreditsSnapshot | undefined {
+  const container = object(value.rate_limit_reset_credits ?? value.rateLimitResetCredits);
+  if (!container) return undefined;
+  const availableCount = nonNegativeInteger(container.available_count ?? container.availableCount);
+  return availableCount === undefined ? undefined : { availableCount };
+}
+
 /** Parses only the public facts needed from the Codex usage response. */
 export function parseSubscriptionUsage(
   payload: unknown,
@@ -89,7 +126,35 @@ export function parseSubscriptionUsage(
   const rateLimits =
     source.rate_limits ?? source.rateLimits ?? source.rate_limit ?? source.rateLimit ?? source;
   const windows = usageWindowsFrom(rateLimits);
-  return windows.length > 0 ? { windows, fetchedAt } : null;
+  const resetCredits = resetCreditsSummaryFrom(source);
+  return windows.length > 0 || resetCredits
+    ? { windows, ...(resetCredits ? { resetCredits } : {}), fetchedAt }
+    : null;
+}
+
+/** Parses the small, relevant subset of reset-credit detail records. */
+export function parseResetCreditDetails(payload: unknown): ResetCredit[] | undefined {
+  const source = object(payload);
+  if (!source || !Array.isArray(source.credits)) return undefined;
+  return source.credits.flatMap((value): ResetCredit[] => {
+    const credit = object(value);
+    if (!credit) return [];
+    const id = credit.id;
+    const resetType = credit.reset_type ?? credit.resetType;
+    const status = credit.status;
+    if (typeof id !== "string" || typeof resetType !== "string" || typeof status !== "string") {
+      return [];
+    }
+    const grantedAt = timestamp(credit.granted_at ?? credit.grantedAt);
+    const expiresAt = timestamp(credit.expires_at ?? credit.expiresAt);
+    return [{
+      id,
+      resetType,
+      status,
+      ...(grantedAt === undefined ? {} : { grantedAt }),
+      ...(expiresAt === undefined ? {} : { expiresAt }),
+    }];
+  });
 }
 
 /** Selects a weekly window by its declared duration, never array position. */
@@ -148,6 +213,56 @@ export function formatResetCountdown(
   return "<1m";
 }
 
+/** Formats a credit expiry with day-only precision for multi-day windows. */
+export function formatCreditExpiryCountdown(
+  expiresAt: number,
+  now = Date.now(),
+): string | null {
+  if (!Number.isFinite(expiresAt) || !Number.isFinite(now) || expiresAt <= now) return null;
+  const remainingMs = expiresAt - now;
+  const minuteMs = 60_000;
+  const hourMs = 60 * minuteMs;
+  const dayMs = 24 * hourMs;
+  if (remainingMs >= dayMs) return `${Math.floor(remainingMs / dayMs)}d`;
+  if (remainingMs >= hourMs) {
+    const hours = Math.floor(remainingMs / hourMs);
+    const minutes = Math.floor((remainingMs % hourMs) / minuteMs);
+    return `${hours}h${minutes}m`;
+  }
+  if (remainingMs >= minuteMs) return `${Math.floor(remainingMs / minuteMs)}m`;
+  return "<1m";
+}
+
+/**
+ * Returns the earliest future expiry only when enough usable detail rows cover
+ * the authoritative summary count; capped/incomplete detail lists show count only.
+ */
+export function selectEarliestResetCreditExpiry(
+  resetCredits: ResetCreditsSnapshot | undefined,
+  now = Date.now(),
+): number | undefined {
+  if (!resetCredits?.credits) return undefined;
+  const usable = resetCredits.credits.filter((credit) =>
+    credit.status === "available" && credit.resetType === "codex_rate_limits",
+  );
+  if (usable.length < resetCredits.availableCount) return undefined;
+  const expiries = usable
+    .map((credit) => credit.expiresAt)
+    .filter((expiresAt): expiresAt is number => expiresAt !== undefined && expiresAt > now);
+  return expiries.length > 0 ? Math.min(...expiries) : undefined;
+}
+
+function requestInit(apiKey: string, accountId: string): RequestInit {
+  return {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "ChatGPT-Account-Id": accountId,
+      originator: "pi",
+    },
+    signal: AbortSignal.timeout(10_000),
+  };
+}
+
 /** Uses Pi's public resolved provider auth; credentials stay in memory only. */
 export function createChatGptSubscriptionUsageProvider(
   options: SubscriptionUsageProviderOptions = {},
@@ -161,16 +276,21 @@ export function createChatGptSubscriptionUsageProvider(
       const accountId = apiKey ? accountIdFromAccessToken(apiKey) : null;
       if (!apiKey || !accountId) return null;
 
-      const response = await fetchUsage(CODEX_USAGE_URL, {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "ChatGPT-Account-Id": accountId,
-          originator: "pi",
-        },
-        signal: AbortSignal.timeout(10_000),
-      });
+      const response = await fetchUsage(CODEX_USAGE_URL, requestInit(apiKey, accountId));
       if (!response.ok) return null;
-      return parseSubscriptionUsage(await response.json());
+      const snapshot = parseSubscriptionUsage(await response.json());
+      if (!snapshot || (snapshot.resetCredits?.availableCount ?? 0) <= 0) return snapshot;
+
+      try {
+        const details = await fetchUsage(CODEX_RESET_CREDITS_URL, requestInit(apiKey, accountId));
+        if (!details.ok) return snapshot;
+        const credits = parseResetCreditDetails(await details.json());
+        return credits === undefined
+          ? snapshot
+          : { ...snapshot, resetCredits: { ...snapshot.resetCredits!, credits } };
+      } catch {
+        return snapshot;
+      }
     },
   };
 }

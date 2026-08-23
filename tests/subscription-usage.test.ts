@@ -5,9 +5,12 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
   createChatGptSubscriptionUsageProvider,
+  formatCreditExpiryCountdown,
   formatResetCountdown,
   getRemainingPercent,
+  parseResetCreditDetails,
   parseSubscriptionUsage,
+  selectEarliestResetCreditExpiry,
   selectWeeklyWindow,
 } from "../src/subscription-usage.ts";
 
@@ -148,4 +151,116 @@ test("injected transport rejection remains observable to the best-effort caller"
   });
 
   await assert.rejects(provider.fetchUsage(context()), /Timed out/);
+});
+
+test("usage summary parses only a valid authoritative reset-credit count", () => {
+  const payload = realUsagePayload(18_000, 604_800);
+  Object.assign(payload, { rate_limit_reset_credits: { available_count: 1 } });
+  assert.equal(parseSubscriptionUsage(payload, 10)?.resetCredits?.availableCount, 1);
+
+  for (const available_count of [-1, 1.5, "1", Number.NaN]) {
+    assert.equal(parseSubscriptionUsage({
+      ...payload,
+      rate_limit_reset_credits: { available_count },
+    }, 10)?.resetCredits, undefined);
+  }
+});
+
+test("real reset-credit details parse UTC timestamps and ignore invalid timestamps", () => {
+  const credits = parseResetCreditDetails({ credits: [{
+    id: "credit-for-test",
+    reset_type: "codex_rate_limits",
+    status: "available",
+    granted_at: "2026-08-21T00:00:00Z",
+    expires_at: "2026-09-21T00:00:00Z",
+  }, {
+    id: "invalid-time",
+    reset_type: "codex_rate_limits",
+    status: "available",
+    expires_at: "not-a-date",
+  }] });
+
+  assert.deepEqual(credits?.[0], {
+    id: "credit-for-test",
+    resetType: "codex_rate_limits",
+    status: "available",
+    grantedAt: Date.parse("2026-08-21T00:00:00Z"),
+    expiresAt: Date.parse("2026-09-21T00:00:00Z"),
+  });
+  assert.equal(credits?.[1]?.expiresAt, undefined);
+});
+
+test("earliest expiry requires complete eligible available Codex credit details", () => {
+  const now = Date.parse("2026-08-21T00:00:00Z");
+  const credit = (id: string, expiresAt: number, status = "available", resetType = "codex_rate_limits") => ({ id, expiresAt, status, resetType });
+  const first = now + 29 * 24 * 60 * 60 * 1_000;
+  const second = now + 54 * 24 * 60 * 60 * 1_000;
+
+  assert.equal(selectEarliestResetCreditExpiry({
+    availableCount: 2,
+    credits: [credit("later", second), credit("earlier", first)],
+  }, now), first);
+  assert.equal(selectEarliestResetCreditExpiry({
+    availableCount: 3,
+    credits: [credit("earlier", first), credit("later", second)],
+  }, now), undefined);
+  assert.equal(selectEarliestResetCreditExpiry({
+    availableCount: 1,
+    credits: [credit("used", first, "consumed"), credit("other", second, "available", "other")],
+  }, now), undefined);
+});
+
+test("credit expiry countdown uses compact lower-precision, timezone-independent units", () => {
+  const now = 1_700_000_000_000;
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  assert.equal(formatCreditExpiryCountdown(now + 29 * day + 8 * hour, now), "29d");
+  assert.equal(formatCreditExpiryCountdown(now + day + 23 * hour, now), "1d");
+  assert.equal(formatCreditExpiryCountdown(now + 18 * hour + 32 * minute, now), "18h32m");
+  assert.equal(formatCreditExpiryCountdown(now + 42 * minute, now), "42m");
+  assert.equal(formatCreditExpiryCountdown(now + 17_000, now), "<1m");
+  assert.equal(formatCreditExpiryCountdown(now, now), null);
+});
+
+test("provider avoids details for zero count and retains summary when details fail", async () => {
+  const usage = { ...realUsagePayload(18_000, 604_800), rate_limit_reset_credits: { available_count: 0 } };
+  let requests = 0;
+  const provider = createChatGptSubscriptionUsageProvider({
+    async fetch() {
+      requests += 1;
+      return Response.json(usage);
+    },
+  });
+  assert.equal((await provider.fetchUsage(context()))?.resetCredits?.availableCount, 0);
+  assert.equal(requests, 1);
+
+  const positiveProvider = createChatGptSubscriptionUsageProvider({
+    async fetch(url) {
+      requests += 1;
+      if (url.endsWith("/usage")) return Response.json({ ...usage, rate_limit_reset_credits: { available_count: 1 } });
+      throw new DOMException("Timed out", "TimeoutError");
+    },
+  });
+  const snapshot = await positiveProvider.fetchUsage(context());
+  assert.equal(snapshot?.resetCredits?.availableCount, 1);
+  assert.equal(snapshot?.resetCredits?.credits, undefined);
+  assert.equal(requests, 3);
+});
+
+test("provider fetches positive-count details once during the same refresh", async () => {
+  const urls: string[] = [];
+  const provider = createChatGptSubscriptionUsageProvider({
+    async fetch(url) {
+      urls.push(url);
+      return url.endsWith("/usage")
+        ? Response.json({ ...realUsagePayload(18_000, 604_800), rate_limit_reset_credits: { available_count: 1 } })
+        : Response.json({ credits: [] });
+    },
+  });
+  await provider.fetchUsage(context());
+  assert.deepEqual(urls, [
+    "https://chatgpt.com/backend-api/wham/usage",
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+  ]);
 });
