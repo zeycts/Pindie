@@ -241,7 +241,7 @@ Read-only observation remains available throughout these boundaries. A later Age
 ### Safe Observation v0.1
 
 - **SO01-SO04** `pindie_git_observe` accepts only `status`, `branch`, `root`, `diff`, `diff_cached`, `diff_check`, `log`, and `remote`; it exposes no command, args, flags, executable, shell, cwd, or environment input. Paths are diff-only positional paths after `--`; log has a fixed bounded limit.
-- **SO05-SO08** It directly invokes fixed Git argv without a shell, with pager/prompt/optional-lock/fsmonitor hardening and external diff/textconv disabled for diff actions. Output is bounded, timeout and Pi AbortSignal terminate the child, and nonzero Git exits are errors.
+- **SO05-SO08** It directly invokes fixed Git argv without a shell, with pager/prompt/optional-lock/lazy-fetch/fsmonitor hardening and external diff/textconv disabled for diff actions. Output is bounded, timeout and Pi AbortSignal terminate the child, and nonzero Git exits are errors.
 - **SO09-SO11** It is read-only for Extension guards before State/coherence/Gate/terminal preflight, so it remains available with completed State, an open Gate, stale Run, or unavailable State. It does not save or mutate Pindie State, verification, Gate, or external-State epoch; generic `bash` remains consequential.
 
 Project coherence does not hold State locking across arbitrary edit/write/bash execution. A narrow project-tool TOCTOU race remains between consequential preflight and project mutation; later State invalidation/dispatch is still protected.

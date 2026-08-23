@@ -85,10 +85,17 @@ test("SO-T11-T15 runner gets shell-free hardened invocation and stable output", 
   assert.equal(calls[0].executable, "git");
   assert.equal(calls[0].shell, false);
   assert.equal(calls[0].env.GIT_OPTIONAL_LOCKS, "0");
+  assert.equal(calls[0].env.GIT_NO_LAZY_FETCH, "1");
+  assert.equal(calls[0].env.GIT_LITERAL_PATHSPECS, "1");
   assert.equal(calls[0].env.GIT_PAGER, "cat");
   assert.equal(calls[0].env.PAGER, "cat");
   assert.equal(calls[0].env.GIT_TERMINAL_PROMPT, "0");
-  assert.equal(safeGitEnvironment({ KEEP: "yes" }).KEEP, "yes");
+  const inherited = safeGitEnvironment({ GIT_NO_LAZY_FETCH: "0", GIT_LITERAL_PATHSPECS: "0", KEEP: "yes" });
+  assert.equal(inherited.GIT_NO_LAZY_FETCH, "1");
+  assert.equal(inherited.GIT_LITERAL_PATHSPECS, "1");
+  assert.equal(inherited.KEEP, "yes");
+  const magicPath = buildGitObserveArgv({ action: "diff", paths: [":(glob)**"] });
+  assert.deepEqual(magicPath.slice(magicPath.indexOf("--")), ["--", ":(glob)**"]);
   const empty = createPindieGitObserveTool({ runner: async () => ({ stdout: "", stderr: "warning", truncated: false }) });
   assert.match(text(await execute(empty, { action: "branch" })), /^\(no output\)[\s\S]*Git warnings:\nwarning$/);
 });
