@@ -152,6 +152,15 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - T49a If Pi delivers an old Agent Run's final `agent_settled` after session replacement or reload invalidated its ExtensionContext, Pindie ignores only Pi's specific stale-context error before mutating runtime State or accessing UI; unrelated errors still propagate.
 - T50 Successful integrated `complete_task` persists completed State, returns a terminating result, and terminal-task guards block later consequential mutation and same-run `pindie_state(start_task)` calls.
 
+### Active Task Continuation v0.1
+
+- AC01 An active Task continues across response, turn, and low-level Agent Loop boundaries while a safe executable next action remains. `nextIntent` records continuation context; it does not authorize yielding merely because further implementation, replanning, or verification iterations are needed.
+- AC02 `agent_end` is the only continuation decision point. Pindie decides whether semantic work should continue; when eligible, Pi performs it through one hidden CustomMessage queued with `pi.sendMessage(..., { deliverAs: "followUp" })` and Pi's existing `agent.continue()` machinery. Pindie creates no second Agent Loop.
+- AC03 Eligibility requires available State, a current uncompleted Task, no Human Gate, no blockers, a final assistant `stopReason` of `stop`, no pending Pi messages, and an unused extension-local fuse. Questions alone do not suppress continuation.
+- AC04 `aborted`, `error`, and `length` stops never continue automatically. Existing pending messages, Pi retry, compaction, user interrupt, and error handling remain Pi-owned and are not overridden.
+- AC05 The extension-local fuse resets at `before_agent_start` and permits at most one automatic continuation before final `agent_settled`. A Pi-native follow-up remains in the same user-driven Agent Run and does not reset the fuse, Run Timer, Run Cost baseline, Current Activity Run semantics, Human Gate snapshot boundary, or adaptive reasoning. A second normal stop settles normally.
+- AC06 Continuation state is runtime-only: it is absent from `PindieState`, persistence, and task status. Session shutdown, State unavailability, and the next user-driven Agent Run clear the transient allowance.
+
 ### Run Timer v0.1
 
 - RT01 `before_agent_start` starts one runtime-only Run timer from a monotonic clock; it is independent of the persistent Pindie Task and State.
