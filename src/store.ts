@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +15,7 @@ import {
 const STATE_FILE_NAME = "state.json";
 const LOCK_DIRECTORY_NAME = "state.lock";
 const LOCK_OWNER_FILE_NAME = "owner.json";
+const LOCK_RECLAIM_DIRECTORY_NAME = ".reclaim";
 
 export class StateLockBusyError extends Error {
   constructor() {
@@ -33,9 +34,10 @@ export interface FileStateStoreOptions {
   baseDir?: string;
   lockRetryMs?: number;
   lockTimeoutMs?: number;
-  orphanLockGraceMs?: number;
   now?: () => number;
   isProcessAlive?: (pid: number) => boolean;
+  /** Test-only barrier after exclusively claiming a valid dead-owner lock. */
+  onReclaimClaimed?: () => Promise<void>;
 }
 
 interface LockOwner {
@@ -90,6 +92,10 @@ function isLockOwner(value: unknown): value is LockOwner {
     typeof value.acquiredAt === "number" && Number.isFinite(value.acquiredAt);
 }
 
+function sameOwner(left: LockOwner, right: LockOwner): boolean {
+  return left.token === right.token && left.pid === right.pid && left.acquiredAt === right.acquiredAt;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -119,17 +125,17 @@ export class FileStateStore implements PindieStateStore {
   private readonly baseDir: string;
   private readonly lockRetryMs: number;
   private readonly lockTimeoutMs: number;
-  private readonly orphanLockGraceMs: number;
   private readonly now: () => number;
   private readonly isProcessAlive: (pid: number) => boolean;
+  private readonly onReclaimClaimed: (() => Promise<void>) | undefined;
 
   constructor(options: FileStateStoreOptions = {}) {
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "projects");
     this.lockRetryMs = options.lockRetryMs ?? 20;
     this.lockTimeoutMs = options.lockTimeoutMs ?? 500;
-    this.orphanLockGraceMs = options.orphanLockGraceMs ?? 1_000;
     this.now = options.now ?? Date.now;
     this.isProcessAlive = options.isProcessAlive ?? defaultIsProcessAlive;
+    this.onReclaimClaimed = options.onReclaimClaimed;
   }
 
   async load(projectRoot: string): Promise<PindieState> {
@@ -188,6 +194,8 @@ export class FileStateStore implements PindieStateStore {
           await writeFile(join(lockPath, LOCK_OWNER_FILE_NAME), JSON.stringify({ token, pid: process.pid, acquiredAt: this.now() }), { encoding: "utf8", flag: "wx" });
           return;
         } catch (error) {
+          // A successful mkdir created this ownerless lock. Ambiguous ownerless
+          // locks are never reclaimed, so no contender can replace it here.
           await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
           throw new Error(`Could not establish Pindie State lock ownership: ${errorMessage(error)}`);
         }
@@ -201,27 +209,34 @@ export class FileStateStore implements PindieStateStore {
   }
 
   private async reclaimIfSafe(lockPath: string): Promise<void> {
-    const owner = await this.readLockOwner(lockPath);
-    if (owner && this.isProcessAlive(owner.pid)) return;
-    if (!owner) {
-      try {
-        const info = await stat(lockPath);
-        if (this.now() - info.mtimeMs < this.orphanLockGraceMs) return;
-      } catch (error) {
-        if (isMissingFile(error)) return;
-        return;
-      }
-    }
-    // Atomically move only the observed stale/orphan lock out of the acquisition
-    // path. A former owner can then never remove a newly acquired replacement.
-    const recoveryPath = `${lockPath}.reclaim-${randomUUID()}`;
+    const observedOwner = await this.readLockOwner(lockPath);
+    // Missing or malformed ownership is deliberately fail-closed. Age cannot
+    // prove ownership, and an owner-establishment failure must not let another
+    // process replace a lock that its creator may still clean up.
+    if (!observedOwner || this.isProcessAlive(observedOwner.pid)) return;
+
+    const reclaimPath = join(lockPath, LOCK_RECLAIM_DIRECTORY_NAME);
     try {
-      await rename(lockPath, recoveryPath);
-    } catch (error) {
-      if (isMissingFile(error)) return;
+      await mkdir(reclaimPath);
+    } catch {
       return;
     }
-    await rm(recoveryPath, { recursive: true, force: true });
+
+    try {
+      await this.onReclaimClaimed?.();
+      // The reclaim marker serializes reclaimers for this exact directory
+      // instance. Re-read after claiming it; a stale observation alone is never
+      // authority to remove the canonical lock path.
+      const currentOwner = await this.readLockOwner(lockPath);
+      if (!currentOwner || !sameOwner(currentOwner, observedOwner) || this.isProcessAlive(currentOwner.pid)) return;
+      await rm(lockPath, { recursive: true, force: true });
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+    } finally {
+      // This operation owns only its marker. If the canonical directory was
+      // removed above this is a harmless ENOENT; otherwise release the claim.
+      await rm(reclaimPath, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 
   private async readLockOwner(lockPath: string): Promise<LockOwner | null> {
