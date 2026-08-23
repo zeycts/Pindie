@@ -25,6 +25,7 @@ class CapturedExtensionAPI {
   readonly commands = new Map<string, any>();
   readonly appliedThinkingLevels: string[] = [];
   thinkingLevel = "medium";
+  private runtimeBound = false;
 
   on(eventName: string, handler: CapturedHandler): void {
     assert.equal(this.handlers.has(eventName), false);
@@ -39,9 +40,15 @@ class CapturedExtensionAPI {
     this.commands.set(name, command);
   }
 
-  getThinkingLevel(): any { return this.thinkingLevel; }
+  bindRuntime(): void { this.runtimeBound = true; }
+
+  getThinkingLevel(): any {
+    if (!this.runtimeBound) throw new Error("Extension runtime not initialized.");
+    return this.thinkingLevel;
+  }
 
   setThinkingLevel(level: string): void {
+    if (!this.runtimeBound) throw new Error("Extension runtime not initialized.");
     this.appliedThinkingLevels.push(level);
     this.thinkingLevel = level;
   }
@@ -221,9 +228,26 @@ function createHarness(
       resolveProjectRoot: async (cwd) => resolvedRoots[cwd] ?? cwd,
     },
   );
+  api.bindRuntime();
 
   return { api, store, integration };
 }
+
+test("Extension registration does not call Pi runtime action methods before runtime binding", async () => {
+  const api = new CapturedExtensionAPI();
+  const store = new ExtensionTestStore([["/repo", activeState()]]);
+  assert.doesNotThrow(() => registerPindieExtension(
+    api as unknown as ExtensionAPI,
+    { store, resolveProjectRoot: async (cwd) => cwd },
+  ));
+  assert.deepEqual(api.appliedThinkingLevels, []);
+  api.bindRuntime();
+  await api.handler("session_start")({ type: "session_start", reason: "startup" }, context("/repo"));
+  await api.handler("before_agent_start")({ type: "before_agent_start", systemPrompt: "", prompt: "", systemPromptOptions: {} }, context("/repo"));
+  assert.deepEqual(api.appliedThinkingLevels, ["medium"]);
+  await api.commands.get("reasoning").handler("high", context("/repo"));
+  assert.equal(api.appliedThinkingLevels.at(-1), "high");
+});
 
 async function startSession(
   harness: ReturnType<typeof createHarness>,

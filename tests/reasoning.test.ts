@@ -19,7 +19,7 @@ const failed: PindieState = {
 };
 const result = (toolName: string, isError = false) => ({ toolName, isError });
 
-function controller() { return new ReasoningController("medium"); }
+function controller() { return new ReasoningController(); }
 
 test("AR01-AR03 reset and Agent Runs initialize Auto medium while Fixed is preserved", () => {
   const reasoning = controller();

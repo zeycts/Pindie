@@ -27,8 +27,9 @@ export function isFixedThinkingLevel(level: string): level is typeof FIXED_THINK
 export class ReasoningController {
   private current: ReasoningSnapshot;
 
-  constructor(effectiveLevel: ThinkingLevel) {
-    this.current = { mode: "auto", requestedLevel: "medium", effectiveLevel };
+  /** The initial effective level is a pre-runtime placeholder; session_start synchronizes Pi authority. */
+  constructor() {
+    this.current = { mode: "auto", requestedLevel: "medium", effectiveLevel: "medium" };
   }
 
   get snapshot(): ReasoningSnapshot {

@@ -96,7 +96,7 @@ export function registerPindieExtension(
   options: PindieExtensionOptions = {},
 ): PindieExtensionIntegration {
   const runtime = new PindieRuntime(options.store ?? new FileStateStore());
-  const reasoning = new ReasoningController(pi.getThinkingLevel());
+  const reasoning = new ReasoningController();
   const runActivity = new RunActivityTracker();
   const runCost = new RunCostTracker();
   const runTimer = new RunTimer();
