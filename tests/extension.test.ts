@@ -24,6 +24,8 @@ class CapturedExtensionAPI {
   readonly tools = new Map<string, any>();
   readonly commands = new Map<string, any>();
   readonly appliedThinkingLevels: string[] = [];
+  readonly sentMessages: unknown[] = [];
+  readonly appendedEntries: unknown[] = [];
   thinkingLevel = "medium";
   private runtimeBound = false;
 
@@ -52,6 +54,10 @@ class CapturedExtensionAPI {
     this.appliedThinkingLevels.push(level);
     this.thinkingLevel = level;
   }
+
+  sendMessage(message: unknown): void { this.sentMessages.push(message); }
+
+  appendEntry(entry: unknown): void { this.appendedEntries.push(entry); }
 
   handler(eventName: string): CapturedHandler {
     const handler = this.handlers.get(eventName);
@@ -297,6 +303,59 @@ function assertBlocked(result: any, reason: RegExp): void {
   assert.equal(result?.block, true);
   assert.match(result?.reason ?? "", reason);
 }
+
+test("EI20-EI30 /efficiency is registered and reads runtime facts without mutation", async () => {
+  const entries: unknown[] = [{
+    type: "message",
+    message: {
+      role: "assistant",
+      usage: { input: 1_200, output: 20, cacheRead: 203_000, cacheWrite: 0, cost: { total: 4.048 } },
+    },
+  }];
+  const harness = createHarness([["/repo", activeState()]]);
+  assert.ok(harness.api.commands.has("efficiency"));
+  assert.deepEqual(harness.api.appliedThinkingLevels, []);
+  await startSession(harness, "/repo", "startup", entries);
+  harness.integration.reasoning.setFixed("max");
+  harness.integration.reasoning.synchronizeEffective("high");
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  const reasoningBefore = harness.integration.reasoning.snapshot;
+  const notices: Array<{ message: string; type: string }> = [];
+  let entryReads = 0;
+  let contextReads = 0;
+  const commandContext = {
+    ...context("/repo"),
+    mode: "tui",
+    sessionManager: { getEntries: () => { entryReads += 1; return entries; } },
+    getContextUsage: () => {
+      contextReads += 1;
+      return { tokens: 204_000, contextWindow: 272_000, percent: 74.8 };
+    },
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+
+  await harness.api.commands.get("efficiency").handler("", commandContext);
+
+  assert.equal(entryReads, 1);
+  assert.equal(contextReads, 1);
+  assert.equal(notices.at(-1)?.type, "info");
+  assert.match(notices.at(-1)?.message ?? "", /Reasoning: fixed · requested max · effective high/);
+  assert.match(notices.at(-1)?.message ?? "", /Context: 204k \/ 272k · 74.8%/);
+  assert.match(notices.at(-1)?.message ?? "", /CH 99.4%/);
+  assert.deepEqual(harness.integration.reasoning.snapshot, reasoningBefore);
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.deepEqual(harness.store.saves, []);
+  assert.deepEqual(harness.api.appliedThinkingLevels, []);
+  assert.deepEqual(harness.api.sentMessages, []);
+  assert.deepEqual(harness.api.appendedEntries, []);
+
+  await harness.api.commands.get("efficiency").handler("unexpected", commandContext);
+  assert.deepEqual(notices.at(-1), { message: "Usage: /efficiency", type: "warning" });
+  assert.equal(entryReads, 1);
+  assert.equal(contextReads, 1);
+  assert.deepEqual(harness.integration.reasoning.snapshot, reasoningBefore);
+  assert.deepEqual(harness.store.saves, []);
+});
 
 test("the Extension registers the two existing Pindie tools and required hooks", () => {
   const { api } = createHarness();
@@ -981,6 +1040,62 @@ test("Run Cost measures public session usage from the Run baseline and resets pe
     uiContext,
   );
   assert.equal(harness.integration.runCost.snapshot(entries as any), null);
+});
+
+test("agent_settled ignores only an obsolete stale ExtensionContext after replacement", async () => {
+  const oldHarness = createHarness([["/old", activeState("Old session")]]);
+  const newHarness = createHarness([["/new", activeState("Current session")]]);
+  const oldEntries: unknown[] = [{
+    type: "message",
+    message: { role: "assistant", usage: { cost: { total: 1 } } },
+  }];
+  const currentEntries: unknown[] = [{
+    type: "message",
+    message: { role: "assistant", usage: { cost: { total: 3 } } },
+  }];
+
+  await startSession(oldHarness, "/old", "startup", oldEntries);
+  await beginAgentRun(oldHarness, "/old", oldEntries);
+  await oldHarness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "reload" },
+    context("/old", oldEntries),
+  );
+  await startSession(newHarness, "/new", "reload", currentEntries);
+  await beginAgentRun(newHarness, "/new", currentEntries);
+
+  const staleContext = {
+    get sessionManager(): never {
+      throw new Error("This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().");
+    },
+  };
+  await assert.doesNotReject(async () => oldHarness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    staleContext,
+  ));
+
+  assert.equal(oldHarness.integration.runActivity.activity, null);
+  assert.equal(oldHarness.integration.runTimer.durationMs, null);
+  assert.equal(oldHarness.integration.runCost.snapshot(oldEntries as any), null);
+  assert.equal(newHarness.integration.runActivity.activity, "thinking");
+  assert.equal(newHarness.integration.runTimer.active, true);
+  assert.deepEqual(newHarness.integration.runCost.snapshot(currentEntries as any), {
+    cost: 0,
+    active: true,
+  });
+});
+
+test("agent_settled rethrows errors other than Pi's stale ExtensionContext error", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  const failure = new Error("session entries failed");
+
+  await assert.rejects(
+    async () => harness.api.handler("agent_settled")(
+      { type: "agent_settled" },
+      { sessionManager: { getEntries: () => { throw failure; } } },
+    ),
+    failure,
+  );
 });
 
 test("Current Activity refreshes status from public tool execution lifecycle and clears on settlement", async () => {

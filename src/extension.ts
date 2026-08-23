@@ -20,6 +20,10 @@ import {
   ReasoningController,
   type ThinkingLevel,
 } from "./reasoning.ts";
+import {
+  deriveEfficiencySnapshot,
+  formatEfficiencyReport,
+} from "./efficiency.ts";
 import { RunActivityTracker } from "./run-activity.ts";
 import { RunCostTracker } from "./run-cost.ts";
 import { RunTimer } from "./run-timer.ts";
@@ -78,6 +82,12 @@ function isReadOnlyObservation(event: ToolCallEvent): boolean {
     isToolCallEventType("find", event) ||
     isToolCallEventType("ls", event)
   );
+}
+
+const STALE_EXTENSION_CONTEXT_ERROR = "This extension ctx is stale after session replacement or reload.";
+
+function isStaleExtensionContextError(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith(STALE_EXTENSION_CONTEXT_ERROR);
 }
 
 function hasAction<TName extends string>(
@@ -188,6 +198,24 @@ export function registerPindieExtension(
     }),
   );
   pi.registerTool(createPindieGateTool(runtime, { onStateChange: refreshStatus }));
+
+  pi.registerCommand("efficiency", {
+    description: "Show read-only runtime efficiency facts",
+    handler: async (args, ctx) => {
+      if (args.trim()) {
+        ctx.ui.notify("Usage: /efficiency", "warning");
+        return;
+      }
+      const entries = ctx.sessionManager.getEntries();
+      const report = formatEfficiencyReport(deriveEfficiencySnapshot({
+        entries,
+        contextUsage: ctx.getContextUsage(),
+        reasoning: reasoning.snapshot,
+        runCost: runCost.snapshot(entries),
+      }));
+      ctx.ui.notify(report, "info");
+    },
+  });
 
   pi.registerCommand("reasoning", {
     description: "Set or show adaptive reasoning (auto|minimal|low|medium|high|xhigh|max|status)",
@@ -393,9 +421,20 @@ export function registerPindieExtension(
   });
 
   pi.on("agent_settled", (_event, ctx) => {
+    // Pi can dispose an old session runner before its in-flight Agent Run reaches
+    // the finally-path that emits agent_settled. Its context is then deliberately
+    // stale; that obsolete run must not touch or reset this runtime's state.
+    let entries;
+    try {
+      entries = ctx.sessionManager.getEntries();
+    } catch (error) {
+      if (isStaleExtensionContextError(error)) return;
+      throw error;
+    }
+
     statusContext = ctx;
     runActivity.settle();
-    runCost.finish(ctx.sessionManager.getEntries());
+    runCost.finish(entries);
     runTimer.finish();
     refreshStatus(ctx);
     void refreshSubscriptionUsage(ctx);

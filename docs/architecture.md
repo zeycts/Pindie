@@ -40,7 +40,7 @@ Pi's built-in footer presents infrastructure and runtime information (project, b
 
 The Pindie status line derives its compact segments from runtime-only Run timing, Run Cost, and Current Activity, semantic current-task State, directly available runtime alerts, and optional runtime-only account observations. It does not persist display fields or create independent status entries for each fact. Current Activity is a runtime-only observable Pi execution hint for compact presentation, not Pindie State and not a Core Loop phase.
 
-Its left region is Pindie current-work information (Run timing, Run Cost, Current Activity, verification, and attention). Its right region is account/environment resource information. Run Cost is the incremental Pi-reported `usage.cost.total` for the same Agent Run as Run Timer, not Pi's cumulative session cost and not necessarily an amount charged to a subscription user's credit card. ChatGPT subscription usage, when available from Pi's public resolved OpenAI Codex auth, is a best-effort runtime observation only: `◉ 52%` means 52% weekly allowance remains and `↻ 6d23h` is the time remaining until its weekly reset. The countdown is derived at render time from the runtime `resetsAt` timestamp: days render as `d+h`, hours as `h+m`, minutes as `m`, and less than one minute as `<1m`; expired timestamps omit the reset segment. `⟳ 1` means one manual full-reset credit is available; when complete eligible detail coverage makes it trustworthy, `⟳ 1 · 29d` also shows the nearest available credit expiry. The count comes authoritatively from the usage summary, while details are requested only for a positive count. A capped or incomplete detail list suppresses expiry rather than guessing. Manual reset credits are read-only runtime observations in v0.1: they are never persisted and Pindie has no consume action. Pindie selects the weekly window by its declared seven-day duration; the Codex backend may declare that duration as `limit_window_seconds`. The request uses Pi's runtime global fetch, which honors the standard proxy environment/configuration Pi establishes, but usage remains runtime-only and is never Pindie State or allowed to affect semantic/runtime correctness.
+Its left region is Pindie current-work information (Run timing, Run Cost, Current Activity, verification, and attention). Its right region is account/environment resource information. Run Cost is the incremental Pi-reported `usage.cost.total` for the same Agent Run as Run Timer, not Pi's cumulative session cost and not necessarily an amount charged to a subscription user's credit card. The on-demand `/efficiency` Inspector is separate from status presentation: it is runtime-only and read-only, derives reasoning, context, and session/cache facts from Pindie runtime state and Pi public APIs, reuses Run Cost, and owns no usage or cache State. ChatGPT subscription usage, when available from Pi's public resolved OpenAI Codex auth, is a best-effort runtime observation only: `◉ 52%` means 52% weekly allowance remains and `↻ 6d23h` is the time remaining until its weekly reset. The countdown is derived at render time from the runtime `resetsAt` timestamp: days render as `d+h`, hours as `h+m`, minutes as `m`, and less than one minute as `<1m`; expired timestamps omit the reset segment. `⟳ 1` means one manual full-reset credit is available; when complete eligible detail coverage makes it trustworthy, `⟳ 1 · 29d` also shows the nearest available credit expiry. The count comes authoritatively from the usage summary, while details are requested only for a positive count. A capped or incomplete detail list suppresses expiry rather than guessing. Manual reset credits are read-only runtime observations in v0.1: they are never persisted and Pindie has no consume action. Pindie selects the weekly window by its declared seven-day duration; the Codex backend may declare that duration as `limit_window_seconds`. The request uses Pi's runtime global fetch, which honors the standard proxy environment/configuration Pi establishes, but usage remains runtime-only and is never Pindie State or allowed to affect semantic/runtime correctness.
 
 | Metric | Scope |
 | --- | --- |
@@ -179,6 +179,7 @@ The implemented v0.1 Core Extension provides:
 - Human Gate lifecycle
 - runtime safety checks
 - runtime-only Agent Run timing, cost, observable Current Activity, and adaptive reasoning control in the unified Pindie semantic status line (with timing also in completion output)
+- an on-demand read-only `/efficiency` Inspector derived from current Pi public session/context facts, runtime reasoning, and existing Run Cost without persistence or background collection
 - one theme-aware Pindie status line for Current Activity, verification progress, and actionable Human Gate, blocker, and State-unavailable conditions
 - custom tools `pindie_state` and `pindie_gate`
 
@@ -235,7 +236,8 @@ tool_result
   → refresh the derived Pindie status line
 
 agent_settled
-  → finalize runtime-only Run timer and clear Current Activity
+  → ignore an obsolete stale ExtensionContext after Pi session replacement/reload
+  → otherwise finalize runtime-only Run timer and clear Current Activity
   → consistency validation only; never auto-complete
 
 session_shutdown
