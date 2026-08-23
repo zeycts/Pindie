@@ -55,7 +55,9 @@ class CapturedExtensionAPI {
     this.thinkingLevel = level;
   }
 
-  sendMessage(message: unknown): void { this.sentMessages.push(message); }
+  sendMessage(message: unknown, options?: unknown): void {
+    this.sentMessages.push({ message, options });
+  }
 
   appendEntry(entry: unknown): void { this.appendedEntries.push(entry); }
 
@@ -159,10 +161,12 @@ function completedState(): PindieState {
 function context(
   cwd: string,
   sessionEntries: unknown[] = [],
+  hasPendingMessages = false,
 ): Record<string, unknown> {
   return {
     cwd,
     hasUI: false,
+    hasPendingMessages: () => hasPendingMessages,
     sessionManager: { getEntries: () => sessionEntries },
     ui: { notify: () => undefined },
   };
@@ -216,6 +220,18 @@ function toolResult(
     content: [],
     details: undefined,
     isError,
+  };
+}
+
+function agentEnd(stopReason: "stop" | "aborted" | "error" | "length" = "stop"): Record<string, unknown> {
+  return {
+    type: "agent_end",
+    messages: [{
+      role: "assistant",
+      content: [{ type: "text", text: "Observed the remaining implementation work; continuing is safe." }],
+      stopReason,
+      timestamp: 1,
+    }],
   };
 }
 
@@ -362,6 +378,7 @@ test("the Extension registers the two existing Pindie tools and required hooks",
 
   assert.deepEqual([...api.tools.keys()].sort(), ["pindie_gate", "pindie_state"]);
   assert.deepEqual([...api.handlers.keys()].sort(), [
+    "agent_end",
     "agent_settled",
     "before_agent_start",
     "context",
@@ -374,6 +391,84 @@ test("the Extension registers the two existing Pindie tools and required hooks",
     "tool_result",
     "turn_end",
   ]);
+});
+
+test("AC01-AC15 active executable tasks queue one hidden Pi-native follow-up per Agent Run", async () => {
+  const state = activeState();
+  state.task!.openLoops.questions = ["Should the release note mention this?"];
+  const harness = createHarness([["/repo", state]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  const reasoningBefore = harness.integration.reasoning.snapshot;
+
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+
+  assert.deepEqual(harness.api.sentMessages, [{
+    message: {
+      customType: "pindie-active-task-continuation",
+      content: "The current Pindie Task is still unfinished. First re-evaluate the latest actual user intent. If it asks to stop, pause, return control, or only inspect, explain, or discuss without resuming consequential Task work, do not resume consequential Task work; allow this Agent Run to settle normally. Otherwise, if the latest user intent still calls for Task execution, continue the Task now. Re-observe only what is necessary, then take the smallest safe next action. Do not stop merely to summarize remaining work, restate next steps, re-plan, or because more implementation, test, or verification iterations are required. If consequential human judgment is genuinely required, use the existing Human Gate. If a real external blocker prevents progress, record it. Otherwise continue toward current verified completion. Persisting nextIntent records continuation context; it is not permission to yield.",
+      display: false,
+    },
+    options: { deliverAs: "followUp" },
+  }]);
+  const continuationContent = (harness.api.sentMessages[0] as {
+    message: { content: string };
+  }).message.content;
+  assert.equal((continuationContent.match(/First re-evaluate the latest actual user intent\./g) ?? []).length, 1);
+  assert.ok(
+    continuationContent.indexOf("First re-evaluate the latest actual user intent.") <
+      continuationContent.indexOf("continue the Task now."),
+  );
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.deepEqual(harness.integration.reasoning.snapshot, reasoningBefore);
+  assert.deepEqual(harness.store.saves, []);
+  assert.equal(harness.integration.runTimer.active, true);
+  assert.equal(harness.integration.runCost.snapshot([] as any)?.active, true);
+
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(harness.api.sentMessages.length, 1);
+
+  await beginAgentRun(harness);
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(harness.api.sentMessages.length, 2);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(harness.integration.runTimer.active, false);
+  assert.equal(harness.integration.runCost.snapshot([] as any)?.active, false);
+  assert.equal(harness.integration.runActivity.activity, null);
+});
+
+test("AC04-AC13 continuation eligibility suppresses every ineligible agent end", async () => {
+  const cases: Array<{
+    name: string;
+    state: PindieState | undefined;
+    stopReason?: "aborted" | "error" | "length";
+    pending?: boolean;
+  }> = [
+    { name: "no current Task", state: EMPTY_STATE },
+    { name: "completed Task", state: completedState() },
+    { name: "Human Gate", state: gatedState() },
+    { name: "blockers", state: { task: { ...activeState().task!, openLoops: { blockers: ["Awaiting service"], questions: [], nextIntent: null } } } },
+    { name: "unavailable State", state: undefined },
+    { name: "aborted stop", state: activeState(), stopReason: "aborted" },
+    { name: "error stop", state: activeState(), stopReason: "error" },
+    { name: "length stop", state: activeState(), stopReason: "length" },
+    { name: "existing pending Pi message", state: activeState(), pending: true },
+  ];
+
+  for (const scenario of cases) {
+    const harness = createHarness(scenario.state === undefined ? [] : [["/repo", scenario.state]]);
+    if (scenario.state === undefined) {
+      harness.store.loadErrors.set("/repo", new Error("State unavailable"));
+    }
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+    await harness.api.handler("agent_end")(
+      agentEnd(scenario.stopReason ?? "stop"),
+      context("/repo", [], scenario.pending),
+    );
+    assert.deepEqual(harness.api.sentMessages, [], scenario.name);
+  }
 });
 
 test("AR20-AR35 reasoning integration follows public Pi lifecycle without State persistence", async () => {

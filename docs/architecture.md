@@ -112,6 +112,7 @@ Persist only semantic current-work information that cannot be reliably reconstru
 5. **State stays minimal.** Reconstructable information belongs to Git/files/environment, not Pindie State.
 6. **Human judgment is explicit.** Product taste, consequential architecture choices, and destructive actions may require a Human Gate.
 7. **One current task.** v0.1 deliberately excludes task queues and orchestration.
+8. **Active work continues.** An active Task continues only while the latest user intent still calls for Task execution and a safe executable next action remains; response, turn, and low-level agent-loop boundaries are not Task boundaries. The hidden continuation follow-up is a probe subordinate to latest user intent, not unconditional authorization to resume persisted State. Persisted `nextIntent` records continuation context, not permission to yield or override later user intent because more implementation, replanning, or verification iterations are required.
 
 ## 5. State model
 
@@ -205,6 +206,7 @@ session_start
   → Runtime.load
 
 before_agent_start
+  → reset extension-local active-Task continuation fuse
   → start runtime-only Run timer, Run Cost, and Current Activity (thinking)
   → request Auto Medium or the runtime-only Fixed thinking level through Pi
   → snapshot pre-existing Human Gate / completed-task identity
@@ -219,6 +221,12 @@ context (before every LLM call)
 tool_execution_start / tool_execution_end
   → update runtime-only Current Activity from public tool execution lifecycle
   → immediately refresh the one Pindie semantic status line
+
+agent_end
+  → Pindie decides whether active semantic work should continue
+  → when the active Task is executable and the final assistant message stopped normally, queue one hidden Pi-native continuation probe that first re-evaluates latest user intent
+  → the probe settles normally rather than resuming consequential Task work when that intent no longer calls for execution
+  → Pi's existing follow-up queue and `agent.continue()` machinery execute that continuation; Pindie creates no second Agent Loop
 
 tool_call
   → enforce unavailable-State, Human Gate, terminal-task, and same-run guards
@@ -236,6 +244,7 @@ tool_result
   → refresh the derived Pindie status line
 
 agent_settled
+  → remains the final Agent Run settlement boundary after Pi retries, compaction, and queued follow-ups
   → ignore an obsolete stale ExtensionContext after Pi session replacement/reload
   → otherwise finalize runtime-only Run timer and clear Current Activity
   → consistency validation only; never auto-complete
@@ -247,7 +256,7 @@ session_shutdown
 
 Successful Pindie State and Human Gate tool transitions also refresh the status line after persistence. Tool execution start/end events refresh Current Activity immediately. Run timer ticks remain the only periodic trigger; they re-read current runtime State and do not persist timing or presentation.
 
-The Agent-run snapshot is extension-local and resets at each `before_agent_start`. It records only object identity for a gate or completed task that already existed at the run boundary; it is neither persisted State nor a second state machine. This lets a later run consume persisted consequential State while preventing a gate opened, or task completed, during the current run from being immediately consumed by sibling or follow-up tool calls.
+The Agent-run snapshot is extension-local and resets at each `before_agent_start`. It records only object identity for a gate or completed task that already existed at the run boundary plus a one-shot active-Task continuation fuse; it is neither persisted State nor a second state machine. The fuse permits at most one hidden Pi-native follow-up for one user-driven Agent Run and is not reset by that follow-up. This lets a later run consume persisted consequential State while preventing a gate opened, or task completed, during the current run from being immediately consumed by sibling or follow-up tool calls.
 
 Generic `bash` results are not treated as known project mutation in v0.1. The Extension does not parse shell commands or implement a second Agent Loop.
 

@@ -70,6 +70,8 @@ export interface PindieExtensionIntegration {
 }
 
 const PINDIE_STATUS_ID = "pindie-status";
+const PINDIE_ACTIVE_TASK_CONTINUATION_TYPE = "pindie-active-task-continuation";
+const PINDIE_ACTIVE_TASK_CONTINUATION_MESSAGE = "The current Pindie Task is still unfinished. First re-evaluate the latest actual user intent. If it asks to stop, pause, return control, or only inspect, explain, or discuss without resuming consequential Task work, do not resume consequential Task work; allow this Agent Run to settle normally. Otherwise, if the latest user intent still calls for Task execution, continue the Task now. Re-observe only what is necessary, then take the smallest safe next action. Do not stop merely to summarize remaining work, restate next steps, re-plan, or because more implementation, test, or verification iterations are required. If consequential human judgment is genuinely required, use the existing Human Gate. If a real external blocker prevents progress, record it. Otherwise continue toward current verified completion. Persisting nextIntent records continuation context; it is not permission to yield.";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -122,10 +124,12 @@ export function registerPindieExtension(
   let statusContext: ExtensionContext | null = null;
   let gateAtAgentRunStart: HumanGate | null = null;
   let completedTaskAtAgentRunStart: PindieTask | null = null;
+  let activeTaskContinuationAttempted = false;
 
   const clearAgentRunSnapshot = (): void => {
     gateAtAgentRunStart = null;
     completedTaskAtAgentRunStart = null;
+    activeTaskContinuationAttempted = false;
   };
 
   const presentStatusBestEffort = (
@@ -285,6 +289,7 @@ export function registerPindieExtension(
 
   pi.on("before_agent_start", (event, ctx) => {
     statusContext = ctx;
+    clearAgentRunSnapshot();
     reasoning.beforeAgentStart();
     applyRequestedThinkingLevel();
     runActivity.start();
@@ -295,6 +300,35 @@ export function registerPindieExtension(
     gateAtAgentRunStart = task?.humanGate ?? null;
     completedTaskAtAgentRunStart = task?.completed ? task : null;
     return { systemPrompt: injectPindieCore(event.systemPrompt) };
+  });
+
+  pi.on("agent_end", (event, ctx) => {
+    if (activeTaskContinuationAttempted || ctx.hasPendingMessages()) return;
+    if (runtime.projectRoot === null || stateUnavailableReason !== null) return;
+
+    const task = runtime.state.task;
+    const finalAssistantMessage = [...event.messages]
+      .reverse()
+      .find((message) => message.role === "assistant");
+    if (
+      !task ||
+      task.completed ||
+      task.humanGate !== null ||
+      task.openLoops.blockers.length > 0 ||
+      finalAssistantMessage?.stopReason !== "stop"
+    ) {
+      return;
+    }
+
+    activeTaskContinuationAttempted = true;
+    pi.sendMessage(
+      {
+        customType: PINDIE_ACTIVE_TASK_CONTINUATION_TYPE,
+        content: PINDIE_ACTIVE_TASK_CONTINUATION_MESSAGE,
+        display: false,
+      },
+      { deliverAs: "followUp" },
+    );
   });
 
   pi.on("context", (event) => {

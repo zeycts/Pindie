@@ -68,6 +68,12 @@ test("D08 Core Policy distinguishes constraints from success criteria", () => {
   assert.match(PINDIE_CORE_POLICY, /success criteria are final observable outcomes required for completion/i);
 });
 
+test("AC15 Core Policy contains each active-Task continuation semantic exactly once", () => {
+  assert.equal((PINDIE_CORE_POLICY.match(/An active Task should continue only while the latest actual user intent still calls for Task execution/g) ?? []).length, 1);
+  assert.equal((PINDIE_CORE_POLICY.match(/A hidden continuation follow-up is a probe subordinate to latest user intent/g) ?? []).length, 1);
+  assert.equal((PINDIE_CORE_POLICY.match(/persisting it does not authorize yielding or overriding later user intent/gi) ?? []).length, 1);
+});
+
 test("CP05-CP06 repeated Core injection leaves one block and preserves Pi Skill metadata", () => {
   const skillIndex = "<available_skills>\n<skill><name>release</name></skill>\n</available_skills>";
   const first = injectPindieCore(`Pi base system prompt\n\n${skillIndex}`);
