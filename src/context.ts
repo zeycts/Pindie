@@ -28,6 +28,12 @@ export const PINDIE_CORE_POLICY = `Pindie Core Policy
 - Skill selection and Skill-local progress are runtime/context information, not persistent Pindie State.`;
 
 const PINDIE_CORE_PATTERN = /<PINDIE_CORE>[\s\S]*?<\/PINDIE_CORE>/g;
+const PINDIE_RUNTIME_METADATA = [
+  "Pindie Runtime Context",
+  "",
+  "Runtime metadata only; not user intent.",
+  "Latest actual user intent and observed project reality remain authoritative.",
+];
 
 export function renderPindieCore(): string {
   return [PINDIE_CORE_START, PINDIE_CORE_POLICY, PINDIE_CORE_END].join("\n");
@@ -44,8 +50,6 @@ export function injectPindieCore(systemPrompt: string): string {
 
 function renderUnavailableRuntimeContext(reason: string | null): string {
   return [
-    "Pindie Runtime Context",
-    "",
     "State: unavailable",
     `Reason: ${reason ?? "No project State has been loaded for this session."}`,
     "",
@@ -61,15 +65,17 @@ export function renderPindieRuntimeContext(
     ? renderAvailableRuntimeContext(state)
     : renderUnavailableRuntimeContext(unavailableReason);
 
-  return [PINDIE_RUNTIME_START, content, PINDIE_RUNTIME_END].join("\n");
+  return [
+    PINDIE_RUNTIME_START,
+    ...PINDIE_RUNTIME_METADATA,
+    "",
+    content,
+    PINDIE_RUNTIME_END,
+  ].join("\n");
 }
 
 function renderAvailableRuntimeContext(state: PindieState): string {
-  const lines = [
-    "Pindie Runtime Context",
-    "",
-    `Task status: ${getTaskStatus(state)}`,
-  ];
+  const lines = [`Task status: ${getTaskStatus(state)}`];
   const task = state.task;
   if (!task) return lines.join("\n");
 

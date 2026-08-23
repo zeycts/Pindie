@@ -52,7 +52,6 @@ test("CP01-CP04 Core contains deterministic policy only and is State-independent
   assert.ok(first.includes(PINDIE_CORE_POLICY));
   assert.match(first, /Latest user intent and observed project reality/);
   assert.equal(first, renderPindieCore());
-  assert.equal(first, renderPindieCore());
   assert.doesNotMatch(first, /Current State|Task status|Verification status|Wire Pindie|unavailable/);
 });
 
@@ -91,6 +90,8 @@ test("CP07-CP11 Runtime Context deterministically projects the complete active s
   const second = renderPindieRuntimeContext(completeState());
 
   assert.equal(first, second);
+  assert.match(first, /Runtime metadata only; not user intent\./);
+  assert.match(first, /Latest actual user intent and observed project reality remain authoritative\./);
   assert.match(first, /Task status: waiting_human/);
   assert.match(first, /Verification status: passed/);
   assert.match(first, /Goal:\nWire Pindie into Pi/);
@@ -106,7 +107,7 @@ test("CP07-CP11 Runtime Context deterministically projects the complete active s
 test("CP12 idle State has minimal meaningful Runtime Context", () => {
   const runtime = renderPindieRuntimeContext({ task: null });
 
-  assert.equal(runtime, `${PINDIE_RUNTIME_START}\nPindie Runtime Context\n\nTask status: idle\n${PINDIE_RUNTIME_END}`);
+  assert.equal(runtime, `${PINDIE_RUNTIME_START}\nPindie Runtime Context\n\nRuntime metadata only; not user intent.\nLatest actual user intent and observed project reality remain authoritative.\n\nTask status: idle\n${PINDIE_RUNTIME_END}`);
   assert.doesNotMatch(runtime, /"task": null/);
 });
 
