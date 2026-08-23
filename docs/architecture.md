@@ -178,7 +178,7 @@ The implemented v0.1 Core Extension provides:
 - verification invalidation on known project mutation
 - Human Gate lifecycle
 - runtime safety checks
-- runtime-only Agent Run timing, cost, and observable Current Activity in the unified Pindie semantic status line (with timing also in completion output)
+- runtime-only Agent Run timing, cost, observable Current Activity, and adaptive reasoning control in the unified Pindie semantic status line (with timing also in completion output)
 - one theme-aware Pindie status line for Current Activity, verification progress, and actionable Human Gate, blocker, and State-unavailable conditions
 - custom tools `pindie_state` and `pindie_gate`
 
@@ -205,6 +205,7 @@ session_start
 
 before_agent_start
   → start runtime-only Run timer, Run Cost, and Current Activity (thinking)
+  → request Auto Medium or the runtime-only Fixed thinking level through Pi
   → snapshot pre-existing Human Gate / completed-task identity
   → append one stable Core Policy block
   → derive and publish one Pindie semantic status line
@@ -221,6 +222,13 @@ tool_execution_start / tool_execution_end
 tool_call
   → enforce unavailable-State, Human Gate, terminal-task, and same-run guards
 
+turn_end (only turns with tool results)
+  → runtime-only Auto reasoning chooses the next requested Low, Medium, or High from tool errors, current verification, current request, and successful built-in edit/write results
+  → Pi clamps and reports the effective thinking level
+
+thinking_level_select
+  → synchronize only the runtime-only effective thinking level; never infer mode
+
 tool_result
   → successful edit/write
   → Runtime.dispatch(invalidate_verification)
@@ -231,7 +239,7 @@ agent_settled
   → consistency validation only; never auto-complete
 
 session_shutdown
-  → clear runtime-only Run timer, Run Cost, Current Activity, and Pindie status presentation
+  → clear runtime-only Run timer, Run Cost, Current Activity, adaptive reasoning mode, and Pindie status presentation
   → unload transient Runtime context
 ```
 
@@ -240,6 +248,8 @@ Successful Pindie State and Human Gate tool transitions also refresh the status 
 The Agent-run snapshot is extension-local and resets at each `before_agent_start`. It records only object identity for a gate or completed task that already existed at the run boundary; it is neither persisted State nor a second state machine. This lets a later run consume persisted consequential State while preventing a gate opened, or task completed, during the current run from being immediately consumed by sibling or follow-up tool calls.
 
 Generic `bash` results are not treated as known project mutation in v0.1. The Extension does not parse shell commands or implement a second Agent Loop.
+
+Adaptive reasoning is runtime-only and never enters `PindieState`, the State Store, project files, or Pi session entries. Its controller requests a level with Pi's public `setThinkingLevel()` then reads the effective level from public `getThinkingLevel()`; Pi remains authoritative for model support and clamping. Auto starts each Agent Run at Medium and only requests Low, Medium, or High. Fixed mode is selected only through `/reasoning` and may request Pi's supported `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` levels. The controller does not route models, infer Core Loop phases, classify with an LLM, or retain history.
 
 ## 8. Persistence target
 

@@ -173,10 +173,19 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - CA04 With no active tools in an active Run, Current Activity is `thinking`; simultaneous tools of one mapped kind retain that kind; multiple mapped kinds render `working`. Unknown/duplicate tool ends are harmless. No activity survives settlement or session reset.
 - CA05 Current Activity is presentation-only. Lifecycle tracking or status rendering failure cannot alter tool execution, State transitions, Human Gates, or Agent Runs. Tool start/end immediately refresh existing status; Run Timer remains the only periodic timer.
 
+### Adaptive Reasoning v0.1
+
+- AR01 Runtime-only reasoning resets at `session_start` to Auto, requested Medium, with its effective level synchronized from Pi; session shutdown/replacement clears the transient controller.
+- AR02 `before_agent_start` requests Medium in Auto for every user-driven Agent Run; Fixed reapplies its selected request. Pi remains authoritative for effective level and model capability clamping.
+- AR03 Only `/reasoning` changes Pindie's Auto/Fixed mode. `thinking_level_select` only synchronizes effective level and refreshes presentation.
+- AR04 At `turn_end`, only a turn with one or more tool results may adapt Auto. Priority is: any tool error or failed verification → High; passed verification → Low; clean current High → Medium; successful built-in edit/write → Low; otherwise → Medium.
+- AR05 Fixed ignores Auto evidence. Auto requests only Low, Medium, or High; Fixed may request `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
+- AR06 Reasoning is neither Pindie semantic State nor State Store/session/project persistence. It adds no model routing, phase inference, tool-set changes, history, cache behavior, or keyboard shortcut.
+
 ### Pindie Status Line v0.1 — Verification + Alerts
 
 - SL01 Pi owns the infrastructure footer; Pindie owns exactly one semantic current-work status entry (`pindie-status`) beneath it. Pindie does not replace Pi's footer.
-- SL02 The status line orders available segments as Run timing, Run Cost, Current Activity, verification, then one actionable attention condition. Segments are derived from runtime timing, Current Activity, State, and direct runtime availability—not persisted display state.
+- SL02 The status line orders available segments as Run timing, Run Cost, Auto indicator when runtime reasoning is Auto, Current Activity, verification, then one actionable attention condition. The compact `auto` segment is absent in Fixed mode; Pi continues to render actual model and effective thinking separately. Segments are derived from runtime timing, Current Activity, reasoning mode, State, and direct runtime availability—not persisted display state.
 - SL03 Verification progress is distinct passed-criterion coverage over total success criteria. Overlapping passed checks do not double-count; failed checks do not add coverage.
 - SL04 Pending verification renders `verify <covered>/<total>`; stale renders `verify stale` without historical progress; failed renders `verify failed <covered>/<total>`; passed renders `✓ <covered>/<total>`; no task omits verification.
 - SL05 Attention is absent normally. State-unavailable is an error alert. Otherwise an open Human Gate takes precedence over blockers and renders its kind; a blocker renders `⚠ blocked`.
