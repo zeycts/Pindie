@@ -69,8 +69,9 @@ test("D08 Core Policy distinguishes constraints from success criteria", () => {
 });
 
 test("AC15 Core Policy contains each active-Task continuation semantic exactly once", () => {
-  assert.equal((PINDIE_CORE_POLICY.match(/An active Task should continue while a safe executable next action remains/g) ?? []).length, 1);
-  assert.equal((PINDIE_CORE_POLICY.match(/persisting it does not authorize yielding/gi) ?? []).length, 1);
+  assert.equal((PINDIE_CORE_POLICY.match(/An active Task should continue only while the latest actual user intent still calls for Task execution/g) ?? []).length, 1);
+  assert.equal((PINDIE_CORE_POLICY.match(/A hidden continuation follow-up is a probe subordinate to latest user intent/g) ?? []).length, 1);
+  assert.equal((PINDIE_CORE_POLICY.match(/persisting it does not authorize yielding or overriding later user intent/gi) ?? []).length, 1);
 });
 
 test("CP05-CP06 repeated Core injection leaves one block and preserves Pi Skill metadata", () => {

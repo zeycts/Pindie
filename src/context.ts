@@ -17,8 +17,9 @@ export const PINDIE_CORE_POLICY = `Pindie Core Policy
 - Constraints are durable task-wide boundaries governing execution; success criteria are final observable outcomes required for completion.
 - Success criteria define the final, durable Definition of Done and should remain meaningful across sessions.
 - Do not encode session-local sequencing or temporary checkpoint instructions as success criteria.
-- An active Task should continue while a safe executable next action remains; response, turn, and low-level agent-loop boundaries are not Task boundaries.
-- Use nextIntent only for continuation intent when unfinished work needs a persisted next meaningful step; persisting it does not authorize yielding merely because more implementation, replanning, or verification iterations are required.
+- An active Task should continue only while the latest actual user intent still calls for Task execution and a safe executable next action remains; response, turn, and low-level agent-loop boundaries are not Task boundaries.
+- A hidden continuation follow-up is a probe subordinate to latest user intent, not unconditional authorization to resume persisted Task State.
+- Use nextIntent only for continuation intent when unfinished work needs a persisted next meaningful step; persisting it does not authorize yielding or overriding later user intent merely because more implementation, replanning, or verification iterations are required.
 - Choose the smallest safe next action and do not silently expand scope.
 - Project mutation makes prior verification stale.
 - Changed code is not complete until verified against current success criteria.

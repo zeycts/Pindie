@@ -112,7 +112,7 @@ Persist only semantic current-work information that cannot be reliably reconstru
 5. **State stays minimal.** Reconstructable information belongs to Git/files/environment, not Pindie State.
 6. **Human judgment is explicit.** Product taste, consequential architecture choices, and destructive actions may require a Human Gate.
 7. **One current task.** v0.1 deliberately excludes task queues and orchestration.
-8. **Active work continues.** An active Task continues while a safe executable next action remains; response, turn, and low-level agent-loop boundaries are not Task boundaries. Persisted `nextIntent` records continuation context, not permission to yield because more implementation, replanning, or verification iterations are required.
+8. **Active work continues.** An active Task continues only while the latest user intent still calls for Task execution and a safe executable next action remains; response, turn, and low-level agent-loop boundaries are not Task boundaries. The hidden continuation follow-up is a probe subordinate to latest user intent, not unconditional authorization to resume persisted State. Persisted `nextIntent` records continuation context, not permission to yield or override later user intent because more implementation, replanning, or verification iterations are required.
 
 ## 5. State model
 
@@ -224,7 +224,8 @@ tool_execution_start / tool_execution_end
 
 agent_end
   → Pindie decides whether active semantic work should continue
-  → when the active Task is executable and the final assistant message stopped normally, queue one hidden Pi-native follow-up CustomMessage
+  → when the active Task is executable and the final assistant message stopped normally, queue one hidden Pi-native continuation probe that first re-evaluates latest user intent
+  → the probe settles normally rather than resuming consequential Task work when that intent no longer calls for execution
   → Pi's existing follow-up queue and `agent.continue()` machinery execute that continuation; Pindie creates no second Agent Loop
 
 tool_call

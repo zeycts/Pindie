@@ -407,11 +407,19 @@ test("AC01-AC15 active executable tasks queue one hidden Pi-native follow-up per
   assert.deepEqual(harness.api.sentMessages, [{
     message: {
       customType: "pindie-active-task-continuation",
-      content: "The current Pindie Task is still active. Continue it now. Re-observe only what is necessary, then take the smallest safe next action. Do not stop merely to summarize remaining work, restate next steps, re-plan, or because more implementation, test, or verification iterations are required. If consequential human judgment is genuinely required, use the existing Human Gate. If a real external blocker prevents progress, record it. Otherwise continue toward current verified completion. Persisting nextIntent records continuation context; it is not permission to yield.",
+      content: "The current Pindie Task is still unfinished. First re-evaluate the latest actual user intent. If it asks to stop, pause, return control, or only inspect, explain, or discuss without resuming consequential Task work, do not resume consequential Task work; allow this Agent Run to settle normally. Otherwise, if the latest user intent still calls for Task execution, continue the Task now. Re-observe only what is necessary, then take the smallest safe next action. Do not stop merely to summarize remaining work, restate next steps, re-plan, or because more implementation, test, or verification iterations are required. If consequential human judgment is genuinely required, use the existing Human Gate. If a real external blocker prevents progress, record it. Otherwise continue toward current verified completion. Persisting nextIntent records continuation context; it is not permission to yield.",
       display: false,
     },
     options: { deliverAs: "followUp" },
   }]);
+  const continuationContent = (harness.api.sentMessages[0] as {
+    message: { content: string };
+  }).message.content;
+  assert.equal((continuationContent.match(/First re-evaluate the latest actual user intent\./g) ?? []).length, 1);
+  assert.ok(
+    continuationContent.indexOf("First re-evaluate the latest actual user intent.") <
+      continuationContent.indexOf("continue the Task now."),
+  );
   assert.deepEqual(harness.integration.runtime.state, stateBefore);
   assert.deepEqual(harness.integration.reasoning.snapshot, reasoningBefore);
   assert.deepEqual(harness.store.saves, []);
