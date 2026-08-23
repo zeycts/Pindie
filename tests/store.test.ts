@@ -188,7 +188,14 @@ test("FIX-L01 two reclaimers serialize recovery of one valid dead-owner lock", a
   let releaseReclaim!: () => void;
   const claimed = new Promise<void>((resolve) => { reclaimClaimed = resolve; });
   const reclaimBarrier = new Promise<void>((resolve) => { releaseReclaim = resolve; });
-  const options = { baseDir: fixture.baseDir, lockRetryMs: 1, lockTimeoutMs: 100, isProcessAlive: () => false };
+  const options = {
+    baseDir: fixture.baseDir,
+    lockRetryMs: 1,
+    lockTimeoutMs: 100,
+    // Only the seeded stale lock owner is dead; replacement owners use this
+    // process PID and must be treated as live by the competing reclaimer.
+    isProcessAlive: (pid: number) => pid !== 42,
+  };
   const first = new FileStateStore({ ...options, onReclaimClaimed: async () => { reclaimClaimed(); await reclaimBarrier; } });
   const second = new FileStateStore(options);
   let active = 0;
@@ -236,7 +243,10 @@ test("FIX-L03-L04 valid dead owners recover while live owners remain busy", asyn
   t.after(() => rm(fixture.baseDir, { recursive: true, force: true }));
   const deadProject = "/workspace/dead";
   await writeLockOwner(lockPath(fixture.baseDir, deadProject), { token: "dead", pid: 42, acquiredAt: 0 });
-  const deadStore = new FileStateStore({ baseDir: fixture.baseDir, isProcessAlive: () => false });
+  const deadStore = new FileStateStore({
+    baseDir: fixture.baseDir,
+    isProcessAlive: (pid) => pid !== 42,
+  });
   let recovered = false;
   await deadStore.withProjectLock(deadProject, async () => { recovered = true; });
   assert.equal(recovered, true);
