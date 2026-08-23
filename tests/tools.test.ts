@@ -25,6 +25,10 @@ class ToolTestStore implements PindieStateStore {
     if (this.beforeSave) await this.beforeSave();
     this.persistedState = state;
   }
+
+  async withProjectLock<T>(_projectRoot: string, operation: () => Promise<T>): Promise<T> {
+    return operation();
+  }
 }
 
 function activeState(): PindieState {

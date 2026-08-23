@@ -8,6 +8,7 @@ import { EMPTY_STATE, type PindieState } from "../src/state.ts";
 import {
   FileStateStore,
   getProjectId,
+  StateLockBusyError,
 } from "../src/store.ts";
 
 function activeState(): PindieState {
@@ -144,6 +145,50 @@ test("project IDs are deterministic and distinct roots use different paths", asy
   await fixture.store.save(secondRoot, EMPTY_STATE);
 
   assert.notEqual(fixture.statePath(firstRoot), fixture.statePath(secondRoot));
+});
+
+test("PSC-L01-L04 project locks serialize same-project operations, do not block other projects, and release on success or throw", async (t) => {
+  const fixture = await createTestStore();
+  t.after(() => rm(fixture.baseDir, { recursive: true, force: true }));
+  const second = new FileStateStore({ baseDir: fixture.baseDir, lockRetryMs: 2, lockTimeoutMs: 100 });
+  let release!: () => void;
+  const holding = fixture.store.withProjectLock("/workspace/a", () => new Promise<void>((resolve) => { release = resolve; }));
+  // The lock directory is proof A acquired; B cannot enter until it is released.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  let secondEntered = false;
+  const waiting = second.withProjectLock("/workspace/a", async () => { secondEntered = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(secondEntered, false);
+  let otherEntered = false;
+  await second.withProjectLock("/workspace/b", async () => { otherEntered = true; });
+  assert.equal(otherEntered, true);
+  release();
+  await holding;
+  await waiting;
+  assert.equal(secondEntered, true);
+  await assert.rejects(second.withProjectLock("/workspace/a", async () => { throw new Error("callback failure"); }), /callback failure/);
+  await assert.doesNotReject(second.withProjectLock("/workspace/a", async () => undefined));
+});
+
+test("PSC-L05-L09 lock recovery never steals live owners and narrowly recovers dead or old ownerless locks", async (t) => {
+  const fixture = await createTestStore();
+  t.after(() => rm(fixture.baseDir, { recursive: true, force: true }));
+  const projectRoot = "/workspace/locks";
+  const lockPath = join(fixture.baseDir, getProjectId(projectRoot), "state.lock");
+  await mkdir(lockPath, { recursive: true });
+  await writeFile(join(lockPath, "owner.json"), JSON.stringify({ token: "live", pid: process.pid, acquiredAt: 0 }));
+  const shortStore = new FileStateStore({ baseDir: fixture.baseDir, lockRetryMs: 2, lockTimeoutMs: 15, orphanLockGraceMs: 40 });
+  await assert.rejects(shortStore.withProjectLock(projectRoot, async () => undefined), StateLockBusyError);
+  await rm(lockPath, { recursive: true, force: true });
+  await mkdir(lockPath, { recursive: true });
+  await writeFile(join(lockPath, "owner.json"), JSON.stringify({ token: "dead", pid: 999_999_999, acquiredAt: 0 }));
+  let reclaimed = false;
+  await shortStore.withProjectLock(projectRoot, async () => { reclaimed = true; });
+  assert.equal(reclaimed, true);
+  await mkdir(lockPath, { recursive: true });
+  await assert.rejects(shortStore.withProjectLock(projectRoot, async () => undefined), StateLockBusyError);
+  await new Promise((resolve) => setTimeout(resolve, 45));
+  await shortStore.withProjectLock(projectRoot, async () => undefined);
 });
 
 test("invalid State passed to save does not overwrite existing State", async (t) => {

@@ -230,6 +230,16 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 
 Read-only observation remains available throughout these boundaries. A later Agent run may consume a persisted Human Gate or replace a completed task because the consequential state was already present at that run's start.
 
+### Project State Coherence v0.1
+
+- **PSC-V01-V03** Internal `invalidate_verification` reopens a completed/passed Task to unfinished stale verification after known mutation; completed Tasks remain terminal to every model-facing semantic action.
+- **PSC-L01-L12** `FileStateStore.withProjectLock(projectRoot, operation)` serializes same-project State critical sections with an atomic `state.lock` directory, never serializes different projects, releases only matching token ownership in `finally`, and uses bounded retry. Valid live or uncertain PID owners are never stolen because of age; confirmed-dead owners and old missing/corrupt owner metadata are narrowly reclaimed. Busy is a transient `StateLockBusyError`, not State unavailability.
+- **PSC-R01-R04** `PindieRuntime.refresh()` loads disk authority. A deep-equal load preserves State and Task object identity and epoch; a differing load is adopted and increments only the runtime external-State epoch; failed loads preserve the working snapshot and throw.
+- **PSC-D01-D09** Dispatch locks, reloads, compares with the State against which the event was decided, then reduces/saves/publishes. Stale ordinary events throw `PindieStateConflictError` after adopting authority; only internal invalidation safely rebases. Save still precedes publish.
+- **PSC-A01-A13** Run start refreshes before identity snapshots. Consequential preflight detects external change and makes the remainder of that Run read-only; read/grep/find/ls remain available. The next user-driven Run snapshots the current epoch and recovers normally. A stale Run does not queue Active Task Continuation. Busy, conflict, and unavailable State remain distinct.
+
+Project coherence does not hold State locking across arbitrary edit/write/bash execution. A narrow project-tool TOCTOU race remains between consequential preflight and project mutation; later State invalidation/dispatch is still protected.
+
 ## 7. State Store behavior contract (implemented in PR 3)
 
 - T51 Missing State file loads empty State.

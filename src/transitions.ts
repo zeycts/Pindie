@@ -301,13 +301,16 @@ export function reduceState(
     }
 
     case "invalidate_verification": {
-      const task = mutableTaskRequired(state);
+      const task = taskRequired(state);
       if (isFailure(task)) return task;
 
-      if (task.verification.stale) return succeeded(state);
+      if (task.verification.stale && !task.completed) return succeeded(state);
 
+      // Internal mutation bookkeeping is the sole completion-terminality
+      // exception: known project mutation must revoke stale verified completion.
       return withTask(state, {
         ...task,
+        completed: false,
         verification: { stale: true, checks: [] },
       });
     }
