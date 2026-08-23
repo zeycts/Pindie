@@ -68,6 +68,11 @@ test("D08 Core Policy distinguishes constraints from success criteria", () => {
   assert.match(PINDIE_CORE_POLICY, /success criteria are final observable outcomes required for completion/i);
 });
 
+test("SO-C01-SO-C02 Core Policy prefers dedicated Git observation while bash stays consequential", () => {
+  assert.match(PINDIE_CORE_POLICY, /prefer pindie_git_observe.*supported read-only Git inspection/i);
+  assert.match(PINDIE_CORE_POLICY, /unrestricted bash remains consequential/i);
+});
+
 test("EH01 Core Policy requires operation-owned narrow execution cleanup", () => {
   assert.match(PINDIE_CORE_POLICY, /Temporary resources created during execution or verification are owned by that operation/i);
   assert.match(PINDIE_CORE_POLICY, /scope them narrowly, clean only resources it created/i);

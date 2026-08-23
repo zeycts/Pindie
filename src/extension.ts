@@ -45,6 +45,7 @@ import {
 } from "./subscription-usage.ts";
 import { FileStateStore, type PindieStateStore } from "./store.ts";
 import { createPindieGateTool } from "./tools/gate.ts";
+import { createPindieGitObserveTool } from "./tools/git-observe.ts";
 import { createPindieStateTool } from "./tools/state.ts";
 
 type ProjectRootResolver = (cwd: string) => Promise<string>;
@@ -83,7 +84,8 @@ function isReadOnlyObservation(event: ToolCallEvent): boolean {
     isToolCallEventType("read", event) ||
     isToolCallEventType("grep", event) ||
     isToolCallEventType("find", event) ||
-    isToolCallEventType("ls", event)
+    isToolCallEventType("ls", event) ||
+    isToolCallEventType("pindie_git_observe", event)
   );
 }
 
@@ -207,6 +209,7 @@ export function registerPindieExtension(
     }),
   );
   pi.registerTool(createPindieGateTool(runtime, { onStateChange: refreshStatus }));
+  pi.registerTool(createPindieGitObserveTool());
 
   pi.registerCommand("efficiency", {
     description: "Show read-only runtime efficiency facts",
