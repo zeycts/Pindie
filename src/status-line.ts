@@ -39,6 +39,7 @@ export interface VerificationProgress {
 export interface PindieStatusSnapshot {
   timing: RunTiming | null;
   runCost?: RunCost | null;
+  reasoningMode?: "auto" | "fixed" | null;
   activity?: RunActivity | null;
   state: PindieState | null;
   stateUnavailableReason: string | null;
@@ -109,6 +110,10 @@ export function deriveStatusSegments(
 
   if (snapshot.runCost) {
     segments.push({ text: formatRunCost(snapshot.runCost.cost), tone: "dim" });
+  }
+
+  if (snapshot.reasoningMode === "auto") {
+    segments.push({ text: "auto", tone: "dim" });
   }
 
   if (snapshot.activity) {

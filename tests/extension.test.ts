@@ -22,6 +22,9 @@ type CapturedHandler = (
 class CapturedExtensionAPI {
   readonly handlers = new Map<string, CapturedHandler>();
   readonly tools = new Map<string, any>();
+  readonly commands = new Map<string, any>();
+  readonly appliedThinkingLevels: string[] = [];
+  thinkingLevel = "medium";
 
   on(eventName: string, handler: CapturedHandler): void {
     assert.equal(this.handlers.has(eventName), false);
@@ -30,6 +33,17 @@ class CapturedExtensionAPI {
 
   registerTool(tool: { name: string }): void {
     this.tools.set(tool.name, tool);
+  }
+
+  registerCommand(name: string, command: any): void {
+    this.commands.set(name, command);
+  }
+
+  getThinkingLevel(): any { return this.thinkingLevel; }
+
+  setThinkingLevel(level: string): void {
+    this.appliedThinkingLevels.push(level);
+    this.thinkingLevel = level;
   }
 
   handler(eventName: string): CapturedHandler {
@@ -137,6 +151,7 @@ function context(
     cwd,
     hasUI: false,
     sessionManager: { getEntries: () => sessionEntries },
+    ui: { notify: () => undefined },
   };
 }
 
@@ -152,6 +167,7 @@ function interactiveContext(
     sessionManager: { getEntries: () => sessionEntries },
     ui: {
       theme: { fg: (_color: string, text: string) => text },
+      notify: () => undefined,
       setStatus: (id: string, text: string | undefined) => {
         if (throwOnSetStatus) throw new Error("Status renderer unavailable");
         statuses.push({ id, text });
@@ -268,11 +284,57 @@ test("the Extension registers the two existing Pindie tools and required hooks",
     "context",
     "session_shutdown",
     "session_start",
+    "thinking_level_select",
     "tool_call",
     "tool_execution_end",
     "tool_execution_start",
     "tool_result",
+    "turn_end",
   ]);
+});
+
+test("AR20-AR35 reasoning integration follows public Pi lifecycle without State persistence", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  assert.ok(harness.api.handlers.has("turn_end"));
+  assert.ok(harness.api.handlers.has("thinking_level_select"));
+  assert.ok(harness.api.commands.has("reasoning"));
+  await startSession(harness, "/repo");
+  assert.equal(harness.integration.reasoning.snapshot.mode, "auto");
+  await beginAgentRun(harness);
+  assert.equal(harness.api.appliedThinkingLevels.at(-1), "medium");
+  const originalState = structuredClone(harness.integration.runtime.state);
+  await harness.api.handler("turn_end")({ type: "turn_end", toolResults: [toolResult("bash", true)] }, context("/repo"));
+  assert.equal(harness.api.appliedThinkingLevels.at(-1), "high");
+  await harness.api.handler("turn_end")({ type: "turn_end", toolResults: [toolResult("edit")] }, context("/repo"));
+  assert.equal(harness.api.appliedThinkingLevels.at(-1), "medium");
+  await harness.api.handler("turn_end")({ type: "turn_end", toolResults: [toolResult("edit")] }, context("/repo"));
+  assert.equal(harness.api.appliedThinkingLevels.at(-1), "low");
+  const countBeforeTerminal = harness.api.appliedThinkingLevels.length;
+  await harness.api.handler("turn_end")({ type: "turn_end", toolResults: [] }, context("/repo"));
+  assert.equal(harness.api.appliedThinkingLevels.length, countBeforeTerminal);
+  const command = harness.api.commands.get("reasoning");
+  const notices: string[] = [];
+  const commandContext = { ...context("/repo"), ui: { notify: (message: string) => notices.push(message) } };
+  await command.handler("status", commandContext);
+  assert.match(notices.at(-1) ?? "", /auto; requested low; effective low/);
+  await command.handler("high", commandContext);
+  assert.deepEqual(harness.integration.reasoning.snapshot, { mode: "fixed", requestedLevel: "high", effectiveLevel: "high" });
+  await harness.api.handler("turn_end")({ type: "turn_end", toolResults: [toolResult("edit")] }, context("/repo"));
+  assert.equal(harness.integration.reasoning.snapshot.requestedLevel, "high");
+  await command.handler("invalid", commandContext);
+  assert.equal(harness.integration.reasoning.snapshot.requestedLevel, "high");
+  await command.handler("auto", context("/repo"));
+  assert.equal(harness.integration.reasoning.snapshot.mode, "auto");
+  assert.equal(harness.api.appliedThinkingLevels.at(-1), "medium");
+  harness.api.thinkingLevel = "low";
+  await harness.api.handler("thinking_level_select")({ type: "thinking_level_select", level: "low", previousLevel: "medium" }, context("/repo"));
+  assert.equal(harness.integration.reasoning.snapshot.effectiveLevel, "low");
+  assert.equal(harness.integration.reasoning.snapshot.mode, "auto");
+  assert.deepEqual(harness.integration.runtime.state, originalState);
+  assert.deepEqual(harness.store.saves, []);
+  await harness.api.handler("session_shutdown")({ type: "session_shutdown" }, context("/repo"));
+  await startSession(harness, "/repo", "new");
+  assert.equal(harness.integration.reasoning.snapshot.mode, "auto");
 });
 
 test("T37 session_start resolves and loads project State", async () => {
@@ -873,7 +935,7 @@ test("Run Cost measures public session usage from the Run baseline and resets pe
     { type: "agent_settled" },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /last 0s • \$0.31 • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /last 0s • \$0.31 • auto • verify 0\/1/);
   assert.deepEqual(harness.integration.runCost.snapshot(entries as any), {
     cost: 0.31,
     active: false,
@@ -888,7 +950,7 @@ test("Run Cost measures public session usage from the Run baseline and resets pe
     },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /⏱ 0s • \$0.000 • thinking • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /⏱ 0s • \$0.000 • auto • thinking • verify 0\/1/);
 
   await harness.api.handler("session_shutdown")(
     { type: "session_shutdown", reason: "new" },
@@ -912,7 +974,7 @@ test("Current Activity refreshes status from public tool execution lifecycle and
     uiContext,
   );
   assert.equal(harness.integration.runActivity.activity, "thinking");
-  assert.match(statuses.at(-1)?.text ?? "", /\$0.000 • thinking • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /\$0.000 • auto • thinking • verify 0\/1/);
 
   await harness.api.handler("tool_execution_start")(
     toolExecution("tool_execution_start", "read-a", "read"),
@@ -959,7 +1021,7 @@ test("unified Pindie status publishes active and final timing, then clears on sh
   );
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • thinking • verify 0/1",
+    text: "⏱ 0s • $0.000 • auto • thinking • verify 0/1",
   });
 
   await harness.api.handler("agent_settled")(
@@ -968,7 +1030,7 @@ test("unified Pindie status publishes active and final timing, then clears on sh
   );
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "last 0s • $0.000 • verify 0/1",
+    text: "last 0s • $0.000 • auto • verify 0/1",
   });
 
   await harness.api.handler("session_shutdown")(
@@ -1005,7 +1067,7 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   });
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • thinking • ✓ 1/1",
+    text: "⏱ 0s • $0.000 • auto • thinking • ✓ 1/1",
   });
 
   await harness.api.tool("pindie_gate").execute("gate", {
@@ -1015,7 +1077,7 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   });
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • thinking • ✓ 1/1 • ⚠ gate: approval",
+    text: "⏱ 0s • $0.000 • auto • thinking • ✓ 1/1 • ⚠ gate: approval",
   });
 
   await harness.api.handler("agent_settled")(

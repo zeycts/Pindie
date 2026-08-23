@@ -14,6 +14,12 @@ import {
   isPindieRuntimeContextMessage,
 } from "./context.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
+import {
+  FIXED_THINKING_LEVELS,
+  isFixedThinkingLevel,
+  ReasoningController,
+  type ThinkingLevel,
+} from "./reasoning.ts";
 import { RunActivityTracker } from "./run-activity.ts";
 import { RunCostTracker } from "./run-cost.ts";
 import { RunTimer } from "./run-timer.ts";
@@ -53,6 +59,7 @@ export interface PindieExtensionOptions {
 export interface PindieExtensionIntegration {
   readonly runtime: PindieRuntime;
   readonly runActivity: RunActivityTracker;
+  readonly reasoning: ReasoningController;
   readonly runCost: RunCostTracker;
   readonly runTimer: RunTimer;
   readonly stateUnavailableReason: string | null;
@@ -89,6 +96,7 @@ export function registerPindieExtension(
   options: PindieExtensionOptions = {},
 ): PindieExtensionIntegration {
   const runtime = new PindieRuntime(options.store ?? new FileStateStore());
+  const reasoning = new ReasoningController(pi.getThinkingLevel());
   const runActivity = new RunActivityTracker();
   const runCost = new RunCostTracker();
   const runTimer = new RunTimer();
@@ -130,6 +138,7 @@ export function registerPindieExtension(
             ? null
             : { durationMs: runTimer.durationMs, active: runTimer.active },
         runCost: runCost.snapshot(ctx!.sessionManager.getEntries()),
+        reasoningMode: reasoning.snapshot.mode,
         activity: runActivity.activity,
         state: runtime.projectRoot === null ? null : runtime.state,
         stateUnavailableReason,
@@ -141,6 +150,16 @@ export function registerPindieExtension(
 
   const clearPindieStatus = (ctx: ExtensionContext): void => {
     presentStatusBestEffort(ctx, () => undefined);
+  };
+
+  const applyRequestedThinkingLevel = (): void => {
+    pi.setThinkingLevel(reasoning.snapshot.requestedLevel);
+    reasoning.synchronizeEffective(pi.getThinkingLevel());
+  };
+
+  const reasoningStatus = (): string => {
+    const { mode, requestedLevel, effectiveLevel } = reasoning.snapshot;
+    return `Reasoning: ${mode}; requested ${requestedLevel}; effective ${effectiveLevel}.`;
   };
 
   const refreshSubscriptionUsage = async (ctx: ExtensionContext): Promise<void> => {
@@ -170,8 +189,38 @@ export function registerPindieExtension(
   );
   pi.registerTool(createPindieGateTool(runtime, { onStateChange: refreshStatus }));
 
+  pi.registerCommand("reasoning", {
+    description: "Set or show adaptive reasoning (auto|minimal|low|medium|high|xhigh|max|status)",
+    getArgumentCompletions: (prefix) => ["auto", ...FIXED_THINKING_LEVELS, "status"]
+      .filter((value) => value.startsWith(prefix))
+      .map((value) => ({ value, label: value })),
+    handler: async (args, ctx) => {
+      const value = args.trim().toLowerCase();
+      if (value === "status") {
+        ctx.ui.notify(reasoningStatus(), "info");
+        return;
+      }
+      if (value === "auto") reasoning.setAuto();
+      else if (isFixedThinkingLevel(value)) {
+        reasoning.setFixed(value);
+      } else if (!value && ctx.mode === "tui") {
+        const selected = await ctx.ui.select("Reasoning", ["auto", ...FIXED_THINKING_LEVELS]);
+        if (!selected) return;
+        if (selected === "auto") reasoning.setAuto();
+        else reasoning.setFixed(selected as ThinkingLevel);
+      } else {
+        ctx.ui.notify(`${reasoningStatus()} Usage: /reasoning [auto|minimal|low|medium|high|xhigh|max|status]`, "warning");
+        return;
+      }
+      applyRequestedThinkingLevel();
+      refreshStatus(ctx);
+      ctx.ui.notify(reasoningStatus(), "info");
+    },
+  });
+
   pi.on("session_start", async (_event, ctx) => {
     statusContext = ctx;
+    reasoning.reset(pi.getThinkingLevel());
     runActivity.reset();
     runCost.reset();
     runTimer.reset();
@@ -195,6 +244,7 @@ export function registerPindieExtension(
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    reasoning.reset(pi.getThinkingLevel());
     runActivity.reset();
     runCost.reset();
     runTimer.reset();
@@ -207,6 +257,8 @@ export function registerPindieExtension(
 
   pi.on("before_agent_start", (event, ctx) => {
     statusContext = ctx;
+    reasoning.beforeAgentStart();
+    applyRequestedThinkingLevel();
     runActivity.start();
     runCost.start(ctx.sessionManager.getEntries());
     runTimer.start(ctx.hasUI ? () => refreshStatus(ctx) : undefined);
@@ -326,6 +378,20 @@ export function registerPindieExtension(
     refreshStatus();
   });
 
+  pi.on("turn_end", (event, ctx) => {
+    if (event.toolResults.length === 0) return;
+    const state = runtime.projectRoot === null ? { task: null } : runtime.state;
+    if (reasoning.decideNext(state, event.toolResults)) {
+      applyRequestedThinkingLevel();
+      refreshStatus(ctx);
+    }
+  });
+
+  pi.on("thinking_level_select", (event, ctx) => {
+    reasoning.synchronizeEffective(event.level);
+    refreshStatus(ctx);
+  });
+
   pi.on("agent_settled", (_event, ctx) => {
     statusContext = ctx;
     runActivity.settle();
@@ -345,6 +411,7 @@ export function registerPindieExtension(
 
   return {
     runtime,
+    reasoning,
     runActivity,
     runCost,
     runTimer,

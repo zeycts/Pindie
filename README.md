@@ -56,6 +56,7 @@ Implemented:
 - `pindie_state`
 - `pindie_gate`
 - Pi Core Extension wiring
+- Runtime-only adaptive reasoning (`/reasoning [auto|minimal|low|medium|high|xhigh|max|status]`); Auto starts each run at Medium and adapts only Pi's requested thinking level
 
 Bundled Skills:
 

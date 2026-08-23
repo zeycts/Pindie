@@ -55,6 +55,16 @@ test("active Run presents dim timing and neutral pending verification", () => {
   ]);
 });
 
+test("AR36-AR38 Auto adds one compact segment before activity while Fixed omits it", () => {
+  assert.deepEqual(segments({ reasoningMode: "auto", activity: "running" }), [
+    { text: "⏱ 2m 14s", tone: "dim" },
+    { text: "auto", tone: "dim" },
+    { text: "running", tone: "accent" },
+    { text: "verify 0/4", tone: "text" },
+  ]);
+  assert.equal(segments({ reasoningMode: "fixed" }).filter(({ text }) => text === "auto").length, 0);
+});
+
 test("Run Cost and accent Activity follow the timer before verification and attention", () => {
   assert.deepEqual(segments({
     runCost: { cost: 0.14, active: true },
@@ -238,6 +248,12 @@ test("Current Activity preserves right-aligned weekly usage", () => {
   assert.equal(visibleWidth(rendered), 70);
   assert.match(rendered, /⏱ 42s • \$0.14 • editing • verify stale/);
   assert.match(rendered, /◉ 97% • ↻ 6d23h$/);
+});
+
+test("AR39 narrow-width rendering remains bounded with Auto", () => {
+  const layout = deriveStatusLayout({ ...snapshot({ reasoningMode: "auto", activity: "editing" }), runCost: { cost: 0.14, active: true } });
+  const rendered = renderStatusLayout({ fg: (_tone, text) => text }, layout, 18)!;
+  assert.match(rendered, /auto|verify|\$0.14/);
 });
 
 test("ANSI-aware layout aligns right usage, degrades narrowly, and falls back without width", () => {
