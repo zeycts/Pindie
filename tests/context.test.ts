@@ -74,8 +74,15 @@ test("EH01 Core Policy requires operation-owned narrow execution cleanup", () =>
   assert.match(PINDIE_CORE_POLICY, /never use broad filesystem or process cleanup/i);
 });
 
+test("TB29-TB32 Core Policy reconciles latest intent with the current Task", () => {
+  assert.match(PINDIE_CORE_POLICY, /before consequential project action, reconcile latest actual user intent with the current Pindie Task/i);
+  assert.match(PINDIE_CORE_POLICY, /Continue or refine only when latest intent still belongs to this current Task/i);
+  assert.match(PINDIE_CORE_POLICY, /clearly different user-requested Task may replace an unfinished current Task/i);
+  assert.match(PINDIE_CORE_POLICY, /Observation, explanation, discussion, pause, or return-control intent alone does not mutate the Task or authorize consequential continuation/i);
+});
+
 test("AC15 Core Policy contains each active-Task continuation semantic exactly once", () => {
-  assert.equal((PINDIE_CORE_POLICY.match(/An active Task should continue only while the latest actual user intent still calls for Task execution/g) ?? []).length, 1);
+  assert.equal((PINDIE_CORE_POLICY.match(/An active Task should continue only while the latest actual user intent still calls for consequential execution of this current Task/g) ?? []).length, 1);
   assert.equal((PINDIE_CORE_POLICY.match(/A hidden continuation follow-up is a probe subordinate to latest user intent/g) ?? []).length, 1);
   assert.equal((PINDIE_CORE_POLICY.match(/persisting it does not authorize yielding or overriding later user intent/gi) ?? []).length, 1);
 });

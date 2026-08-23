@@ -9,6 +9,7 @@ import type { PindieEvent } from "../transitions.ts";
 
 const STATE_ACTIONS = [
   "start_task",
+  "replace_task",
   "refine_task",
   "set_open_loops",
   "record_verification",
@@ -35,23 +36,23 @@ const PindieStateParameters = Type.Object(
   {
     action: StringEnum(STATE_ACTIONS, {
       description:
-        "Action contract: start_task: goal + successCriteria required; constraints + nextIntent optional. refine_task: goal / constraints / successCriteria only; at least one required. set_open_loops: blockers + questions required; nextIntent optional. record_verification: check required. complete_task: summary required; no other semantic fields.",
+        "Action contract: start_task starts a new Task: goal + successCriteria required; constraints + nextIntent optional. replace_task starts a different user-requested unfinished current Task: goal + successCriteria required; constraints + nextIntent optional. refine_task changes the existing Task Contract: goal / constraints / successCriteria only; at least one required. set_open_loops: blockers + questions required; nextIntent optional. record_verification: check required. complete_task: summary required; no other semantic fields.",
     }),
     goal: Type.Optional(Type.String({
       description:
-        "Durable outcome the task is trying to achieve; used by start_task and refine_task.",
+        "Durable outcome the task is trying to achieve; used by start_task, replace_task, and refine_task.",
     })),
     constraints: Type.Optional(Type.Array(Type.String(), {
       description:
-        "Durable task-wide boundaries or execution requirements used by start_task and refine_task, such as scope limits, prohibited actions, fixed human decisions, or technical constraints. Constraints are boundaries, not completion outcomes.",
+        "Durable task-wide boundaries or execution requirements used by start_task, replace_task, and refine_task, such as scope limits, prohibited actions, fixed human decisions, or technical constraints. Constraints are boundaries, not completion outcomes.",
     })),
     successCriteria: Type.Optional(Type.Array(Type.String(), {
       description:
-        "Final observable outcomes required for completion; the final, durable Definition of Done used by start_task and refine_task. Each criterion must remain meaningful across sessions and true at final completion. Do not use success criteria for execution rules, prohibited actions, process sequencing, or temporary current-run choreography that belongs in constraints or current-run context.",
+        "Final observable outcomes required for completion; the final, durable Definition of Done used by start_task, replace_task, and refine_task. Each criterion must remain meaningful across sessions and true at final completion. Do not use success criteria for execution rules, prohibited actions, process sequencing, or temporary current-run choreography that belongs in constraints or current-run context.",
     })),
     nextIntent: Type.Optional(Type.String({
       description:
-        "Continuation intent or likely next meaningful step for unfinished work, including cross-session continuation. Accepted only by start_task and set_open_loops; not part of the Definition of Done.",
+        "Continuation intent or likely next meaningful step for unfinished work, including cross-session continuation. Accepted only by start_task, replace_task, and set_open_loops; not part of the Definition of Done.",
     })),
     blockers: Type.Optional(Type.Array(Type.String(), {
       description: "Current blockers; used only by set_open_loops.",
@@ -185,6 +186,40 @@ export function createPindieStateTool(
           );
           return result(
             `Current task started.\n\n${formatSuccessCriteria(state)}`,
+            state,
+          );
+        }
+
+        case "replace_task": {
+          assertOnlyFields(params, params.action, [
+            "action",
+            "goal",
+            "constraints",
+            "successCriteria",
+            "nextIntent",
+          ]);
+          if (params.goal === undefined) {
+            throw new Error("Invalid pindie_state replace_task input: goal is required.");
+          }
+          if (!params.successCriteria || params.successCriteria.length === 0) {
+            throw new Error(
+              "Invalid pindie_state replace_task input: provide at least one success criterion.",
+            );
+          }
+
+          const state = await dispatchOrThrow(
+            runtime,
+            {
+              type: "replace_task",
+              goal: params.goal,
+              constraints: params.constraints ?? [],
+              successCriteria: params.successCriteria,
+              nextIntent: params.nextIntent ?? null,
+            },
+            options.onStateChange,
+          );
+          return result(
+            `Current unfinished task replaced.\n\n${formatSuccessCriteria(state)}`,
             state,
           );
         }

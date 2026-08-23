@@ -51,6 +51,10 @@ Session-local choreography, sequencing, and checkpoint instructions are not auto
 - Leave consequential product taste and architecture judgment to the human.
 - Verification evidence must truthfully describe real tool/runtime evidence.
 
+### Task Boundary & Intent Reconciliation v0.1
+
+Before consequential project action, reconcile latest actual user intent with the current Task after any needed read-only observation: start when no unfinished Task exists, continue when intent still belongs to the Task without material Contract change, refine when it does with a material Contract change, and replace an unfinished Task only when intent clearly requests a different Task. Stop, pause, inspection, explanation, or discussion alone does not mutate State or authorize consequential continuation. Use the existing Human Gate for consequential ambiguity; these relationships are Core decision discipline, not persisted State or controller machinery.
+
 ## 3. Derived statuses
 
 ### Task status
@@ -80,6 +84,7 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - T01 Start first task.
 - T02 Reject starting a second active task.
 - T03 A new task may replace a completed task.
+- TB01-TB09 `replace_task` atomically replaces only an unfinished current Task with a clean fresh Task Contract, open loops, verification, and no Human Gate; idle rejects with `NO_CURRENT_TASK`, completed rejects with `TASK_COMPLETED`, and existing `start_task` boundaries remain unchanged.
 - T04 Refining goal invalidates verification.
 - T05 Refining constraints invalidates verification.
 - T06 Replacing success criteria regenerates IDs and invalidates verification.
@@ -116,10 +121,11 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 ## 5. Custom Tool behavior contract (implemented in PR 4)
 
 - T36 `pindie_gate(open)` persists `waiting_human` State before returning a terminating tool result.
-- `pindie_state` exposes only `start_task`, `refine_task`, `set_open_loops`, `record_verification`, and `complete_task`; no arbitrary state patch API.
+- `pindie_state` exposes only `start_task`, `replace_task`, `refine_task`, `set_open_loops`, `record_verification`, and `complete_task`; no arbitrary state patch API.
 - The public `pindie_state` action contract is:
-  - `start_task`: `goal` and `successCriteria` required; `constraints` and `nextIntent` optional.
-  - `refine_task`: only `goal`, `constraints`, and `successCriteria`; at least one required.
+  - `start_task`: starts a new Task; `goal` and `successCriteria` required; `constraints` and `nextIntent` optional.
+  - `replace_task`: replaces a different unfinished current Task; `goal` and `successCriteria` required; `constraints` and `nextIntent` optional.
+  - `refine_task`: changes the existing Task Contract; only `goal`, `constraints`, and `successCriteria`; at least one required.
   - `set_open_loops`: `blockers` and `questions` required; `nextIntent` optional.
   - `record_verification`: `check` required; no other semantic fields.
   - `complete_task`: `summary` required; no other semantic fields.
@@ -154,8 +160,8 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 
 ### Active Task Continuation v0.1
 
-- AC01 An active Task continues across response, turn, and low-level Agent Loop boundaries only while latest actual user intent still calls for Task execution and a safe executable next action remains. `nextIntent` records continuation context; it does not authorize yielding or overriding later user intent merely because further implementation, replanning, or verification iterations are needed.
-- AC02 `agent_end` is the only continuation decision point. Pindie decides whether semantic work should continue; when eligible, Pi performs it through one hidden CustomMessage continuation probe queued with `pi.sendMessage(..., { deliverAs: "followUp" })` and Pi's existing `agent.continue()` machinery. The probe first re-evaluates latest actual user intent and settles normally rather than resuming consequential Task work when that intent no longer calls for execution. Pindie creates no second Agent Loop.
+- AC01 An active Task continues across response, turn, and low-level Agent Loop boundaries only while latest actual user intent still calls for consequential execution of this current Task and a safe executable next action remains. `nextIntent` records continuation context; it does not authorize yielding or overriding later user intent merely because further implementation, replanning, or verification iterations are needed.
+- AC02 `agent_end` is the only continuation decision point. Pindie decides whether semantic work should continue; when eligible, Pi performs it through one hidden CustomMessage continuation probe queued with `pi.sendMessage(..., { deliverAs: "followUp" })` and Pi's existing `agent.continue()` machinery. The probe first re-evaluates whether latest intent belongs to this current Task: it reconciles a clearly different Task through permitted `replace_task`, and settles normally for pause, observation, explanation, discussion, return-control, or ambiguity rather than resuming consequential work. Pindie creates no second Agent Loop.
 - AC03 Eligibility requires available State, a current uncompleted Task, no Human Gate, no blockers, a final assistant `stopReason` of `stop`, no pending Pi messages, and an unused extension-local fuse. Questions alone do not suppress continuation.
 - AC04 `aborted`, `error`, and `length` stops never continue automatically. Existing pending messages, Pi retry, compaction, user interrupt, and error handling remain Pi-owned and are not overridden.
 - AC05 The extension-local fuse resets at `before_agent_start` and permits at most one automatic continuation before final `agent_settled`. A Pi-native follow-up remains in the same user-driven Agent Run and does not reset the fuse, Run Timer, Run Cost baseline, Current Activity Run semantics, Human Gate snapshot boundary, or adaptive reasoning. A second normal stop settles normally.
@@ -214,6 +220,7 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 
 `before_agent_start` is the Agent-run boundary for transient guard permissions. These permissions are not persisted in `PindieState`:
 
+- TB18-TB28 An unfinished Task that existed at `before_agent_start` may be replaced exactly once only while its object identity remains the current Task. A Task started, replaced, or semantically mutated during the Run is not replaceable; ordinary consequential tools remain allowed after a legal replacement. This permits direct replacement of pre-existing active, blocked, or gated Tasks, while a Gate opened during the Run blocks replacement.
 - RG01-RG02 A Human Gate opened during the current Agent run cannot be refined away or resolved during that same run.
 - RG03-RG04 A Human Gate already present when the Agent run begins permits `pindie_state(refine_task)` and `pindie_gate(resolve)`.
 - RG05 Resolving a pre-existing Gate A and opening Gate B does not permit Gate B to be refined or resolved in the same run.

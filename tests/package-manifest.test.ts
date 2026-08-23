@@ -23,4 +23,6 @@ test("GS01 bundled git-workflow Skill is exposed through Pi without replacing th
   assert.match(skill, /^---\nname: git-workflow\ndescription: .+\n---/);
   assert.match(skill, /branch.*commit.*push.*pull-request/i);
   assert.match(skill, /code-changing.*reviewable (branch|pull request)/i);
+  assert.match(skill, /Pindie Core owns Task establishment and reconciliation/i);
+  assert.match(skill, /does not require Git inspection before Pindie Task establishment\/reconciliation/i);
 });

@@ -16,6 +16,13 @@ export type PindieEvent =
       nextIntent?: string | null;
     }
   | {
+      type: "replace_task";
+      goal: string;
+      constraints: string[];
+      successCriteria: string[];
+      nextIntent?: string | null;
+    }
+  | {
       type: "refine_task";
       goal?: string;
       constraints?: string[];
@@ -77,6 +84,24 @@ function criteriaFrom(descriptions: string[]): PindieTask["successCriteria"] {
     id: `c${index + 1}`,
     description,
   }));
+}
+
+function freshTask(event: Extract<PindieEvent, {
+  type: "start_task" | "replace_task";
+}>): PindieTask {
+  return {
+    goal: event.goal,
+    constraints: [...event.constraints],
+    successCriteria: criteriaFrom(event.successCriteria),
+    openLoops: {
+      blockers: [],
+      questions: [],
+      nextIntent: event.nextIntent ?? null,
+    },
+    verification: { stale: false, checks: [] },
+    humanGate: null,
+    completed: false,
+  };
 }
 
 function sameStrings(left: string[], right: string[]): boolean {
@@ -154,19 +179,25 @@ export function reduceState(
         );
       }
 
-      return withTask(state, {
-        goal: event.goal,
-        constraints: [...event.constraints],
-        successCriteria: criteriaFrom(event.successCriteria),
-        openLoops: {
-          blockers: [],
-          questions: [],
-          nextIntent: event.nextIntent ?? null,
-        },
-        verification: { stale: false, checks: [] },
-        humanGate: null,
-        completed: false,
-      });
+      return withTask(state, freshTask(event));
+    }
+
+    case "replace_task": {
+      const task = taskRequired(state);
+      if (isFailure(task)) {
+        return failed(
+          TransitionErrorCode.NO_CURRENT_TASK,
+          "Use start_task when there is no current task to replace.",
+        );
+      }
+      if (task.completed) {
+        return failed(
+          TransitionErrorCode.TASK_COMPLETED,
+          "The completed task is terminal. Use start_task for a completed task.",
+        );
+      }
+
+      return withTask(state, freshTask(event));
     }
 
     case "refine_task": {

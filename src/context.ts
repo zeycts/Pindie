@@ -12,12 +12,14 @@ export const PINDIE_RUNTIME_CONTEXT_TYPE = "pindie-runtime-context";
 
 export const PINDIE_CORE_POLICY = `Pindie Core Policy
 - Latest user intent and observed project reality override stale Pindie State.
-- Observe relevant reality before consequential changes.
+- Read-only observation may precede reconciliation when needed to understand intent or project reality; before consequential project action, reconcile latest actual user intent with the current Pindie Task.
+- Continue or refine only when latest intent still belongs to this current Task; a clearly different user-requested Task may replace an unfinished current Task.
+- Observation, explanation, discussion, pause, or return-control intent alone does not mutate the Task or authorize consequential continuation; use a Human Gate when consequential Task-boundary judgment is genuinely ambiguous.
 - Maintain one semantic current task with a goal, constraints, and explicit success criteria.
 - Constraints are durable task-wide boundaries governing execution; success criteria are final observable outcomes required for completion.
 - Success criteria define the final, durable Definition of Done and should remain meaningful across sessions.
 - Do not encode session-local sequencing or temporary checkpoint instructions as success criteria.
-- An active Task should continue only while the latest actual user intent still calls for Task execution and a safe executable next action remains; response, turn, and low-level agent-loop boundaries are not Task boundaries.
+- An active Task should continue only while the latest actual user intent still calls for consequential execution of this current Task and a safe executable next action remains; response, turn, and low-level agent-loop boundaries are not Task boundaries.
 - A hidden continuation follow-up is a probe subordinate to latest user intent, not unconditional authorization to resume persisted Task State.
 - Use nextIntent only for continuation intent when unfinished work needs a persisted next meaningful step; persisting it does not authorize yielding or overriding later user intent merely because more implementation, replanning, or verification iterations are required.
 - Choose the smallest safe next action and do not silently expand scope.

@@ -112,7 +112,8 @@ Persist only semantic current-work information that cannot be reliably reconstru
 5. **State stays minimal.** Reconstructable information belongs to Git/files/environment, not Pindie State.
 6. **Human judgment is explicit.** Product taste, consequential architecture choices, and destructive actions may require a Human Gate.
 7. **One current task.** v0.1 deliberately excludes task queues and orchestration.
-8. **Active work continues.** An active Task continues only while the latest user intent still calls for Task execution and a safe executable next action remains; response, turn, and low-level agent-loop boundaries are not Task boundaries. The hidden continuation follow-up is a probe subordinate to latest user intent, not unconditional authorization to resume persisted State. Persisted `nextIntent` records continuation context, not permission to yield or override later user intent because more implementation, replanning, or verification iterations are required.
+8. **Task boundaries reconcile intent.** Before consequential project action, reconcile latest actual user intent with the current Task after any needed read-only observation: continue when it belongs to that Task, refine when its Contract changes, replace an unfinished Task through `replace_task` when it clearly requests a different Task, and use a Human Gate for consequential ambiguity. Observation, discussion, pause, or return-control intent alone does not authorize consequential continuation.
+9. **Active work continues.** An active Task continues only while the latest user intent calls for consequential execution of this current Task and a safe executable next action remains; response, turn, and low-level agent-loop boundaries are not Task boundaries. The hidden continuation follow-up is a probe subordinate to latest user intent, not unconditional authorization to resume persisted State. Persisted `nextIntent` records continuation context, not permission to yield or override later user intent because more implementation, replanning, or verification iterations are required.
 
 ## 5. State model
 
@@ -209,7 +210,7 @@ before_agent_start
   → reset extension-local active-Task continuation fuse
   → start runtime-only Run timer, Run Cost, and Current Activity (thinking)
   → request Auto Medium or the runtime-only Fixed thinking level through Pi
-  → snapshot pre-existing Human Gate / completed-task identity
+  → snapshot pre-existing unfinished-task, Human Gate, and completed-task identity
   → append one stable Core Policy block
   → derive and publish one Pindie semantic status line
 
@@ -256,7 +257,7 @@ session_shutdown
 
 Successful Pindie State and Human Gate tool transitions also refresh the status line after persistence. Tool execution start/end events refresh Current Activity immediately. Run timer ticks remain the only periodic trigger; they re-read current runtime State and do not persist timing or presentation.
 
-The Agent-run snapshot is extension-local and resets at each `before_agent_start`. It records only object identity for a gate or completed task that already existed at the run boundary plus a one-shot active-Task continuation fuse; it is neither persisted State nor a second state machine. The fuse permits at most one hidden Pi-native follow-up for one user-driven Agent Run and is not reset by that follow-up. This lets a later run consume persisted consequential State while preventing a gate opened, or task completed, during the current run from being immediately consumed by sibling or follow-up tool calls.
+The Agent-run snapshot is extension-local and resets at each `before_agent_start`. It records only object identity for an unfinished replaceable Task, gate, or completed task that already existed at the run boundary plus a one-shot active-Task continuation fuse; it is neither persisted State nor a second state machine. `replace_task` may replace only that untouched run-start unfinished Task, once: a Task started, replaced, or semantically mutated during the Run is not replaceable. This permits abandoning a pre-existing Gate with a clearly different Task while preventing a Gate opened during the Run from being bypassed. The fuse permits at most one hidden Pi-native follow-up for one user-driven Agent Run and is not reset by that follow-up.
 
 Generic `bash` results are not treated as known project mutation in v0.1. The Extension does not parse shell commands or implement a second Agent Loop.
 
@@ -303,7 +304,7 @@ Skills specialize the Pindie Core Loop. Skills do not replace the Pindie Core Lo
 
 Pi owns Skill discovery and directory scanning, metadata parsing and validation, index construction, progressive disclosure, loading `SKILL.md`, explicit `/skill:<name>` invocation, source resolution, collisions, project trust, and Skill reload/runtime mechanics. Pindie exposes bundled resources through `pi.skills: ["./skills"]`; it does not scan, load, select, validate, resolve, or invoke Skills itself.
 
-Pindie owns only the Skill semantic contract: a Skill is an optional specialized procedure, subordinate to runtime and safety constraints, latest user intent, observed project reality, Core invariants, the current Task Contract, Verification, and Human Gates. A Skill cannot bypass guards, change completed-task rules, silently expand scope, or treat stale State as more authoritative than reality. Skill-guided calls use the ordinary Pi tool path and existing Pindie guards.
+Pindie owns only the Skill semantic contract: a Skill is an optional specialized procedure, subordinate to runtime and safety constraints, latest user intent, observed project reality, Core invariants, the current Task Contract, Verification, and Human Gates. Core Task establishment and reconciliation precede consequential Git action; git-workflow's Git inspection requirement does not outrank that Core boundary. A Skill cannot bypass guards, change completed-task rules, silently expand scope, or treat stale State as more authoritative than reality. Skill-guided calls use the ordinary Pi tool path and existing Pindie guards.
 
 Skills have no Pindie lifecycle or persistent State. Pindie does not infer an active Skill from reading `SKILL.md`, add Skill status presentation, or create Skill-specific verification logic. Reading is observational; existing successful `edit` and `write` invalidation remains authoritative. Skill configuration failures remain Pi resource/configuration failures and never make Pindie State unavailable.
 
