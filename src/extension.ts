@@ -8,7 +8,11 @@ import {
   type ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 
-import { injectPindieCore } from "./context.ts";
+import {
+  createPindieRuntimeContextMessage,
+  injectPindieCore,
+  isPindieRuntimeContextMessage,
+} from "./context.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
 import { RunActivityTracker } from "./run-activity.ts";
 import { RunCostTracker } from "./run-cost.ts";
@@ -210,16 +214,23 @@ export function registerPindieExtension(
     const task = stateUnavailableReason === null ? state?.task ?? null : null;
     gateAtAgentRunStart = task?.humanGate ?? null;
     completedTaskAtAgentRunStart = task?.completed ? task : null;
+    return { systemPrompt: injectPindieCore(event.systemPrompt) };
+  });
+
+  pi.on("context", (event) => {
+    const messages = event.messages.filter(
+      (message) => !isPindieRuntimeContextMessage(message),
+    );
+    const state = runtime.projectRoot === null ? null : runtime.state;
     const unavailableReason =
       stateUnavailableReason ??
       (state === null ? "No project State has been loaded for this session." : null);
 
     return {
-      systemPrompt: injectPindieCore(
-        event.systemPrompt,
-        state,
-        unavailableReason,
-      ),
+      messages: [
+        ...messages,
+        createPindieRuntimeContextMessage(state, unavailableReason),
+      ],
     };
   });
 

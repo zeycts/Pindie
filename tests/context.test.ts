@@ -5,142 +5,139 @@ import {
   PINDIE_CORE_END,
   PINDIE_CORE_POLICY,
   PINDIE_CORE_START,
+  PINDIE_RUNTIME_CONTEXT_TYPE,
+  PINDIE_RUNTIME_END,
+  PINDIE_RUNTIME_START,
+  createPindieRuntimeContextMessage,
   injectPindieCore,
+  isPindieRuntimeContextMessage,
   renderPindieCore,
+  renderPindieRuntimeContext,
 } from "../src/context.ts";
 import type { PindieState } from "../src/state.ts";
 
-function verifiedState(): PindieState {
+function completeState(): PindieState {
   return {
     task: {
       goal: "Wire Pindie into Pi",
       constraints: ["Preserve Pi's Agent Loop"],
       successCriteria: [{ id: "c1", description: "Extension wiring works" }],
-      openLoops: { blockers: [], questions: [], nextIntent: "Run tests" },
+      openLoops: {
+        blockers: ["Awaiting API access"],
+        questions: ["Which release channel?"],
+        nextIntent: "Run tests",
+      },
       verification: {
         stale: false,
-        checks: [
-          {
-            name: "tests",
-            status: "passed",
-            covers: ["c1"],
-            evidence: "Extension tests passed.",
-          },
-        ],
+        checks: [{
+          name: "tests",
+          status: "passed",
+          covers: ["c1"],
+          evidence: "Extension tests passed.",
+        }],
       },
-      humanGate: null,
+      humanGate: {
+        kind: "decision",
+        question: "Choose a release strategy.",
+        options: ["Canary", "Immediate"],
+      },
       completed: false,
     },
   };
 }
 
-test("C01 the Pindie Core Policy is included", () => {
-  const block = renderPindieCore(verifiedState());
+test("CP01-CP04 Core contains deterministic policy only and is State-independent", () => {
+  const first = renderPindieCore();
 
-  assert.match(block, /Pindie Core Policy/);
-  assert.match(block, /Latest user intent and observed project reality/);
-  assert.ok(block.includes(PINDIE_CORE_POLICY));
+  assert.ok(first.includes(PINDIE_CORE_POLICY));
+  assert.match(first, /Latest user intent and observed project reality/);
+  assert.equal(first, renderPindieCore());
+  assert.equal(first, renderPindieCore());
+  assert.doesNotMatch(first, /Current State|Task status|Verification status|Wire Pindie|unavailable/);
 });
 
 test("D04 Core Policy explains durable success-criterion semantics", () => {
   assert.match(PINDIE_CORE_POLICY, /final, durable Definition of Done/i);
   assert.match(PINDIE_CORE_POLICY, /meaningful across sessions/i);
-  assert.match(
-    PINDIE_CORE_POLICY,
-    /session-local sequencing.*checkpoint instructions.*as success criteria/i,
-  );
+  assert.match(PINDIE_CORE_POLICY, /session-local sequencing.*checkpoint instructions.*as success criteria/i);
   assert.match(PINDIE_CORE_POLICY, /nextIntent only for continuation intent/i);
-  assert.match(
-    PINDIE_CORE_POLICY,
-    /unfinished work.*persisted next meaningful step/i,
-  );
+  assert.match(PINDIE_CORE_POLICY, /unfinished work.*persisted next meaningful step/i);
 });
 
 test("D08 Core Policy distinguishes constraints from success criteria", () => {
-  assert.match(
-    PINDIE_CORE_POLICY,
-    /Constraints are durable task-wide boundaries governing execution/i,
-  );
-  assert.match(
-    PINDIE_CORE_POLICY,
-    /success criteria are final observable outcomes required for completion/i,
-  );
+  assert.match(PINDIE_CORE_POLICY, /Constraints are durable task-wide boundaries governing execution/i);
+  assert.match(PINDIE_CORE_POLICY, /success criteria are final observable outcomes required for completion/i);
 });
 
-test("C02 persisted Current State is rendered deterministically", () => {
-  const first = renderPindieCore(verifiedState());
-  const second = renderPindieCore(verifiedState());
+test("CP05-CP06 repeated Core injection leaves one block and preserves Pi Skill metadata", () => {
+  const skillIndex = "<available_skills>\n<skill><name>release</name></skill>\n</available_skills>";
+  const first = injectPindieCore(`Pi base system prompt\n\n${skillIndex}`);
+  const second = injectPindieCore(first);
 
-  assert.equal(first, second);
-  assert.match(first, /Pindie Current State/);
-  assert.match(first, /"goal": "Wire Pindie into Pi"/);
-});
-
-test("C03 derived task status is rendered", () => {
-  assert.match(renderPindieCore(verifiedState()), /Task status: active/);
-});
-
-test("C04 derived verification status is rendered", () => {
-  assert.match(
-    renderPindieCore(verifiedState()),
-    /Verification status: passed/,
-  );
-});
-
-test("C05 repeated injection leaves exactly one Pindie Core block", () => {
-  const first = injectPindieCore("Pi base system prompt", verifiedState());
-  const second = injectPindieCore(first, verifiedState());
-
-  assert.match(second, /^Pi base system prompt/);
+  assert.equal(second, first);
   assert.equal(second.split(PINDIE_CORE_START).length - 1, 1);
   assert.equal(second.split(PINDIE_CORE_END).length - 1, 1);
-  assert.equal(second, first);
-});
-
-test("SI02 Core injection preserves Pi Skill metadata unchanged", () => {
-  const skillIndex = `<available_skills>\n<skill><name>release</name><description>Prepare a release when requested.</description></skill>\n</available_skills>`;
-  const prompt = `Pi base system prompt\n\n${skillIndex}\n\nPi closing instructions`;
-
-  const result = injectPindieCore(prompt, verifiedState());
-
-  assert.ok(result.includes(skillIndex));
-  assert.match(result, /^Pi base system prompt/);
-  assert.match(result, /Pi closing instructions/);
-  assert.equal(result.split("<available_skills>").length - 1, 1);
-  assert.equal(result.split(PINDIE_CORE_START).length - 1, 1);
-});
-
-test("SI03 repeated Core injection preserves one Pi Skill index and one Core block", () => {
-  const skillIndex = `<available_skills>\n<skill><name>release</name><description>Prepare a release when requested.</description></skill>\n</available_skills>`;
-  let result = `Pi base system prompt\n\n${skillIndex}`;
-
-  for (let index = 0; index < 3; index += 1) {
-    result = injectPindieCore(result, verifiedState());
-  }
-
-  assert.equal(result.split("<available_skills>").length - 1, 1);
-  assert.equal(result.split(PINDIE_CORE_START).length - 1, 1);
-  assert.equal(result.split(PINDIE_CORE_END).length - 1, 1);
-  assert.ok(result.includes(skillIndex));
+  assert.ok(second.includes(skillIndex));
 });
 
 test("SI05 Core Policy keeps optional Skills subordinate to Core safeguards", () => {
   assert.match(PINDIE_CORE_POLICY, /Specialized Skills are optional procedures/i);
-  assert.match(
-    PINDIE_CORE_POLICY,
-    /cannot override latest user intent, observed reality, Pindie Core and State invariants, the Task Contract, Verification, or Human Gates/i,
-  );
+  assert.match(PINDIE_CORE_POLICY, /cannot override latest user intent, observed reality, Pindie Core and State invariants, the Task Contract, Verification, or Human Gates/i);
   assert.match(PINDIE_CORE_POLICY, /Skill selection and Skill-local progress.*not persistent Pindie State/i);
 });
 
-test("C06 load failure renders unavailable State instead of EMPTY_STATE", () => {
-  const block = renderPindieCore(
-    null,
-    "Could not parse the project State file.",
-  );
+test("CP07-CP11 Runtime Context deterministically projects the complete active semantic State", () => {
+  const first = renderPindieRuntimeContext(completeState());
+  const second = renderPindieRuntimeContext(completeState());
 
-  assert.match(block, /Pindie State is unavailable/);
-  assert.match(block, /Could not parse the project State file/);
-  assert.match(block, /Do not make consequential project changes/);
-  assert.doesNotMatch(block, /"task": null/);
+  assert.equal(first, second);
+  assert.match(first, /Task status: waiting_human/);
+  assert.match(first, /Verification status: passed/);
+  assert.match(first, /Goal:\nWire Pindie into Pi/);
+  assert.match(first, /Constraints:\n- Preserve Pi's Agent Loop/);
+  assert.match(first, /Success criteria:\n- c1: Extension wiring works/);
+  assert.match(first, /Blockers:\n- Awaiting API access/);
+  assert.match(first, /Questions:\n- Which release channel\?/);
+  assert.match(first, /Next intent:\nRun tests/);
+  assert.match(first, /tests — passed — covers: c1\n  Evidence: Extension tests passed\./);
+  assert.match(first, /Human gate:\n- Kind: decision\n- Question: Choose a release strategy\.\n- Options:\n  - Canary\n  - Immediate/);
+});
+
+test("CP12 idle State has minimal meaningful Runtime Context", () => {
+  const runtime = renderPindieRuntimeContext({ task: null });
+
+  assert.equal(runtime, `${PINDIE_RUNTIME_START}\nPindie Runtime Context\n\nTask status: idle\n${PINDIE_RUNTIME_END}`);
+  assert.doesNotMatch(runtime, /"task": null/);
+});
+
+test("CP13 unavailable State has fail-closed Runtime Context", () => {
+  const runtime = renderPindieRuntimeContext(null, "Could not parse the project State file.");
+
+  assert.match(runtime, /State: unavailable/);
+  assert.match(runtime, /Could not parse the project State file/);
+  assert.match(runtime, /Do not make consequential project changes/);
+});
+
+test("CP14 empty optional Runtime Context sections are omitted", () => {
+  const state: PindieState = {
+    task: {
+      ...completeState().task!,
+      constraints: [],
+      openLoops: { blockers: [], questions: [], nextIntent: null },
+      verification: { stale: false, checks: [] },
+      humanGate: null,
+    },
+  };
+  const runtime = renderPindieRuntimeContext(state);
+
+  assert.doesNotMatch(runtime, /Constraints:|Blockers:|Questions:|Next intent:|Verification checks:|Human gate:/);
+});
+
+test("Runtime Context messages use the stable custom type without volatile model-facing content", () => {
+  const message = createPindieRuntimeContextMessage(completeState());
+
+  assert.equal(message.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
+  assert.equal(message.timestamp, 0);
+  assert.ok(isPindieRuntimeContextMessage(message));
+  assert.match(String(message.content), new RegExp(PINDIE_RUNTIME_START));
 });

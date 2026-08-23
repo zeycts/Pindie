@@ -6,6 +6,9 @@ import {
 
 export const PINDIE_CORE_START = "<PINDIE_CORE>";
 export const PINDIE_CORE_END = "</PINDIE_CORE>";
+export const PINDIE_RUNTIME_START = "<PINDIE_RUNTIME>";
+export const PINDIE_RUNTIME_END = "</PINDIE_RUNTIME>";
+export const PINDIE_RUNTIME_CONTEXT_TYPE = "pindie-runtime-context";
 
 export const PINDIE_CORE_POLICY = `Pindie Core Policy
 - Latest user intent and observed project reality override stale Pindie State.
@@ -26,58 +29,108 @@ export const PINDIE_CORE_POLICY = `Pindie Core Policy
 
 const PINDIE_CORE_PATTERN = /<PINDIE_CORE>[\s\S]*?<\/PINDIE_CORE>/g;
 
-function renderCurrentState(state: PindieState): string {
-  const lines = [
-    "Pindie Current State",
-    "",
-    `Task status: ${getTaskStatus(state)}`,
-  ];
-
-  if (state.task) {
-    lines.push(
-      `Verification status: ${getVerificationStatus(state.task)}`,
-    );
-  }
-
-  lines.push("", JSON.stringify(state, null, 2));
-  return lines.join("\n");
+export function renderPindieCore(): string {
+  return [PINDIE_CORE_START, PINDIE_CORE_POLICY, PINDIE_CORE_END].join("\n");
 }
 
-function renderUnavailableState(reason: string | null): string {
+export function injectPindieCore(systemPrompt: string): string {
+  const withoutOlderBlock = systemPrompt
+    .replace(PINDIE_CORE_PATTERN, "")
+    .trimEnd();
+  const block = renderPindieCore();
+
+  return withoutOlderBlock ? `${withoutOlderBlock}\n\n${block}` : block;
+}
+
+function renderUnavailableRuntimeContext(reason: string | null): string {
   return [
-    "Pindie State is unavailable:",
-    reason ?? "No project State has been loaded for this session.",
+    "Pindie Runtime Context",
+    "",
+    "State: unavailable",
+    `Reason: ${reason ?? "No project State has been loaded for this session."}`,
     "",
     "Do not make consequential project changes until Pindie State is restored.",
   ].join("\n");
 }
 
-export function renderPindieCore(
+export function renderPindieRuntimeContext(
   state: PindieState | null,
   unavailableReason: string | null = null,
 ): string {
-  const currentState = state
-    ? renderCurrentState(state)
-    : renderUnavailableState(unavailableReason);
+  const content = state
+    ? renderAvailableRuntimeContext(state)
+    : renderUnavailableRuntimeContext(unavailableReason);
 
-  return [
-    PINDIE_CORE_START,
-    PINDIE_CORE_POLICY,
-    "",
-    currentState,
-    PINDIE_CORE_END,
-  ].join("\n");
+  return [PINDIE_RUNTIME_START, content, PINDIE_RUNTIME_END].join("\n");
 }
 
-export function injectPindieCore(
-  systemPrompt: string,
+function renderAvailableRuntimeContext(state: PindieState): string {
+  const lines = [
+    "Pindie Runtime Context",
+    "",
+    `Task status: ${getTaskStatus(state)}`,
+  ];
+  const task = state.task;
+  if (!task) return lines.join("\n");
+
+  lines.push("", `Verification status: ${getVerificationStatus(task)}`, "", "Goal:", task.goal);
+
+  if (task.constraints.length > 0) {
+    lines.push("", "Constraints:", ...task.constraints.map((constraint) => `- ${constraint}`));
+  }
+  lines.push(
+    "",
+    "Success criteria:",
+    ...task.successCriteria.map((criterion) => `- ${criterion.id}: ${criterion.description}`),
+  );
+  if (task.openLoops.blockers.length > 0) {
+    lines.push("", "Blockers:", ...task.openLoops.blockers.map((blocker) => `- ${blocker}`));
+  }
+  if (task.openLoops.questions.length > 0) {
+    lines.push("", "Questions:", ...task.openLoops.questions.map((question) => `- ${question}`));
+  }
+  if (task.openLoops.nextIntent !== null) {
+    lines.push("", "Next intent:", task.openLoops.nextIntent);
+  }
+  if (task.verification.checks.length > 0) {
+    lines.push("", "Verification checks:");
+    for (const check of task.verification.checks) {
+      lines.push(
+        `- ${check.name} — ${check.status} — covers: ${check.covers.length > 0 ? check.covers.join(", ") : "none"}`,
+        `  Evidence: ${check.evidence}`,
+      );
+    }
+  }
+  if (task.humanGate) {
+    lines.push("", "Human gate:", `- Kind: ${task.humanGate.kind}`, `- Question: ${task.humanGate.question}`);
+    if (task.humanGate.options && task.humanGate.options.length > 0) {
+      lines.push("- Options:", ...task.humanGate.options.map((option) => `  - ${option}`));
+    }
+  }
+
+  return lines.join("\n");
+}
+
+export function createPindieRuntimeContextMessage(
   state: PindieState | null,
   unavailableReason: string | null = null,
-): string {
-  const withoutOlderBlock = systemPrompt
-    .replace(PINDIE_CORE_PATTERN, "")
-    .trimEnd();
-  const block = renderPindieCore(state, unavailableReason);
+) {
+  return {
+    role: "custom" as const,
+    customType: PINDIE_RUNTIME_CONTEXT_TYPE,
+    content: renderPindieRuntimeContext(state, unavailableReason),
+    display: false,
+    timestamp: 0,
+  };
+}
 
-  return withoutOlderBlock ? `${withoutOlderBlock}\n\n${block}` : block;
+export function isPindieRuntimeContextMessage(message: unknown): boolean {
+  return (
+    typeof message === "object" &&
+    message !== null &&
+    "role" in message &&
+    "customType" in message &&
+    message.role === "custom" &&
+    message.customType === PINDIE_RUNTIME_CONTEXT_TYPE
+  );
 }
