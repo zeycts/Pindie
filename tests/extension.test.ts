@@ -3,7 +3,10 @@ import test from "node:test";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { PINDIE_CORE_START } from "../src/context.ts";
+import {
+  PINDIE_CORE_START,
+  PINDIE_RUNTIME_CONTEXT_TYPE,
+} from "../src/context.ts";
 import {
   registerPindieExtension,
   type PindieExtensionOptions,
@@ -262,6 +265,7 @@ test("the Extension registers the two existing Pindie tools and required hooks",
   assert.deepEqual([...api.handlers.keys()].sort(), [
     "agent_settled",
     "before_agent_start",
+    "context",
     "session_shutdown",
     "session_start",
     "tool_call",
@@ -381,12 +385,82 @@ test("T41-T43 before_agent_start preserves Pi prompt and injects one current Cor
 
   assert.match(second.systemPrompt, /^Pi system prompt/);
   assert.match(second.systemPrompt, /Pindie Core Policy/);
-  assert.match(second.systemPrompt, /Pindie Current State/);
-  assert.match(second.systemPrompt, /Task status: active/);
+  assert.doesNotMatch(second.systemPrompt, /Pindie Current State|Task status:|Wire Pi extension/);
   assert.equal(second.systemPrompt.split(PINDIE_CORE_START).length - 1, 1);
 });
 
-test("load failure injects explicit unavailable context", async () => {
+test("CP15-CP24 Context lifecycle projects fresh ephemeral Runtime Context", async () => {
+  const harness = createHarness([["/repo", verifiedState()]]);
+  await startSession(harness, "/repo");
+  const originalMessages = [
+    { role: "user", content: "Continue", timestamp: 1 },
+    {
+      role: "custom",
+      customType: PINDIE_RUNTIME_CONTEXT_TYPE,
+      content: "stale projection",
+      display: false,
+      timestamp: 0,
+    },
+    { role: "assistant", content: [{ type: "text", text: "Observed." }], timestamp: 2 },
+  ];
+  const semanticState = structuredClone(harness.integration.runtime.state);
+  const first = await harness.api.handler("context")(
+    { type: "context", messages: originalMessages },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+
+  assert.deepEqual(originalMessages[0], { role: "user", content: "Continue", timestamp: 1 });
+  assert.deepEqual(first.messages.slice(0, 2), [originalMessages[0], originalMessages[2]]);
+  assert.equal(first.messages.filter((message) => message.customType === PINDIE_RUNTIME_CONTEXT_TYPE).length, 1);
+  assert.equal(first.messages.at(-1)?.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
+  assert.match(String(first.messages.at(-1)?.content), /Verification status: passed/);
+  assert.deepEqual(harness.integration.runtime.state, semanticState);
+  assert.deepEqual(harness.store.saves, []);
+
+  const repeated = await harness.api.handler("context")(
+    { type: "context", messages: first.messages },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+  assert.equal(repeated.messages.filter((message) => message.customType === PINDIE_RUNTIME_CONTEXT_TYPE).length, 1);
+
+  await harness.api.tool("pindie_state").execute("refine", {
+    action: "refine_task",
+    goal: "Refined runtime goal",
+  });
+  const afterStateMutation = await harness.api.handler("context")(
+    { type: "context", messages: repeated.messages },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+  assert.match(String(afterStateMutation.messages.at(-1)?.content), /Goal:\nRefined runtime goal/);
+
+  await harness.api.tool("pindie_state").execute("verify", {
+    action: "record_verification",
+    check: { name: "tests", status: "passed", covers: ["c1"], evidence: "passed" },
+  });
+  await harness.api.handler("tool_result")(toolResult("edit"), context("/repo"));
+  const afterEdit = await harness.api.handler("context")(
+    { type: "context", messages: afterStateMutation.messages },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+  assert.match(String(afterEdit.messages.at(-1)?.content), /Verification status: stale/);
+});
+
+test("unavailable Runtime Context remains consistent with fail-closed guards", async () => {
+  const harness = createHarness();
+  harness.store.loadErrors.set("/repo", new Error("invalid persisted State"));
+  await startSession(harness, "/repo");
+
+  const projected = await harness.api.handler("context")(
+    { type: "context", messages: [{ role: "user", content: "Continue", timestamp: 1 }] },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+
+  assert.match(String(projected.messages.at(-1)?.content), /State: unavailable/);
+  assert.match(String(projected.messages.at(-1)?.content), /invalid persisted State/);
+  assertBlocked(await callGuard(harness, toolCall("edit")), /State is unavailable/i);
+});
+
+test("load failure injects explicit unavailable Runtime Context", async () => {
   const harness = createHarness();
   harness.store.loadErrors.set("/repo", new Error("invalid persisted State"));
   await startSession(harness, "/repo");
@@ -401,9 +475,8 @@ test("load failure injects explicit unavailable context", async () => {
     context("/repo"),
   ) as { systemPrompt: string };
 
-  assert.match(result.systemPrompt, /Pindie State is unavailable/);
-  assert.match(result.systemPrompt, /invalid persisted State/);
-  assert.doesNotMatch(result.systemPrompt, /"task": null/);
+  assert.doesNotMatch(result.systemPrompt, /Pindie State is unavailable|invalid persisted State|"task": null/);
+  assert.match(result.systemPrompt, new RegExp(PINDIE_CORE_START));
 });
 
 test("T44 successful edit invalidates verification and persists it", async () => {

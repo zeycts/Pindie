@@ -140,9 +140,9 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - T38 `/new` in the same project preserves the same current Pindie task.
 - T39 Different repositories resolve to different State.
 - T40 Different subdirectories of one Git repository resolve to one State.
-- T41 `before_agent_start` injects the Core Policy.
-- T42 `before_agent_start` injects Current State.
-- T43 Injection does not duplicate Pindie policy/context blocks.
+- T41 `before_agent_start` injects stable Core Policy only.
+- T42 `context`, before every LLM call, appends fresh ephemeral Runtime Context projected from current State.
+- T43 Core injection and repeated Runtime Context projection do not duplicate Pindie blocks/messages or rewrite other Pi/session messages.
 - T44 Successful `edit` invalidates current verification.
 - T45 Successful `write` invalidates current verification.
 - T46 Failed `edit` does not invalidate verification.
@@ -276,7 +276,7 @@ The eventual v0.1 core is accepted when it can:
 
 - persist one current task per project
 - survive Pi session changes
-- inject Core Policy and Current State
+- inject stable Core Policy and project current Runtime Context per LLM call
 - create/refine semantic work State through controlled tools
 - invalidate known verification after project mutation
 - track verification against success criteria
@@ -299,7 +299,7 @@ Pi is the only Skill runtime. Pindie does not implement a Skill registry, loader
 
 ### SR03 — Progressive disclosure is preserved
 
-Pindie does not inject complete Skill bodies into Agent Runs. Pi continues to provide discovery metadata/index in the system prompt and loads `SKILL.md` on demand. `injectPindieCore()` preserves every incoming Pi-generated Skill metadata block unchanged and replaces only its own `<PINDIE_CORE>...</PINDIE_CORE>` block.
+Pindie does not inject complete Skill bodies into Agent Runs. Pi continues to provide discovery metadata/index in the system prompt and loads `SKILL.md` on demand. `injectPindieCore()` preserves every incoming Pi-generated Skill metadata block unchanged and replaces only its own stable `<PINDIE_CORE>...</PINDIE_CORE>` block. Dynamic State is a separate request-time Runtime Context projection, not system-prompt or Skill content.
 
 ### SR04 — Skills are subordinate to Pindie Core
 

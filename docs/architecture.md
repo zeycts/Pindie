@@ -164,6 +164,7 @@ Do not persist these in Pindie State when they can be re-observed:
 - complete build/test logs
 - loop phase such as `deciding` or `testing`
 - Skill selection, lifecycle, or Skill-local workflow progress
+- request-time model Runtime Context or any prompt-cache metadata
 
 Pi sessions provide interaction history; Git/files/environment provide reality. Pi Skill context provides reconstructable Skill information.
 
@@ -172,7 +173,7 @@ Pi sessions provide interaction history; Git/files/environment provide reality. 
 The implemented v0.1 Core Extension provides:
 
 - State loading and persistence
-- Core Policy + Current State injection
+- stable Core Policy system-prompt injection plus ephemeral request-time Runtime Context projection
 - deterministic State transitions
 - verification invalidation on known project mutation
 - Human Gate lifecycle
@@ -205,8 +206,13 @@ session_start
 before_agent_start
   → start runtime-only Run timer, Run Cost, and Current Activity (thinking)
   → snapshot pre-existing Human Gate / completed-task identity
-  → append one Core Policy + Current State block
+  → append one stable Core Policy block
   → derive and publish one Pindie semantic status line
+
+context (before every LLM call)
+  → preserve existing Pi/session messages while removing any prior synthetic Pindie Runtime Context message
+  → read current authoritative Runtime State and append one fresh deterministic Runtime Context message
+  → never persist Runtime Context or manage Pi prompt caching
 
 tool_execution_start / tool_execution_end
   → update runtime-only Current Activity from public tool execution lifecycle
@@ -247,7 +253,7 @@ canonical project root
 
 The Core Extension resolves the canonical project root (the canonical Git root when available, otherwise canonical cwd). `FileStateStore` assumes the provided project root is already canonical and only hashes it to derive the project ID.
 
-Pi session history may retain snapshots, but it is not the authoritative current-work State.
+Pi session history may retain snapshots, but it is not the authoritative current-work State. Pindie Core Policy is stable system-prompt content; dynamic semantic State is instead projected as one ephemeral custom Runtime Context message immediately before each LLM call. That projection is deterministic, includes the derived statuses and populated Task Contract/open-loop/verification/Human Gate semantics, and is not saved to a Pi session or Pindie State. Pi alone owns prompt cache behavior.
 
 ## 9. Skill Integration v0.1
 
