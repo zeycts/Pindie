@@ -78,6 +78,28 @@ test("TBE-C01-C02 Core Policy requires a Task for consequential action but keeps
   assert.match(PINDIE_CORE_POLICY, /Read-only observation alone does not require or create a Task/i);
 });
 
+test("ETA-C01 Core Policy admits a clear new idle or done Task before consequential tools", () => {
+  assert.match(PINDIE_CORE_POLICY, /State is idle or done/i);
+  assert.match(PINDIE_CORE_POLICY, /clearly defines a new consequential outcome/i);
+  assert.match(PINDIE_CORE_POLICY, /enough information for a truthful Task Contract/i);
+  assert.match(PINDIE_CORE_POLICY, /start_task before any consequential tool/i);
+});
+
+test("ETA-C02 Core Policy limits Task-free observation to genuinely needed reconciliation", () => {
+  assert.match(PINDIE_CORE_POLICY, /Task-free read-only observation may precede reconciliation only when genuinely needed/i);
+  assert.match(PINDIE_CORE_POLICY, /intent, project reality, the Task boundary, or the Task Contract/i);
+});
+
+test("ETA-C03 Core Policy keeps observation and return-control intent Task-free", () => {
+  assert.match(PINDIE_CORE_POLICY, /Observation, explanation, discussion, pause, or return-control intent alone does not mutate the Task or authorize consequential continuation/i);
+  assert.match(PINDIE_CORE_POLICY, /Read-only observation alone does not require or create a Task/i);
+});
+
+test("ETA-C04 Core Policy keeps supported observation distinct from consequential bash", () => {
+  assert.match(PINDIE_CORE_POLICY, /pindie_git_observe.*supported read-only Git inspection/i);
+  assert.match(PINDIE_CORE_POLICY, /unrestricted bash remains consequential/i);
+});
+
 test("PMF-C01-C02 Core Policy makes freshness depend on known unchanged project reality", () => {
   assert.match(PINDIE_CORE_POLICY, /Project mutation makes prior verification stale/i);
   assert.match(PINDIE_CORE_POLICY, /Preserve prior verification only when relevant project reality is known unchanged/i);
@@ -91,7 +113,7 @@ test("EH01 Core Policy requires operation-owned narrow execution cleanup", () =>
 });
 
 test("TB29-TB32 Core Policy reconciles latest intent with the current Task", () => {
-  assert.match(PINDIE_CORE_POLICY, /before consequential project action, reconcile latest actual user intent with the current Pindie Task/i);
+  assert.match(PINDIE_CORE_POLICY, /Reconcile the current Task as early as latest user intent permits/i);
   assert.match(PINDIE_CORE_POLICY, /Continue or refine only when latest intent still belongs to this current Task/i);
   assert.match(PINDIE_CORE_POLICY, /clearly different user-requested Task may replace an unfinished current Task/i);
   assert.match(PINDIE_CORE_POLICY, /Observation, explanation, discussion, pause, or return-control intent alone does not mutate the Task or authorize consequential continuation/i);
