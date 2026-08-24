@@ -1329,6 +1329,130 @@ test("Current Activity refreshes status from public tool execution lifecycle and
   assert.doesNotMatch(statuses.at(-1)?.text ?? "", /thinking|reading|editing|running|updating|working/);
 });
 
+test("RA-E01 and RA-E02 final activity schedules one expiry refresh back to thinking", async () => {
+  let time = 0;
+  const timers: Array<{ callback: () => void; delayMs: number; cancelled: boolean }> = [];
+  const harness = createHarness([['/repo', activeState()]], {}, {
+    now: () => time,
+    scheduleActivityRefresh: (callback, delayMs) => {
+      const timer = { callback, delayMs, cancelled: false };
+      timers.push(timer);
+      return timer as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearActivityRefresh: (timer) => {
+      (timer as unknown as { cancelled: boolean }).cancelled = true;
+    },
+  });
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses);
+  await startSession(harness, "/repo");
+  await harness.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} },
+    uiContext,
+  );
+  await harness.api.handler("tool_execution_start")(
+    toolExecution("tool_execution_start", "read", "read"), uiContext,
+  );
+  await harness.api.handler("tool_execution_end")(
+    toolExecution("tool_execution_end", "read", "read"), uiContext,
+  );
+
+  assert.equal(harness.integration.runActivity.activity, "reading");
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delayMs, 250);
+  assert.match(statuses.at(-1)?.text ?? "", /reading/);
+
+  time += 250;
+  timers[0].callback();
+  assert.equal(harness.integration.runActivity.activity, "thinking");
+  assert.match(statuses.at(-1)?.text ?? "", /thinking/);
+  assert.deepEqual(harness.store.saves, []);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, uiContext);
+});
+
+test("RA-E03 a new real tool supersedes an obsolete linger callback", async () => {
+  let time = 0;
+  const timers: Array<{ callback: () => void; cancelled: boolean }> = [];
+  const harness = createHarness([['/repo', activeState()]], {}, {
+    now: () => time,
+    scheduleActivityRefresh: (callback) => {
+      const timer = { callback, cancelled: false };
+      timers.push(timer);
+      return timer as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearActivityRefresh: (timer) => {
+      (timer as unknown as { cancelled: boolean }).cancelled = true;
+    },
+  });
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses);
+  await startSession(harness, "/repo");
+  await harness.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "", systemPrompt: "", systemPromptOptions: {} }, uiContext);
+  await harness.api.handler("tool_execution_start")(toolExecution("tool_execution_start", "read", "read"), uiContext);
+  await harness.api.handler("tool_execution_end")(toolExecution("tool_execution_end", "read", "read"), uiContext);
+  const oldTimer = timers[0];
+
+  await harness.api.handler("tool_execution_start")(toolExecution("tool_execution_start", "edit", "edit"), uiContext);
+  assert.equal(oldTimer.cancelled, true);
+  assert.equal(harness.integration.runActivity.activity, "editing");
+  time += 250;
+  oldTimer.callback();
+  assert.equal(harness.integration.runActivity.activity, "editing");
+  assert.match(statuses.at(-1)?.text ?? "", /editing/);
+  await harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "done" }, uiContext);
+});
+
+test("RA-E04 settlement cancels linger presentation", async () => {
+  const timers: Array<{ callback: () => void; cancelled: boolean }> = [];
+  const harness = createHarness([['/repo', activeState()]], {}, {
+    scheduleActivityRefresh: (callback) => {
+      const timer = { callback, cancelled: false };
+      timers.push(timer);
+      return timer as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearActivityRefresh: (timer) => { (timer as unknown as { cancelled: boolean }).cancelled = true; },
+  });
+  const uiContext = interactiveContext("/repo", []);
+  await startSession(harness, "/repo");
+  await harness.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "", systemPrompt: "", systemPromptOptions: {} }, uiContext);
+  await harness.api.handler("tool_execution_start")(toolExecution("tool_execution_start", "read", "read"), uiContext);
+  await harness.api.handler("tool_execution_end")(toolExecution("tool_execution_end", "read", "read"), uiContext);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, uiContext);
+
+  assert.equal(timers[0].cancelled, true);
+  assert.equal(harness.integration.runActivity.activity, null);
+});
+
+test("RA-E05 session replacement prevents an old linger callback from changing new presentation", async () => {
+  let time = 0;
+  const timers: Array<{ callback: () => void; cancelled: boolean }> = [];
+  const harness = createHarness([['/repo', activeState()]], {}, {
+    now: () => time,
+    scheduleActivityRefresh: (callback) => {
+      const timer = { callback, cancelled: false };
+      timers.push(timer);
+      return timer as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearActivityRefresh: (timer) => { (timer as unknown as { cancelled: boolean }).cancelled = true; },
+  });
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses);
+  await startSession(harness, "/repo");
+  await harness.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "", systemPrompt: "", systemPromptOptions: {} }, uiContext);
+  await harness.api.handler("tool_execution_start")(toolExecution("tool_execution_start", "read", "read"), uiContext);
+  await harness.api.handler("tool_execution_end")(toolExecution("tool_execution_end", "read", "read"), uiContext);
+  const oldTimer = timers[0];
+
+  await harness.api.handler("session_start")({ type: "session_start", reason: "replacement" }, uiContext);
+  await harness.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "", systemPrompt: "", systemPromptOptions: {} }, uiContext);
+  assert.equal(oldTimer.cancelled, true);
+  time += 250;
+  oldTimer.callback();
+  assert.equal(harness.integration.runActivity.activity, "thinking");
+  assert.match(statuses.at(-1)?.text ?? "", /thinking/);
+  await harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "done" }, uiContext);
+});
+
 test("unified Pindie status publishes active and final timing, then clears on shutdown", async () => {
   const harness = createHarness([["/repo", activeState()]]);
   await startSession(harness, "/repo");

@@ -204,9 +204,9 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 
 - CA01 Current Activity is runtime-only observable Pi execution activity for compact status presentation, not Pindie State and not a semantic Observe / Understand / Decide / Act / Verify / Update State Core Loop phase.
 - CA02 `before_agent_start` starts a clean active Run at `thinking`. Public `tool_execution_start` / `tool_execution_end` track active executions by `toolCallId`; `agent_settled`, `session_shutdown`, and `session_start` clear all tracking. No historical session entries are reconstructed.
-- CA03 Known tool names map as: `read` → `reading`; `edit` / `write` → `editing`; `bash` → `running`; `pindie_state` / `pindie_gate` → `updating`; unknown tools → `working`. No model prose, hidden reasoning, or bash command parsing is used.
-- CA04 With no active tools in an active Run, Current Activity is `thinking`; simultaneous tools of one mapped kind retain that kind; multiple mapped kinds render `working`. Unknown/duplicate tool ends are harmless. No activity survives settlement or session reset.
-- CA05 Current Activity is presentation-only. Lifecycle tracking or status rendering failure cannot alter tool execution, State transitions, Human Gates, or Agent Runs. Tool start/end immediately refresh existing status; Run Timer remains the only periodic timer.
+- CA03 Known tool names map as: `read` / `pindie_git_observe` → `reading`; `edit` / `write` → `editing`; `bash` → `running`; `pindie_state` / `pindie_gate` → `updating`; unknown tools → `working`. No model prose, hidden reasoning, individual Git-observe action inspection, or bash command parsing is used.
+- CA04 With no active tools in an active Run, Current Activity is `thinking`; simultaneous tools of one mapped kind retain that kind; multiple mapped kinds render `working`. Unknown/duplicate tool ends are harmless. When the final short-lived tool ends, its activity may remain visible for a small bounded presentation interval before returning to `thinking`; actual active tools always take precedence and linger is presentation-only. No activity survives settlement or session reset.
+- CA05 Current Activity is presentation-only. Lifecycle tracking, status rendering, or one-shot linger-expiry refresh failure cannot alter tool execution, State transitions, Human Gates, or Agent Runs. Tool start/end immediately refresh existing status; Run Timer remains the only periodic timer.
 
 ### Adaptive Reasoning v0.1
 
