@@ -55,6 +55,17 @@ Session-local choreography, sequencing, and checkpoint instructions are not auto
 
 Before consequential project action, reconcile latest actual user intent with the current Task after any needed read-only observation: start when no unfinished Task exists, continue when intent still belongs to the Task without material Contract change, refine when it does with a material Contract change, and replace an unfinished Task only when intent clearly requests a different Task. Stop, pause, inspection, explanation, or discussion alone does not mutate State or authorize consequential continuation. Use the existing Human Gate for consequential ambiguity; these relationships are Core decision discipline, not persisted State or controller machinery.
 
+### Early Task Admission v0.1
+
+- **ETA01-ETA02** With idle or done State, when latest intent clearly requests a new consequential outcome and already provides enough information for a truthful Task Contract, call `pindie_state(start_task)` before consequential project execution.
+- **ETA03-ETA04** Observation-only, explanation, discussion, pause, and return-control intent creates no Task and authorizes no consequential Task work.
+- **ETA05** Task-free read-only observation may precede reconciliation only when genuinely needed to understand intent, project reality, the Task boundary, or the Task Contract.
+- **ETA06** Generic `bash` remains consequential and is never reclassified through command parsing.
+- **ETA07** Insufficient information for a truthful Task Contract must not create a placeholder Task merely to unlock consequential tools.
+- **ETA08** Existing unfinished-Task CONTINUE, REFINE, and REPLACE semantics remain unchanged.
+- **ETA09** A successfully persisted same-run `start_task` backs subsequent consequential execution through existing Task-Backed Execution.
+- **ETA10** Early Task Admission adds no State field, persistent flag, controller, public tool, shell allowlist, or new execution path.
+
 ### Task-Backed Execution v0.1
 
 - **TBE-E01-E02** With idle State, `read`, `grep`, `find`, `ls`, and `pindie_git_observe` remain Task-free; only `pindie_state(start_task)` is admitted as a consequential transition.
