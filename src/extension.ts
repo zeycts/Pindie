@@ -15,6 +15,10 @@ import {
 } from "./context.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
 import {
+  captureProjectFingerprint as defaultCaptureProjectFingerprint,
+  type ProjectFingerprint,
+} from "./project-mutation.ts";
+import {
   FIXED_THINKING_LEVELS,
   isFixedThinkingLevel,
   ReasoningController,
@@ -60,6 +64,8 @@ export interface PindieExtensionOptions {
   subscriptionUsageProvider?: SubscriptionUsageProvider;
   getStatusWidth?: () => number | undefined;
   now?: () => number;
+  /** Internal test seam for runtime-only project mutation observation. */
+  captureProjectFingerprint?: (projectRoot: string) => Promise<ProjectFingerprint>;
 }
 
 export interface PindieExtensionIntegration {
@@ -87,6 +93,20 @@ function isReadOnlyObservation(event: ToolCallEvent): boolean {
     isToolCallEventType("ls", event) ||
     isToolCallEventType("pindie_git_observe", event)
   );
+}
+
+function isAmbiguousConsequentialTool(event: ToolCallEvent): boolean {
+  return !isReadOnlyObservation(event) &&
+    !isToolCallEventType("pindie_state", event) &&
+    !isToolCallEventType("pindie_gate", event) &&
+    !isToolCallEventType("edit", event) &&
+    !isToolCallEventType("write", event);
+}
+
+interface MutationWindow {
+  projectRoot: string;
+  baseline: ProjectFingerprint;
+  pendingToolCallIds: Set<string>;
 }
 
 const STALE_EXTENSION_CONTEXT_ERROR = "This extension ctx is stale after session replacement or reload.";
@@ -117,6 +137,9 @@ export function registerPindieExtension(
   const runTimer = new RunTimer();
   const resolveProjectRoot =
     options.resolveProjectRoot ?? defaultResolveProjectRoot;
+  const captureProjectFingerprint =
+    options.captureProjectFingerprint ?? defaultCaptureProjectFingerprint;
+  let mutationWindow: MutationWindow | null = null;
   const subscriptionUsageProvider =
     options.subscriptionUsageProvider ?? chatGptSubscriptionUsageProvider;
   const now = options.now ?? Date.now;
@@ -270,6 +293,7 @@ export function registerPindieExtension(
     runtime.unload();
     stateUnavailableReason = null;
     clearAgentRunSnapshot();
+    mutationWindow = null;
 
     try {
       const projectRoot = await resolveProjectRoot(ctx.cwd);
@@ -292,6 +316,7 @@ export function registerPindieExtension(
     runtime.unload();
     stateUnavailableReason = null;
     clearAgentRunSnapshot();
+    mutationWindow = null;
     statusContext = null;
   });
 
@@ -471,21 +496,30 @@ export function registerPindieExtension(
           "The current Pindie task is completed and terminal. Start a new task with pindie_state(start_task) before consequential project action.",
       };
     }
+
+    // This is deliberately after every existing admission guard. A blocked call
+    // has no project-effect probe and generic bash is never parsed.
+    if (isAmbiguousConsequentialTool(event)) {
+      const projectRoot = runtime.projectRoot;
+      if (mutationWindow === null) {
+        let baseline: ProjectFingerprint;
+        try {
+          baseline = await captureProjectFingerprint(projectRoot);
+        } catch (error) {
+          baseline = { kind: "unknown", reason: errorMessage(error) };
+        }
+        mutationWindow = { projectRoot, baseline, pendingToolCallIds: new Set() };
+      } else if (mutationWindow.projectRoot !== projectRoot) {
+        // A session has one loaded project. Do not mix an impossible second root
+        // into a known window; fail closed for verification instead.
+        mutationWindow.baseline = { kind: "unknown", reason: "Mutation window project root changed." };
+      }
+      mutationWindow.pendingToolCallIds.add(event.toolCallId);
+    }
   });
 
-  pi.on("tool_result", async (event) => {
-    if (
-      event.isError ||
-      runtime.projectRoot === null ||
-      stateUnavailableReason !== null ||
-      (!isEditToolResult(event) && !isWriteToolResult(event))
-    ) {
-      return;
-    }
-
-    const task = runtime.state.task;
-    if (!task) return;
-
+  const invalidateVerificationAfterProjectMutation = async (): Promise<void> => {
+    if (runtime.projectRoot === null || stateUnavailableReason !== null || !runtime.state.task) return;
     try {
       const result = await runtime.dispatch({
         type: "invalidate_verification",
@@ -507,6 +541,31 @@ export function registerPindieExtension(
     }
 
     refreshStatus();
+  };
+
+  pi.on("tool_result", async (event) => {
+    if (!event.isError && (isEditToolResult(event) || isWriteToolResult(event))) {
+      await invalidateVerificationAfterProjectMutation();
+      return;
+    }
+
+    const window = mutationWindow;
+    if (!window || !window.pendingToolCallIds.delete(event.toolCallId)) return;
+    // Consume before observation/dispatch so duplicate results cannot act twice.
+    if (window.pendingToolCallIds.size === 0) mutationWindow = null;
+    if (window.baseline.kind === "unknown") {
+      await invalidateVerificationAfterProjectMutation();
+      return;
+    }
+    let after: ProjectFingerprint;
+    try {
+      after = await captureProjectFingerprint(window.projectRoot);
+    } catch (error) {
+      after = { kind: "unknown", reason: errorMessage(error) };
+    }
+    if (after.kind !== "known" || after.digest !== window.baseline.digest) {
+      await invalidateVerificationAfterProjectMutation();
+    }
   });
 
   pi.on("turn_end", (event, ctx) => {

@@ -161,7 +161,7 @@ Open Loops are updated through one semantic `set_open_loops` event that atomical
 - T45 Successful `write` invalidates current verification.
 - T46 Failed `edit` does not invalidate verification.
 - T47 `read` does not invalidate verification.
-- T48 Generic `bash` calls are not blindly treated as project mutation.
+- T48 Generic `bash` calls use Project Mutation Freshness rather than being blindly classified from command text.
 - T49 `agent_settled` never auto-completes a task.
 - T49a If Pi delivers an old Agent Run's final `agent_settled` after session replacement or reload invalidated its ExtensionContext, Pindie ignores only Pi's specific stale-context error before mutating runtime State or accessing UI; unrelated errors still propagate.
 - T50 Successful integrated `complete_task` persists completed State, returns a terminating result, and terminal-task guards block later consequential mutation and same-run `pindie_state(start_task)` calls.
@@ -245,6 +245,12 @@ Read-only observation remains available throughout these boundaries. A later Age
 - **PSC-R01-R04** `PindieRuntime.refresh()` loads disk authority. A deep-equal load preserves State and Task object identity and epoch; a differing load is adopted and increments only the runtime external-State epoch; failed loads preserve the working snapshot and throw.
 - **PSC-D01-D09** Dispatch locks, reloads, compares with the State against which the event was decided, then reduces/saves/publishes. Stale ordinary events throw `PindieStateConflictError` after adopting authority; only internal invalidation safely rebases. Save still precedes publish.
 - **PSC-A01-A13** Run start refreshes before identity snapshots. Consequential preflight detects external change and makes the remainder of that Run read-only; read/grep/find/ls and `pindie_git_observe` remain available. The next user-driven Run snapshots the current epoch and recovers normally. A stale Run does not queue Active Task Continuation. Busy, conflict, and unavailable State remain distinct.
+
+### Project Mutation Freshness v0.1
+
+- **PMF-E01-E04** Only an admitted ambiguous consequential tool (`bash` or unknown/custom consequential tool) joins a runtime-only shared mutation window after all ordinary guards pass; its first call captures BEFORE and overlapping calls share that baseline. Blocked calls, Safe Observation, Pindie semantic tools, and edit/write do not probe.
+- **PMF-E05-E10** The matching `tool_result` consumes its `toolCallId`; the window remains until every pending tool settles. Known equal baseline/current Git-visible worktree content preserves verification regardless of tool success/failure; changed or unknown freshness dispatches existing `invalidate_verification` and clears current checks.
+- **PMF-F01-F14** A Git fingerprint deterministically hashes tracked plus nonignored untracked worktree paths and raw contents/mode, symlink target text, and tracked missing paths. It excludes index/HEAD/branch metadata, ignored artifacts, and mtimes; non-Git or unsafe/unsupported/bounded-out observations are unknown and fail closed only for verification freshness.
 
 ### Safe Observation v0.1
 

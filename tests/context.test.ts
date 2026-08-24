@@ -78,6 +78,12 @@ test("TBE-C01-C02 Core Policy requires a Task for consequential action but keeps
   assert.match(PINDIE_CORE_POLICY, /Read-only observation alone does not require or create a Task/i);
 });
 
+test("PMF-C01-C02 Core Policy makes freshness depend on known unchanged project reality", () => {
+  assert.match(PINDIE_CORE_POLICY, /Project mutation makes prior verification stale/i);
+  assert.match(PINDIE_CORE_POLICY, /Preserve prior verification only when relevant project reality is known unchanged/i);
+  assert.match(PINDIE_CORE_POLICY, /success or failure alone does not establish freshness/i);
+});
+
 test("EH01 Core Policy requires operation-owned narrow execution cleanup", () => {
   assert.match(PINDIE_CORE_POLICY, /Temporary resources created during execution or verification are owned by that operation/i);
   assert.match(PINDIE_CORE_POLICY, /scope them narrowly, clean only resources it created/i);
