@@ -57,7 +57,7 @@ Before consequential project action, reconcile latest actual user intent with th
 
 ### Early Task Admission v0.1
 
-- **ETA01-ETA02** With idle or done State, when latest intent clearly requests a new consequential outcome and already provides enough information for a truthful Task Contract, call `pindie_state(start_task)` before the first consequential tool.
+- **ETA01-ETA02** With idle or done State, when latest intent clearly requests a new consequential outcome and already provides enough information for a truthful Task Contract, call `pindie_state(start_task)` before consequential project execution.
 - **ETA03-ETA04** Observation-only, explanation, discussion, pause, and return-control intent creates no Task and authorizes no consequential Task work.
 - **ETA05** Task-free read-only observation may precede reconciliation only when genuinely needed to understand intent, project reality, the Task boundary, or the Task Contract.
 - **ETA06** Generic `bash` remains consequential and is never reclassified through command parsing.

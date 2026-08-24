@@ -82,7 +82,7 @@ test("ETA-C01 Core Policy admits a clear new idle or done Task before consequent
   assert.match(PINDIE_CORE_POLICY, /State is idle or done/i);
   assert.match(PINDIE_CORE_POLICY, /clearly defines a new consequential outcome/i);
   assert.match(PINDIE_CORE_POLICY, /enough information for a truthful Task Contract/i);
-  assert.match(PINDIE_CORE_POLICY, /start_task before any consequential tool/i);
+  assert.match(PINDIE_CORE_POLICY, /start_task before consequential project execution/i);
 });
 
 test("ETA-C02 Core Policy limits Task-free observation to genuinely needed reconciliation", () => {
