@@ -48,9 +48,10 @@ const now = 1_700_000_000_000;
 const day = 24 * 60 * 60 * 1_000;
 const countdownReset = now + 6 * day + 23 * 60 * 60 * 1_000 + 59 * 60 * 1_000;
 
-test("active Run presents dim timing and neutral pending verification", () => {
+test("SSA-S02 active unfinished Task renders lifecycle before pending verification", () => {
   assert.deepEqual(segments(), [
     { text: "⏱ 2m 14s", tone: "dim" },
+    { text: "active", tone: "text" },
     { text: "verify 0/4", tone: "text" },
   ]);
 });
@@ -60,6 +61,7 @@ test("AR36-AR38 Auto adds one compact segment before activity while Fixed omits 
     { text: "⏱ 2m 14s", tone: "dim" },
     { text: "auto", tone: "dim" },
     { text: "running", tone: "accent" },
+    { text: "active", tone: "text" },
     { text: "verify 0/4", tone: "text" },
   ]);
   assert.equal(segments({ reasoningMode: "fixed" }).filter(({ text }) => text === "auto").length, 0);
@@ -103,6 +105,7 @@ test("settled Run omits cleared Activity and presents final duration and passed 
   assert.deepEqual(result, [
     { text: "last 4m 51s", tone: "dim" },
     { text: "$0.41", tone: "dim" },
+    { text: "active", tone: "text" },
     { text: "✓ 4/4", tone: "success" },
   ]);
 });
@@ -112,7 +115,7 @@ test("partial passed criterion coverage remains normal verification progress", (
     state: { task: task({ verification: { stale: false, checks: [
       { name: "partial", status: "passed", covers: ["c1", "c2"], evidence: "passed" },
     ] } }) },
-  }).at(1), { text: "verify 2/4", tone: "text" });
+  }).at(2), { text: "verify 2/4", tone: "text" });
 });
 
 test("verification progress counts distinct criteria covered by passed checks", () => {
@@ -134,13 +137,13 @@ test("verification progress counts distinct criteria covered by passed checks", 
       { name: "overlap", status: "passed", covers: ["c2", "c3"], evidence: "passed" },
       { name: "failure", status: "failed", covers: ["c4"], evidence: "failed" },
     ] } }) },
-  }).at(1), { text: "verify failed 3/4", tone: "error" });
+  }).at(2), { text: "verify failed 3/4", tone: "error" });
 });
 
 test("stale verification suppresses historical progress and uses warning", () => {
   assert.deepEqual(segments({
     state: { task: task({ verification: { stale: true, checks: [] } }) },
-  }).at(1), { text: "verify stale", tone: "warning" });
+  }).at(2), { text: "verify stale", tone: "warning" });
 });
 
 test("Human Gate takes precedence over blocked attention and uses warning", () => {
@@ -165,9 +168,36 @@ test("blocked and unavailable State each use their actionable semantic tone", ()
   }).at(-1), { text: "⚠ state unavailable", tone: "error" });
 });
 
-test("no task omits verification and preserves timing only", () => {
+test("SSA-S03 through SSA-S11 lifecycle and attention preserve independent semantic truth", () => {
+  const passed = { stale: false, checks: [
+    { name: "all", status: "passed" as const, covers: ["c1", "c2", "c3", "c4"], evidence: "passed" },
+  ] };
+  assert.deepEqual(segments({ state: { task: task({ verification: passed }) } }).slice(1), [
+    { text: "active", tone: "text" }, { text: "✓ 4/4", tone: "success" },
+  ]);
+  assert.deepEqual(segments({ state: { task: task({ completed: true, verification: passed, openLoops: { blockers: [], questions: [], nextIntent: null } }) } }).slice(1), [
+    { text: "done", tone: "success" }, { text: "✓ 4/4", tone: "success" },
+  ]);
+  assert.deepEqual(segments({ state: { task: task({ openLoops: { blockers: ["blocked"], questions: [], nextIntent: null } }) } }).slice(1), [
+    { text: "verify 0/4", tone: "text" }, { text: "⚠ blocked", tone: "warning" },
+  ]);
+  assert.deepEqual(segments({ state: { task: task({ humanGate: { kind: "approval", question: "Approve?" } }) } }).slice(1), [
+    { text: "verify 0/4", tone: "text" }, { text: "⚠ gate: approval", tone: "warning" },
+  ]);
+  assert.deepEqual(segments({ runStale: true }).slice(1), [
+    { text: "active", tone: "text" }, { text: "verify 0/4", tone: "text" }, { text: "⚠ stale run", tone: "warning" },
+  ]);
+  assert.equal(segments({ runStale: true, state: { task: task({ humanGate: { kind: "input", question: "Input?" } }) } }).some(({ text }) => text === "⚠ stale run"), false);
+  assert.deepEqual(segments({ runStale: true, state: { task: task({ openLoops: { blockers: ["blocked"], questions: [], nextIntent: null } }) } }).at(-1), { text: "⚠ stale run", tone: "warning" });
+  assert.deepEqual(segments({ runStale: true, state: null, stateUnavailableReason: "missing" }).slice(1), [
+    { text: "⚠ state unavailable", tone: "error" },
+  ]);
+});
+
+test("SSA-S01 loaded idle State renders idle and omits verification", () => {
   assert.deepEqual(segments({ state: { task: null } }), [
     { text: "⏱ 2m 14s", tone: "dim" },
+    { text: "idle", tone: "dim" },
   ]);
 });
 
@@ -246,7 +276,7 @@ test("Current Activity preserves right-aligned weekly usage", () => {
   const rendered = renderStatusLayout({ fg: (_tone, text) => text }, layout, 70)!;
 
   assert.equal(visibleWidth(rendered), 70);
-  assert.match(rendered, /⏱ 42s • \$0.14 • editing • verify stale/);
+  assert.match(rendered, /⏱ 42s • \$0.14 • editing • active • verify stale/);
   assert.match(rendered, /◉ 97% • ↻ 6d23h$/);
 });
 

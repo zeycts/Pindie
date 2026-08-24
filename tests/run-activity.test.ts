@@ -19,6 +19,9 @@ test("RA-V01 a new active Run starts thinking", () => {
 test("RA-V02 through RA-V04 map known tools", () => {
   const cases = [
     ["read", "reading"],
+    ["grep", "reading"],
+    ["find", "reading"],
+    ["ls", "reading"],
     ["pindie_git_observe", "reading"],
     ["edit", "editing"],
     ["write", "editing"],

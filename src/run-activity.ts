@@ -16,6 +16,9 @@ export interface RunActivityTrackerOptions {
 function activityForTool(toolName: string): RunActivity {
   switch (toolName) {
     case "read":
+    case "grep":
+    case "find":
+    case "ls":
     case "pindie_git_observe":
       return "reading";
     case "edit":

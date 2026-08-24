@@ -5,6 +5,7 @@ import type { RunActivity } from "./run-activity.ts";
 import { formatRunCost, type RunCost } from "./run-cost.ts";
 import { formatDuration, type RunTiming } from "./run-timer.ts";
 import {
+  getTaskStatus,
   getVerificationStatus,
   type PindieState,
   type PindieTask,
@@ -43,6 +44,8 @@ export interface PindieStatusSnapshot {
   activity?: RunActivity | null;
   state: PindieState | null;
   stateUnavailableReason: string | null;
+  /** Runtime-only presentation fact for an active Agent Run. */
+  runStale?: boolean;
   subscriptionUsage?: SubscriptionUsageSnapshot | null;
 }
 
@@ -66,6 +69,20 @@ export function getVerificationProgress(task: PindieTask): VerificationProgress 
     ).length,
     total: task.successCriteria.length,
   };
+}
+
+function taskLifecycleSegment(state: PindieState): StatusSegment | null {
+  switch (getTaskStatus(state)) {
+    case "idle":
+      return { text: "idle", tone: "dim" };
+    case "active":
+      return { text: "active", tone: "text" };
+    case "done":
+      return { text: "done", tone: "success" };
+    case "blocked":
+    case "waiting_human":
+      return null;
+  }
 }
 
 function verificationSegment(task: PindieTask): StatusSegment {
@@ -120,13 +137,20 @@ export function deriveStatusSegments(
     segments.push({ text: snapshot.activity, tone: "accent" });
   }
 
-  const task = snapshot.state?.task;
+  const state = snapshot.state;
+  const task = state?.task;
+  if (state && snapshot.stateUnavailableReason === null) {
+    const lifecycle = taskLifecycleSegment(state);
+    if (lifecycle) segments.push(lifecycle);
+  }
   if (task) segments.push(verificationSegment(task));
 
   if (snapshot.stateUnavailableReason !== null) {
     segments.push({ text: "⚠ state unavailable", tone: "error" });
   } else if (task?.humanGate) {
     segments.push({ text: `⚠ gate: ${task.humanGate.kind}`, tone: "warning" });
+  } else if (snapshot.runStale) {
+    segments.push({ text: "⚠ stale run", tone: "warning" });
   } else if (task && task.openLoops.blockers.length > 0) {
     segments.push({ text: "⚠ blocked", tone: "warning" });
   }

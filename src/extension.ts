@@ -233,6 +233,11 @@ export function registerPindieExtension(
         activity: runActivity.activity,
         state: runtime.projectRoot === null ? null : runtime.state,
         stateUnavailableReason,
+        runStale:
+          runTimer.active &&
+          runtime.projectRoot !== null &&
+          stateUnavailableReason === null &&
+          runtime.externalStateEpoch !== externalStateEpochAtAgentRunStart,
         subscriptionUsage,
       }, now());
       return renderStatusLayout(ctx!.ui.theme, layout, getStatusWidth());
