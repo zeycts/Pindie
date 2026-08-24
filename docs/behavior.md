@@ -248,8 +248,8 @@ Read-only observation remains available throughout these boundaries. A later Age
 
 ### Project Mutation Freshness v0.1
 
-- **PMF-E01-E04** Only an admitted ambiguous consequential tool (`bash` or unknown/custom consequential tool) receives a runtime-only BEFORE fingerprint after all ordinary guards pass; blocked calls, Safe Observation, Pindie semantic tools, and edit/write do not probe.
-- **PMF-E05-E10** The matching `tool_result` consumes its `toolCallId` probe. Known equal BEFORE/AFTER Git-visible worktree content preserves verification regardless of tool success/failure; changed or unknown freshness dispatches existing `invalidate_verification` and clears current checks.
+- **PMF-E01-E04** Only an admitted ambiguous consequential tool (`bash` or unknown/custom consequential tool) joins a runtime-only shared mutation window after all ordinary guards pass; its first call captures BEFORE and overlapping calls share that baseline. Blocked calls, Safe Observation, Pindie semantic tools, and edit/write do not probe.
+- **PMF-E05-E10** The matching `tool_result` consumes its `toolCallId`; the window remains until every pending tool settles. Known equal baseline/current Git-visible worktree content preserves verification regardless of tool success/failure; changed or unknown freshness dispatches existing `invalidate_verification` and clears current checks.
 - **PMF-F01-F14** A Git fingerprint deterministically hashes tracked plus nonignored untracked worktree paths and raw contents/mode, symlink target text, and tracked missing paths. It excludes index/HEAD/branch metadata, ignored artifacts, and mtimes; non-Git or unsafe/unsupported/bounded-out observations are unknown and fail closed only for verification freshness.
 
 ### Safe Observation v0.1

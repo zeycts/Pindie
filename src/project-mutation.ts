@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { lstat, readlink, realpath } from "node:fs/promises";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 import { safeGitEnvironment } from "./tools/git-observe.ts";
 
@@ -89,6 +89,22 @@ export async function runProjectFingerprintGit(
 
 function unknown(reason: string): ProjectFingerprint { return { kind: "unknown", reason }; }
 
+/** Parses Git's -z output without lossy filename decoding. */
+function decodeGitPaths(output: Buffer): string[] {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const paths: string[] = [];
+  let start = 0;
+  for (let index = 0; index < output.length; index += 1) {
+    if (output[index] !== 0) continue;
+    if (index > start) paths.push(decoder.decode(output.subarray(start, index)));
+    start = index + 1;
+  }
+  // Git -z emits a trailing NUL. A nonempty trailing segment is malformed but
+  // decoded strictly so it cannot silently become a replacement-character path.
+  if (start < output.length) paths.push(decoder.decode(output.subarray(start)));
+  return paths;
+}
+
 function contained(root: string, path: string): boolean {
   const rel = relative(root, path);
   return rel === "" || (!rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && rel !== ".." && !isAbsolute(rel));
@@ -137,7 +153,7 @@ export async function captureProjectFingerprint(
     });
     if (output.length > maxPathListBytes) return unknown("Git path list exceeded its byte bound.");
     if (Date.now() > deadline) return unknown("Project fingerprint timed out.");
-    const paths = new Set(output.toString("utf8").split("\0").filter(Boolean));
+    const paths = new Set(decodeGitPaths(output));
     if (paths.size > maxPaths) return unknown("Git path count exceeded its bound.");
     const hash = createHash("sha256");
     frame(hash, "pindie-project-fingerprint-v1");
@@ -157,7 +173,7 @@ export async function captureProjectFingerprint(
       if (!contained(root, parent)) return unknown(`Path '${path}' escapes the project root.`);
       if (stat.isSymbolicLink()) {
         frame(hash, "kind", "symlink");
-        frame(hash, "target", await readlink(candidate));
+        frame(hash, "target", await readlink(candidate, { encoding: "buffer" }));
       } else if (stat.isFile()) {
         const actual = await realpath(candidate);
         if (!contained(root, actual)) return unknown(`Path '${path}' escapes the project root.`);

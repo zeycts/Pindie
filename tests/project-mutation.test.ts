@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { chmod, mkdtemp, mkdir, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import test from "node:test";
 import {
   buildProjectFingerprintArgv,
   captureProjectFingerprint,
+  runProjectFingerprintGit,
   type ProjectFingerprintInvocation,
 } from "../src/project-mutation.ts";
 
@@ -95,6 +97,38 @@ test("PMF-F14 non-Git projects and unsafe or oversized enumeration fail closed",
     }
     assert.equal((await captureProjectFingerprint(dir, { maxPaths: 1, runner: async () => Buffer.from("a\0b\0") })).kind, "unknown");
     assert.equal((await captureProjectFingerprint(dir, { maxPathListBytes: 2, runner: async () => Buffer.from("abc\0") })).kind, "unknown");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("PMF-F26 invalid UTF-8 Git path bytes fail closed while valid Unicode paths remain known", { skip: process.platform === "win32" }, async () => {
+  const dir = await repo();
+  try {
+    const invalid = await captureProjectFingerprint(dir, { runner: async () => Buffer.from([0xff, 0x00]) });
+    assert.equal(invalid.kind, "unknown");
+    await writeFile(join(dir, "测试-é.ts"), "unicode\n");
+    assert.equal((await captureProjectFingerprint(dir)).kind, "known");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("PMF-F24 timeout terminates the Git child and capture fails closed", async () => {
+  const child = new EventEmitter() as any;
+  child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+  const signals: string[] = [];
+  child.kill = (signal: string) => {
+    signals.push(signal);
+    if (signal === "SIGKILL") setImmediate(() => child.emit("close", null));
+    return true;
+  };
+  const invocation: ProjectFingerprintInvocation = {
+    executable: "git", argv: buildProjectFingerprintArgv(), cwd: process.cwd(), env: process.env,
+    shell: false, timeoutMs: 1, maxOutputBytes: 64,
+  };
+  await assert.rejects(runProjectFingerprintGit(invocation, (() => child) as any), /timed out/);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  const dir = await mkdtemp(join(tmpdir(), "pindie-pmf-timeout-"));
+  try {
+    const result = await captureProjectFingerprint(dir, { runner: async () => { throw new Error("timeout"); } });
+    assert.equal(result.kind, "unknown");
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

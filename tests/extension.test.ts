@@ -871,6 +871,45 @@ test("PMF-E01-E18 probes admitted ambiguous tools by toolCallId and preserves on
   assert.equal(harness.store.saves.length, 1);
 });
 
+test("PMF-E25-E29 overlapping ambiguous tools share one baseline until every result settles", async () => {
+  const fingerprints = ["S0", "S0", "S0", "S1", "S2", "S2"];
+  let captures = 0;
+  const harness = createHarness([["/repo", verifiedState()]], {}, {
+    captureProjectFingerprint: async () => {
+      captures += 1;
+      return { kind: "known", digest: fingerprints.shift() ?? "missing" };
+    },
+  });
+  await startSession(harness, "/repo"); await beginAgentRun(harness);
+  await callGuard(harness, toolCall("bash", {}, "A"));
+  await callGuard(harness, toolCall("bash", {}, "B"));
+  assert.equal(captures, 1, "B must not capture A's in-flight/polluted reality");
+  // A restores the shared baseline; B remains pending, so C must still join it.
+  await harness.api.handler("tool_result")(toolResult("bash", false, "A"), context("/repo"));
+  await callGuard(harness, toolCall("future_mutating_tool", {}, "C"));
+  assert.equal(captures, 2, "only A result captured AFTER; C joined the active window");
+  await harness.api.handler("tool_result")(toolResult("bash", false, "B"), context("/repo"));
+  await harness.api.handler("tool_result")(toolResult("future_mutating_tool", false, "C"), context("/repo"));
+  assert.equal(harness.integration.runtime.state.task?.verification.stale, true, "C's S1 must compare with shared S0");
+  // After all pending IDs settle, D starts a new window and captures a new baseline.
+  await callGuard(harness, toolCall("bash", {}, "D"));
+  assert.equal(captures, 5);
+  await harness.api.handler("tool_result")(toolResult("bash", false, "D"), context("/repo"));
+
+  const unknown = createHarness([["/repo", verifiedState()]], {}, {
+    captureProjectFingerprint: async () => { captures += 1; return { kind: "unknown", reason: "non-git" }; },
+  });
+  await startSession(unknown, "/repo"); await beginAgentRun(unknown);
+  await callGuard(unknown, toolCall("bash", {}, "U1"));
+  await callGuard(unknown, toolCall("bash", {}, "U2"));
+  const unknownCaptures = captures;
+  await unknown.api.handler("tool_result")(toolResult("bash", false, "U2"), context("/repo"));
+  await unknown.api.handler("tool_result")(toolResult("bash", false, "U1"), context("/repo"));
+  assert.equal(captures, unknownCaptures, "unknown baseline skips AFTER captures");
+  assert.equal(unknown.integration.stateUnavailableReason, null);
+  assert.equal(unknown.integration.runtime.state.task?.verification.stale, true);
+});
+
 test("PMF-E01 blocked bash creates no probe and unknown before allows then invalidates", async () => {
   let captures = 0;
   const gated = createHarness([["/repo", gatedState()]], {}, { captureProjectFingerprint: async () => { captures += 1; return { kind: "unknown", reason: "non-git" }; } });

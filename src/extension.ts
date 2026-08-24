@@ -103,9 +103,10 @@ function isAmbiguousConsequentialTool(event: ToolCallEvent): boolean {
     !isToolCallEventType("write", event);
 }
 
-interface MutationProbe {
+interface MutationWindow {
   projectRoot: string;
-  before: ProjectFingerprint;
+  baseline: ProjectFingerprint;
+  pendingToolCallIds: Set<string>;
 }
 
 const STALE_EXTENSION_CONTEXT_ERROR = "This extension ctx is stale after session replacement or reload.";
@@ -138,7 +139,7 @@ export function registerPindieExtension(
     options.resolveProjectRoot ?? defaultResolveProjectRoot;
   const captureProjectFingerprint =
     options.captureProjectFingerprint ?? defaultCaptureProjectFingerprint;
-  const mutationProbes = new Map<string, MutationProbe>();
+  let mutationWindow: MutationWindow | null = null;
   const subscriptionUsageProvider =
     options.subscriptionUsageProvider ?? chatGptSubscriptionUsageProvider;
   const now = options.now ?? Date.now;
@@ -292,7 +293,7 @@ export function registerPindieExtension(
     runtime.unload();
     stateUnavailableReason = null;
     clearAgentRunSnapshot();
-    mutationProbes.clear();
+    mutationWindow = null;
 
     try {
       const projectRoot = await resolveProjectRoot(ctx.cwd);
@@ -315,7 +316,7 @@ export function registerPindieExtension(
     runtime.unload();
     stateUnavailableReason = null;
     clearAgentRunSnapshot();
-    mutationProbes.clear();
+    mutationWindow = null;
     statusContext = null;
   });
 
@@ -500,13 +501,20 @@ export function registerPindieExtension(
     // has no project-effect probe and generic bash is never parsed.
     if (isAmbiguousConsequentialTool(event)) {
       const projectRoot = runtime.projectRoot;
-      let before: ProjectFingerprint;
-      try {
-        before = await captureProjectFingerprint(projectRoot);
-      } catch (error) {
-        before = { kind: "unknown", reason: errorMessage(error) };
+      if (mutationWindow === null) {
+        let baseline: ProjectFingerprint;
+        try {
+          baseline = await captureProjectFingerprint(projectRoot);
+        } catch (error) {
+          baseline = { kind: "unknown", reason: errorMessage(error) };
+        }
+        mutationWindow = { projectRoot, baseline, pendingToolCallIds: new Set() };
+      } else if (mutationWindow.projectRoot !== projectRoot) {
+        // A session has one loaded project. Do not mix an impossible second root
+        // into a known window; fail closed for verification instead.
+        mutationWindow.baseline = { kind: "unknown", reason: "Mutation window project root changed." };
       }
-      mutationProbes.set(event.toolCallId, { projectRoot, before });
+      mutationWindow.pendingToolCallIds.add(event.toolCallId);
     }
   });
 
@@ -541,22 +549,21 @@ export function registerPindieExtension(
       return;
     }
 
-    const probe = mutationProbes.get(event.toolCallId);
-    if (!probe) return;
-    // Consume before observation/dispatch so duplicate or failed processing
-    // cannot apply the same result twice.
-    mutationProbes.delete(event.toolCallId);
-    if (probe.before.kind === "unknown") {
+    const window = mutationWindow;
+    if (!window || !window.pendingToolCallIds.delete(event.toolCallId)) return;
+    // Consume before observation/dispatch so duplicate results cannot act twice.
+    if (window.pendingToolCallIds.size === 0) mutationWindow = null;
+    if (window.baseline.kind === "unknown") {
       await invalidateVerificationAfterProjectMutation();
       return;
     }
     let after: ProjectFingerprint;
     try {
-      after = await captureProjectFingerprint(probe.projectRoot);
+      after = await captureProjectFingerprint(window.projectRoot);
     } catch (error) {
       after = { kind: "unknown", reason: errorMessage(error) };
     }
-    if (after.kind !== "known" || after.digest !== probe.before.digest) {
+    if (after.kind !== "known" || after.digest !== window.baseline.digest) {
       await invalidateVerificationAfterProjectMutation();
     }
   });
