@@ -501,7 +501,7 @@ export function registerPindieExtension(
       return {
         block: true,
         reason:
-          "No active Pindie Task exists. Establish the current Task with pindie_state(start_task) before consequential project action. Read-only observation does not require a Task.",
+          "No active Pindie Task exists. Establish the current Task with pindie_state(start_task) before consequential project action. If only read-only observation is needed, use read, grep, find, ls, or pindie_git_observe directly rather than unrestricted bash.",
       };
     }
 
@@ -550,7 +550,7 @@ export function registerPindieExtension(
       return {
         block: true,
         reason:
-          "The current Pindie task is completed and terminal. Start a new task with pindie_state(start_task) before consequential project action.",
+          "The current Pindie Task is completed and terminal. Start a new Task with pindie_state(start_task) before consequential project action. If only read-only observation is needed, use read, grep, find, ls, or pindie_git_observe directly rather than unrestricted bash.",
       };
     }
 

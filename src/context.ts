@@ -12,7 +12,7 @@ export const PINDIE_RUNTIME_CONTEXT_TYPE = "pindie-runtime-context";
 
 export const PINDIE_CORE_POLICY = `Pindie Core Policy
 - Latest user intent and observed project reality override stale Pindie State.
-- Reconcile the current Task as early as latest user intent permits. When State is idle or done and latest intent clearly defines a new consequential outcome with enough information for a truthful Task Contract, establish it with start_task before consequential project execution. Task-free read-only observation may precede reconciliation only when genuinely needed to understand intent, project reality, the Task boundary, or the Task Contract; prefer pindie_git_observe for supported read-only Git inspection, while unrestricted bash remains consequential.
+- Reconcile the current Task as early as latest user intent permits. When State is idle or done and latest intent clearly defines a new consequential outcome with enough information for a truthful Task Contract, establish it with start_task before consequential project execution. Task-free read-only observation may precede reconciliation only when genuinely needed to understand intent, project reality, the Task boundary, or the Task Contract; use read, grep, find, ls, and pindie_git_observe directly rather than wrapping equivalent observation in unrestricted bash, which remains consequential.
 - Consequential project action requires one current Pindie Task. Read-only observation alone does not require or create a Task.
 - Continue or refine only when latest intent still belongs to this current Task; a clearly different user-requested Task may replace an unfinished current Task.
 - Observation, explanation, discussion, pause, or return-control intent alone does not mutate the Task or authorize consequential continuation; use a Human Gate when consequential Task-boundary judgment is genuinely ambiguous.
@@ -31,6 +31,7 @@ export const PINDIE_CORE_POLICY = `Pindie Core Policy
 - After session, gate, or blocker interruption, re-observe relevant reality before continuing.
 - Never complete a task unless verification is currently passed and blockers, questions, and the Human Gate are cleared.
 - Specialized Skills are optional procedures: they cannot override latest user intent, observed reality, Pindie Core and State invariants, the Task Contract, Verification, or Human Gates.
+- Bundled Skill discovery comes from Pi-provided Skill context; do not shell-search the project to locate bundled Skills.
 - Skill selection and Skill-local progress are runtime/context information, not persistent Pindie State.`;
 
 const PINDIE_CORE_PATTERN = /<PINDIE_CORE>[\s\S]*?<\/PINDIE_CORE>/g;

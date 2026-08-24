@@ -68,9 +68,10 @@ test("D08 Core Policy distinguishes constraints from success criteria", () => {
   assert.match(PINDIE_CORE_POLICY, /success criteria are final observable outcomes required for completion/i);
 });
 
-test("SO-C01-SO-C02 Core Policy prefers dedicated Git observation while bash stays consequential", () => {
-  assert.match(PINDIE_CORE_POLICY, /prefer pindie_git_observe.*supported read-only Git inspection/i);
-  assert.match(PINDIE_CORE_POLICY, /unrestricted bash remains consequential/i);
+test("OC-C01-OC-C02 Core Policy names direct observation tools and keeps bash consequential", () => {
+  assert.match(PINDIE_CORE_POLICY, /use read, grep, find, ls, and pindie_git_observe directly/i);
+  assert.match(PINDIE_CORE_POLICY, /rather than wrapping equivalent observation in unrestricted bash/i);
+  assert.match(PINDIE_CORE_POLICY, /unrestricted bash, which remains consequential/i);
 });
 
 test("TBE-C01-C02 Core Policy requires a Task for consequential action but keeps observation Task-free", () => {
@@ -95,9 +96,9 @@ test("ETA-C03 Core Policy keeps observation and return-control intent Task-free"
   assert.match(PINDIE_CORE_POLICY, /Read-only observation alone does not require or create a Task/i);
 });
 
-test("ETA-C04 Core Policy keeps supported observation distinct from consequential bash", () => {
-  assert.match(PINDIE_CORE_POLICY, /pindie_git_observe.*supported read-only Git inspection/i);
-  assert.match(PINDIE_CORE_POLICY, /unrestricted bash remains consequential/i);
+test("OC-C03 Core Policy assigns bundled Skill discovery to Pi context", () => {
+  assert.match(PINDIE_CORE_POLICY, /Bundled Skill discovery comes from Pi-provided Skill context/i);
+  assert.match(PINDIE_CORE_POLICY, /do not shell-search the project to locate bundled Skills/i);
 });
 
 test("PMF-C01-C02 Core Policy makes freshness depend on known unchanged project reality", () => {

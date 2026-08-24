@@ -2002,6 +2002,36 @@ test("TBE-E01-E20 idle State admits only observation and start_task while preser
   assert.equal(harness.api.sentMessages.length, 1);
 });
 
+test("OC-E01-OC-E08 guards preserve direct observation and give informational recovery guidance", async () => {
+  for (const [name, state] of [["idle", EMPTY_STATE], ["completed", completedState()]] as const) {
+    const harness = createHarness([["/repo", state]]);
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+    const stateBefore = structuredClone(harness.integration.runtime.state);
+
+    for (const toolName of ["read", "grep", "find", "ls", "pindie_git_observe"]) {
+      assert.equal(await callGuard(harness, toolCall(
+        toolName,
+        toolName === "pindie_git_observe" ? { action: "status" } : {},
+      )), undefined, `${name}: ${toolName}`);
+    }
+    for (const command of ["find .", "git status", "cat package.json"]) {
+      const result = await callGuard(harness, toolCall("bash", { command }, `${name}-${command}`));
+      assertBlocked(result, name === "idle" ? /No active Pindie Task/i : /completed and terminal/i);
+      assert.match(result.reason, /pindie_state\(start_task\)/i);
+      assert.match(result.reason, /read, grep, find, ls, or pindie_git_observe directly/i);
+      assert.match(result.reason, /unrestricted bash/i);
+    }
+    assert.deepEqual(harness.integration.runtime.state, stateBefore);
+    assert.deepEqual(harness.store.saves, []);
+  }
+
+  const unknown = createHarness();
+  await startSession(unknown, "/repo");
+  await beginAgentRun(unknown);
+  assertBlocked(await callGuard(unknown, toolCall("future_consequential_tool")), /No active Pindie Task/i);
+});
+
 test("TBE-E12-E14 coherence and State unavailability outrank idle task admission", async () => {
   const changed = createHarness();
   await startSession(changed, "/repo");
