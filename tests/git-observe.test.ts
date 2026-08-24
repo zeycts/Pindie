@@ -38,6 +38,10 @@ function text(result: any): string { return result.content[0].text; }
 
 test("SO-T01-T02 exposes exactly the fixed action and parameter surface", () => {
   const { tool } = fakeTool();
+  assert.deepEqual(GIT_OBSERVE_ACTIONS, [
+    "status", "branch", "root", "diff", "diff_cached", "diff_check", "log", "remote",
+  ]);
+  assert.ok(!GIT_OBSERVE_ACTIONS.some((action) => ["ls_remote", "fetch", "pr", "checks", "reviews"].includes(action)));
   assert.deepEqual(tool.parameters.properties.action.enum, GIT_OBSERVE_ACTIONS);
   assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["action", "limit", "paths"]);
   assert.doesNotMatch(JSON.stringify(tool.parameters), /command|args|flags|env|cwd|shell|executable/i);

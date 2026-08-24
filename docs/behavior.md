@@ -66,6 +66,16 @@ Before consequential project action, reconcile latest actual user intent with th
 - **ETA09** A successfully persisted same-run `start_task` backs subsequent consequential execution through existing Task-Backed Execution.
 - **ETA10** Early Task Admission adds no State field, persistent flag, controller, public tool, shell allowlist, or new execution path.
 
+### Observation Coverage v0.1
+
+- **OC01-OC02** Project read-only observation uses `read`/`grep`/`find`/`ls` directly; supported local Git observation uses `pindie_git_observe`.
+- **OC03-OC04** Bundled Skill discovery uses Pi Skill context, not filesystem search; Skill discovery and user-project filesystem observation remain separate.
+- **OC05-OC07** Generic `bash` remains consequential regardless of command text. Runtime neither parses nor allowlists shell commands; the Task-free lane remains exactly `read`, `grep`, `find`, `ls`, and `pindie_git_observe`.
+- **OC08-OC11** Supported observation-only intent remains Task-free. Clear consequential intent still follows Early Task Admission; genuinely needed safe observation may precede reconciliation, but placeholder Tasks must not unlock bash.
+- **OC12-OC13** Idle and completed Task Guard guidance names both `start_task` and direct read-only recovery. Guards only allow or block: they never mutate State or auto-convert shell calls.
+- **OC14-OC17** External/provider observation is a separate deferred capability boundary. `pindie_git_observe` gains no network/provider actions, and Pindie introduces no universal observer.
+- **OC18-OC20** Observation adds no persistent State, Runtime Context block, or custom tool.
+
 ### Task-Backed Execution v0.1
 
 - **TBE-E01-E02** With idle State, `read`, `grep`, `find`, `ls`, and `pindie_git_observe` remain Task-free; only `pindie_state(start_task)` is admitted as a consequential transition.
