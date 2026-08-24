@@ -201,6 +201,59 @@ test("SSA-S01 loaded idle State renders idle and omits verification", () => {
   ]);
 });
 
+test("SIR-M01 through SIR-M10 representative status matrix locks semantic boundaries", () => {
+  const passed = {
+    stale: false,
+    checks: [{
+      name: "all",
+      status: "passed" as const,
+      covers: ["c1", "c2", "c3", "c4"],
+      evidence: "passed",
+    }],
+  };
+  const cases = [
+    { name: "idle", input: { activity: null, state: { task: null } }, expected: ["idle"], absent: ["verify"] },
+    { name: "reading pending", input: { activity: "reading" as const }, expected: ["reading", "active", "verify 0/4"] },
+    { name: "editing stale", input: { activity: "editing" as const, state: { task: task({ verification: { stale: true, checks: [] } }) } }, expected: ["editing", "active", "verify stale"] },
+    { name: "running active passed", input: { activity: "running" as const, state: { task: task({ verification: passed }) } }, expected: ["running", "active", "✓ 4/4"], absent: ["done"] },
+    { name: "done passed", input: { activity: null, state: { task: task({ completed: true, verification: passed }) } }, expected: ["done", "✓ 4/4"], absent: ["active"] },
+    { name: "blocked", input: { activity: null, state: { task: task({ openLoops: { blockers: ["blocked"], questions: [], nextIntent: null } }) } }, expected: ["verify 0/4", "⚠ blocked"], absent: ["active", "blocked"] },
+    { name: "waiting human", input: { activity: null, state: { task: task({ humanGate: { kind: "approval", question: "Approve?" } }) } }, expected: ["verify 0/4", "⚠ gate: approval"], absent: ["active", "waiting", "waiting_human"] },
+    { name: "stale active Run", input: { activity: null, runStale: true, state: { task: task({ verification: passed }) } }, expected: ["active", "✓ 4/4", "⚠ stale run"] },
+  ];
+
+  for (const scenario of cases) {
+    const texts = deriveStatusSegments(snapshot({ timing: null, ...scenario.input })).map(({ text }) => text);
+    for (const expected of scenario.expected) assert.ok(texts.includes(expected), scenario.name);
+    for (const absent of scenario.absent ?? []) assert.equal(texts.includes(absent), false, scenario.name);
+  }
+
+  const full = deriveStatusSegments(snapshot({
+    activity: "reading",
+    runStale: true,
+    state: { task: task({ verification: { stale: true, checks: [] } }) },
+  })).map(({ text }) => text);
+  assert.ok(full.indexOf("reading") < full.indexOf("active"));
+  assert.ok(full.indexOf("active") < full.indexOf("verify stale"));
+  assert.ok(full.indexOf("verify stale") < full.indexOf("⚠ stale run"));
+});
+
+test("SIR-M09 attention precedence shows exactly one primary condition", () => {
+  const attention = ["⚠ state unavailable", "⚠ gate: input", "⚠ stale run", "⚠ blocked"];
+  const blocked = { blockers: ["blocked"], questions: [], nextIntent: null };
+  const cases = [
+    { name: "unavailable", input: { state: null, stateUnavailableReason: "missing", runStale: true }, expected: "⚠ state unavailable" },
+    { name: "gate", input: { state: { task: task({ humanGate: { kind: "input", question: "Input?" }, openLoops: blocked }) }, runStale: true }, expected: "⚠ gate: input" },
+    { name: "stale", input: { state: { task: task({ openLoops: blocked }) }, runStale: true }, expected: "⚠ stale run" },
+    { name: "blocker", input: { state: { task: task({ openLoops: blocked }) } }, expected: "⚠ blocked" },
+  ];
+
+  for (const scenario of cases) {
+    const texts = deriveStatusSegments(snapshot({ timing: null, ...scenario.input })).map(({ text }) => text);
+    assert.deepEqual(texts.filter((text) => attention.includes(text)), [scenario.expected], scenario.name);
+  }
+});
+
 test("weekly account status is dim and derives its reset countdown at render time", () => {
   const withUsage = deriveStatusLayout({
     ...snapshot(),

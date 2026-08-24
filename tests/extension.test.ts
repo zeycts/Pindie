@@ -1535,6 +1535,66 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   );
 });
 
+test("SIR-E01 through SIR-E06 status follows the real idle-to-done lifecycle", async () => {
+  let time = 0;
+  const timers: Array<{ callback: () => void; cancelled: boolean }> = [];
+  const harness = createHarness([], {}, {
+    now: () => time,
+    scheduleActivityRefresh: (callback) => {
+      const timer = { callback, cancelled: false };
+      timers.push(timer);
+      return timer as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearActivityRefresh: (timer) => {
+      (timer as unknown as { cancelled: boolean }).cancelled = true;
+    },
+  });
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses);
+  const status = () => statuses.at(-1)?.text ?? "";
+
+  await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, uiContext);
+  assert.match(status(), /idle/);
+  await harness.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "Start", systemPrompt: "", systemPromptOptions: {} },
+    uiContext,
+  );
+  await harness.api.tool("pindie_state").execute("start", {
+    action: "start_task",
+    goal: "Freeze status integration",
+    successCriteria: ["Status lifecycle is covered"],
+  });
+  assert.match(status(), /active • verify 0\/1/);
+
+  await harness.api.handler("tool_execution_start")(
+    toolExecution("tool_execution_start", "read", "read"), uiContext,
+  );
+  assert.match(status(), /reading • active • verify 0\/1/);
+  await harness.api.handler("tool_execution_end")(
+    toolExecution("tool_execution_end", "read", "read"), uiContext,
+  );
+  assert.match(status(), /reading • active • verify 0\/1/);
+  time += 250;
+  timers[0].callback();
+  assert.match(status(), /thinking • active • verify 0\/1/);
+
+  await harness.api.tool("pindie_state").execute("verify", {
+    action: "record_verification",
+    check: { name: "status", status: "passed", covers: ["c1"], evidence: "passed" },
+  });
+  assert.match(status(), /active • ✓ 1\/1/);
+  assert.doesNotMatch(status(), /done/);
+
+  await harness.api.tool("pindie_state").execute("complete", {
+    action: "complete_task",
+    summary: "Status lifecycle covered.",
+  });
+  assert.match(status(), /done • ✓ 1\/1/);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, uiContext);
+  assert.match(status(), /done • ✓ 1\/1/);
+  assert.doesNotMatch(status(), /thinking|reading|editing|running|updating|working/);
+});
+
 test("State and Gate commits survive a status presentation failure", async () => {
   const harness = createHarness([["/repo", activeState()]]);
   const statuses: Array<{ id: string; text: string | undefined }> = [];
