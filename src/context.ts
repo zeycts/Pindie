@@ -24,7 +24,7 @@ export const PINDIE_CORE_POLICY = `Pindie Core Policy
 - A hidden continuation follow-up is a probe subordinate to latest user intent, not unconditional authorization to resume persisted Task State.
 - Use nextIntent only for continuation intent when unfinished work needs a persisted next meaningful step; persisting it does not authorize yielding or overriding later user intent merely because more implementation, replanning, or verification iterations are required.
 - Choose the smallest safe next action and do not silently expand scope.
-- Project mutation makes prior verification stale.
+- Project mutation makes prior verification stale. Preserve prior verification only when relevant project reality is known unchanged; ambiguous tool success or failure alone does not establish freshness.
 - Changed code is not complete until verified against current success criteria.
 - Temporary resources created during execution or verification are owned by that operation: scope them narrowly, clean only resources it created, and never use broad filesystem or process cleanup.
 - Use a Human Gate for consequential human judgment.

@@ -200,8 +200,9 @@ function interactiveContext(
 function toolCall(
   toolName: string,
   input: Record<string, unknown> = {},
+  toolCallId = `call-${toolName}`,
 ): Record<string, unknown> {
-  return { type: "tool_call", toolCallId: `call-${toolName}`, toolName, input };
+  return { type: "tool_call", toolCallId, toolName, input };
 }
 
 function toolExecution(
@@ -215,10 +216,11 @@ function toolExecution(
 function toolResult(
   toolName: string,
   isError = false,
+  toolCallId = `call-${toolName}`,
 ): Record<string, unknown> {
   return {
     type: "tool_result",
-    toolCallId: `call-${toolName}`,
+    toolCallId,
     toolName,
     input: {},
     content: [],
@@ -837,17 +839,50 @@ test("T47 read does not invalidate verification", async () => {
   assert.deepEqual(harness.store.saves, []);
 });
 
-test("T48 bash does not blindly invalidate verification", async () => {
-  const harness = createHarness([["/repo", verifiedState()]]);
+test("PMF-E01-E18 probes admitted ambiguous tools by toolCallId and preserves only known unchanged reality", async () => {
+  const fingerprints = [
+    { kind: "known" as const, digest: "A" }, { kind: "known" as const, digest: "A" },
+    { kind: "known" as const, digest: "B0" }, { kind: "known" as const, digest: "B1" },
+  ];
+  let captures = 0;
+  const harness = createHarness([["/repo", verifiedState()]], {}, {
+    captureProjectFingerprint: async () => { captures += 1; return fingerprints.shift() ?? { kind: "unknown", reason: "missing" }; },
+  });
   await startSession(harness, "/repo");
-
-  await harness.api.handler("tool_result")(
-    toolResult("bash"),
-    context("/repo"),
-  );
-
+  await beginAgentRun(harness);
+  // Safe observation, semantic tools, and known edit/write paths never probe.
+  for (const name of ["read", "grep", "find", "ls", "pindie_git_observe", "pindie_state", "pindie_gate", "edit", "write"]) {
+    await callGuard(harness, toolCall(name));
+  }
+  assert.equal(captures, 0);
+  await callGuard(harness, toolCall("bash", {}, "unchanged"));
+  assert.equal(captures, 1);
+  await harness.api.handler("tool_result")(toolResult("bash", false, "unchanged"), context("/repo"));
   assert.equal(harness.integration.runtime.state.task?.verification.stale, false);
-  assert.deepEqual(harness.store.saves, []);
+  assert.equal(harness.store.saves.length, 0);
+  await callGuard(harness, toolCall("future_mutating_tool", {}, "changed"));
+  await harness.api.handler("tool_result")(toolResult("future_mutating_tool", true, "changed"), context("/repo"));
+  assert.equal(harness.integration.runtime.state.task?.verification.stale, true);
+  assert.deepEqual(harness.integration.runtime.state.task?.verification.checks, []);
+  assert.equal(harness.store.saves.length, 1);
+  // The consumed duplicate and unmatched result are no-ops.
+  await harness.api.handler("tool_result")(toolResult("future_mutating_tool", true, "changed"), context("/repo"));
+  await harness.api.handler("tool_result")(toolResult("bash", false, "unmatched"), context("/repo"));
+  assert.equal(harness.store.saves.length, 1);
+});
+
+test("PMF-E01 blocked bash creates no probe and unknown before allows then invalidates", async () => {
+  let captures = 0;
+  const gated = createHarness([["/repo", gatedState()]], {}, { captureProjectFingerprint: async () => { captures += 1; return { kind: "unknown", reason: "non-git" }; } });
+  await startSession(gated, "/repo"); await beginAgentRun(gated);
+  assertBlocked(await callGuard(gated, toolCall("bash")), /Human Gate/i);
+  assert.equal(captures, 0);
+  const harness = createHarness([["/repo", verifiedState()]], {}, { captureProjectFingerprint: async () => { captures += 1; return { kind: "unknown", reason: "non-git" }; } });
+  await startSession(harness, "/repo"); await beginAgentRun(harness);
+  assert.equal(await callGuard(harness, toolCall("bash")), undefined);
+  await harness.api.handler("tool_result")(toolResult("bash", true), context("/repo"));
+  assert.equal(harness.integration.stateUnavailableReason, null);
+  assert.equal(harness.integration.runtime.state.task?.verification.stale, true);
 });
 
 test("H01-H04 Human Gate blocks edit, write, bash, and unknown tools", async () => {

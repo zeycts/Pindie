@@ -15,6 +15,10 @@ import {
 } from "./context.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
 import {
+  captureProjectFingerprint as defaultCaptureProjectFingerprint,
+  type ProjectFingerprint,
+} from "./project-mutation.ts";
+import {
   FIXED_THINKING_LEVELS,
   isFixedThinkingLevel,
   ReasoningController,
@@ -60,6 +64,8 @@ export interface PindieExtensionOptions {
   subscriptionUsageProvider?: SubscriptionUsageProvider;
   getStatusWidth?: () => number | undefined;
   now?: () => number;
+  /** Internal test seam for runtime-only project mutation observation. */
+  captureProjectFingerprint?: (projectRoot: string) => Promise<ProjectFingerprint>;
 }
 
 export interface PindieExtensionIntegration {
@@ -87,6 +93,19 @@ function isReadOnlyObservation(event: ToolCallEvent): boolean {
     isToolCallEventType("ls", event) ||
     isToolCallEventType("pindie_git_observe", event)
   );
+}
+
+function isAmbiguousConsequentialTool(event: ToolCallEvent): boolean {
+  return !isReadOnlyObservation(event) &&
+    !isToolCallEventType("pindie_state", event) &&
+    !isToolCallEventType("pindie_gate", event) &&
+    !isToolCallEventType("edit", event) &&
+    !isToolCallEventType("write", event);
+}
+
+interface MutationProbe {
+  projectRoot: string;
+  before: ProjectFingerprint;
 }
 
 const STALE_EXTENSION_CONTEXT_ERROR = "This extension ctx is stale after session replacement or reload.";
@@ -117,6 +136,9 @@ export function registerPindieExtension(
   const runTimer = new RunTimer();
   const resolveProjectRoot =
     options.resolveProjectRoot ?? defaultResolveProjectRoot;
+  const captureProjectFingerprint =
+    options.captureProjectFingerprint ?? defaultCaptureProjectFingerprint;
+  const mutationProbes = new Map<string, MutationProbe>();
   const subscriptionUsageProvider =
     options.subscriptionUsageProvider ?? chatGptSubscriptionUsageProvider;
   const now = options.now ?? Date.now;
@@ -270,6 +292,7 @@ export function registerPindieExtension(
     runtime.unload();
     stateUnavailableReason = null;
     clearAgentRunSnapshot();
+    mutationProbes.clear();
 
     try {
       const projectRoot = await resolveProjectRoot(ctx.cwd);
@@ -292,6 +315,7 @@ export function registerPindieExtension(
     runtime.unload();
     stateUnavailableReason = null;
     clearAgentRunSnapshot();
+    mutationProbes.clear();
     statusContext = null;
   });
 
@@ -471,21 +495,23 @@ export function registerPindieExtension(
           "The current Pindie task is completed and terminal. Start a new task with pindie_state(start_task) before consequential project action.",
       };
     }
+
+    // This is deliberately after every existing admission guard. A blocked call
+    // has no project-effect probe and generic bash is never parsed.
+    if (isAmbiguousConsequentialTool(event)) {
+      const projectRoot = runtime.projectRoot;
+      let before: ProjectFingerprint;
+      try {
+        before = await captureProjectFingerprint(projectRoot);
+      } catch (error) {
+        before = { kind: "unknown", reason: errorMessage(error) };
+      }
+      mutationProbes.set(event.toolCallId, { projectRoot, before });
+    }
   });
 
-  pi.on("tool_result", async (event) => {
-    if (
-      event.isError ||
-      runtime.projectRoot === null ||
-      stateUnavailableReason !== null ||
-      (!isEditToolResult(event) && !isWriteToolResult(event))
-    ) {
-      return;
-    }
-
-    const task = runtime.state.task;
-    if (!task) return;
-
+  const invalidateVerificationAfterProjectMutation = async (): Promise<void> => {
+    if (runtime.projectRoot === null || stateUnavailableReason !== null || !runtime.state.task) return;
     try {
       const result = await runtime.dispatch({
         type: "invalidate_verification",
@@ -507,6 +533,32 @@ export function registerPindieExtension(
     }
 
     refreshStatus();
+  };
+
+  pi.on("tool_result", async (event) => {
+    if (!event.isError && (isEditToolResult(event) || isWriteToolResult(event))) {
+      await invalidateVerificationAfterProjectMutation();
+      return;
+    }
+
+    const probe = mutationProbes.get(event.toolCallId);
+    if (!probe) return;
+    // Consume before observation/dispatch so duplicate or failed processing
+    // cannot apply the same result twice.
+    mutationProbes.delete(event.toolCallId);
+    if (probe.before.kind === "unknown") {
+      await invalidateVerificationAfterProjectMutation();
+      return;
+    }
+    let after: ProjectFingerprint;
+    try {
+      after = await captureProjectFingerprint(probe.projectRoot);
+    } catch (error) {
+      after = { kind: "unknown", reason: errorMessage(error) };
+    }
+    if (after.kind !== "known" || after.digest !== probe.before.digest) {
+      await invalidateVerificationAfterProjectMutation();
+    }
   });
 
   pi.on("turn_end", (event, ctx) => {

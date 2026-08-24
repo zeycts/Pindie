@@ -178,7 +178,7 @@ The implemented v0.1 Core Extension provides:
 - State loading and persistence
 - stable Core Policy system-prompt injection plus ephemeral request-time Runtime Context projection
 - deterministic State transitions
-- verification invalidation on known project mutation
+- verification invalidation on known project mutation and runtime-only Project Mutation Freshness probes for ambiguous consequential tools
 - Human Gate lifecycle
 - runtime safety checks
 - runtime-only Agent Run timing, cost, observable Current Activity, and adaptive reasoning control in the unified Pindie semantic status line (with timing also in completion output)
@@ -247,6 +247,8 @@ thinking_level_select
 tool_result
   → successful edit/write
   → Runtime.dispatch(invalidate_verification)
+  → ambiguous consequential tool with runtime-only probe: compare BEFORE/AFTER Git-visible worktree fingerprint
+  → unchanged preserves verification; changed or unknown dispatches invalidate_verification
   → refresh the derived Pindie status line
 
 agent_settled
@@ -266,7 +268,7 @@ The Agent-run snapshot is extension-local and resets at each `before_agent_start
 
 `pindie_git_observe` provides exactly eight fixed semantic read-only Git actions (`status`, `branch`, `root`, `diff`, `diff_cached`, `diff_check`, `log`, and `remote`). It invokes fixed `git` argv directly without a shell, disables prompts, optional locks, lazy fetch, fsmonitor, external diff/textconv, and pager behavior, and cannot mutate Pindie State. It is read-only for guards; generic `bash` remains consequential and is never parsed for Git exceptions.
 
-Generic `bash` results are not treated as known project mutation in v0.1. The Extension does not parse shell commands or implement a second Agent Loop.
+Project Mutation Freshness keeps a runtime-only `Map<toolCallId, MutationProbe>` for admitted ambiguous consequential tools (`bash` and unknown/custom consequential tools). Only after State/coherence, Task, replace, Gate, and completion guards pass, it captures a BEFORE Git-visible worktree fingerprint; matching results consume their own probe and compare AFTER. Known unchanged content preserves current verification, while changed or unknown freshness dispatches the existing `invalidate_verification`. Successful edit/write retain direct invalidation; failed edit/write, Safe Observation, and Pindie State/Gate tools do not probe. Fingerprints are not persisted or model-facing, and generic shell commands are never parsed.
 
 Execution Hygiene is a Core execution invariant. `pi-smoke` is narrow tooling for repeated Pindie dogfood verification, not State, Runtime, Skill lifecycle, bash parsing, or a second Agent Loop.
 
