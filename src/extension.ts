@@ -64,6 +64,10 @@ export interface PindieExtensionOptions {
   subscriptionUsageProvider?: SubscriptionUsageProvider;
   getStatusWidth?: () => number | undefined;
   now?: () => number;
+  /** Internal test seams for runtime-only activity presentation expiry. */
+  activityLingerMs?: number;
+  scheduleActivityRefresh?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
+  clearActivityRefresh?: (timer: ReturnType<typeof setTimeout>) => void;
   /** Internal test seam for runtime-only project mutation observation. */
   captureProjectFingerprint?: (projectRoot: string) => Promise<ProjectFingerprint>;
 }
@@ -132,7 +136,11 @@ export function registerPindieExtension(
 ): PindieExtensionIntegration {
   const runtime = new PindieRuntime(options.store ?? new FileStateStore());
   const reasoning = new ReasoningController();
-  const runActivity = new RunActivityTracker();
+  const now = options.now ?? Date.now;
+  const runActivity = new RunActivityTracker({
+    now,
+    lingerMs: options.activityLingerMs,
+  });
   const runCost = new RunCostTracker();
   const runTimer = new RunTimer();
   const resolveProjectRoot =
@@ -142,7 +150,16 @@ export function registerPindieExtension(
   let mutationWindow: MutationWindow | null = null;
   const subscriptionUsageProvider =
     options.subscriptionUsageProvider ?? chatGptSubscriptionUsageProvider;
-  const now = options.now ?? Date.now;
+  const scheduleActivityRefresh = (
+    callback: () => void,
+    delayMs: number,
+  ): ReturnType<typeof setTimeout> =>
+    options.scheduleActivityRefresh?.(callback, delayMs) ??
+    (setTimeout(callback, delayMs) as ReturnType<typeof setTimeout>);
+  const clearActivityRefresh = (timer: ReturnType<typeof setTimeout>): void => {
+    if (options.clearActivityRefresh) options.clearActivityRefresh(timer);
+    else clearTimeout(timer);
+  };
   const getStatusWidth = options.getStatusWidth ?? (() => process.stdout.columns);
   let subscriptionUsage: SubscriptionUsageSnapshot | null = null;
   let lastUsageFetchAt: number | null = null;
@@ -153,6 +170,36 @@ export function registerPindieExtension(
   let completedTaskAtAgentRunStart: PindieTask | null = null;
   let activeTaskContinuationAttempted = false;
   let externalStateEpochAtAgentRunStart = 0;
+  let activityLingerTimer: ReturnType<typeof setTimeout> | null = null;
+  let activityLingerGeneration = 0;
+
+  const clearActivityLingerRefresh = (): void => {
+    activityLingerGeneration += 1;
+    const timer = activityLingerTimer;
+    activityLingerTimer = null;
+    if (timer === null) return;
+    try {
+      clearActivityRefresh(timer);
+    } catch {
+      // Presentation cleanup must not alter semantic or runtime behavior.
+    }
+  };
+
+  const scheduleActivityLingerRefresh = (): void => {
+    clearActivityLingerRefresh();
+    const delayMs = runActivity.nextPresentationChangeInMs;
+    if (delayMs === null) return;
+    const generation = activityLingerGeneration;
+    try {
+      activityLingerTimer = scheduleActivityRefresh(() => {
+        if (generation !== activityLingerGeneration) return;
+        activityLingerTimer = null;
+        refreshStatus();
+      }, delayMs);
+    } catch {
+      // Presentation scheduling must not alter semantic or runtime behavior.
+    }
+  };
 
   const clearAgentRunSnapshot = (): void => {
     gateAtAgentRunStart = null;
@@ -283,6 +330,7 @@ export function registerPindieExtension(
 
   pi.on("session_start", async (_event, ctx) => {
     statusContext = ctx;
+    clearActivityLingerRefresh();
     reasoning.reset(pi.getThinkingLevel());
     runActivity.reset();
     runCost.reset();
@@ -308,6 +356,7 @@ export function registerPindieExtension(
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    clearActivityLingerRefresh();
     reasoning.reset(pi.getThinkingLevel());
     runActivity.reset();
     runCost.reset();
@@ -342,6 +391,7 @@ export function registerPindieExtension(
     externalStateEpochAtAgentRunStart = runtime.externalStateEpoch;
     reasoning.beforeAgentStart();
     applyRequestedThinkingLevel();
+    clearActivityLingerRefresh();
     runActivity.start();
     runCost.start(ctx.sessionManager.getEntries());
     runTimer.start(ctx.hasUI ? () => refreshStatus(ctx) : undefined);
@@ -397,12 +447,14 @@ export function registerPindieExtension(
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
+    clearActivityLingerRefresh();
     runActivity.toolExecutionStart(event.toolCallId, event.toolName);
     refreshStatus(ctx);
   });
 
   pi.on("tool_execution_end", (event, ctx) => {
     runActivity.toolExecutionEnd(event.toolCallId);
+    scheduleActivityLingerRefresh();
     refreshStatus(ctx);
   });
 
@@ -595,6 +647,7 @@ export function registerPindieExtension(
     }
 
     statusContext = ctx;
+    clearActivityLingerRefresh();
     runActivity.settle();
     runCost.finish(entries);
     runTimer.finish();
