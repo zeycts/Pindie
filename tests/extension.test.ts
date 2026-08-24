@@ -1204,7 +1204,7 @@ test("Run Cost measures public session usage from the Run baseline and resets pe
     { type: "agent_settled" },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /last 0s • \$0.31 • auto • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /last 0s • \$0.31 • auto • active • verify 0\/1/);
   assert.deepEqual(harness.integration.runCost.snapshot(entries as any), {
     cost: 0.31,
     active: false,
@@ -1219,7 +1219,7 @@ test("Run Cost measures public session usage from the Run baseline and resets pe
     },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /⏱ 0s • \$0.000 • auto • thinking • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /⏱ 0s • \$0.000 • auto • thinking • active • verify 0\/1/);
 
   await harness.api.handler("session_shutdown")(
     { type: "session_shutdown", reason: "new" },
@@ -1299,7 +1299,7 @@ test("Current Activity refreshes status from public tool execution lifecycle and
     uiContext,
   );
   assert.equal(harness.integration.runActivity.activity, "thinking");
-  assert.match(statuses.at(-1)?.text ?? "", /\$0.000 • auto • thinking • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /\$0.000 • auto • thinking • active • verify 0\/1/);
 
   await harness.api.handler("tool_execution_start")(
     toolExecution("tool_execution_start", "read-a", "read"),
@@ -1470,7 +1470,7 @@ test("unified Pindie status publishes active and final timing, then clears on sh
   );
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • auto • thinking • verify 0/1",
+    text: "⏱ 0s • $0.000 • auto • thinking • active • verify 0/1",
   });
 
   await harness.api.handler("agent_settled")(
@@ -1479,7 +1479,7 @@ test("unified Pindie status publishes active and final timing, then clears on sh
   );
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "last 0s • $0.000 • auto • verify 0/1",
+    text: "last 0s • $0.000 • auto • active • verify 0/1",
   });
 
   await harness.api.handler("session_shutdown")(
@@ -1516,7 +1516,7 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   });
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • auto • thinking • ✓ 1/1",
+    text: "⏱ 0s • $0.000 • auto • thinking • active • ✓ 1/1",
   });
 
   await harness.api.tool("pindie_gate").execute("gate", {
@@ -1638,6 +1638,35 @@ test("TB18-TB28 replacement is limited to the untouched unfinished Task at Agent
       action: "replace_task", goal: "Task C", successCriteria: ["Task C works"],
     })), /only replace the unfinished Task that existed at the start/i);
   }
+});
+
+test("SSA-E01 through SSA-E03 stale presentation follows active Run coherence only", async () => {
+  const initial = activeState("Task A");
+  const harness = createHarness([["/repo", initial]]);
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses);
+  await startSession(harness, "/repo");
+  await harness.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} },
+    uiContext,
+  );
+  const external = activeState("Task B");
+  harness.store.states.set("/repo", external);
+
+  assertBlocked(await callGuard(harness, toolCall("edit")), /changed outside this Agent Run/i);
+  assert.match(statuses.at(-1)?.text ?? "", /active • verify 0\/1 • ⚠ stale run/);
+  assert.deepEqual(harness.integration.runtime.state, external);
+  assert.deepEqual(harness.store.saves, []);
+
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, uiContext);
+  assert.doesNotMatch(statuses.at(-1)?.text ?? "", /⚠ stale run/);
+
+  await harness.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "Next", systemPrompt: "", systemPromptOptions: {} },
+    uiContext,
+  );
+  assert.doesNotMatch(statuses.at(-1)?.text ?? "", /⚠ stale run/);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, uiContext);
 });
 
 test("PSC-A01-A07 run-start refresh snapshots authority and stale Runs are read-only until next user Run", async () => {
