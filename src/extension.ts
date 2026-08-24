@@ -415,6 +415,14 @@ export function registerPindieExtension(
     }
 
     const task = runtime.state.task;
+    if (task === null && !hasAction(event, "pindie_state", "start_task")) {
+      return {
+        block: true,
+        reason:
+          "No active Pindie Task exists. Establish the current Task with pindie_state(start_task) before consequential project action. Read-only observation does not require a Task.",
+      };
+    }
+
     if (hasAction(event, "pindie_state", "replace_task")) {
       if (task && !task.completed && task !== replaceableTaskAtAgentRunStart) {
         return {

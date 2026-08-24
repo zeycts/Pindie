@@ -73,6 +73,11 @@ test("SO-C01-SO-C02 Core Policy prefers dedicated Git observation while bash sta
   assert.match(PINDIE_CORE_POLICY, /unrestricted bash remains consequential/i);
 });
 
+test("TBE-C01-C02 Core Policy requires a Task for consequential action but keeps observation Task-free", () => {
+  assert.match(PINDIE_CORE_POLICY, /Consequential project action requires one current Pindie Task/i);
+  assert.match(PINDIE_CORE_POLICY, /Read-only observation alone does not require or create a Task/i);
+});
+
 test("EH01 Core Policy requires operation-owned narrow execution cleanup", () => {
   assert.match(PINDIE_CORE_POLICY, /Temporary resources created during execution or verification are owned by that operation/i);
   assert.match(PINDIE_CORE_POLICY, /scope them narrowly, clean only resources it created/i);
