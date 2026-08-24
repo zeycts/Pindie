@@ -1679,6 +1679,62 @@ test("RC03 a completed task present at run start permits one replacement", async
   );
 });
 
+test("TBE-E01-E20 idle State admits only observation and start_task while preserving existing guard ordering", async () => {
+  const harness = createHarness();
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  const loadsBeforeObservation = harness.store.loads.length;
+  for (const name of ["read", "grep", "find", "ls", "pindie_git_observe"]) {
+    assert.equal(await callGuard(harness, toolCall(name, name === "pindie_git_observe" ? { action: "status" } : {})), undefined);
+  }
+  assert.equal(harness.store.loads.length, loadsBeforeObservation);
+  assert.equal(harness.integration.runtime.state.task, null);
+  assert.deepEqual(harness.store.saves, []);
+
+  assert.equal(await callGuard(harness, toolCall("pindie_state", { action: "start_task" })), undefined);
+  for (const [name, input] of [
+    ["edit", {}], ["write", {}], ["bash", { command: "git status" }], ["future_mutating_tool", {}],
+    ...["replace_task", "refine_task", "set_open_loops", "record_verification", "complete_task"].map((action) => ["pindie_state", { action }]),
+    ...["open", "resolve"].map((action) => ["pindie_gate", { action }]),
+  ] as Array<[string, Record<string, unknown>]>) {
+    assertBlocked(await callGuard(harness, toolCall(name, input)), /No active Pindie Task.*start_task/i);
+  }
+
+  await harness.api.tool("pindie_state").execute("start", {
+    action: "start_task", goal: "Task A", successCriteria: ["Task A works"],
+  });
+  assert.equal(harness.integration.runtime.state.task?.goal, "Task A");
+  for (const name of ["edit", "write", "bash", "future_mutating_tool"]) {
+    assert.equal(await callGuard(harness, toolCall(name)), undefined);
+  }
+  assertBlocked(await callGuard(harness, toolCall("pindie_state", {
+    action: "replace_task", goal: "Task B", successCriteria: ["Task B works"],
+  })), /only replace the unfinished Task that existed at the start/i);
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(harness.api.sentMessages.length, 1);
+});
+
+test("TBE-E12-E14 coherence and State unavailability outrank idle task admission", async () => {
+  const changed = createHarness();
+  await startSession(changed, "/repo");
+  await beginAgentRun(changed);
+  changed.store.states.set("/repo", activeState("Task B"));
+  assertBlocked(await callGuard(changed, toolCall("edit")), /changed outside this Agent Run/i);
+  assert.equal(changed.integration.runtime.state.task?.goal, "Task B");
+
+  const staleIdle = createHarness([["/repo", activeState()]]);
+  await startSession(staleIdle, "/repo");
+  await beginAgentRun(staleIdle);
+  staleIdle.store.states.set("/repo", EMPTY_STATE);
+  assertBlocked(await callGuard(staleIdle, toolCall("pindie_state", { action: "start_task" })), /changed outside this Agent Run/i);
+
+  const unavailable = createHarness();
+  unavailable.store.loadErrors.set("/repo", new Error("State cannot be loaded"));
+  await startSession(unavailable, "/repo");
+  assertBlocked(await callGuard(unavailable, toolCall("pindie_state", { action: "start_task" })), /State is unavailable/i);
+});
+
 test("RC04 replacing Task A then completing Task B does not permit Task C in the same run", async () => {
   const harness = createHarness([["/repo", completedState()]]);
   await startSession(harness, "/repo");

@@ -114,6 +114,7 @@ Persist only semantic current-work information that cannot be reliably reconstru
 7. **One current task.** v0.1 deliberately excludes task queues and orchestration.
 8. **Task boundaries reconcile intent.** Before consequential project action, reconcile latest actual user intent with the current Task after any needed read-only observation: continue when it belongs to that Task, refine when its Contract changes, replace an unfinished Task through `replace_task` when it clearly requests a different Task, and use a Human Gate for consequential ambiguity. Observation, discussion, pause, or return-control intent alone does not authorize consequential continuation.
 9. **Active work continues.** An active Task continues only while the latest user intent calls for consequential execution of this current Task and a safe executable next action remains; response, turn, and low-level agent-loop boundaries are not Task boundaries. The hidden continuation follow-up is a probe subordinate to latest user intent, not unconditional authorization to resume persisted State. Persisted `nextIntent` records continuation context, not permission to yield or override later user intent because more implementation, replanning, or verification iterations are required.
+10. **Task-backed execution.** Read-only observation requires no Task. Consequential project action requires available, coherent State and one current Task; `pindie_state(start_task)` is the legal transition from idle into Task-backed execution, before existing Task-boundary, Human Gate, and completion guards apply.
 
 ## 5. State model
 
@@ -232,7 +233,9 @@ agent_end
 
 tool_call
   → allow only existing read-only observation, including `pindie_git_observe`, without freshness preflight
-  → otherwise enforce unavailable-State, stale-Run freshness, Human Gate, terminal-task, and same-run guards
+  → otherwise enforce unavailable-State and stale-Run freshness / authoritative refresh
+  → require a current Task, allowing only `pindie_state(start_task)` when idle
+  → otherwise enforce existing Task-boundary, Human Gate, terminal-task, and same-run guards
 
 turn_end (only turns with tool results)
   → runtime-only Auto reasoning chooses the next requested Low, Medium, or High from tool errors, current verification, current request, and successful built-in edit/write results

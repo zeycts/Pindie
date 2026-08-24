@@ -55,6 +55,14 @@ Session-local choreography, sequencing, and checkpoint instructions are not auto
 
 Before consequential project action, reconcile latest actual user intent with the current Task after any needed read-only observation: start when no unfinished Task exists, continue when intent still belongs to the Task without material Contract change, refine when it does with a material Contract change, and replace an unfinished Task only when intent clearly requests a different Task. Stop, pause, inspection, explanation, or discussion alone does not mutate State or authorize consequential continuation. Use the existing Human Gate for consequential ambiguity; these relationships are Core decision discipline, not persisted State or controller machinery.
 
+### Task-Backed Execution v0.1
+
+- **TBE-E01-E02** With idle State, `read`, `grep`, `find`, `ls`, and `pindie_git_observe` remain Task-free; only `pindie_state(start_task)` is admitted as a consequential transition.
+- **TBE-E03-E08** Idle State blocks `edit`, `write`, generic `bash` (including `git status`), unknown consequential tools, non-start State actions, and Human Gate actions.
+- **TBE-E09-E11** A successfully persisted same-run `start_task` backs subsequent consequential execution but does not make the new Task replaceable in that Run.
+- **TBE-E12-E14** State availability and authoritative coherence refresh precede Task admission; unavailable or stale Runs fail closed with their existing reasons.
+- **TBE-E15-E20** Existing completed-task, Human Gate, active-task, read-only no-refresh, and continuation behavior remains unchanged.
+
 ## 3. Derived statuses
 
 ### Task status
