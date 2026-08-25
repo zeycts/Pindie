@@ -21,15 +21,12 @@ const result = (toolName: string, isError = false) => ({ toolName, isError });
 
 function controller() { return new ReasoningController(); }
 
-test("AR01-AR03 reset and Agent Runs initialize Auto medium while Fixed is preserved", () => {
+test("AR01-AR03 reset and Agent Runs initialize Auto medium", () => {
   const reasoning = controller();
   assert.deepEqual(reasoning.snapshot, { mode: "auto", requestedLevel: "medium", effectiveLevel: "medium" });
   reasoning.decideNext(active, [result("edit")]);
   reasoning.beforeAgentStart();
   assert.equal(reasoning.snapshot.requestedLevel, "medium");
-  reasoning.setFixed("high");
-  reasoning.beforeAgentStart();
-  assert.equal(reasoning.snapshot.requestedLevel, "high");
 });
 
 test("AR04-AR14 Auto policy uses its specified priority and hysteresis", () => {
@@ -54,18 +51,13 @@ test("AR04-AR14 Auto policy uses its specified priority and hysteresis", () => {
   assert.equal(reasoning.snapshot.requestedLevel, "low");
 });
 
-test("AR15-AR19 Fixed ignores adaptation, Auto restores medium, and effective synchronization preserves mode", () => {
+test("AR15-AR19 Manual ignores adaptation and Auto restores medium", () => {
   const reasoning = controller();
-  reasoning.setFixed("low");
+  reasoning.setManual();
   reasoning.decideNext(failed, [result("bash", true)]);
-  assert.equal(reasoning.snapshot.requestedLevel, "low");
-  reasoning.setFixed("high");
-  reasoning.decideNext(active, [result("edit")]);
-  assert.equal(reasoning.snapshot.requestedLevel, "high");
+  assert.deepEqual(reasoning.snapshot, { mode: "manual", requestedLevel: "medium", effectiveLevel: "medium" });
   reasoning.setAuto();
   assert.equal(reasoning.snapshot.requestedLevel, "medium");
   reasoning.synchronizeEffective("low");
   assert.deepEqual(reasoning.snapshot, { mode: "auto", requestedLevel: "medium", effectiveLevel: "low" });
-  reasoning.setFixed("high"); reasoning.synchronizeEffective("medium");
-  assert.equal(reasoning.snapshot.mode, "fixed");
 });

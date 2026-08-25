@@ -3,25 +3,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getVerificationStatus, type PindieState } from "./state.ts";
 
 export type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
-export type ReasoningMode = "auto" | "fixed";
+export type ReasoningMode = "auto" | "manual";
 
 export interface ReasoningSnapshot {
   mode: ReasoningMode;
   requestedLevel: ThinkingLevel;
   effectiveLevel: ThinkingLevel;
-}
-
-export const FIXED_THINKING_LEVELS = [
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const satisfies readonly ThinkingLevel[];
-
-export function isFixedThinkingLevel(level: string): level is typeof FIXED_THINKING_LEVELS[number] {
-  return FIXED_THINKING_LEVELS.includes(level as typeof FIXED_THINKING_LEVELS[number]);
 }
 
 export class ReasoningController {
@@ -49,9 +36,8 @@ export class ReasoningController {
     this.current.requestedLevel = "medium";
   }
 
-  setFixed(level: ThinkingLevel): void {
-    this.current.mode = "fixed";
-    this.current.requestedLevel = level;
+  setManual(): void {
+    this.current.mode = "manual";
   }
 
   beforeAgentStart(): void {
@@ -59,7 +45,7 @@ export class ReasoningController {
   }
 
   decideNext(state: PindieState, toolResults: readonly { toolName: string; isError: boolean }[]): boolean {
-    if (this.current.mode === "fixed" || toolResults.length === 0) return false;
+    if (this.current.mode === "manual" || toolResults.length === 0) return false;
 
     const verification = state.task ? getVerificationStatus(state.task) : "pending";
     if (toolResults.some((result) => result.isError) || verification === "failed") {

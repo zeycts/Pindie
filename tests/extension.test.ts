@@ -273,8 +273,8 @@ test("Extension registration does not call Pi runtime action methods before runt
   await api.handler("session_start")({ type: "session_start", reason: "startup" }, context("/repo"));
   await api.handler("before_agent_start")({ type: "before_agent_start", systemPrompt: "", prompt: "", systemPromptOptions: {} }, context("/repo"));
   assert.deepEqual(api.appliedThinkingLevels, ["medium"]);
-  await api.commands.get("reasoning").handler("high", context("/repo"));
-  assert.equal(api.appliedThinkingLevels.at(-1), "high");
+  await api.commands.get("reasoning").handler("manual", context("/repo"));
+  assert.deepEqual(api.appliedThinkingLevels, ["medium"]);
 });
 
 async function startSession(
@@ -338,7 +338,7 @@ test("EI20-EI30 /efficiency is registered and reads runtime facts without mutati
   assert.ok(harness.api.commands.has("efficiency"));
   assert.deepEqual(harness.api.appliedThinkingLevels, []);
   await startSession(harness, "/repo", "startup", entries);
-  harness.integration.reasoning.setFixed("max");
+  harness.integration.reasoning.setManual();
   harness.integration.reasoning.synchronizeEffective("high");
   const stateBefore = structuredClone(harness.integration.runtime.state);
   const reasoningBefore = harness.integration.reasoning.snapshot;
@@ -361,7 +361,7 @@ test("EI20-EI30 /efficiency is registered and reads runtime facts without mutati
   assert.equal(entryReads, 1);
   assert.equal(contextReads, 1);
   assert.equal(notices.at(-1)?.type, "info");
-  assert.match(notices.at(-1)?.message ?? "", /Reasoning: fixed · requested max · effective high/);
+  assert.match(notices.at(-1)?.message ?? "", /Reasoning: manual · requested medium · effective high/);
   assert.match(notices.at(-1)?.message ?? "", /Context: 204k \/ 272k · 74.8%/);
   assert.match(notices.at(-1)?.message ?? "", /CH 99.4%/);
   assert.deepEqual(harness.integration.reasoning.snapshot, reasoningBefore);
@@ -479,7 +479,7 @@ test("AC04-AC13 continuation eligibility suppresses every ineligible agent end",
   }
 });
 
-test("AR20-AR35 reasoning integration follows public Pi lifecycle without State persistence", async () => {
+test("AR20-AR35 reasoning integration preserves auto authority and manual relinquishes it", async () => {
   const harness = createHarness([["/repo", activeState()]]);
   assert.ok(harness.api.handlers.has("turn_end"));
   assert.ok(harness.api.handlers.has("thinking_level_select"));
@@ -491,27 +491,38 @@ test("AR20-AR35 reasoning integration follows public Pi lifecycle without State 
   const originalState = structuredClone(harness.integration.runtime.state);
   await harness.api.handler("turn_end")({ type: "turn_end", toolResults: [toolResult("bash", true)] }, context("/repo"));
   assert.equal(harness.api.appliedThinkingLevels.at(-1), "high");
+  const command = harness.api.commands.get("reasoning");
+  const notices: Array<{ message: string; type: string }> = [];
+  const commandContext = { ...context("/repo"), ui: { notify: (message: string, type: string) => notices.push({ message, type }) } };
+  assert.deepEqual(command.getArgumentCompletions(""), [{ value: "auto", label: "auto" }, { value: "manual", label: "manual" }]);
+  const selectorOptions: string[][] = [];
+  await command.handler("", {
+    ...commandContext,
+    mode: "tui",
+    ui: {
+      notify: (message: string, type: string) => notices.push({ message, type }),
+      select: async (_title: string, options: string[]) => {
+        selectorOptions.push(options);
+        return null;
+      },
+    },
+  });
+  assert.deepEqual(selectorOptions, [["auto", "manual"]]);
+  await command.handler("manual", commandContext);
+  assert.equal(harness.integration.reasoning.snapshot.mode, "manual");
+  const manualCount = harness.api.appliedThinkingLevels.length;
+  await beginAgentRun(harness);
   await harness.api.handler("turn_end")({ type: "turn_end", toolResults: [toolResult("edit")] }, context("/repo"));
+  assert.equal(harness.api.appliedThinkingLevels.length, manualCount);
+  await command.handler("high", commandContext);
+  assert.deepEqual(notices.at(-1), { message: "Usage: /reasoning [auto|manual]", type: "warning" });
+  await command.handler("status", commandContext);
+  assert.deepEqual(notices.at(-1), { message: "Usage: /reasoning [auto|manual]", type: "warning" });
+  await command.handler("auto", commandContext);
+  assert.equal(harness.integration.reasoning.snapshot.mode, "auto");
   assert.equal(harness.api.appliedThinkingLevels.at(-1), "medium");
   await harness.api.handler("turn_end")({ type: "turn_end", toolResults: [toolResult("edit")] }, context("/repo"));
   assert.equal(harness.api.appliedThinkingLevels.at(-1), "low");
-  const countBeforeTerminal = harness.api.appliedThinkingLevels.length;
-  await harness.api.handler("turn_end")({ type: "turn_end", toolResults: [] }, context("/repo"));
-  assert.equal(harness.api.appliedThinkingLevels.length, countBeforeTerminal);
-  const command = harness.api.commands.get("reasoning");
-  const notices: string[] = [];
-  const commandContext = { ...context("/repo"), ui: { notify: (message: string) => notices.push(message) } };
-  await command.handler("status", commandContext);
-  assert.match(notices.at(-1) ?? "", /auto; requested low; effective low/);
-  await command.handler("high", commandContext);
-  assert.deepEqual(harness.integration.reasoning.snapshot, { mode: "fixed", requestedLevel: "high", effectiveLevel: "high" });
-  await harness.api.handler("turn_end")({ type: "turn_end", toolResults: [toolResult("edit")] }, context("/repo"));
-  assert.equal(harness.integration.reasoning.snapshot.requestedLevel, "high");
-  await command.handler("invalid", commandContext);
-  assert.equal(harness.integration.reasoning.snapshot.requestedLevel, "high");
-  await command.handler("auto", context("/repo"));
-  assert.equal(harness.integration.reasoning.snapshot.mode, "auto");
-  assert.equal(harness.api.appliedThinkingLevels.at(-1), "medium");
   harness.api.thinkingLevel = "low";
   await harness.api.handler("thinking_level_select")({ type: "thinking_level_select", level: "low", previousLevel: "medium" }, context("/repo"));
   assert.equal(harness.integration.reasoning.snapshot.effectiveLevel, "low");

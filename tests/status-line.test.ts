@@ -56,7 +56,7 @@ test("SSA-S02 active unfinished Task renders lifecycle before pending verificati
   ]);
 });
 
-test("AR36-AR38 Auto adds one compact segment before activity while Fixed omits it", () => {
+test("AR36-AR38 status reports the reasoning authority before activity", () => {
   assert.deepEqual(segments({ reasoningMode: "auto", activity: "running" }), [
     { text: "⏱ 2m 14s", tone: "dim" },
     { text: "auto", tone: "dim" },
@@ -64,7 +64,7 @@ test("AR36-AR38 Auto adds one compact segment before activity while Fixed omits 
     { text: "active", tone: "text" },
     { text: "verify 0/4", tone: "text" },
   ]);
-  assert.equal(segments({ reasoningMode: "fixed" }).filter(({ text }) => text === "auto").length, 0);
+  assert.equal(segments({ reasoningMode: "manual" }).some(({ text }) => text === "manual"), true);
 });
 
 test("Run Cost and accent Activity follow the timer before verification and attention", () => {
