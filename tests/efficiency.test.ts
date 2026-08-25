@@ -96,8 +96,8 @@ test("EI11-EI19 report formatting handles context, reasoning, run cost, and dete
   assert.match(formatEfficiencyReport(deriveEfficiencySnapshot({
     ...base,
     contextUsage: known,
-    reasoning: { mode: "fixed", requestedLevel: "max", effectiveLevel: "high" },
+    reasoning: { mode: "manual", requestedLevel: "max", effectiveLevel: "high" },
     runCost: { cost: 0.94, active: false },
-  })), /Reasoning: fixed · requested max · effective high[\s\S]*last run \$0.94/);
+  })), /Reasoning: manual · requested max · effective high[\s\S]*last run \$0.94/);
   assert.match(formatEfficiencyReport(deriveEfficiencySnapshot({ ...base, contextUsage: known, runCost: null })), /Cost: session \$4.048$/);
 });

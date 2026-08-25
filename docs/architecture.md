@@ -211,7 +211,7 @@ before_agent_start
   → refresh authoritative project State before any run-start identity snapshots
   → reset extension-local active-Task continuation fuse
   → start runtime-only Run timer, Run Cost, and Current Activity (thinking)
-  → request Auto Medium or the runtime-only Fixed thinking level through Pi
+  → request Auto Medium through Pi; Manual leaves Pi's thinking level unchanged
   → snapshot pre-existing unfinished-task, Human Gate, and completed-task identity
   → append one stable Core Policy block
   → derive and publish one Pindie semantic status line
@@ -272,7 +272,7 @@ Project Mutation Freshness keeps one runtime-only overlapping mutation window fo
 
 Execution Hygiene is a Core execution invariant. `pi-smoke` is narrow tooling for repeated Pindie dogfood verification, not State, Runtime, Skill lifecycle, bash parsing, or a second Agent Loop.
 
-Adaptive reasoning is runtime-only and never enters `PindieState`, the State Store, project files, or Pi session entries. Its controller requests a level with Pi's public `setThinkingLevel()` then reads the effective level from public `getThinkingLevel()`; Pi remains authoritative for model support and clamping. Auto starts each Agent Run at Medium and only requests Low, Medium, or High. Fixed mode is selected only through `/reasoning` and may request Pi's supported `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` levels. The controller does not route models, infer Core Loop phases, classify with an LLM, or retain history.
+Adaptive reasoning is runtime-only and never enters `PindieState`, the State Store, project files, or Pi session entries. Its controller requests a level with Pi's public `setThinkingLevel()` then reads the effective level from public `getThinkingLevel()`; Pi remains authoritative for model support and clamping. Auto starts each Agent Run at Medium and only requests Low, Medium, or High. Manual mode, selected through `/reasoning`, leaves thinking-level control to Pi's native `/thinking` interface. The controller does not route models, infer Core Loop phases, classify with an LLM, or retain history.
 
 ## 8. Persistence target
 

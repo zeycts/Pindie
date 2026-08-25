@@ -18,12 +18,7 @@ import {
   captureProjectFingerprint as defaultCaptureProjectFingerprint,
   type ProjectFingerprint,
 } from "./project-mutation.ts";
-import {
-  FIXED_THINKING_LEVELS,
-  isFixedThinkingLevel,
-  ReasoningController,
-  type ThinkingLevel,
-} from "./reasoning.ts";
+import { ReasoningController } from "./reasoning.ts";
 import {
   deriveEfficiencySnapshot,
   formatEfficiencyReport,
@@ -249,6 +244,7 @@ export function registerPindieExtension(
   };
 
   const applyRequestedThinkingLevel = (): void => {
+    if (reasoning.snapshot.mode === "manual") return;
     pi.setThinkingLevel(reasoning.snapshot.requestedLevel);
     reasoning.synchronizeEffective(pi.getThinkingLevel());
   };
@@ -305,26 +301,21 @@ export function registerPindieExtension(
   });
 
   pi.registerCommand("reasoning", {
-    description: "Set or show adaptive reasoning (auto|minimal|low|medium|high|xhigh|max|status)",
-    getArgumentCompletions: (prefix) => ["auto", ...FIXED_THINKING_LEVELS, "status"]
+    description: "Choose who controls thinking level (auto|manual)",
+    getArgumentCompletions: (prefix) => ["auto", "manual"]
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({ value, label: value })),
     handler: async (args, ctx) => {
-      const value = args.trim().toLowerCase();
-      if (value === "status") {
-        ctx.ui.notify(reasoningStatus(), "info");
-        return;
+      let value = args.trim().toLowerCase();
+      if (!value && ctx.mode === "tui") {
+        const selected = await ctx.ui.select("Reasoning", ["auto", "manual"]);
+        if (!selected) return;
+        value = selected;
       }
       if (value === "auto") reasoning.setAuto();
-      else if (isFixedThinkingLevel(value)) {
-        reasoning.setFixed(value);
-      } else if (!value && ctx.mode === "tui") {
-        const selected = await ctx.ui.select("Reasoning", ["auto", ...FIXED_THINKING_LEVELS]);
-        if (!selected) return;
-        if (selected === "auto") reasoning.setAuto();
-        else reasoning.setFixed(selected as ThinkingLevel);
-      } else {
-        ctx.ui.notify(`${reasoningStatus()} Usage: /reasoning [auto|minimal|low|medium|high|xhigh|max|status]`, "warning");
+      else if (value === "manual") reasoning.setManual();
+      else {
+        ctx.ui.notify("Usage: /reasoning [auto|manual]", "warning");
         return;
       }
       applyRequestedThinkingLevel();
