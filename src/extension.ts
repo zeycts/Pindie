@@ -433,37 +433,6 @@ export function registerPindieExtension(
     statusContext = null;
   });
 
-  pi.on("input", async (event, ctx) => {
-    if (!ctx.isIdle() || event.source === "extension") return;
-
-    runToolBaseline = [...pi.getActiveTools()];
-    if (runtime.projectRoot !== null && stateUnavailableReason === null) {
-      try {
-        await runtime.refresh();
-      } catch (error) {
-        markUnavailable(
-          `Could not refresh Pindie State before this Agent Run: ${errorMessage(error)} Restore or repair the project State, then reload the session.`,
-        );
-      }
-    }
-
-    const state = currentAuthoritativeState();
-    const prospectiveContext = state === null
-      ? null
-      : beginAgentRunFacts(state, runtime.externalStateEpoch);
-    const facts = deriveSemanticRunFacts(
-      prospectiveContext,
-      state,
-      runtime.externalStateEpoch,
-    );
-    const derivation = deriveSemanticSnapshot(state, facts);
-    if (!derivation.ok) {
-      markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
-      return;
-    }
-    applyToolSurface(deriveCapabilities(derivation.snapshot));
-  });
-
   pi.on("before_agent_start", async (event, ctx) => {
     statusContext = ctx;
     if (runToolBaseline === null) {
