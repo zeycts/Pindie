@@ -182,7 +182,7 @@ Tool descriptions explain only the operation's meaning and input contract. They 
 
 ## 8. M3 Tool Surface projection
 
-For each user-driven Agent Run, Pindie captures a runtime-only **Run Tool Baseline** before applying its semantic restriction.
+For each actual Agent Run, Pindie captures a runtime-only **Run Tool Baseline** at `before_agent_start` before applying semantic restriction.
 
 ```text
 Effective tools
@@ -198,9 +198,10 @@ Behavioral rules:
 2. Baseline order is preserved.
 3. Unknown/custom baseline-active tools require `project.mutate`; they disappear when that capability is absent.
 4. The baseline is runtime-only and never enters `PindieState`.
-5. Pindie restores the exact baseline when the high-level Agent Run settles.
-6. The next user-driven Run captures a fresh baseline, so user/Pi changes made while idle become authoritative for that Run.
-7. Pindie does not create or persist a second user tool preference store.
+5. The baseline is created only for an actual Agent Run, not speculatively from `input`.
+6. Pindie restores the exact baseline when the high-level Agent Run settles.
+7. The next actual Run captures a fresh baseline, so Pi/user changes made while idle become authoritative for that Run.
+8. Pindie does not create or persist a second user tool preference store.
 
 For every baseline-active recognized tool `T` in an unchanged semantic world:
 
@@ -212,17 +213,39 @@ capabilities.has(requiredCapability(T))
 
 The M2 Gateway must agree with the same capability truth.
 
-## 9. Pi v0.84.3 overlay constraint
+## 9. Pi v0.84.3 overlay and lifecycle constraint
 
 The pinned Pi v0.84.3 API exposes `getActiveTools()`, `getAllTools()`, and replacement-style `setActiveTools(names)`. It exposes no composable overlay primitive and no active-tool-change event.
 
 Therefore M3 does not promise perfect composition with another extension that mutates active tools during the same already-running Agent Run. Pindie owns its Run-scoped semantic narrowing and restores the captured baseline at settlement. Do not add polling, heuristic diff-merging, or a second configuration state machine to pretend this limitation does not exist.
 
+Pi v0.84.3 also emits extension `input` before model/auth preflight. That input may be handled or rejected without an Agent Run and therefore without `before_agent_start`/`agent_settled`.
+
+Required rule:
+
+```text
+input
+→ must NOT capture-and-restrict the Run Tool Baseline
+
+before_agent_start
+→ authoritative Run Facts boundary
+→ authoritative Run Tool Baseline boundary
+→ initial capability-driven Tool Surface application
+```
+
+This prevents a failed/handled input from leaving Pi idle with a semantically narrowed active-tool set or causing a later Run to capture a false narrowed baseline.
+
 ## 10. Initial and mid-Run Tool Surface refresh
 
-The first model turn of a user-driven Run should start with the correct Tool Surface. Because Pi captures the `before_agent_start` system-prompt input before the handler runs, M3 should pre-apply the prospective next-Run surface during an earlier user-input boundary when feasible, using freshly observed State and a prospective coherent Run baseline.
+At `before_agent_start`:
 
-Actual M2 Run Facts remain established authoritatively in `before_agent_start`; do not replace the M2 Run boundary with speculative input-time State.
+1. capture the current Pi/user active tools as the fresh Run Tool Baseline;
+2. refresh authoritative Pindie State using the existing M2 safety path;
+3. establish actual Run Facts;
+4. derive Snapshot + Capabilities;
+5. derive and apply the effective Tool Surface from the captured baseline.
+
+Do not create a prospective next-Run semantic context from `input`.
 
 Within the Run, recompute the effective surface after any event that can change capabilities, including:
 
@@ -236,19 +259,24 @@ external State change causing stale authority
 State becoming unavailable
 ```
 
-A mid-Run Tool Surface update affects the actual tool schemas available on the next agent turn. Gateway authorization remains the final authority for any call produced against stale visibility.
+A Tool Surface update affects the actual tool schemas available on the next agent turn. Gateway authorization remains the final authority for any call produced against stale visibility.
 
 ## 11. Core Policy / Pi system-prompt limitation during M3
 
-Pindie's current Core Policy is injected from `before_agent_start` as a system-prompt override for the high-level Run. Pi v0.84.3 rebuilds its base system prompt when active tools change, but that already-created override can keep old selected-tool text for later turns of the same Run.
+Pindie's current Core Policy is injected from `before_agent_start` as a system-prompt override for the high-level Run. Pi v0.84.3 rebuilds its base system prompt when active tools change, but the `before_agent_start` hook receives a prompt input that was prepared before Pindie's handler narrows tools, and the returned override can keep old selected-tool text during the Run.
 
-M3 must not solve this by importing private Pi internals, parsing/rebuilding Pi's default system prompt, or adding compensating natural-language rules.
+M3 must not solve this by:
+
+- pre-restricting tools from `input`;
+- importing private Pi internals;
+- parsing/rebuilding Pi's default system prompt;
+- adding compensating natural-language rules.
 
 Required M3 behavior:
 
-- pre-apply the initial surface so the first-turn override starts from the correct Pi base prompt where feasible;
+- make the actual tool schemas/action space correct before model execution by applying the initial surface in `before_agent_start`;
 - keep actual dynamic tool schemas and the M2 Gateway correct throughout the Run;
-- accept/document the temporary mid-Run prompt-text lag under the existing Core override.
+- accept/document temporary prompt-text lag under the existing Core override.
 
 M4 owns Policy Reduction and removal/restructuring of that override so prompt text and dynamic Tool Surface fully converge.
 
@@ -279,11 +307,11 @@ successful project mutation invalidates verification
 Gate opened during this Run
 → observation only
 
-Gate existing before a fresh user Run
+Gate existing before a fresh Run
 → gate resolve/refine and eligible replacement become visible
 
 Task completed during Run
-→ observation only; pindie_task_start remains absent until the next user-driven Run
+→ observation only; pindie_task_start remains absent until the next Run
 
 stale/unavailable authority
 → observation only
@@ -310,7 +338,8 @@ M3 must not:
 - redesign Skills;
 - create a generic plugin/tool policy framework;
 - parse shell commands;
-- import private Pi prompt-building internals.
+- import private Pi prompt-building internals;
+- mutate active tools from `input` to speculate about a future Run.
 
 ## 15. Migration status
 

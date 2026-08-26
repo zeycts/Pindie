@@ -66,7 +66,7 @@ M0 established `Run Facts → Semantic Snapshot → Capabilities`. M1 establishe
 
 M3 aligns model-visible affordances with that already-live legality model. It replaces the broad `pindie_state` / `pindie_gate` action enums with narrow semantic tools and dynamically narrows Pi's active Tool Surface from a fresh per-Run Pi/user baseline. Pindie may remove baseline tools when current capabilities do not permit them, but it must never re-enable a tool that Pi/user had disabled.
 
-Pindie is currently pinned to Pi v0.84.3. Its active-tool API is replacement-style and has no composable overlay/change event, so M3 uses a Run-scoped baseline and restores it when the Run settles. M4 then removes/restructures redundant Core Policy injection so Pi's system-prompt text can fully track mid-Run dynamic Tool Surface changes.
+The Run Tool Baseline is captured only at the actual `before_agent_start` Run boundary. Pindie does not pre-restrict tools from Pi's `input` event because Pi v0.84.3 emits `input` before model/auth preflight; an input can be handled or fail without an Agent Run, which would otherwise risk leaving a narrowed tool set behind. M4 later removes/restructures redundant Core Policy injection so Pi's system-prompt text can fully track dynamic Tool Surface changes.
 
 ## Current implemented baseline
 

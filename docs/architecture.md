@@ -190,7 +190,7 @@ These tools are adapters to the existing semantic `PindieEvent`s. Reducer events
 
 ### Tool Surface projection
 
-For every active Agent Run:
+For every actual Agent Run:
 
 ```text
 Run Tool Baseline
@@ -200,7 +200,7 @@ Tools allowed by current capabilities
 Effective Tool Surface
 ```
 
-The **Run Tool Baseline** is the Pi/user active-tool set captured before Pindie applies semantic restriction. Pindie may narrow that set but must never enable a tool absent from the baseline.
+The **Run Tool Baseline** is the Pi/user active-tool set captured at the authoritative `before_agent_start` boundary before Pindie applies semantic restriction. Pindie may narrow that set but must never enable a tool absent from the baseline.
 
 For a baseline-active tool `T` in an unchanged semantic world:
 
@@ -226,22 +226,38 @@ pi.setActiveTools(names)
 
 M3 therefore owns a simple Run-scoped overlay contract:
 
-1. Capture a fresh baseline before Pindie restricts the next user-driven Run.
-2. Derive the effective set by filtering that baseline through current capabilities.
-3. Reapply from the same baseline whenever semantic capabilities change during the Run.
-4. Restore the exact baseline when the Run settles.
-5. Capture a fresh baseline for the next user-driven Run.
+1. At `before_agent_start`, refresh authoritative Pindie State and establish the actual Run Facts boundary.
+2. Capture the current Pi/user active tools as the Run Tool Baseline before Pindie restricts them.
+3. Derive the effective set by filtering that baseline through current capabilities.
+4. Reapply from the same baseline whenever semantic capabilities change during the Run.
+5. Restore the exact baseline when the Run settles.
+6. Capture a fresh baseline for the next actual Agent Run.
 
 Do not maintain a second persistent active-tool configuration. Do not restore/enable tools that were absent from the captured baseline.
 
 Concurrent changes to active tools by another extension during an already-running Agent Run cannot be perfectly composed with Pi v0.84.3 because no overlay/change-event API exists. M3 documents that limitation rather than adding heuristic synchronization or another state machine.
+
+### Why `input` is not the baseline boundary
+
+Pi v0.84.3 emits the extension `input` event before model/auth preflight. That input may be handled or rejected without `before_agent_start`, without an Agent Run, and without `agent_settled`.
+
+Therefore Pindie must **not** capture-and-restrict the active Tool Surface from `input`. Doing so could leave Pi idle with a narrowed active set and cause a later input to capture that restricted set as a false baseline.
+
+`before_agent_start` is the single authority boundary for both:
+
+```text
+actual Agent Run Facts
+Run Tool Baseline
+```
+
+This deliberately favors lifecycle correctness over speculative pre-Run prompt-text synchronization.
 
 ### Refresh points
 
 The effective Tool Surface must be recomputed when capability truth can change, including:
 
 ```text
-initial user-driven Run admission
+initial before_agent_start Run admission
 successful semantic Task/Gate/verification transitions
 project mutation that invalidates verification
 external State change that makes the Run stale
@@ -253,11 +269,11 @@ The M2 Gateway remains authoritative for races, stale pre-generated calls, and a
 
 ## 8. Pi system-prompt integration boundary
 
-Pi v0.84.3 rebuilds its base system prompt when active tools change. However, Pindie's current `before_agent_start` Core Policy injection returns a system-prompt override for the high-level Agent Run. That override remains active during subsequent turns of the same Run.
+Pi v0.84.3 rebuilds its base system prompt when active tools change. However, Pindie's current `before_agent_start` Core Policy injection returns a system-prompt override for the high-level Agent Run. The hook receives a prompt value that was prepared before Pindie's handler narrows the tools, and the returned override remains active during subsequent turns of the same Run.
 
-Therefore M3 must not pretend that mid-Run `setActiveTools()` can also refresh every piece of already-overridden Pi prompt text. Actual tool schemas/availability still change and the M2 Gateway remains correct, but selected-tool text inside the existing Run override may temporarily lag after a mid-Run surface change.
+Therefore M3 guarantees the actual tool schemas/action space, not perfect synchronization of every selected-tool text fragment in the existing prompt override. `setActiveTools()` during `before_agent_start` still changes the actual tools before model execution; mid-Run surface changes likewise update actual schemas for later turns. The M2 Gateway remains correct for stale/pre-generated calls.
 
-M3 should pre-apply the initial Tool Surface before `before_agent_start` when feasible so the first-turn Pi prompt is built from the correct active tools. It must not parse/rebuild Pi's private prompt, import private Pi internals, or add compensating lifecycle prose.
+M3 must not parse/rebuild Pi's private prompt, import private Pi internals, or add compensating lifecycle prose. It also must not pre-restrict tools at `input` merely to improve prompt text.
 
 M4 owns Policy Reduction and restructuring/removal of the Core Policy override so prompt text and dynamic Tool Surface can fully converge.
 
@@ -281,12 +297,13 @@ Continuation remains subordinate to latest user intent and is redesigned only in
 4. Snapshot and capabilities are derived, never persisted.
 5. Tool visibility and Gateway legality derive from the same capabilities.
 6. Effective tools are a subset of the captured Pi/user Run baseline.
-7. Tool Effect classification is shared execution semantics, not a second policy system.
-8. Reducer knows semantic events, not Pi tools.
-9. Harness closes deterministic branches; model retains genuine semantic choices.
-10. Human authority is explicit for consequential judgment.
-11. Gateway remains a defense-in-depth backstop after Tool Surface alignment.
-12. Pi remains the only low-level agent loop and Skill runtime.
+7. Run Tool Baseline is captured only for an actual Agent Run at `before_agent_start`, never speculatively at `input`.
+8. Tool Effect classification is shared execution semantics, not a second policy system.
+9. Reducer knows semantic events, not Pi tools.
+10. Harness closes deterministic branches; model retains genuine semantic choices.
+11. Human authority is explicit for consequential judgment.
+12. Gateway remains a defense-in-depth backstop after Tool Surface alignment.
+13. Pi remains the only low-level agent loop and Skill runtime.
 
 ## 12. Migration plan
 
