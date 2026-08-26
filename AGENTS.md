@@ -36,7 +36,7 @@ Pindie must not implement a second agent loop, workflow engine, persisted phase 
 - Reducer transitions remain tool-agnostic; Pi tool names must not leak into State semantics.
 - Guards are execution-time backstops, not the primary way the normal Agent Loop learns what is legal.
 - Prefer the smallest implementation that directly represents the approved architecture.
-- Do not create a second temporary semantic truth merely to preserve legacy v0.1 affordances during migration. Build pure target semantics first, then cut runtime consumers over at the milestone that explicitly owns that behavior change.
+- Do not create a second temporary semantic truth merely to preserve legacy v0.1 affordances during migration.
 
 ## Development workflow
 
@@ -51,14 +51,37 @@ For each approved milestone:
 
 ## Approved v0.2 migration sequence
 
-- **M0 — Semantic Foundation:** pure `RunFacts → SemanticSnapshot → Capabilities` derivation and tests; no runtime behavior change. Implemented.
-- **M1 — Execution Semantics Foundation:** pure Tool Effect Model plus capability-based authorization helpers; no `extension.ts`/Guard cutover and no runtime behavior change.
-- **M2 — Semantic Gateway Cutover:** adapt real Agent-run/runtime facts into `SemanticRunFacts` and make capability authorization the semantic execution authority. This is the first intentional runtime semantic cutover and includes the already-approved blocker, Human Gate, and completion capability semantics rather than preserving them through a parallel compatibility policy.
-- **M3 — Model Tool Surface:** replace broad model-facing semantic action enums with narrow semantic tools and capability-driven dynamic tool visibility.
+- **M0 — Semantic Foundation:** pure `RunFacts → SemanticSnapshot → Capabilities` derivation and tests. Implemented.
+- **M1 — Execution Semantics Foundation:** pure Tool Effect classification plus capability-membership authorization. Implemented.
+- **M2 — Semantic Gateway Cutover:** next. Adapt real Agent-run/runtime facts into `SemanticRunFacts`, make capability authorization the live semantic execution authority, and make Project Mutation Freshness consume the shared Tool Effect classification.
+- **M3 — Model Tool Surface:** replace broad model-facing semantic action enums with narrow semantic tools and capability-driven dynamic visibility.
 - **M4 — Policy Reduction:** remove Core Policy, tool-description, and Guard instructions made redundant by the semantic/capability architecture.
 - **M5 — Verification v0.2:** separate Harness-owned factual evidence from model-owned semantic coverage judgment.
 - **M6 — Continuation Simplification:** deterministic continuation eligibility plus a thin semantic intent probe.
 - **M7 — Skill / Docs Prune:** remove duplicated Core correctness rules from Skills and prune stale migration documentation.
 - **M8 — Extension Composition:** leave `extension.ts` primarily as Pi lifecycle wiring over semantic/runtime subsystems.
 
-Implement only the current approved milestone. M1 must not wire the new authorization path into live `tool_call` handling. M2 must not preserve target/legacy differences by inventing a second compatibility capability model; it intentionally moves the live semantic authorization boundary onto the v0.2 capability truth.
+## M2 implementation authority
+
+M2 is the first intentional runtime semantic cutover. It must consume the existing M0/M1 truth directly rather than inventing compatibility capabilities.
+
+Use a minimal runtime-only Agent Run facts context. Run-start Task/Gate object identity is permitted only as a coherent-run change detector over immutable Runtime State; it is not persistent Task identity. A single additional runtime fact may record that the current Task was introduced by successful `task.start` or `task.replace` during the Run.
+
+For non-observation calls, the live path is:
+
+```text
+classify Tool Effect
+→ refresh authoritative State / detect stale Run
+→ derive SemanticRunFacts
+→ derive SemanticSnapshot
+→ derive Capabilities
+→ authorize required capability
+→ if allowed, establish mutation observation as required
+→ execute
+```
+
+Known observation capabilities remain a fast path because M0 grants `observe.project` and `observe.git` under coherent, stale, and unavailable authority.
+
+At M2 cutover, target capability semantics become live. In particular: blocked Tasks do not authorize `project.mutate`; incomplete verification does not authorize `task.complete`; a Gate opened during the current Run has observation-only authority; Task start/replace/refine/resolve obey Run Facts; stale or unavailable authority is observation-only.
+
+M2 must not add dynamic Tool Surface behavior or split `pindie_state`/`pindie_gate`; that is M3. M2 must not prune Core Policy; that is M4.

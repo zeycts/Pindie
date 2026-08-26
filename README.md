@@ -54,14 +54,10 @@ See:
 
 ## Migration status
 
-The repository has a working v0.1 Runtime baseline and is migrating incrementally to the v0.2 architecture.
-
-Migration sequence:
-
 ```text
 M0 Semantic Foundation              — implemented
-M1 Execution Semantics Foundation   — next
-M2 Semantic Gateway Cutover
+M1 Execution Semantics Foundation   — implemented
+M2 Semantic Gateway Cutover         — next
 M3 Model Tool Surface
 M4 Policy Reduction
 M5 Verification v0.2
@@ -70,9 +66,11 @@ M7 Skill / Docs Prune
 M8 Extension Composition
 ```
 
-M0 established pure `Run Facts → Semantic Snapshot → Capabilities` derivation without changing Runtime behavior. M1 adds a pure Tool Effect Model and capability-authorization layer, still without changing the live `tool_call` path. M2 is the first intentional runtime semantic cutover: real Agent-run facts are adapted into the semantic model and live execution authorization begins consuming the v0.2 capability truth.
+M0 established `Run Facts → Semantic Snapshot → Capabilities`. M1 established concrete Tool Effect classification and pure capability authorization. Neither changed the live `tool_call` path.
 
-This staging avoids maintaining two competing semantic rule systems. Target capability semantics may intentionally differ from legacy v0.1 Guard/tool affordances until M2 moves that live responsibility onto v0.2.
+M2 is the first intentional runtime cutover. It adapts real Agent-run facts into the semantic model and makes the existing capability truth the live execution authority. The cutover also makes Project Mutation Freshness consume the same Tool Effect classification instead of a separate tool-name taxonomy.
+
+The M2 Run Facts design stays runtime-only: use run-start Task/Gate identity only as a coherent-run immutable-State change detector, plus the minimum additional fact needed to remember that a Task was introduced by successful start/replacement during the Run. No Task ID or workflow phase is added to persistent State.
 
 ## Current implemented baseline
 
@@ -82,6 +80,7 @@ The repository already includes:
 - deterministic State reducer and invariants;
 - project-scoped Runtime persistence and conflict handling;
 - v0.2 Semantic Foundation (`SemanticRunFacts`, `SemanticSnapshot`, capability derivation);
+- v0.2 Execution Semantics Foundation (Tool Effect classification and pure authorization);
 - current legacy `pindie_state`, `pindie_gate`, and `pindie_git_observe` model-facing tools;
 - verification invalidation from known/observed project mutation;
 - Human Gate lifecycle;
@@ -89,7 +88,7 @@ The repository already includes:
 - `/efficiency` inspection;
 - bundled `git-workflow` Skill through Pi's Skill runtime.
 
-Some model-facing/runtime mechanisms are intentionally legacy v0.1 shapes that later v0.2 milestones will reshape. Target semantics in the v0.2 docs should not be redesigned back toward those legacy shapes merely to match current implementation.
+Until M2 is implemented, the live Agent still uses the legacy v0.1 semantic Guard path even though target semantic/execution truth already exists in pure modules. M3 later aligns model-visible tools with the live legality model.
 
 ## Development
 
