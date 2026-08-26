@@ -17,8 +17,8 @@ If the current milestone, target docs, and implementation appear inconsistent, r
 
 ## Architectural ownership
 
-- Pi owns model invocation, tool execution, sessions, and the low-level `LLM → Tool → Result → LLM` agent loop.
-- Pindie owns durable semantic State, State invariants, deterministic semantic derivation, legal capabilities, execution authorization, verification semantics, Human Gate semantics, and Pindie-owned presentation.
+- Pi owns model invocation, tool execution, sessions, the low-level `LLM → Tool → Result → LLM` agent loop, and the concrete active-tool registry.
+- Pindie owns durable semantic State, State invariants, deterministic semantic derivation, legal capabilities, execution authorization, capability-driven narrowing of the active Tool Surface, verification semantics, Human Gate semantics, and Pindie-owned presentation.
 - The model owns interpretation of user intent, planning, semantic choices within the legal capability space, and semantic evidence-coverage judgment.
 - The human owns goals, taste, consequential judgment, and final approval where required.
 - Reality is authoritative for reconstructable facts.
@@ -30,13 +30,14 @@ Pindie must not implement a second agent loop, workflow engine, persisted phase 
 - **Deterministic closure:** if authoritative facts uniquely determine a constraint, encode it in the Harness rather than asking the model to remember it.
 - **Semantic freedom:** do not hard-code choices that genuinely require interpretation of user intent or project meaning.
 - **Eliminate meaningless choices, preserve meaningful choices.**
-- Model-visible affordances and runtime legality should be projections of the same semantic capability model.
+- Model-visible affordances and runtime legality are projections of the same semantic capability model.
 - Persist only durable semantic current-work information that cannot be reliably reconstructed from reality.
 - Capabilities, active tools, run authority, presentation, reasoning mode, and workflow phases are runtime-derived and never persisted in `PindieState`.
 - Reducer transitions remain tool-agnostic; Pi tool names must not leak into State semantics.
-- Guards are execution-time backstops, not the primary way the normal Agent Loop learns what is legal.
+- The Execution Gateway remains a defense-in-depth backstop even after Tool Surface alignment.
+- Pindie may narrow Pi/user tool availability for the current Run, but must not re-enable tools that were absent from the Run baseline.
 - Prefer the smallest implementation that directly represents the approved architecture.
-- Do not create a second temporary semantic truth merely to preserve legacy v0.1 affordances during migration.
+- Do not create a second temporary semantic truth merely to preserve legacy affordances during migration.
 
 ## Development workflow
 
@@ -53,35 +54,47 @@ For each approved milestone:
 
 - **M0 — Semantic Foundation:** pure `RunFacts → SemanticSnapshot → Capabilities` derivation and tests. Implemented.
 - **M1 — Execution Semantics Foundation:** pure Tool Effect classification plus capability-membership authorization. Implemented.
-- **M2 — Semantic Gateway Cutover:** next. Adapt real Agent-run/runtime facts into `SemanticRunFacts`, make capability authorization the live semantic execution authority, and make Project Mutation Freshness consume the shared Tool Effect classification.
-- **M3 — Model Tool Surface:** replace broad model-facing semantic action enums with narrow semantic tools and capability-driven dynamic visibility.
-- **M4 — Policy Reduction:** remove Core Policy, tool-description, and Guard instructions made redundant by the semantic/capability architecture.
+- **M2 — Semantic Gateway Cutover:** real Agent-run facts now feed M0/M1; capability authorization is the live semantic execution authority and Project Mutation Freshness consumes shared Tool Effects. Implemented.
+- **M3 — Model Tool Surface:** next. Replace broad semantic action enums with narrow semantic tools and make model-visible active tools a capability-driven narrowing of the Pi/user Run baseline.
+- **M4 — Policy Reduction:** remove Core Policy, tool-description, and Guard instructions made redundant by the semantic/capability architecture; also resolve the temporary Pi v0.84.3 system-prompt override limitation left by M3.
 - **M5 — Verification v0.2:** separate Harness-owned factual evidence from model-owned semantic coverage judgment.
 - **M6 — Continuation Simplification:** deterministic continuation eligibility plus a thin semantic intent probe.
 - **M7 — Skill / Docs Prune:** remove duplicated Core correctness rules from Skills and prune stale migration documentation.
 - **M8 — Extension Composition:** leave `extension.ts` primarily as Pi lifecycle wiring over semantic/runtime subsystems.
 
-## M2 implementation authority
+## M3 implementation authority
 
-M2 is the first intentional runtime semantic cutover. It must consume the existing M0/M1 truth directly rather than inventing compatibility capabilities.
+M3 aligns model-visible affordances with the already-live M2 legality model. It must not change M0 capability semantics or weaken the M2 Gateway.
 
-Use a minimal runtime-only Agent Run facts context. Run-start Task/Gate object identity is permitted only as a coherent-run change detector over immutable Runtime State; it is not persistent Task identity. A single additional runtime fact may record that the current Task was introduced by successful `task.start` or `task.replace` during the Run.
-
-For non-observation calls, the live path is:
+Replace the broad model-facing semantic tools with narrow capability-shaped tools:
 
 ```text
-classify Tool Effect
-→ refresh authoritative State / detect stale Run
-→ derive SemanticRunFacts
-→ derive SemanticSnapshot
-→ derive Capabilities
-→ authorize required capability
-→ if allowed, establish mutation observation as required
-→ execute
+pindie_task_start         → task.start
+pindie_task_replace       → task.replace
+pindie_task_refine        → task.refine
+pindie_task_progress      → task.progress
+pindie_verification_record → verification.record
+pindie_task_complete      → task.complete
+pindie_gate_open          → gate.open
+pindie_gate_resolve       → gate.resolve
+pindie_git_observe        → observe.git
 ```
 
-Known observation capabilities remain a fast path because M0 grants `observe.project` and `observe.git` under coherent, stale, and unavailable authority.
+Internal reducer events remain unchanged. M3 does not redesign verification data, Gate semantics, or State.
 
-At M2 cutover, target capability semantics become live. In particular: blocked Tasks do not authorize `project.mutate`; incomplete verification does not authorize `task.complete`; a Gate opened during the current Run has observation-only authority; Task start/replace/refine/resolve obey Run Facts; stale or unavailable authority is observation-only.
+Pindie is pinned to Pi v0.84.3. Its exact active-tool API is replacement-style: `getActiveTools()` returns the current names and `setActiveTools(names)` replaces the active set, ignores unknown names, rebuilds Pi's base system prompt, and takes effect on the next agent turn. There is no public composable overlay or active-tool-change event.
 
-M2 must not add dynamic Tool Surface behavior or split `pindie_state`/`pindie_gate`; that is M3. M2 must not prune Core Policy; that is M4.
+Therefore M3 uses a runtime-only **Run Tool Baseline**:
+
+```text
+Run baseline = Pi/user active tools captured before Pindie restriction
+Effective tools = Run baseline ∩ tools allowed by current Pindie capabilities
+```
+
+Pindie may only remove tools from that baseline during the Run. It must never activate a tool that the baseline did not contain. Restore the exact baseline when the Run settles; the next user-driven Run captures a fresh baseline.
+
+Within an active Run, recompute the effective Tool Surface after semantic capability changes, project-mutation verification invalidation, and stale/unavailable authority changes. The M2 Gateway remains authoritative for races and already-generated calls.
+
+Pi v0.84.3 has one integration limitation: Pindie's current `before_agent_start` Core Policy injection creates a system-prompt override for the high-level Run. Mid-Run `setActiveTools()` updates actual tool schemas but cannot cleanly rebuild that already-overridden prompt. Do not parse/rebuild Pi's private system prompt or import private Pi internals. Pre-apply the initial Tool Surface before `before_agent_start` when feasible so the first-turn prompt starts from the correct surface. M4 owns removal/restructuring of the Core Policy override so prompt text and dynamic Tool Surface can fully converge.
+
+M3 must not prune Core Policy, redesign verification, redesign continuation, or invent a custom tool-registry framework.

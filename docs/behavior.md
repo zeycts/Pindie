@@ -1,10 +1,8 @@
 # Pindie v0.2 — Behavior Specification
 
-This document defines the approved v0.2 semantic and behavioral contract. Target semantics here are authoritative; existing source/tests are the runtime baseline until a milestone explicitly cuts that responsibility over.
+This document defines the approved v0.2 semantic and behavioral contract. Target semantics here are authoritative; source/tests are the implemented baseline unless the current milestone explicitly changes them.
 
 ## 1. Persistent-State invariants
-
-These remain reducer/State responsibilities:
 
 1. `state.task` is `null` or one current Task; there is no task queue.
 2. Completed Task is terminal for ordinary semantic transitions.
@@ -16,32 +14,30 @@ These remain reducer/State responsibilities:
 8. Completed Task implies current verification status `passed`.
 9. Every Task has at least one success criterion.
 
-Persistent-State validation must not duplicate runtime-only capability or Run-boundary rules.
+Persistent State must not store runtime capabilities, active tools, Run authority, or workflow phases.
 
-## 2. Ownership rules
+## 2. Ownership
 
 ```text
 Reality → reconstructable facts
 Harness → deterministic truth, legality, lifecycle, freshness
 Model   → intent interpretation, planning, semantic choice, coverage judgment
 Human   → goals, taste, consequential judgment, approval
+Pi      → concrete tool registry/execution and low-level Agent Loop
 ```
 
-- **Deterministic closure:** if authoritative facts uniquely determine legality, Harness closes the branch.
-- **Semantic freedom:** choices requiring interpretation remain model-owned within the legal capability space.
+Deterministic facts close deterministic branches; genuine semantic ambiguity remains model-owned within the legal capability space.
 
-Pindie must not convert semantic ambiguity into a persisted workflow phase/controller state.
-
-## 3. Derived statuses
+## 3. Derived semantic truth
 
 Task status:
 
 ```text
-no task                → idle
-completed              → done
-human gate open        → waiting_human
-blockers present       → blocked
-otherwise              → active
+no task          → idle
+completed        → done
+human gate open  → waiting_human
+blockers present → blocked
+otherwise        → active
 ```
 
 Verification status:
@@ -54,115 +50,17 @@ all criteria covered by passing checks → passed
 otherwise                              → pending
 ```
 
-These statuses are derived, never persisted separately.
-
-## 4. Semantic Run Facts
+Run relations are runtime-only:
 
 ```text
-TaskRunRelation
-- none
-- preexisting_untouched
-- preexisting_changed
-- introduced_during_run
-
-CompletionRunRelation
-- not_completed
-- completed_before_run
-- completed_during_run
-
-GateRunRelation
-- none
-- existed_before_run
-- opened_during_run
+TaskRunRelation       none | preexisting_untouched | preexisting_changed | introduced_during_run
+CompletionRunRelation not_completed | completed_before_run | completed_during_run
+GateRunRelation       none | existed_before_run | opened_during_run
 ```
 
-Run Facts describe what happened, not conclusions such as `canReplaceTask` or `gateResolvable`. They are runtime-only.
+`completionReady` means unfinished Task + passed current verification + no blockers + no unresolved questions + no Human Gate.
 
-### M2 Run context
-
-M2 may retain only the minimum history that cannot be reconstructed from current State:
-
-```text
-Task reference at Run start
-Gate reference at Run start
-external-State epoch at Run start
-whether successful task.start/task.replace introduced the current Task during this Run
-```
-
-Run-start references are coherent-run immutable-State change detectors only. They are not durable semantic identity and must not cause a Task ID to be added to persistent State.
-
-### Task relation derivation
-
-For a coherent Run:
-
-```text
-current task == null
-→ none
-
-task was introduced by successful start/replace during this Run
-→ introduced_during_run
-
-current task is the run-start Task object
-→ preexisting_untouched
-
-otherwise
-→ preexisting_changed
-```
-
-A no-op reducer transition that returns the same State/Task object does not turn an untouched Task into changed. A real immutable State change does.
-
-### Completion relation derivation
-
-```text
-no Task or unfinished Task
-→ not_completed
-
-Task was already completed at Run start and current completed Task is that Task
-→ completed_before_run
-
-otherwise current Task completed
-→ completed_during_run
-```
-
-### Gate relation derivation
-
-```text
-no current Gate
-→ none
-
-current Gate is the run-start Gate
-→ existed_before_run
-
-otherwise
-→ opened_during_run
-```
-
-A resolved old Gate followed by a new, textually identical Gate is still `opened_during_run`.
-
-### Authority/coherence
-
-- no authoritative State → unavailable;
-- State exists but no valid current Run context or external epoch changed → stale;
-- otherwise → coherent.
-
-If authoritative refresh discovers external State change during a Run, the Runtime adopts that State and the Run becomes stale.
-
-## 5. Semantic Snapshot
-
-`SemanticSnapshot` is derived from valid `PindieState + SemanticRunFacts`. It contains authority, Task/verification status, Run relations, blocker/question presence, and completion readiness without copying Task content.
-
-```text
-completionReady =
-  unfinished Task
-  AND verification passed
-  AND no blockers
-  AND no unresolved questions
-  AND no Human Gate
-```
-
-Impossible State/RunFacts combinations fail closed rather than being guessed or normalized.
-
-## 6. Capability vocabulary
+## 4. Capability vocabulary and matrix
 
 ```text
 observe.project
@@ -181,356 +79,246 @@ gate.open
 gate.resolve
 ```
 
-Capabilities are semantic, not Pi tool names, and are never persisted.
+If authority is stale or unavailable, capabilities are exactly `observe.project` and `observe.git`.
 
-## 7. Authority dominance
-
-If authority is `unavailable` or `stale`, capabilities are exactly:
+Coherent states:
 
 ```text
-observe.project
-observe.git
+idle
+→ observe.project, observe.git, task.start
+
+done / completed_before_run
+→ observe.project, observe.git, task.start
+
+done / completed_during_run
+→ observe.project, observe.git
+
+active
+→ observe.project, observe.git, project.mutate,
+  task.refine, task.progress, verification.record, gate.open
+→ + task.replace iff preexisting_untouched
+→ + task.complete iff completionReady
+
+blocked
+→ observe.project, observe.git,
+  task.refine, task.progress, verification.record, gate.open
+→ + task.replace iff preexisting_untouched
+→ no project.mutate, no task.complete
+
+waiting_human / opened_during_run
+→ observe.project, observe.git
+
+waiting_human / existed_before_run
+→ observe.project, observe.git, task.refine, gate.resolve
+→ + task.replace iff preexisting_untouched
 ```
 
-This dominates all other rules.
+Questions may coexist with useful work but prevent completion. A Task-level blocker means consequential project mutation is not currently safe/effective.
 
-## 8. Coherent capability matrix
+## 5. Live Gateway behavior
 
-### Idle
+M2 is implemented. Concrete Tool Effects are classified and non-observation calls are authorized through current capabilities after authoritative State refresh/coherence checks.
+
+Current shared effects include:
 
 ```text
-observe.project
-observe.git
-task.start
+read / grep / find / ls → observe.project / none
+pindie_git_observe      → observe.git / none
+edit / write            → project.mutate / known
+bash / unknown/custom   → project.mutate / ambiguous
+semantic Pindie tool    → its exact semantic capability / none
 ```
 
-### Done — completed before current Run
+Unknown/custom tools are conservative. Generic shell input is never parsed into a read-only exception.
 
-```text
-observe.project
-observe.git
-task.start
-```
-
-### Done — completed during current Run
-
-```text
-observe.project
-observe.git
-```
-
-### Active
-
-Base:
-
-```text
-observe.project
-observe.git
-project.mutate
-task.refine
-task.progress
-verification.record
-gate.open
-```
-
-Add `task.replace` only for `preexisting_untouched`.
-
-Add `task.complete` only when `completionReady === true`.
-
-### Blocked
-
-A Task-level blocker means no safe effective consequential project progress is currently available until external reality changes.
-
-Base:
-
-```text
-observe.project
-observe.git
-task.refine
-task.progress
-verification.record
-gate.open
-```
-
-Add `task.replace` only for `preexisting_untouched`.
-
-Do not expose `project.mutate` or `task.complete`.
-
-### Waiting Human — Gate opened during current Run
-
-```text
-observe.project
-observe.git
-```
-
-### Waiting Human — Gate existed before current Run
-
-```text
-observe.project
-observe.git
-task.refine
-gate.resolve
-```
-
-Add `task.replace` only for `preexisting_untouched`.
-
-The model chooses among legal Task-boundary/Gate actions according to latest human input; Harness does not syntax-classify refine vs replace.
-
-## 9. Tool Effect Model
-
-M1 defines the shared concrete execution classification:
-
-```text
-read / grep / find / ls
-→ observe.project / mutation none
-
-pindie_git_observe
-→ observe.git / mutation none
-
-edit / write
-→ project.mutate / mutation known
-
-bash / unknown/custom
-→ project.mutate / mutation ambiguous
-
-pindie_state(start_task)          → task.start / none
-pindie_state(replace_task)        → task.replace / none
-pindie_state(refine_task)         → task.refine / none
-pindie_state(set_open_loops)      → task.progress / none
-pindie_state(record_verification) → verification.record / none
-pindie_state(complete_task)       → task.complete / none
-pindie_gate(open)                 → gate.open / none
-pindie_gate(resolve)              → gate.resolve / none
-```
-
-Unknown/custom tools always classify conservatively; they are never silently unclassified or treated as observation. Generic bash command text is not parsed for read-only exceptions.
-
-Known semantic tool with missing/invalid action is malformed semantic input, not an unknown tool.
-
-Authorization is exactly capability membership:
+Authorization is exactly:
 
 ```text
 allowed = capabilities.has(effect.requiredCapability)
 ```
 
-Authorization must not reimplement Task, Gate, blocker, verification, completion, or Run-boundary rules.
+The Gateway remains live after M3 as a defense-in-depth backstop for races, stale already-generated calls, malformed calls, and external-State changes.
 
-## 10. M2 live Gateway behavior
-
-M2 is the first intentional runtime semantic cutover.
-
-### Observation fast path
-
-Known observation effects requiring `observe.project` or `observe.git` remain directly allowed without project-State refresh because M0 grants those capabilities under coherent, stale, and unavailable authority.
-
-This fast path applies only to explicitly classified observation tools; unknown tools remain consequential.
-
-### Non-observation authorization path
-
-For every non-observation call:
-
-```text
-1. classify Tool Effect
-2. if current external epoch already differs from Run-start epoch, treat Run as stale
-3. otherwise refresh authoritative project State
-4. if refresh adopts external change, treat Run as stale
-5. if refresh fails, mark State unavailable
-6. derive current SemanticRunFacts
-7. derive SemanticSnapshot
-8. derive Capabilities
-9. authorize effect.requiredCapability
-10. only if allowed, establish mutation observation when required
-11. execute
-```
-
-Semantic Gateway rejection is grounded in current authority/Snapshot and missing capability. Integration messages may explain facts but must not recreate a second natural-language lifecycle policy.
-
-### Structured malformed calls
-
-M1 classification failures for malformed `pindie_state`/`pindie_gate` calls remain failures; model-facing tool schema/execution validation remains a separate backstop. M2 must not reinterpret malformed semantic action as generic project mutation.
-
-## 11. M2 Run-history updates
-
-Run origin history changes only after successful execution/result.
-
-```text
-successful task.start or task.replace
-→ mark current Task as introduced during this Run
-```
-
-Do not mark introduction during tool authorization because reducer/Runtime execution can still fail.
-
-Other semantic changes need no explicit event log. If they materially change Pindie State, Runtime immutable publication changes the current Task/Gate object and the relation becomes `preexisting_changed` / `opened_during_run` as appropriate.
-
-Internal `invalidate_verification` likewise participates through ordinary immutable State publication; no special semantic-event history is needed.
-
-## 12. Project Mutation Freshness after M2
-
-The M1 Tool Effect classification becomes the shared taxonomy for authorization and mutation freshness.
+## 6. Project Mutation Freshness
 
 After authorization:
 
 ```text
 projectMutation = none
-→ no project-mutation observation
+→ no mutation observation
 
 projectMutation = known
-→ successful known mutation invalidates verification
+→ successful mutation invalidates prior verification
 
 projectMutation = ambiguous
-→ capture/compare project fingerprint before/after execution
+→ before/after Reality fingerprint observation
 ```
 
-A denied call must not open/add to a mutation window.
+Denied calls create no mutation window. Failed ambiguous tools are still observed afterward because partial project mutation may have occurred.
 
-Ambiguous tools are observed after both successful and failed execution because a failed shell/custom tool may have partially mutated project reality.
+## 7. M3 narrow model-facing semantic tools
 
-Known edit/write invalidation behavior remains unchanged in effect; only the taxonomy source is unified.
-
-## 13. Reducer and Runtime backstops
-
-M2 replaces semantic Guard policy, not data-integrity/runtime safety.
-
-Preserve:
-
-- authoritative State refresh;
-- external-State adoption/epoch tracking;
-- project-scoped locking;
-- State conflict handling;
-- reducer transition validation;
-- atomic persistence/publication;
-- model-facing tool parameter/schema validation;
-- mutation observation/freshness;
-- State unavailable handling.
-
-Reducer completion/Gate/Task checks remain even when Gateway makes the same invalid transition unreachable during normal execution.
-
-## 14. M2 intentional runtime changes
-
-At cutover, these target semantics become live:
+M3 removes the broad model-facing action enums and exposes narrow tools aligned one-to-one with semantic capabilities:
 
 ```text
-idle + project mutation
-→ denied
-
-blocked + edit/write/bash/unknown consequential tool
-→ denied
-
-pending/stale/failed verification + complete_task
-→ denied before reducer execution
-
-completionReady + complete_task
-→ allowed
-
-Gate opened during same Run + resolve/refine/mutation/complete
-→ denied by capability model
-
-Gate existing before Run + resolve
-→ allowed
-
-preexisting untouched active Task + replace
-→ allowed
-
-Task introduced during Run + replace
-→ denied
-
-preexisting Task semantically changed during Run + replace
-→ denied
-
-Task completed before Run + start
-→ allowed
-
-Task completed during Run + start
-→ denied until a new user-driven Run
-
-stale/unavailable + observation
-→ allowed
-
-stale/unavailable + consequential action
-→ denied
+pindie_task_start          → task.start
+pindie_task_replace        → task.replace
+pindie_task_refine         → task.refine
+pindie_task_progress       → task.progress
+pindie_verification_record → verification.record
+pindie_task_complete       → task.complete
+pindie_gate_open           → gate.open
+pindie_gate_resolve        → gate.resolve
+pindie_git_observe         → observe.git
 ```
 
-M2 must not add compatibility exceptions to preserve conflicting v0.1 behavior.
+The legacy model-facing `pindie_state` and `pindie_gate` tools are removed from registration in M3. Internal reducer events remain unchanged.
 
-## 15. M2 and Tool Surface
+All semantic mutation tools remain sequential so same-batch semantic changes are visible before later sequential calls are prepared/executed.
 
-M2 does not change model-visible tool availability. The broad legacy `pindie_state` and `pindie_gate` tools remain visible according to current Pi configuration, so M2 may temporarily still have `visibility > legality`.
+M3 does not redesign current verification record fields. `pindie_verification_record` continues to accept the current check semantics until M5.
 
-M3 owns the correction:
+Tool descriptions explain only the operation's meaning and input contract. They must not repeat lifecycle legality such as when the operation is allowed; visibility and the Gateway own that.
+
+## 8. M3 Tool Surface projection
+
+For each user-driven Agent Run, Pindie captures a runtime-only **Run Tool Baseline** before applying its semantic restriction.
 
 ```text
-model-visible affordance ≈ live semantic legality
+Effective tools
+=
+Run Tool Baseline
+∩
+Tools whose required capability is currently present
 ```
 
-Do not implement dynamic active tools or split semantic tools in M2.
+Behavioral rules:
 
-## 16. Knowledge / policy boundary
+1. Pindie may remove tools from the baseline but never add a tool absent from it.
+2. Baseline order is preserved.
+3. Unknown/custom baseline-active tools require `project.mutate`; they disappear when that capability is absent.
+4. The baseline is runtime-only and never enters `PindieState`.
+5. Pindie restores the exact baseline when the high-level Agent Run settles.
+6. The next user-driven Run captures a fresh baseline, so user/Pi changes made while idle become authoritative for that Run.
+7. Pindie does not create or persist a second user tool preference store.
 
-M2 does not prune Runtime Context or Core Policy. M4 owns policy reduction after M3 aligns visibility with legality.
+For every baseline-active recognized tool `T` in an unchanged semantic world:
 
-Do not use M2 as an opportunity to rewrite tool descriptions, continuation policy, Skills, status presentation, or reasoning heuristics.
+```text
+visible(T)
+⇔
+capabilities.has(requiredCapability(T))
+```
 
-## 17. Continuation
+The M2 Gateway must agree with the same capability truth.
 
-Automatic continuation remains subordinate to latest user intent. M2 may reuse the unified Run coherence/epoch source rather than preserve duplicate stale-run bookkeeping, but it must not otherwise redesign continuation behavior.
+## 9. Pi v0.84.3 overlay constraint
 
-## 18. M0 / M1 status
+The pinned Pi v0.84.3 API exposes `getActiveTools()`, `getAllTools()`, and replacement-style `setActiveTools(names)`. It exposes no composable overlay primitive and no active-tool-change event.
 
-### M0 — Semantic Foundation
+Therefore M3 does not promise perfect composition with another extension that mutates active tools during the same already-running Agent Run. Pindie owns its Run-scoped semantic narrowing and restores the captured baseline at settlement. Do not add polling, heuristic diff-merging, or a second configuration state machine to pretend this limitation does not exist.
 
-Implemented: pure State + Run Facts → Snapshot → Capabilities derivation and semantic matrix tests.
+## 10. Initial and mid-Run Tool Surface refresh
 
-### M1 — Execution Semantics Foundation
+The first model turn of a user-driven Run should start with the correct Tool Surface. Because Pi captures the `before_agent_start` system-prompt input before the handler runs, M3 should pre-apply the prospective next-Run surface during an earlier user-input boundary when feasible, using freshly observed State and a prospective coherent Run baseline.
 
-Implemented: pure Tool Effect classification, conservative unknown-tool classification, structured malformed semantic-action failures, capability-membership authorization, and M0+M1 composition tests.
+Actual M2 Run Facts remain established authoritatively in `before_agent_start`; do not replace the M2 Run boundary with speculative input-time State.
 
-No live runtime consumer was added in M0/M1.
+Within the Run, recompute the effective surface after any event that can change capabilities, including:
 
-## 19. M2 implementation/test contract
+```text
+successful task start/replace/refine/progress
+verification record
+Gate open/resolve
+Task completion
+project mutation causing verification invalidation
+external State change causing stale authority
+State becoming unavailable
+```
 
-M2 should add a small focused Run Facts module/context and modify live extension integration. Avoid controllers, managers, event logs, persisted IDs, or workflow state.
+A mid-Run Tool Surface update affects the actual tool schemas available on the next agent turn. Gateway authorization remains the final authority for any call produced against stale visibility.
 
-Pure Run Facts tests should cover at least:
+## 11. Core Policy / Pi system-prompt limitation during M3
 
-- no Task;
-- preexisting untouched Task;
-- preexisting changed Task;
-- Task introduced by start;
-- Task introduced by replacement;
-- completed before Run;
-- completed during Run;
-- Gate existed before Run;
-- Gate opened during Run;
-- resolve old Gate then open an identical new Gate;
-- external epoch mismatch → stale;
-- unavailable State;
-- missing current Run context → stale;
-- no-op State transition remains untouched;
-- real immutable State transition becomes changed.
+Pindie's current Core Policy is injected from `before_agent_start` as a system-prompt override for the high-level Run. Pi v0.84.3 rebuilds its base system prompt when active tools change, but that already-created override can keep old selected-tool text for later turns of the same Run.
 
-Integration tests should cover at least:
+M3 must not solve this by importing private Pi internals, parsing/rebuilding Pi's default system prompt, or adding compensating natural-language rules.
 
-- idle edit denied; idle start allowed; start then edit same Run allowed;
-- done-before-Run start allowed and replace denied;
-- active untouched replace allowed; replace then second replace denied; refine then replace denied;
-- blocked edit/write/bash denied;
-- premature complete denied; completion-ready complete allowed;
-- same-Run-opened Gate resolve denied; pre-existing Gate resolve allowed;
-- stale/unavailable observation allowed; stale/unavailable mutation denied;
-- blocked ambiguous call creates no mutation window;
-- allowed ambiguous mutation still observes before/after Reality;
-- successful edit/write invalidates verification;
-- failed ambiguous tool that changed Reality still invalidates verification.
+Required M3 behavior:
 
-Tests should assert execution/State effects rather than depend primarily on exact long Guard prose.
+- pre-apply the initial surface so the first-turn override starts from the correct Pi base prompt where feasible;
+- keep actual dynamic tool schemas and the M2 Gateway correct throughout the Run;
+- accept/document the temporary mid-Run prompt-text lag under the existing Core override.
 
-## 20. Migration sequence
+M4 owns Policy Reduction and removal/restructuring of that override so prompt text and dynamic Tool Surface fully converge.
+
+## 12. Key M3 examples
+
+Assuming the relevant tools were baseline-active:
+
+```text
+idle
+→ observation + pindie_task_start
+→ no edit/write/bash/replace/refine/complete
+
+successful pindie_task_start
+→ project mutation/refine/progress/verification/gate-open tools can appear next turn
+→ pindie_task_replace remains absent for same-Run-introduced Task
+
+blocked
+→ observation + legal Task semantic tools
+→ edit/write/bash/custom consequential tools absent
+→ complete absent
+
+completionReady active Task
+→ pindie_task_complete visible
+
+successful project mutation invalidates verification
+→ pindie_task_complete disappears if readiness is lost
+
+Gate opened during this Run
+→ observation only
+
+Gate existing before a fresh user Run
+→ gate resolve/refine and eligible replacement become visible
+
+Task completed during Run
+→ observation only; pindie_task_start remains absent until the next user-driven Run
+
+stale/unavailable authority
+→ observation only
+```
+
+## 13. Surface restoration and races
+
+When the Agent Run settles, restore the exact captured Run baseline and discard the Run Tool Surface context. Session shutdown/replacement must not leak a restricted surface into a later session.
+
+If authority becomes stale/unavailable during a Run, shrink the next-turn surface to observation-only where possible. An already-generated consequential call may still reach the M2 Gateway and must be denied there.
+
+Tool Surface is an affordance projection; Gateway is execution-time authorization. Neither replaces the other.
+
+## 14. Non-goals for M3
+
+M3 must not:
+
+- change M0 capability semantics;
+- weaken M2 Gateway authorization;
+- add persisted active tools or capability State;
+- redesign verification evidence ownership;
+- rewrite Core Policy content;
+- redesign continuation;
+- redesign Skills;
+- create a generic plugin/tool policy framework;
+- parse shell commands;
+- import private Pi prompt-building internals.
+
+## 15. Migration status
 
 ```text
 M0 Semantic Foundation              — implemented
 M1 Execution Semantics Foundation   — implemented
-M2 Semantic Gateway Cutover         — next
-M3 Model Tool Surface
+M2 Semantic Gateway Cutover         — implemented
+M3 Model Tool Surface               — next
 M4 Policy Reduction
 M5 Verification v0.2
 M6 Continuation Simplification
@@ -538,4 +326,4 @@ M7 Skill / Docs Prune
 M8 Extension Composition
 ```
 
-Do not create a parallel legacy/compatibility semantic system. M2 moves live semantic authorization directly onto M0/M1 truth while preserving unrelated Runtime behavior.
+M3's acceptance target is simple: in a stable semantic world, a baseline-active tool is model-visible exactly when its required Pindie capability exists, while the M2 Gateway continues to enforce the same truth at execution time.
