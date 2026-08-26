@@ -258,47 +258,60 @@ It should not need to teach deterministic rules such as “done tasks cannot ref
 
 Core Policy should remain small and stable: respect latest user intent and reality, work toward the Task Contract, choose the smallest safe useful action, avoid silent scope expansion, ground completion in evidence, and defer consequential human judgment.
 
-## 10. Tool Surface and Tool Effects
+## 10. Tool Effects and model-facing affordances
 
-Model-visible tools are an affordance layer over semantic capabilities.
+Model-visible tools are an affordance layer over semantic capabilities. Tool names must not define Pindie semantics.
 
-Tool names must not define Pindie semantics. Instead, tools are classified by semantic effect, for example:
+A Tool Effect Model translates a concrete Pi/model-facing call into the semantic authority it requires and any execution effect relevant to later observation. Initial examples are:
 
 ```text
-read / grep / find / ls   → observe.project
-pindie_git_observe        → observe.git
-edit / write              → project.mutate
-bash / unknown tool       → consequential/unknown effect requiring project.mutate
-Pindie semantic tool      → its explicit semantic capability
+read / grep / find / ls   → requires observe.project; no project mutation
+pindie_git_observe        → requires observe.git; no project mutation
+edit / write              → requires project.mutate; known project mutation
+bash / unknown tool       → requires project.mutate; ambiguous project mutation
+Pindie semantic action    → requires its explicit semantic capability
 ```
 
-Unknown tools remain fail-safe/consequential until explicitly classified otherwise.
+Unknown tools remain fail-safe/consequential until explicitly classified otherwise. Generic shell commands are not parsed to manufacture read-only exceptions.
 
-The target model-facing API should not expose one broad `pindie_state` enum whose actions have incompatible lifecycles. Internal reducer events may remain unchanged, while model-facing affordances become narrow tools such as Task start/refine/replace/progress, verification, Gate open/resolve, and completion.
+Tool effect and capability are distinct concepts: a capability describes what the current semantic world permits; a Tool Effect describes what authority a concrete call requires and whether its project mutation is known, absent, or ambiguous.
 
-Tool visibility and execution authorization must be two projections of the same capability model.
+The target model-facing API should not expose one broad `pindie_state` enum whose actions have incompatible lifecycles. Internal reducer events may remain unchanged, while model-facing affordances later become narrow tools such as Task start/refine/replace/progress, verification, Gate open/resolve, and completion.
+
+Tool visibility and execution authorization must ultimately be two projections of the same capability model.
 
 ## 11. Execution Gateway
 
 Dynamic tool visibility improves the normal Agent action space but cannot replace execution-time authorization. State may change after a tool call is generated, and one model output may contain multiple calls whose legality changes after an earlier call executes.
 
-Every consequential execution therefore remains subject to fresh authority checks:
+The target live path is:
 
 ```text
 tool call
   ↓
 refresh authoritative facts
   ↓
+construct current Run Facts
+  ↓
 derive fresh Snapshot
   ↓
 derive Capabilities
   ↓
-classify required effect/capability
+classify Tool Effect / required capability
   ↓
 allow or block
 ```
 
 The Gateway handles runtime legality. The reducer handles State integrity.
+
+Authorization itself should be thin: after Tool Effect classification, semantic allow/deny follows from whether the required capability is present. Task status, Gate lifecycle, verification readiness, and Task-boundary rules belong in semantic derivation rather than being reimplemented in the Gateway.
+
+Migration deliberately separates the pure execution semantics from the live cutover:
+
+- **M1** establishes Tool Effect classification and pure capability authorization without changing `extension.ts`, existing Guards, or runtime behavior.
+- **M2** adapts real Runtime/run-start facts into `SemanticRunFacts` and makes the live `tool_call` path consume the v0.2 capability truth.
+
+M2 is intentionally the point where legacy runtime behavior that conflicts with target capabilities changes. In particular, it must not preserve blocked mutation, premature completion affordances, or same-Run Human Gate authority through a second “compatibility capability” model. The target capability model is the semantic truth; legacy Guards are migration code to remove, not another authority source.
 
 A normal unchanged world should satisfy:
 
@@ -306,7 +319,7 @@ A normal unchanged world should satisfy:
 model-visible(T) ⇔ semantically legal(T)
 ```
 
-Guard rejection should mainly represent races, stale calls, integration bugs, or other exceptional conditions rather than ordinary Agent navigation.
+Tool Surface alignment comes after the live Gateway cutover. Until then, legacy visibility may still present actions that the v0.2 Gateway rejects. After Model Tool Surface migration, Guard rejection should mainly represent races, stale calls, integration bugs, malformed calls, or other exceptional conditions rather than ordinary Agent navigation.
 
 ## 12. Human Gate
 
@@ -329,7 +342,7 @@ Model   → semantic judgment about which success criteria that evidence covers
 
 Raw logs and full execution history remain reconstructable reality and should not be copied into State. Durable verification should keep the minimum semantic proof needed for the Task.
 
-Verification evidence ownership is a later migration milestone; the Semantic Foundation and capability layers must not prematurely redesign the current persisted verification schema.
+Verification evidence ownership is a later migration milestone; the Semantic Foundation and execution-semantics layers must not prematurely redesign the current persisted verification schema.
 
 ## 14. Continuation
 
@@ -343,7 +356,7 @@ The v0.2 target replaces the current large hidden continuation policy with deter
 
 ## 15. Observation, mutation freshness, activity, reasoning, and Skills
 
-Project Mutation Freshness remains a good architectural pattern: observe Reality before/after ambiguous consequential tools and invalidate verification from observed change rather than model self-report. Its implementation may move closer to the execution/effect layer without changing its core mechanism.
+Project Mutation Freshness remains a good architectural pattern: observe Reality before/after ambiguous consequential tools and invalidate verification from observed change rather than model self-report. Its implementation should consume the same Tool Effect classification used by authorization rather than maintaining an independent tool-name taxonomy.
 
 Current Activity remains runtime-only presentation derived from Pi lifecycle/tool execution and is a reference pattern for deterministic observation-driven behavior.
 
@@ -362,32 +375,61 @@ v0.2 preserves these design invariants:
 5. **Capabilities are derived, never persisted.**
 6. **Knowledge Surface and Capability Surface describe the same semantic world.**
 7. **Tool visibility and Gateway legality derive from the same capabilities.**
-8. **Reducer knows semantic events, not Pi tools.**
-9. **Harness closes deterministic branches; the model retains genuine semantic choices.**
-10. **Human authority is explicit for consequential judgment.**
-11. **Pi remains the only low-level agent loop and Skill runtime.**
+8. **Tool Effect classification is shared execution semantics, not a second policy system.**
+9. **Reducer knows semantic events, not Pi tools.**
+10. **Harness closes deterministic branches; the model retains genuine semantic choices.**
+11. **Human authority is explicit for consequential judgment.**
+12. **Pi remains the only low-level agent loop and Skill runtime.**
 
 ## 17. Migration plan
 
 The repository is migrating incrementally from the implemented v0.1 runtime to this v0.2 target. Target docs are authoritative even while implementation temporarily lags them.
 
 ```text
-M0 Semantic Foundation
-M1 Capability Gateway
-M2 Model Tool Surface
-M3 Policy Reduction
-M4 Gate & Blocked Alignment
-M5 Completion Alignment
-M6 Verification v0.2
-M7 Continuation Simplification
-M8 Skill / Docs Prune
-M9 Extension Composition
+M0 Semantic Foundation              — implemented
+M1 Execution Semantics Foundation
+M2 Semantic Gateway Cutover
+M3 Model Tool Surface
+M4 Policy Reduction
+M5 Verification v0.2
+M6 Continuation Simplification
+M7 Skill / Docs Prune
+M8 Extension Composition
 ```
 
-### M0 boundary
+### M0 — Semantic Foundation
 
-M0 adds only pure semantic derivation and focused tests. It must not change current runtime behavior, tools, guards, State schema, reducer, persistence, Core Policy, or extension lifecycle.
+M0 adds pure semantic derivation and focused tests. It does not change current runtime behavior, tools, Guards, State schema, reducer, persistence, Core Policy, or extension lifecycle.
 
-This deliberate migration seam allows the target semantic truth to be tested independently before any existing consumer begins using it.
+This deliberate migration seam allows target semantic truth to be tested independently before any existing consumer uses it.
 
-Until a later milestone explicitly consumes v0.2 semantics, existing v0.1 source and integration tests remain the runtime regression baseline. They are not the target architectural authority.
+### M1 — Execution Semantics Foundation
+
+M1 adds a pure Tool Effect Model and pure capability authorization. It should be independently testable from concrete capability sets and model-facing tool-call shapes.
+
+M1 does not construct real Run Facts from `extension.ts`, does not replace the live `tool_call` Guard, does not change tool visibility, and does not change runtime behavior. Its job is to answer two questions without duplicating semantic policy:
+
+```text
+What semantic capability does this concrete tool/action require?
+Given a capability set, is that required capability present?
+```
+
+Tool Effect classification may additionally describe known/none/ambiguous project mutation so later Project Mutation Freshness can share the same classification.
+
+### M2 — Semantic Gateway Cutover
+
+M2 is the first intentional live semantic cutover. It adapts current Runtime/run-start facts into `SemanticRunFacts`, derives the authoritative Snapshot/capabilities, and routes live execution authorization through the Tool Effect Model and Gateway.
+
+M2 should remove or delegate semantic branches currently duplicated in `extension.ts` while preserving non-semantic backstops such as authoritative refresh, external-State conflict handling, reducer validation, State locking, malformed payload validation, and project-mutation observation.
+
+M2 consumes the complete target capability semantics. It does not invent compatibility exceptions to retain legacy blocked mutation, premature completion navigation, or same-Run Gate behavior. Those differences become intentional v0.2 runtime behavior at this cutover.
+
+### M3 — Model Tool Surface
+
+M3 aligns model-visible affordances with the already-live legality model: narrow Pindie semantic tools and capability-driven dynamic visibility replace broad action enums and ordinary “visible → Guard rejection” navigation.
+
+### Later milestones
+
+M4 reduces redundant policy text and Guard instructions. M5 separates factual evidence ownership from semantic verification coverage. M6 simplifies continuation. M7 prunes Skills/docs. M8 leaves `extension.ts` primarily as Pi lifecycle wiring.
+
+Each milestone should move one responsibility onto the established semantic source without introducing a parallel semantic authority.
