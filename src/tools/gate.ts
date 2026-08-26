@@ -7,37 +7,27 @@ import { StateLockBusyError } from "../store.ts";
 import type { PindieState } from "../state.ts";
 import type { PindieEvent } from "../transitions.ts";
 
-const GATE_ACTIONS = ["open", "resolve"] as const;
-
-const PindieGateParameters = Type.Object(
+const GateOpenParameters = Type.Object(
   {
-    action: StringEnum(GATE_ACTIONS, {
-      description: "Open or resolve the current Human Gate",
+    kind: StringEnum(["decision", "approval", "input"] as const, {
+      description: "Kind of consequential human input required.",
     }),
-    kind: Type.Optional(
-      StringEnum(["decision", "approval", "input"] as const),
-    ),
-    question: Type.Optional(Type.String()),
-    options: Type.Optional(Type.Array(Type.String())),
+    question: Type.String({ description: "Question presented to the human." }),
+    options: Type.Optional(Type.Array(Type.String(), {
+      description: "Explicit answer options, when useful.",
+    })),
   },
   { additionalProperties: false },
 );
+
+const GateResolveParameters = Type.Object({}, { additionalProperties: false });
 
 export interface PindieGateToolDetails {
   state: PindieState;
 }
 
-function assertOnlyFields(
-  params: Record<string, unknown>,
-  action: string,
-  allowed: readonly string[],
-): void {
-  const unexpected = Object.keys(params).filter((key) => !allowed.includes(key));
-  if (unexpected.length > 0) {
-    throw new Error(
-      `Invalid pindie_gate input for '${action}': unexpected field(s) ${unexpected.join(", ")}.`,
-    );
-  }
+export interface PindieGateToolOptions {
+  onStateChange?: () => void;
 }
 
 async function dispatchOrThrow(
@@ -50,6 +40,7 @@ async function dispatchOrThrow(
     result = await runtime.dispatch(event);
   } catch (error) {
     if (error instanceof PindieStateConflictError) {
+      onStateChange?.();
       throw new Error("Pindie project State changed externally; the latest authoritative State was adopted. Return control and begin a new Agent Run before reconciling this semantic action.");
     }
     if (error instanceof StateLockBusyError) {
@@ -77,73 +68,63 @@ function result(message: string, state: PindieState, terminate = false) {
 
 function openGateMessage(question: string, options?: string[]): string {
   const lines = ["Human input required:", "", question];
-
   if (options && options.length > 0) {
     lines.push("", "Options:", ...options.map((option) => `- ${option}`));
   }
-
   return lines.join("\n");
 }
 
-export function createPindieGateTool(
+export function createPindieGateOpenTool(
   runtime: PindieRuntime,
-  options: { onStateChange?: () => void } = {},
+  options: PindieGateToolOptions = {},
 ) {
   return defineTool({
-    name: "pindie_gate",
-    label: "Pindie Human Gate",
-    description: "Pause for or resolve consequential human input.",
-    promptSnippet: "Open or resolve Pindie's Human Gate",
-    parameters: PindieGateParameters,
+    name: "pindie_gate_open",
+    label: "Open Pindie Human Gate",
+    description: "Open a Human Gate for consequential human input.",
+    parameters: GateOpenParameters,
     executionMode: "sequential",
     async execute(_toolCallId, params) {
-      switch (params.action) {
-        case "open": {
-          assertOnlyFields(params, params.action, [
-            "action",
-            "kind",
-            "question",
-            "options",
-          ]);
-          if (params.kind === undefined || params.question === undefined) {
-            throw new Error(
-              "Invalid pindie_gate open input: kind and question are required.",
-            );
-          }
-
-          const gate = {
-            kind: params.kind,
-            question: params.question,
-            ...(params.options === undefined ? {} : { options: params.options }),
-          };
-          const state = await dispatchOrThrow(
-            runtime,
-            { type: "open_human_gate", gate },
-            options.onStateChange,
-          );
-          return result(
-            openGateMessage(gate.question, gate.options),
-            state,
-            true,
-          );
-        }
-
-        case "resolve": {
-          assertOnlyFields(params, params.action, ["action"]);
-          const state = await dispatchOrThrow(
-            runtime,
-            { type: "resolve_human_gate" },
-            options.onStateChange,
-          );
-          return result(
-            "Human Gate resolved. Re-observe relevant project reality before continuing.",
-            state,
-          );
-        }
-
-        default:
-          throw new Error(`Unsupported pindie_gate action: ${String(params.action)}.`);
+      if (params.kind === undefined || typeof params.question !== "string") {
+        throw new Error(
+          "Invalid pindie_gate_open input: kind and question are required.",
+        );
       }
+      const gate = {
+        kind: params.kind,
+        question: params.question,
+        ...(params.options === undefined ? {} : { options: params.options }),
+      };
+      const state = await dispatchOrThrow(
+        runtime,
+        { type: "open_human_gate", gate },
+        options.onStateChange,
+      );
+      return result(openGateMessage(gate.question, gate.options), state, true);
+    },
+  });
+}
+
+export function createPindieGateResolveTool(
+  runtime: PindieRuntime,
+  options: PindieGateToolOptions = {},
+) {
+  return defineTool({
+    name: "pindie_gate_resolve",
+    label: "Resolve Pindie Human Gate",
+    description: "Resolve the current Human Gate.",
+    parameters: GateResolveParameters,
+    executionMode: "sequential",
+    async execute() {
+      const state = await dispatchOrThrow(
+        runtime,
+        { type: "resolve_human_gate" },
+        options.onStateChange,
+      );
+      return result(
+        "Human Gate resolved. Re-observe relevant project reality before continuing.",
+        state,
+      );
     },
   });
 }

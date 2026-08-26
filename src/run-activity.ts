@@ -26,8 +26,14 @@ function activityForTool(toolName: string): RunActivity {
       return "editing";
     case "bash":
       return "running";
-    case "pindie_state":
-    case "pindie_gate":
+    case "pindie_task_start":
+    case "pindie_task_replace":
+    case "pindie_task_refine":
+    case "pindie_task_progress":
+    case "pindie_verification_record":
+    case "pindie_task_complete":
+    case "pindie_gate_open":
+    case "pindie_gate_resolve":
       return "updating";
     default:
       return "working";

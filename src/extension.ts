@@ -40,6 +40,7 @@ import {
   deriveSemanticSnapshot,
   type SemanticSnapshot,
 } from "./semantics.ts";
+import { deriveEffectiveToolNames } from "./tool-surface.ts";
 import { StateLockBusyError } from "./store.ts";
 import { validateState } from "./state.ts";
 import {
@@ -52,9 +53,19 @@ import {
   type SubscriptionUsageSnapshot,
 } from "./subscription-usage.ts";
 import { FileStateStore, type PindieStateStore } from "./store.ts";
-import { createPindieGateTool } from "./tools/gate.ts";
+import {
+  createPindieGateOpenTool,
+  createPindieGateResolveTool,
+} from "./tools/gate.ts";
 import { createPindieGitObserveTool } from "./tools/git-observe.ts";
-import { createPindieStateTool } from "./tools/state.ts";
+import {
+  createPindieTaskCompleteTool,
+  createPindieTaskProgressTool,
+  createPindieTaskRefineTool,
+  createPindieTaskReplaceTool,
+  createPindieTaskStartTool,
+  createPindieVerificationRecordTool,
+} from "./tools/task.ts";
 
 type ProjectRootResolver = (cwd: string) => Promise<string>;
 
@@ -151,6 +162,7 @@ export function registerPindieExtension(
   let stateUnavailableReason: string | null = null;
   let statusContext: ExtensionContext | null = null;
   let agentRunFactsContext: AgentRunFactsContext | null = null;
+  let runToolBaseline: readonly string[] | null = null;
   let activeTaskContinuationAttempted = false;
   let activityLingerTimer: ReturnType<typeof setTimeout> | null = null;
   let activityLingerGeneration = 0;
@@ -203,6 +215,36 @@ export function registerPindieExtension(
   const currentAgentRunIsStale = (): boolean => {
     const facts = currentSemanticRunFacts();
     return facts.stateAvailable && !facts.runCoherent;
+  };
+
+  const sameToolNames = (
+    left: readonly string[],
+    right: readonly string[],
+  ): boolean =>
+    left.length === right.length && left.every((name, index) => name === right[index]);
+
+  const applyToolSurface = (
+    capabilities: ReturnType<typeof deriveCapabilities>,
+  ): void => {
+    if (runToolBaseline === null) return;
+    const effective = deriveEffectiveToolNames(runToolBaseline, capabilities);
+    if (!sameToolNames(pi.getActiveTools(), effective)) {
+      pi.setActiveTools(effective);
+    }
+  };
+
+  const restoreRunToolBaseline = (bestEffort = false): void => {
+    const baseline = runToolBaseline;
+    if (baseline === null) return;
+    try {
+      if (!sameToolNames(pi.getActiveTools(), baseline)) {
+        pi.setActiveTools([...baseline]);
+      }
+      runToolBaseline = null;
+    } catch (error) {
+      if (!bestEffort) throw error;
+      runToolBaseline = null;
+    }
   };
 
   const presentStatusBestEffort = (
@@ -270,16 +312,40 @@ export function registerPindieExtension(
     runtime.unload();
     stateUnavailableReason = reason;
     clearAgentRunBookkeeping();
+    applyToolSurface(deriveCapabilities({ authority: "unavailable" }));
     refreshStatus();
   };
 
-  pi.registerTool(
-    createPindieStateTool(runtime, {
-      getRunDuration: () => runTimer.durationMs,
-      onStateChange: refreshStatus,
-    }),
-  );
-  pi.registerTool(createPindieGateTool(runtime, { onStateChange: refreshStatus }));
+  const refreshToolSurface = (): void => {
+    if (runToolBaseline === null) return;
+    const derivation = deriveSemanticSnapshot(
+      currentAuthoritativeState(),
+      currentSemanticRunFacts(),
+    );
+    if (!derivation.ok) {
+      markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
+      return;
+    }
+    applyToolSurface(deriveCapabilities(derivation.snapshot));
+  };
+
+  const semanticStateChanged = (): void => {
+    refreshStatus();
+    refreshToolSurface();
+  };
+
+  const taskToolOptions = {
+    getRunDuration: () => runTimer.durationMs,
+    onStateChange: semanticStateChanged,
+  };
+  pi.registerTool(createPindieTaskStartTool(runtime, taskToolOptions));
+  pi.registerTool(createPindieTaskReplaceTool(runtime, taskToolOptions));
+  pi.registerTool(createPindieTaskRefineTool(runtime, taskToolOptions));
+  pi.registerTool(createPindieTaskProgressTool(runtime, taskToolOptions));
+  pi.registerTool(createPindieVerificationRecordTool(runtime, taskToolOptions));
+  pi.registerTool(createPindieTaskCompleteTool(runtime, taskToolOptions));
+  pi.registerTool(createPindieGateOpenTool(runtime, { onStateChange: semanticStateChanged }));
+  pi.registerTool(createPindieGateResolveTool(runtime, { onStateChange: semanticStateChanged }));
   pi.registerTool(createPindieGitObserveTool());
 
   pi.registerCommand("efficiency", {
@@ -325,6 +391,7 @@ export function registerPindieExtension(
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    restoreRunToolBaseline(true);
     statusContext = ctx;
     clearActivityLingerRefresh();
     reasoning.reset(pi.getThinkingLevel());
@@ -352,6 +419,7 @@ export function registerPindieExtension(
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    restoreRunToolBaseline(true);
     clearActivityLingerRefresh();
     reasoning.reset(pi.getThinkingLevel());
     runActivity.reset();
@@ -365,8 +433,42 @@ export function registerPindieExtension(
     statusContext = null;
   });
 
+  pi.on("input", async (event, ctx) => {
+    if (!ctx.isIdle() || event.source === "extension") return;
+
+    runToolBaseline = [...pi.getActiveTools()];
+    if (runtime.projectRoot !== null && stateUnavailableReason === null) {
+      try {
+        await runtime.refresh();
+      } catch (error) {
+        markUnavailable(
+          `Could not refresh Pindie State before this Agent Run: ${errorMessage(error)} Restore or repair the project State, then reload the session.`,
+        );
+      }
+    }
+
+    const state = currentAuthoritativeState();
+    const prospectiveContext = state === null
+      ? null
+      : beginAgentRunFacts(state, runtime.externalStateEpoch);
+    const facts = deriveSemanticRunFacts(
+      prospectiveContext,
+      state,
+      runtime.externalStateEpoch,
+    );
+    const derivation = deriveSemanticSnapshot(state, facts);
+    if (!derivation.ok) {
+      markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
+      return;
+    }
+    applyToolSurface(deriveCapabilities(derivation.snapshot));
+  });
+
   pi.on("before_agent_start", async (event, ctx) => {
     statusContext = ctx;
+    if (runToolBaseline === null) {
+      runToolBaseline = [...pi.getActiveTools()];
+    }
     clearAgentRunBookkeeping();
     mutationWindow = null;
     if (runtime.projectRoot !== null && stateUnavailableReason === null) {
@@ -387,6 +489,7 @@ export function registerPindieExtension(
         runtime.externalStateEpoch,
       );
     }
+    refreshToolSurface();
     reasoning.beforeAgentStart();
     applyRequestedThinkingLevel();
     clearActivityLingerRefresh();
@@ -458,18 +561,7 @@ export function registerPindieExtension(
   });
 
   pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
-    const classification = classifyToolEffect({
-      toolName: event.toolName,
-      input: event.input,
-    });
-    if (!classification.ok) {
-      return {
-        block: true,
-        reason: `Pindie blocked this call: invalid semantic action for '${classification.error.toolName}'.`,
-      };
-    }
-
-    const effect = classification.effect;
+    const effect = classifyToolEffect(event.toolName);
     if (
       effect.requiredCapability === "observe.project" ||
       effect.requiredCapability === "observe.git"
@@ -484,7 +576,7 @@ export function registerPindieExtension(
       runtime.projectRoot !== null
     ) {
       try {
-        if (await runtime.refresh()) refreshStatus();
+        if (await runtime.refresh()) semanticStateChanged();
       } catch (error) {
         markUnavailable(
           `Could not refresh Pindie State before consequential work: ${errorMessage(error)} Restore or repair the project State, then reload the session.`,
@@ -505,10 +597,9 @@ export function registerPindieExtension(
     }
 
     const snapshot = derivation.snapshot;
-    const authorization = authorizeToolEffect(
-      deriveCapabilities(snapshot),
-      effect,
-    );
+    const capabilities = deriveCapabilities(snapshot);
+    applyToolSurface(capabilities);
+    const authorization = authorizeToolEffect(capabilities, effect);
     if (!authorization.allowed) {
       return {
         block: true,
@@ -565,7 +656,7 @@ export function registerPindieExtension(
       throw error;
     }
 
-    refreshStatus();
+    semanticStateChanged();
   };
 
   pi.on("tool_result", async (event) => {
@@ -583,6 +674,7 @@ export function registerPindieExtension(
         agentRunFactsContext,
         effect.requiredCapability,
       );
+      refreshToolSurface();
     }
 
     if (!event.isError && effect.projectMutation === "known") {
@@ -638,6 +730,7 @@ export function registerPindieExtension(
     }
 
     statusContext = ctx;
+    restoreRunToolBaseline();
     clearActivityLingerRefresh();
     runActivity.settle();
     runCost.finish(entries);

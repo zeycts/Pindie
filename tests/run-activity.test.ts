@@ -26,8 +26,8 @@ test("RA-V02 through RA-V04 map known tools", () => {
     ["edit", "editing"],
     ["write", "editing"],
     ["bash", "running"],
-    ["pindie_state", "updating"],
-    ["pindie_gate", "updating"],
+    ["pindie_task_refine", "updating"],
+    ["pindie_gate_open", "updating"],
   ] as const;
 
   for (const [toolName, activity] of cases) {

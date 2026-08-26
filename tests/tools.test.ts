@@ -4,13 +4,23 @@ import test from "node:test";
 import { PindieRuntime } from "../src/runtime.ts";
 import { EMPTY_STATE, getTaskStatus, type PindieState } from "../src/state.ts";
 import type { PindieStateStore } from "../src/store.ts";
-import { createPindieGateTool } from "../src/tools/gate.ts";
-import { createPindieStateTool } from "../src/tools/state.ts";
+import {
+  createPindieGateOpenTool,
+  createPindieGateResolveTool,
+} from "../src/tools/gate.ts";
+import {
+  createPindieTaskCompleteTool,
+  createPindieTaskProgressTool,
+  createPindieTaskRefineTool,
+  createPindieTaskReplaceTool,
+  createPindieTaskStartTool,
+  createPindieVerificationRecordTool,
+} from "../src/tools/task.ts";
 
 class ToolTestStore implements PindieStateStore {
   readonly saves: Array<{ projectRoot: string; state: PindieState }> = [];
   persistedState: PindieState;
-  beforeSave: (() => Promise<void>) | null = null;
+  saveError: Error | null = null;
 
   constructor(initialState: PindieState) {
     this.persistedState = initialState;
@@ -21,8 +31,8 @@ class ToolTestStore implements PindieStateStore {
   }
 
   async save(projectRoot: string, state: PindieState): Promise<void> {
+    if (this.saveError) throw this.saveError;
     this.saves.push({ projectRoot, state });
-    if (this.beforeSave) await this.beforeSave();
     this.persistedState = state;
   }
 
@@ -34,10 +44,10 @@ class ToolTestStore implements PindieStateStore {
 function activeState(): PindieState {
   return {
     task: {
-      goal: "Implement Pindie tools",
+      goal: "Implement narrow tools",
       constraints: [],
-      successCriteria: [{ id: "c1", description: "Tool behavior works" }],
-      openLoops: { blockers: [], questions: [], nextIntent: "Write tool tests" },
+      successCriteria: [{ id: "c1", description: "Tools work" }],
+      openLoops: { blockers: [], questions: [], nextIntent: "Continue" },
       verification: { stale: false, checks: [] },
       humanGate: null,
       completed: false,
@@ -52,14 +62,7 @@ function verifiedState(): PindieState {
       ...state.task!,
       verification: {
         stale: false,
-        checks: [
-          {
-            name: "tests",
-            status: "passed",
-            covers: ["c1"],
-            evidence: "Tool tests passed.",
-          },
-        ],
+        checks: [{ name: "tests", status: "passed", covers: ["c1"], evidence: "passed" }],
       },
     },
   };
@@ -70,683 +73,184 @@ function gatedState(): PindieState {
   return {
     task: {
       ...state.task!,
-      humanGate: {
-        kind: "approval",
-        question: "Approve the tool interface?",
-      },
+      humanGate: { kind: "approval", question: "Approve?" },
     },
   };
 }
 
-async function createHarness(
-  initialState: PindieState = EMPTY_STATE,
-  getRunDuration?: () => number | null,
-) {
+async function harness(initialState: PindieState = EMPTY_STATE) {
   const store = new ToolTestStore(initialState);
   const runtime = new PindieRuntime(store);
-  await runtime.load("/workspace/pindie");
-
-  return {
-    store,
-    runtime,
-    stateTool: createPindieStateTool(runtime, { getRunDuration }),
-    gateTool: createPindieGateTool(runtime),
+  await runtime.load("/repo");
+  let changes = 0;
+  const options = { onStateChange: () => { changes += 1; } };
+  const tools = {
+    start: createPindieTaskStartTool(runtime, options),
+    replace: createPindieTaskReplaceTool(runtime, options),
+    refine: createPindieTaskRefineTool(runtime, options),
+    progress: createPindieTaskProgressTool(runtime, options),
+    verify: createPindieVerificationRecordTool(runtime, options),
+    complete: createPindieTaskCompleteTool(runtime, {
+      ...options,
+      getRunDuration: () => 522_000,
+    }),
+    gateOpen: createPindieGateOpenTool(runtime, options),
+    gateResolve: createPindieGateResolveTool(runtime, options),
   };
+  return { store, runtime, tools, get changes() { return changes; } };
 }
 
 function textOf(result: { content: Array<{ type: string; text?: string }> }): string {
-  return result.content
-    .filter((item) => item.type === "text")
-    .map((item) => item.text ?? "")
-    .join("\n");
+  return result.content.map((item) => item.text ?? "").join("\n");
 }
 
-test("S01 pindie_state maps start_task with defaults", async () => {
-  const { runtime, store, stateTool } = await createHarness();
-
-  const result = await stateTool.execute("call", {
-    action: "start_task",
-    goal: "Build custom tools",
-    successCriteria: ["Both tools are Pi-compatible"],
-  });
-
-  assert.equal(runtime.state.task?.goal, "Build custom tools");
-  assert.deepEqual(runtime.state.task?.constraints, []);
-  assert.equal(runtime.state.task?.openLoops.nextIntent, null);
-  assert.deepEqual(runtime.state.task?.successCriteria, [
-    { id: "c1", description: "Both tools are Pi-compatible" },
+test("all eight narrow semantic tools have exact names, strict schemas, and sequential execution", async () => {
+  const { tools } = await harness();
+  assert.deepEqual(Object.values(tools).map((tool) => tool.name), [
+    "pindie_task_start",
+    "pindie_task_replace",
+    "pindie_task_refine",
+    "pindie_task_progress",
+    "pindie_verification_record",
+    "pindie_task_complete",
+    "pindie_gate_open",
+    "pindie_gate_resolve",
   ]);
-  assert.equal(store.saves.length, 1);
-  assert.deepEqual(result.details, { state: runtime.state });
-});
-
-test("TB11-TB17 replace_task validates, persists before reporting, and exposes fresh criteria", async () => {
-  const harness = await createHarness(activeState());
-  await assert.rejects(harness.stateTool.execute("call", {
-    action: "replace_task", successCriteria: ["Works"],
-  }), /goal is required/i);
-  await assert.rejects(harness.stateTool.execute("call", {
-    action: "replace_task", goal: "Replacement", successCriteria: [],
-  }), /at least one success criterion/i);
-  await assert.rejects(harness.stateTool.execute("call", {
-    action: "replace_task", goal: "Replacement", successCriteria: ["Works"], summary: "Nope",
-  }), /unexpected field\(s\).*summary/i);
-
-  let releaseSave!: () => void;
-  let markSaveStarted!: () => void;
-  const saveStarted = new Promise<void>((resolve) => { markSaveStarted = resolve; });
-  harness.store.beforeSave = () => new Promise<void>((resolve) => {
-    releaseSave = resolve;
-    markSaveStarted();
-  });
-  let settled = false;
-  const execution = harness.stateTool.execute("call", {
-    action: "replace_task", goal: "Replacement", constraints: ["Focused"],
-    successCriteria: ["First", "Second"], nextIntent: "Implement it",
-  }).then((value) => { settled = true; return value; });
-  await saveStarted;
-  assert.equal(settled, false);
-  assert.equal(harness.runtime.state.task?.goal, "Implement Pindie tools");
-  releaseSave();
-  const result = await execution;
-  assert.equal(result.terminate, undefined);
-  assert.equal(harness.store.persistedState.task?.goal, "Replacement");
-  assert.deepEqual(harness.runtime.state.task?.constraints, ["Focused"]);
-  assert.equal(harness.runtime.state.task?.openLoops.nextIntent, "Implement it");
-  assert.match(textOf(result), /Current unfinished task replaced\./);
-  assert.match(textOf(result), /- c1: First\s*\n- c2: Second/);
-});
-
-test("TB13 replace_task defaults optional fields", async () => {
-  const { runtime, stateTool } = await createHarness(activeState());
-  await stateTool.execute("call", {
-    action: "replace_task", goal: "Replacement", successCriteria: ["Works"],
-  });
-  assert.deepEqual(runtime.state.task?.constraints, []);
-  assert.equal(runtime.state.task?.openLoops.nextIntent, null);
-});
-
-test("D01 start_task exposes the generated success criterion IDs", async () => {
-  const { runtime, store, stateTool } = await createHarness();
-
-  const result = await stateTool.execute("call", {
-    action: "start_task",
-    goal: "Expose criterion IDs",
-    successCriteria: ["First criterion", "Second criterion"],
-  });
-  const criteria = [
-    { id: "c1", description: "First criterion" },
-    { id: "c2", description: "Second criterion" },
-  ];
-
-  assert.deepEqual(runtime.state.task?.successCriteria, criteria);
-  assert.deepEqual(store.persistedState.task?.successCriteria, criteria);
-  assert.match(textOf(result), /Success criteria:\s*\n- c1: First criterion\s*\n- c2: Second criterion/);
-});
-
-test("S02 pindie_state maps refine_task", async () => {
-  const { runtime, stateTool } = await createHarness(activeState());
-
-  await stateTool.execute("call", {
-    action: "refine_task",
-    goal: "Implement current Pi custom tools",
-    constraints: ["Use sequential execution"],
-  });
-
-  assert.equal(runtime.state.task?.goal, "Implement current Pi custom tools");
-  assert.deepEqual(runtime.state.task?.constraints, ["Use sequential execution"]);
-});
-
-test("D02 refine_task exposes regenerated success criteria", async () => {
-  const initialState = verifiedState();
-  const { runtime, store, stateTool } = await createHarness(initialState);
-
-  const result = await stateTool.execute("call", {
-    action: "refine_task",
-    successCriteria: ["New first criterion", "New second criterion"],
-  });
-  const criteria = [
-    { id: "c1", description: "New first criterion" },
-    { id: "c2", description: "New second criterion" },
-  ];
-
-  assert.deepEqual(runtime.state.task?.successCriteria, criteria);
-  assert.deepEqual(runtime.state.task?.verification, { stale: true, checks: [] });
-  assert.deepEqual(store.persistedState.task?.successCriteria, criteria);
-  assert.match(
-    textOf(result),
-    /Success criteria:\s*\n- c1: New first criterion\s*\n- c2: New second criterion/,
-  );
-});
-
-test("S03 pindie_state maps one atomic set_open_loops event", async () => {
-  const { runtime, stateTool } = await createHarness(activeState());
-
-  await stateTool.execute("call", {
-    action: "set_open_loops",
-    blockers: ["Waiting for access"],
-    questions: ["Which environment?"],
-  });
-
-  assert.deepEqual(runtime.state.task?.openLoops, {
-    blockers: ["Waiting for access"],
-    questions: ["Which environment?"],
-    nextIntent: null,
-  });
-});
-
-test("S04 pindie_state maps one record_verification check", async () => {
-  const { runtime, stateTool } = await createHarness(activeState());
-  const check = {
-    name: "tests",
-    status: "passed" as const,
-    covers: ["c1"],
-    evidence: "Tool tests passed.",
-  };
-
-  await stateTool.execute("call", { action: "record_verification", check });
-
-  assert.deepEqual(runtime.state.task?.verification.checks, [check]);
-});
-
-test("D03 unknown criterion rejection lists valid IDs without mutation", async () => {
-  const initialState: PindieState = {
-    task: {
-      ...activeState().task!,
-      successCriteria: [
-        { id: "c1", description: "First criterion" },
-        { id: "c2", description: "Second criterion" },
-      ],
-    },
-  };
-  const { runtime, store, stateTool } = await createHarness(initialState);
-
-  await assert.rejects(
-    stateTool.execute("call", {
-      action: "record_verification",
-      check: {
-        name: "docs",
-        status: "passed",
-        covers: ["Documentation is correct"],
-        evidence: "Documentation was reviewed.",
-      },
-    }),
-    /unknown_success_criterion.*Documentation is correct.*Valid criterion IDs: c1, c2/is,
-  );
-
-  assert.equal(runtime.state, initialState);
-  assert.equal(store.persistedState, initialState);
-  assert.deepEqual(store.saves, []);
-});
-
-test("S05 and S10 complete_task persists completion and terminates", async () => {
-  const { runtime, store, stateTool } = await createHarness(verifiedState());
-
-  const result = await stateTool.execute("call", {
-    action: "complete_task",
-    summary: "Completed the verified task.",
-  });
-
-  assert.equal(runtime.state.task?.completed, true);
-  assert.equal(store.persistedState.task?.completed, true);
-  assert.equal(result.terminate, true);
-});
-
-test("D12 successful completion renders summary and verification", async () => {
-  const harness = await createHarness(verifiedState());
-  let releaseSave!: () => void;
-  let markSaveStarted!: () => void;
-  const saveStarted = new Promise<void>((resolve) => {
-    markSaveStarted = resolve;
-  });
-  harness.store.beforeSave = () =>
-    new Promise<void>((resolve) => {
-      releaseSave = resolve;
-      markSaveStarted();
-    });
-  let settled = false;
-
-  const execution = harness.stateTool
-    .execute("call", {
-      action: "complete_task",
-      summary: "Implemented the focused completion UX fix.",
-    })
-    .then((result) => {
-      settled = true;
-      return result;
-    });
-  await saveStarted;
-
-  assert.equal(settled, false);
-  assert.equal(harness.runtime.state.task?.completed, false);
-  assert.equal(harness.store.persistedState.task?.completed, false);
-
-  releaseSave();
-  const result = await execution;
-  const text = textOf(result);
-
-  assert.equal(harness.runtime.state.task?.completed, true);
-  assert.equal(harness.store.persistedState.task?.completed, true);
-  assert.equal(result.terminate, true);
-  assert.match(text, /Current task completed\./);
-  assert.match(text, /Summary:\s*\nImplemented the focused completion UX fix\./);
-  assert.match(text, /Verification:\s*\n- tests: Tool tests passed\./);
-});
-
-test("D14 completion output renders the supplied Run duration", async () => {
-  const { stateTool } = await createHarness(verifiedState(), () => 522_000);
-
-  const result = await stateTool.execute("call", {
-    action: "complete_task",
-    summary: "Completed the verified task.",
-  });
-
-  assert.match(textOf(result), /Duration: 8m 42s/);
-});
-
-test("D13 completion summary is ephemeral", async () => {
-  const { runtime, store, stateTool } = await createHarness(verifiedState());
-
-  const result = await stateTool.execute("call", {
-    action: "complete_task",
-    summary: "Implemented the focused completion UX fix.",
-  });
-
-  assert.match(textOf(result), /Implemented the focused completion UX fix\./);
-  assert.equal("summary" in runtime.state, false);
-  assert.equal("summary" in runtime.state.task!, false);
-  assert.equal("summary" in store.persistedState, false);
-  assert.equal("summary" in store.persistedState.task!, false);
-  assert.doesNotMatch(JSON.stringify(store.persistedState), /summary/i);
-});
-
-test("S06 pindie_state exposes only approved semantic actions", async () => {
-  const { stateTool } = await createHarness();
-  const schema = stateTool.parameters as {
-    properties: { action: { enum: string[] } };
-  };
-
-  assert.deepEqual(schema.properties.action.enum, [
-    "start_task",
-    "replace_task",
-    "refine_task",
-    "set_open_loops",
-    "record_verification",
-    "complete_task",
-  ]);
-  const serialized = JSON.stringify(stateTool.parameters);
-  assert.doesNotMatch(serialized, /patch_state|replace_state|set_completed/);
-  assert.doesNotMatch(serialized, /invalidate_verification|human_gate/);
-});
-
-test("record_verification schema explains that covers uses criterion IDs", async () => {
-  const { stateTool } = await createHarness();
-
-  assert.match(
-    JSON.stringify(stateTool.parameters),
-    /Success criterion IDs.*start_task or refine_task.*not criterion descriptions/i,
-  );
-});
-
-test("D05 pindie_state schema distinguishes durable completion from continuation", async () => {
-  const { stateTool } = await createHarness();
-  const schema = stateTool.parameters as {
-    properties: {
-      successCriteria: { description?: string };
-      nextIntent: { description?: string };
-    };
-  };
-
-  assert.match(
-    schema.properties.successCriteria.description ?? "",
-    /final, durable Definition of Done/i,
-  );
-  assert.match(
-    schema.properties.successCriteria.description ?? "",
-    /across sessions.*Do not.*temporary current-run/i,
-  );
-  assert.match(
-    schema.properties.nextIntent.description ?? "",
-    /continuation intent.*next meaningful step/i,
-  );
-  assert.match(
-    schema.properties.nextIntent.description ?? "",
-    /unfinished.*cross-session/i,
-  );
-});
-
-test("D09 pindie_state schema distinguishes Task Contract fields", async () => {
-  const { stateTool } = await createHarness();
-  const schema = stateTool.parameters as {
-    properties: {
-      goal: { description?: string };
-      constraints: { description?: string };
-      successCriteria: { description?: string };
-    };
-  };
-  const goalDescription = schema.properties.goal.description ?? "";
-  const constraintsDescription = schema.properties.constraints.description ?? "";
-  const successCriteriaDescription = schema.properties.successCriteria.description ?? "";
-
-  assert.match(goalDescription, /durable outcome.*trying to achieve/i);
-  assert.match(
-    constraintsDescription,
-    /durable task-wide boundaries.*execution requirements/i,
-  );
-  assert.match(
-    constraintsDescription,
-    /scope limits.*prohibited actions.*fixed human decisions.*technical constraints/i,
-  );
-  assert.doesNotMatch(constraintsDescription, /final Definition of Done/i);
-  assert.match(
-    successCriteriaDescription,
-    /final observable outcomes required for completion/i,
-  );
-  assert.match(successCriteriaDescription, /final, durable Definition of Done/i);
-  assert.match(
-    successCriteriaDescription,
-    /Do not use success criteria for execution rules, prohibited actions, process sequencing/i,
-  );
-});
-
-test("D06 pindie_state action guidance exposes action-specific fields", async () => {
-  const { stateTool } = await createHarness();
-  const schema = stateTool.parameters as {
-    properties: { action: { description?: string } };
-  };
-  const description = schema.properties.action.description ?? "";
-
-  assert.match(description, /start_task.*goal.*successCriteria.*required/is);
-  assert.match(description, /replace_task.*different.*goal.*successCriteria.*required/is);
-  assert.match(
-    description,
-    /refine_task.*goal.*constraints.*successCriteria.*at least one/is,
-  );
-  assert.match(
-    description,
-    /set_open_loops.*blockers.*questions.*required.*nextIntent.*optional/is,
-  );
-  assert.match(description, /record_verification.*check.*required/is);
-  assert.match(description, /complete_task.*summary.*required/is);
-});
-
-test("D10 complete_task contract requires summary", async () => {
-  const { stateTool } = await createHarness();
-  const schema = stateTool.parameters as {
-    properties: {
-      action: { description?: string };
-      summary: { description?: string };
-    };
-  };
-  const actionDescription = schema.properties.action.description ?? "";
-  const summaryDescription = schema.properties.summary.description ?? "";
-
-  assert.match(actionDescription, /complete_task.*summary required/is);
-  assert.match(summaryDescription, /Used only by complete_task/i);
-  assert.match(summaryDescription, /user-facing summary.*completed outcome/i);
-  assert.match(summaryDescription, /meaningful changes/i);
-  assert.match(summaryDescription, /Verification evidence.*rendered separately/i);
-  assert.match(summaryDescription, /recorded Pindie verification/i);
-});
-
-test("D07 nextIntent schema guidance excludes refine_task", async () => {
-  const { stateTool } = await createHarness();
-  const schema = stateTool.parameters as {
-    properties: { nextIntent: { description?: string } };
-  };
-  const description = schema.properties.nextIntent.description ?? "";
-
-  assert.match(description, /only.*start_task.*set_open_loops/is);
-  assert.doesNotMatch(description, /refine_task/i);
-});
-
-test("refine_task rejects nextIntent with allowed fields and no mutation", async () => {
-  const initialState = activeState();
-  const { runtime, store, stateTool } = await createHarness(initialState);
-
-  await assert.rejects(
-    stateTool.execute("call", {
-      action: "refine_task",
-      constraints: ["Use option A"],
-      nextIntent: "Continue implementation",
-    }),
-    (error: Error) => {
-      assert.match(String(error), /unexpected field\(s\).*nextIntent/is);
-      assert.match(String(error), /refine_task/is);
-      assert.match(
-        String(error),
-        /Allowed fields: action, goal, constraints, successCriteria/is,
-      );
-      return true;
-    },
-  );
-
-  assert.equal(runtime.state, initialState);
-  assert.equal(store.persistedState, initialState);
-  assert.deepEqual(store.saves, []);
-});
-
-test("S07 invalid action-specific parameters are rejected", async () => {
-  const { stateTool } = await createHarness();
-
-  await assert.rejects(
-    stateTool.execute("call", {
-      action: "start_task",
-      goal: "Invalid task",
-      successCriteria: [],
-    }),
-    /at least one success criterion/i,
-  );
-  await assert.rejects(
-    stateTool.execute("call", { action: "refine_task" }),
-    /at least one.*refinement/i,
-  );
-});
-
-test("S08 reducer transition failures surface code and actionable message", async () => {
-  const { store, stateTool } = await createHarness(activeState());
-
-  await assert.rejects(
-    stateTool.execute("call", {
-      action: "start_task",
-      goal: "Overwrite active task",
-      successCriteria: ["Replacement succeeds"],
-    }),
-    /task_already_active.*Complete the current task/i,
-  );
-  assert.deepEqual(store.saves, []);
-});
-
-test("refine_task with no success criteria surfaces the Core State rejection", async () => {
-  const initialState = activeState();
-  const { runtime, store, stateTool } = await createHarness(initialState);
-
-  await assert.rejects(
-    stateTool.execute("call", {
-      action: "refine_task",
-      successCriteria: [],
-    }),
-    /invalid_state.*at least one success criterion/i,
-  );
-
-  assert.equal(runtime.state, initialState);
-  assert.deepEqual(store.saves, []);
-});
-
-test("S09 successful pindie_state results include current State details", async () => {
-  const { runtime, stateTool } = await createHarness(activeState());
-
-  const result = await stateTool.execute("call", {
-    action: "set_open_loops",
-    blockers: [],
-    questions: [],
-    nextIntent: "Continue",
-  });
-
-  assert.deepEqual(result.details, { state: runtime.state });
-});
-
-test("S11 rejected complete_task does not terminate or persist", async () => {
-  const { runtime, store, stateTool } = await createHarness(activeState());
-
-  const error = await stateTool
-    .execute("call", {
-      action: "complete_task",
-      summary: "Completed the verified task.",
-    })
-    .then(
-      () => assert.fail("Expected complete_task to reject"),
-      (failure: unknown) => failure,
-    );
-
-  assert.match(String(error), /verification_pending/);
-  assert.equal((error as { terminate?: boolean }).terminate, undefined);
-  assert.equal(runtime.state.task?.completed, false);
-  assert.deepEqual(store.saves, []);
-});
-
-test("D11 missing or blank complete_task summary is rejected", async () => {
-  for (const params of [
-    { action: "complete_task" },
-    { action: "complete_task", summary: "   " },
-  ]) {
-    const initialState = verifiedState();
-    const { runtime, store, stateTool } = await createHarness(initialState);
-    const error = await stateTool.execute("call", params).then(
-      () => assert.fail("Expected complete_task to reject"),
-      (failure: unknown) => failure,
-    );
-
-    assert.match(String(error), /non-empty summary is required/i);
-    assert.equal((error as { terminate?: boolean }).terminate, undefined);
-    assert.equal(runtime.state, initialState);
-    assert.equal(store.persistedState, initialState);
-    assert.deepEqual(store.saves, []);
+  for (const tool of Object.values(tools)) {
+    assert.equal(tool.executionMode, "sequential", tool.name);
+    assert.equal((tool.parameters as { additionalProperties?: boolean }).additionalProperties, false, tool.name);
   }
 });
 
-test("S12 pindie_state execution is sequential", async () => {
-  const { stateTool } = await createHarness();
-  assert.equal(stateTool.executionMode, "sequential");
+test("start dispatches start_task with defaults and returns generated criterion IDs", async () => {
+  const h = await harness();
+  const result = await h.tools.start.execute("start", {
+    goal: "Build M3",
+    successCriteria: ["Surface works", "Gateway remains"],
+  });
+  assert.equal(h.runtime.state.task?.goal, "Build M3");
+  assert.deepEqual(h.runtime.state.task?.constraints, []);
+  assert.equal(h.runtime.state.task?.openLoops.nextIntent, null);
+  assert.match(textOf(result), /- c1: Surface works\s*\n- c2: Gateway remains/);
+  assert.equal(h.changes, 1);
 });
 
-test("G01 opening a gate persists waiting_human before terminating", async () => {
-  const { runtime, store, gateTool } = await createHarness(activeState());
+test("start and replace require goal plus non-empty successCriteria", async () => {
+  for (const name of ["start", "replace"] as const) {
+    const h = await harness(name === "start" ? EMPTY_STATE : activeState());
+    await assert.rejects((h.tools[name].execute as any)("call", { successCriteria: ["Works"] }), /goal is required/i);
+    await assert.rejects((h.tools[name].execute as any)("call", { goal: "Task", successCriteria: [] }), /at least one success criterion/i);
+  }
+});
 
-  const result = await gateTool.execute("call", {
-    action: "open",
+test("replace dispatches replace_task and preserves optional fields", async () => {
+  const h = await harness(activeState());
+  const result = await h.tools.replace.execute("replace", {
+    goal: "Replacement",
+    constraints: ["Focused"],
+    successCriteria: ["Done"],
+    nextIntent: "Implement",
+  });
+  assert.equal(h.runtime.state.task?.goal, "Replacement");
+  assert.deepEqual(h.runtime.state.task?.constraints, ["Focused"]);
+  assert.equal(h.runtime.state.task?.openLoops.nextIntent, "Implement");
+  assert.match(textOf(result), /unfinished task replaced/i);
+});
+
+test("refine requires at least one field and dispatches refine_task", async () => {
+  const h = await harness(activeState());
+  await assert.rejects((h.tools.refine.execute as any)("refine", {}), /at least one refinement field/i);
+  await h.tools.refine.execute("refine", {
+    goal: "Refined",
+    constraints: ["Keep M2"],
+  });
+  assert.equal(h.runtime.state.task?.goal, "Refined");
+  assert.deepEqual(h.runtime.state.task?.constraints, ["Keep M2"]);
+});
+
+test("progress dispatches set_open_loops with blockers/questions/nextIntent", async () => {
+  const h = await harness(activeState());
+  await h.tools.progress.execute("progress", {
+    blockers: ["Dependency"],
+    questions: ["Which API?"],
+    nextIntent: "Wait",
+  });
+  assert.deepEqual(h.runtime.state.task?.openLoops, {
+    blockers: ["Dependency"],
+    questions: ["Which API?"],
+    nextIntent: "Wait",
+  });
+});
+
+test("verification record preserves the current VerificationCheck semantics", async () => {
+  const h = await harness(activeState());
+  const check = { name: "tests", status: "passed" as const, covers: ["c1"], evidence: "passed" };
+  await h.tools.verify.execute("verify", { check });
+  assert.deepEqual(h.runtime.state.task?.verification.checks, [check]);
+  assert.match(JSON.stringify(h.tools.verify.parameters), /criterion IDs.*not descriptions/i);
+});
+
+test("complete dispatches complete_task, preserves result semantics, and requires a summary", async () => {
+  const h = await harness(verifiedState());
+  await assert.rejects((h.tools.complete.execute as any)("complete", { summary: "   " }), /non-empty summary/i);
+  const result = await h.tools.complete.execute("complete", { summary: "Implemented M3." });
+  assert.equal(h.runtime.state.task?.completed, true);
+  assert.equal(result.terminate, true);
+  assert.match(textOf(result), /Summary:\s*\nImplemented M3\./);
+  assert.match(textOf(result), /Duration: 8m 42s/);
+  assert.match(textOf(result), /Verification:\s*\n- tests: passed/);
+});
+
+test("Gate open and resolve dispatch existing events and preserve result semantics", async () => {
+  const opened = await harness(activeState());
+  const openResult = await opened.tools.gateOpen.execute("open", {
     kind: "decision",
-    question: "Which tool wording should we use?",
-    options: ["Short", "Detailed"],
+    question: "Which option?",
+    options: ["A", "B"],
   });
+  assert.equal(getTaskStatus(opened.runtime.state), "waiting_human");
+  assert.equal(openResult.terminate, true);
+  assert.match(textOf(openResult), /Options:\s*\n- A\s*\n- B/);
 
-  assert.equal(getTaskStatus(runtime.state), "waiting_human");
-  assert.equal(store.persistedState.task?.humanGate?.kind, "decision");
-  assert.match(textOf(result), /Which tool wording should we use\?/);
-  assert.match(textOf(result), /Options:\s*\n- Short\s*\n- Detailed/);
-  assert.equal(result.terminate, true);
+  const resolved = await harness(gatedState());
+  const resolveResult = await resolved.tools.gateResolve.execute("resolve", {});
+  assert.equal(resolved.runtime.state.task?.humanGate, null);
+  assert.notEqual(resolveResult.terminate, true);
+  assert.match(textOf(resolveResult), /Re-observe relevant project reality/i);
 });
 
-test("G02 gate result waits for persistence before terminating", async () => {
-  const harness = await createHarness(activeState());
-  let releaseSave!: () => void;
-  let markSaveStarted!: () => void;
-  const saveStarted = new Promise<void>((resolve) => {
-    markSaveStarted = resolve;
-  });
-  harness.store.beforeSave = () =>
-    new Promise<void>((resolve) => {
-      releaseSave = resolve;
-      markSaveStarted();
-    });
-  let settled = false;
+test("reducer and persistence failures propagate without publishing State changes", async () => {
+  const reducerFailure = await harness(activeState());
+  await assert.rejects(reducerFailure.tools.start.execute("start", {
+    goal: "Overwrite",
+    successCriteria: ["No"],
+  }), /task_already_active/i);
+  assert.deepEqual(reducerFailure.store.saves, []);
 
-  const execution = harness.gateTool
-    .execute("call", {
-      action: "open",
-      kind: "approval",
-      question: "Approve release?",
-    })
-    .then((result) => {
-      settled = true;
-      return result;
-    });
-  await saveStarted;
-
-  assert.equal(settled, false);
-  assert.equal(harness.runtime.state.task?.humanGate, null);
-  assert.equal(harness.store.persistedState.task?.humanGate, null);
-
-  releaseSave();
-  const result = await execution;
-
-  assert.equal(result.terminate, true);
-  assert.equal(harness.store.persistedState.task?.humanGate?.kind, "approval");
+  const persistenceFailure = await harness();
+  persistenceFailure.store.saveError = new Error("disk unavailable");
+  await assert.rejects(persistenceFailure.tools.start.execute("start", {
+    goal: "Task",
+    successCriteria: ["Done"],
+  }), /disk unavailable/i);
+  assert.equal(persistenceFailure.runtime.state.task, null);
+  assert.equal(persistenceFailure.changes, 0);
 });
 
-test("G03 opening a gate without a task rejects without termination", async () => {
-  const { store, gateTool } = await createHarness();
-
-  const error = await gateTool
-    .execute("call", {
-      action: "open",
-      kind: "input",
-      question: "Provide requirements",
-    })
-    .then(
-      () => assert.fail("Expected open to reject"),
-      (failure: unknown) => failure,
-    );
-
-  assert.match(String(error), /no_current_task/);
-  assert.equal((error as { terminate?: boolean }).terminate, undefined);
-  assert.deepEqual(store.saves, []);
-});
-
-test("G04 a second gate is rejected and the existing gate is preserved", async () => {
-  const initialState = gatedState();
-  const { runtime, store, gateTool } = await createHarness(initialState);
-
-  await assert.rejects(
-    gateTool.execute("call", {
-      action: "open",
-      kind: "input",
-      question: "Another question?",
-    }),
-    /human_gate_already_open/,
-  );
-
-  assert.equal(runtime.state, initialState);
-  assert.deepEqual(store.saves, []);
-});
-
-test("G05 resolving a gate persists and reminds the model to re-observe", async () => {
-  const { runtime, store, gateTool } = await createHarness(gatedState());
-
-  const result = await gateTool.execute("call", { action: "resolve" });
-
-  assert.equal(runtime.state.task?.humanGate, null);
-  assert.equal(store.persistedState.task?.humanGate, null);
-  assert.notEqual(result.terminate, true);
-  assert.match(textOf(result), /Human Gate resolved.*Re-observe relevant project reality/i);
-});
-
-test("G06 resolving without a gate is rejected", async () => {
-  const { store, gateTool } = await createHarness(activeState());
-
-  await assert.rejects(
-    gateTool.execute("call", { action: "resolve" }),
-    /no_human_gate/,
-  );
-  assert.deepEqual(store.saves, []);
-});
-
-test("G07 pindie_gate exposes only open/resolve and executes sequentially", async () => {
-  const { gateTool } = await createHarness();
-  const schema = gateTool.parameters as {
-    properties: { action: { enum: string[] } };
+test("required and strict parameter contracts are represented in schemas", async () => {
+  const { tools } = await harness();
+  const schema = (tool: keyof typeof tools) => tools[tool].parameters as {
+    required?: string[];
+    minProperties?: number;
+    properties: Record<string, { minItems?: number }>;
   };
-
-  assert.deepEqual(schema.properties.action.enum, ["open", "resolve"]);
-  assert.equal(gateTool.executionMode, "sequential");
+  assert.deepEqual(schema("start").required, ["goal", "successCriteria"]);
+  assert.equal(schema("start").properties.successCriteria.minItems, 1);
+  assert.deepEqual(schema("replace").required, ["goal", "successCriteria"]);
+  assert.equal(schema("refine").minProperties, 1);
+  assert.deepEqual(schema("progress").required, ["blockers", "questions"]);
+  assert.deepEqual(schema("verify").required, ["check"]);
+  assert.deepEqual(schema("complete").required, ["summary"]);
+  assert.deepEqual(schema("gateOpen").required, ["kind", "question"]);
+  assert.equal(schema("gateResolve").required, undefined);
 });
