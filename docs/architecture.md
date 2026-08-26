@@ -1,124 +1,89 @@
-# Pindie Architecture v0.1
+# Pindie Architecture v0.2
 
 ## 1. Purpose
 
-Pindie is a personal AI agent for indie development built on Pi. Its core job is not to replace Pi's low-level agent runtime. It adds a persistent, verifiable development operating model above it.
+Pindie is a personal AI agent for indie development built on Pi. Pi remains the low-level agent harness. Pindie adds a minimal semantic operating layer that keeps current work durable, verifiable, and aligned with user authority.
 
-The main architectural boundary is:
-
-```text
-Pindie decides what should happen next and what counts as done.
-Pi executes model/tool interactions needed to make it happen.
-```
-
-## 2. Pi vs Pindie
-
-### Pi owns
-
-- model invocation
-- tool-call execution
-- tool results
-- session runtime
-- built-in tools such as read/edit/write/bash
-- the underlying `LLM → Tool → Result → LLM` agent loop
-
-### Pindie owns
-
-- the development operating policy
-- the semantic current-task State
-- State transitions and hard invariants
-- verification semantics
-- Human Gate semantics
-- the semantic contract for optional specialized Skills
-- bundled Skill resources exposed to Pi
-
-Pindie must not implement a second agent loop or a second Skill runtime.
-
-### Status presentation ownership
-
-Pi's built-in footer presents infrastructure and runtime information (project, branch, token/context use, model, and thinking). Pindie presents semantic current-work information through one extension status line beneath it. Pindie never replaces or customizes Pi's footer for this purpose.
-
-The Pindie status line derives its compact segments from runtime-only Run timing, Run Cost, and Current Activity, semantic current-task State, directly available runtime alerts, and optional runtime-only account observations. It does not persist display fields or create independent status entries for each fact. Current Activity is a runtime-only observable Pi execution hint for compact presentation, not Pindie State and not a Core Loop phase.
-
-Its left region is Pindie current-work information (Run timing, Run Cost, Current Activity, verification, and attention). Its right region is account/environment resource information. Run Cost is the incremental Pi-reported `usage.cost.total` for the same Agent Run as Run Timer, not Pi's cumulative session cost and not necessarily an amount charged to a subscription user's credit card. The on-demand `/efficiency` Inspector is separate from status presentation: it is runtime-only and read-only, derives reasoning, context, and session/cache facts from Pindie runtime state and Pi public APIs, reuses Run Cost, and owns no usage or cache State. ChatGPT subscription usage, when available from Pi's public resolved OpenAI Codex auth, is a best-effort runtime observation only: `◉ 52%` means 52% weekly allowance remains and `↻ 6d23h` is the time remaining until its weekly reset. The countdown is derived at render time from the runtime `resetsAt` timestamp: days render as `d+h`, hours as `h+m`, minutes as `m`, and less than one minute as `<1m`; expired timestamps omit the reset segment. `⟳ 1` means one manual full-reset credit is available; when complete eligible detail coverage makes it trustworthy, `⟳ 1 · 29d` also shows the nearest available credit expiry. The count comes authoritatively from the usage summary, while details are requested only for a positive count. A capped or incomplete detail list suppresses expiry rather than guessing. Manual reset credits are read-only runtime observations in v0.1: they are never persisted and Pindie has no consume action. Pindie selects the weekly window by its declared seven-day duration; the Codex backend may declare that duration as `limit_window_seconds`. The request uses Pi's runtime global fetch, which honors the standard proxy environment/configuration Pi establishes, but usage remains runtime-only and is never Pindie State or allowed to affect semantic/runtime correctness.
-
-| Metric | Scope |
-| --- | --- |
-| Run Timer | one Agent Run elapsed time |
-| Run Cost | one Agent Run Pi-reported model-equivalent cost |
-| Current Activity | instantaneous observable active Run execution activity |
-| Verification | current Task |
-| Weekly Usage | ChatGPT account |
-
-Semantic colors follow the active Pi theme:
+The v0.2 architectural boundary is:
 
 ```text
-dim      → informational
-text     → normal state
-accent   → Current Activity
-success  → successful state
-warning  → attention / human intervention
-error    → failure / runtime problem
+Human  → goals, taste, consequential judgment, approval
+Model  → meaning, interpretation, planning, semantic choice
+Pindie → truth, legality, capability, lifecycle, evidence freshness
+Pi     → LLM execution, tools, sessions, low-level agent loop
 ```
 
-## 3. Pindie Core Loop
+Pindie should eliminate meaningless choices, not meaningful choices.
 
-The logical loop is:
+If a conclusion follows uniquely from authoritative facts, Pindie should close that branch deterministically. If a decision genuinely requires interpreting user intent or project meaning, the model should choose within the legal semantic space. Consequential human judgment remains human-owned.
+
+## 2. Non-goals
+
+Pindie v0.2 does not add:
+
+- a second agent loop
+- a workflow engine or persisted phase machine
+- a task queue
+- a planner framework
+- a memory database
+- a second Skill runtime
+- a universal shell parser
+- a second source of project truth
+
+Observe / Understand / Decide / Act / Verify / Update State remain useful semantic descriptions of work, not persisted controller states.
+
+## 3. Target architecture
 
 ```text
-Observe
-  ↓
-Understand
-  ↓
-Decide
-  ↓
-Act
-  ↓
-Verify
-  ↓
-Update State
-  ↓
-Goal satisfied?
-  ├─ No  → Observe
-  └─ Yes → Done
+                         Reality
+                            │
+                            ▼
+                 Persistent State
+                    + Run Facts
+                            │
+                            ▼
+                 Semantic Snapshot
+                            │
+                            ▼
+                    Capabilities
+                 ┌──────────┼──────────┐
+                 ▼          ▼          ▼
+             Knowledge   Tool      Authorization
+              Surface   Surface       Policy
+                 │          │          │
+                 └──────────┴────┬─────┘
+                                 ▼
+                                LLM
+                                 │
+                           semantic choice
+                                 │
+                                 ▼
+                       Execution Gateway
+                                 │
+                              Reducer
+                                 │
+                                 ▼
+                                Pi
+                                 │
+                                 ▼
+                              Reality
 ```
 
-Observe / Understand / Decide / Act / Verify / Update State are semantic phases, not six mandatory model calls and not persisted workflow states. They are distinct from Current Activity, which is a runtime-only presentation hint derived from observable Pi lifecycle and tool execution events; it does not report or infer a semantic Core Loop phase.
+The center of v0.2 is not a new controller. It is a small set of pure semantic derivations:
 
-### Observe
-Gather relevant evidence from the user, project, Git, environment, and tool results.
+```text
+PindieState + RunFacts
+        ↓
+deriveSemanticSnapshot()
+        ↓
+deriveCapabilities()
+```
 
-### Understand
-Form the current problem model: problem, constraints, and success criteria.
+These derivations do not call the model, execute tools, persist data, or create another state machine.
 
-### Decide
-Choose the smallest safe next action. Planning is optional and only one possible decision outcome.
+## 4. Persistent State
 
-### Act
-Change project reality through Pi and tools.
-
-### Verify
-Collect evidence against explicit success criteria. A change is not complete merely because code was written.
-
-### Update State
-Persist only semantic current-work information that cannot be reliably reconstructed from reality.
-
-## 4. Core principles
-
-1. **Reality > State.** Latest user intent and observed project reality override stale persisted State.
-2. **Observe before consequential action.** Resume after interruption through fresh observation.
-3. **Smallest safe next action.** Avoid large speculative execution plans when a smaller verifiable step exists.
-4. **Verification is mandatory.** Completion requires current evidence against success criteria.
-5. **State stays minimal.** Reconstructable information belongs to Git/files/environment, not Pindie State.
-6. **Human judgment is explicit.** Product taste, consequential architecture choices, and destructive actions may require a Human Gate.
-7. **One current task.** v0.1 deliberately excludes task queues and orchestration.
-8. **Task boundaries reconcile intent.** Before consequential project action, reconcile latest actual user intent with the current Task after any needed read-only observation: continue when it belongs to that Task, refine when its Contract changes, replace an unfinished Task through `replace_task` when it clearly requests a different Task, and use a Human Gate for consequential ambiguity. Observation, discussion, pause, or return-control intent alone does not authorize consequential continuation.
-9. **Active work continues.** An active Task continues only while the latest user intent calls for consequential execution of this current Task and a safe executable next action remains; response, turn, and low-level agent-loop boundaries are not Task boundaries. The hidden continuation follow-up is a probe subordinate to latest user intent, not unconditional authorization to resume persisted State. Persisted `nextIntent` records continuation context, not permission to yield or override later user intent because more implementation, replanning, or verification iterations are required.
-10. **Task-backed execution.** Read-only observation requires no Task. Consequential project action requires available, coherent State and one current Task; `pindie_state(start_task)` is the legal transition from idle into Task-backed execution, before existing Task-boundary, Human Gate, and completion guards apply.
-
-## 5. State model
-
-Pindie State is the agent's minimal persistent working memory, not a project database and not a conversation history.
+The existing minimal State model remains the durable semantic source of current work:
 
 ```text
 PindieState
@@ -127,222 +92,302 @@ PindieState
     ├── constraints
     ├── successCriteria
     ├── openLoops
+    │   ├── blockers
+    │   ├── questions
+    │   └── nextIntent
     ├── verification
     ├── humanGate
     └── completed
 ```
 
-The durable Task Contract is `goal + constraints + successCriteria`: goal is the intended outcome, constraints are task-wide execution boundaries, and success criteria are final observable completion outcomes. `openLoops.nextIntent` carries continuation intent for unfinished work.
-
-Task status is derived from facts rather than stored directly:
+Task status remains derived:
 
 ```text
-no task                         → idle
-completed                       → done
-human gate open                 → waiting_human
-one or more blockers            → blocked
-otherwise                       → active
+no task                → idle
+completed              → done
+human gate open        → waiting_human
+blockers present       → blocked
+otherwise              → active
 ```
 
-Verification status is also derived:
+Verification status remains derived from current verification facts.
+
+Capabilities, active tools, Run authority, presentation, reasoning state, tool visibility, continuation fuses, Git fingerprints, and workflow phases are never persisted in `PindieState`.
+
+Reality remains authoritative for reconstructable facts such as files, Git state, package versions, tool output, and current environment state.
+
+## 5. Reducer and Runtime
+
+The existing reducer remains the authority for hard State invariants. It accepts semantic `PindieEvent`s and rejects transitions that would create invalid State.
+
+The reducer must remain independent of Pi tool names and Agent UI concerns.
+
+The existing Runtime remains responsible for:
+
+- project-scoped State loading and persistence
+- authoritative disk refresh
+- short project-scoped locking
+- external-State conflict detection
+- reducer dispatch
+- atomic save-before-publish behavior
+
+Capability architecture does not replace reducer validation or Runtime concurrency checks. Capability projection shapes the normal Agent action space; Runtime and reducer remain execution-time/data-integrity backstops.
+
+A useful relationship is:
 
 ```text
-stale                           → stale
-no checks                       → pending
-any current failed check        → failed
-all criteria covered by passes  → passed
-otherwise                       → pending
+Agent-run capabilities ⊆ State-machine legal transitions
 ```
 
-## 6. What State does not store
+Run-boundary authority may make a transition unavailable even when the reducer would accept that transition from State alone.
 
-Do not persist these in Pindie State when they can be re-observed:
+## 6. Run Facts
 
-- current branch
-- git diff
-- changed files
-- package versions
-- source file contents
-- raw tool-call history
-- complete build/test logs
-- loop phase such as `deciding` or `testing`
-- Skill selection, lifecycle, or Skill-local workflow progress
-- request-time model Runtime Context or any prompt-cache metadata
+Some semantic authority depends on what happened during the current user-driven Agent Run. These facts are runtime-only and must not enter persistent State.
 
-Pi sessions provide interaction history; Git/files/environment provide reality. Pi Skill context provides reconstructable Skill information.
-
-## 7. Core Extension
-
-The implemented v0.1 Core Extension provides:
-
-- State loading and persistence
-- stable Core Policy system-prompt injection plus ephemeral request-time Runtime Context projection
-- deterministic State transitions
-- verification invalidation on known project mutation and runtime-only Project Mutation Freshness probes for ambiguous consequential tools
-- Human Gate lifecycle
-- runtime safety checks
-- runtime-only Agent Run timing, cost, observable Current Activity, and adaptive reasoning control in the unified Pindie semantic status line (with timing also in completion output)
-- an on-demand read-only `/efficiency` Inspector derived from current Pi public session/context facts, runtime reasoning, and existing Run Cost without persistence or background collection
-- one theme-aware Pindie status line for Current Activity, verification progress, and actionable Human Gate, blocker, and State-unavailable conditions
-- custom tools `pindie_state`, `pindie_gate`, and `pindie_git_observe`
-
-The model-facing State mutation path is:
+The v0.2 semantic layer models facts such as:
 
 ```text
-Tool
+State available or unavailable
+Run coherent or stale
+current Task existed before the Run, changed during it, or was introduced during it
+completed Task existed before the Run or completed during it
+Human Gate existed before the Run or opened during it
+```
+
+Run Facts describe events and relationships, not policy conclusions such as `canReplaceTask` or `gateResolvable`.
+
+The existing run-start Task/Gate/completion identities and external-State epoch are implementation inputs that can later be adapted into these semantic facts.
+
+## 7. Semantic Snapshot
+
+`SemanticSnapshot` is a pure derived view of `PindieState + RunFacts`.
+
+It contains derived semantics such as:
+
+- semantic authority: unavailable / stale / coherent
+- Task status
+- verification status
+- Task/Run relationship
+- completion/Run relationship
+- Gate/Run relationship
+- blocker/question presence
+- completion readiness
+
+It does not duplicate Task content such as goal, constraints, criteria, evidence text, or Gate question.
+
+`completionReady` is derived from current facts:
+
+```text
+unfinished Task
+AND verification passed
+AND no blockers
+AND no unresolved questions
+AND no Human Gate
+```
+
+## 8. Capability Model
+
+Capabilities express the currently legal meaningful action space. They are semantic concepts, not Pi tool names.
+
+Initial v0.2 vocabulary:
+
+```text
+observe.project
+observe.git
+project.mutate
+
+task.start
+task.refine
+task.replace
+task.progress
+task.complete
+
+verification.record
+
+gate.open
+gate.resolve
+```
+
+Capabilities are derived only from `SemanticSnapshot` and are never persisted.
+
+Examples:
+
+```text
+idle
+→ observe.project, observe.git, task.start
+
+done + completed before current Run
+→ observe.project, observe.git, task.start
+
+done + completed during current Run
+→ observation only
+
+active
+→ observe + mutate + refine + progress + verify + gate.open
+  plus replace when the untouched Task pre-existed the Run
+  plus complete when completionReady
+
+waiting_human + Gate opened during current Run
+→ observation only
+
+waiting_human + Gate existed before current Run
+→ observe + gate.resolve + legal Task-boundary operations
+```
+
+A Task-level blocker means the current Task has no safe effective consequential progress available until external reality changes. Target v0.2 therefore removes `project.mutate` while blocked. Questions may remain unresolved while useful work continues, but they prevent completion.
+
+## 9. Knowledge Surface
+
+The model-facing Runtime Context should describe the current semantic world, not duplicate lifecycle rules.
+
+It may include:
+
+- Task status
+- verification status
+- goal
+- constraints
+- success criteria
+- blockers
+- questions
+- next intent
+- current verification records
+- Human Gate
+
+It should not need to teach deterministic rules such as “done tasks cannot refine” or “pending verification cannot complete” once those rules are represented by capabilities.
+
+Core Policy should remain small and stable: respect latest user intent and reality, work toward the Task Contract, choose the smallest safe useful action, avoid silent scope expansion, ground completion in evidence, and defer consequential human judgment.
+
+## 10. Tool Surface and Tool Effects
+
+Model-visible tools are an affordance layer over semantic capabilities.
+
+Tool names must not define Pindie semantics. Instead, tools are classified by semantic effect, for example:
+
+```text
+read / grep / find / ls   → observe.project
+pindie_git_observe        → observe.git
+edit / write              → project.mutate
+bash / unknown tool       → consequential/unknown effect requiring project.mutate
+Pindie semantic tool      → its explicit semantic capability
+```
+
+Unknown tools remain fail-safe/consequential until explicitly classified otherwise.
+
+The target model-facing API should not expose one broad `pindie_state` enum whose actions have incompatible lifecycles. Internal reducer events may remain unchanged, while model-facing affordances become narrow tools such as Task start/refine/replace/progress, verification, Gate open/resolve, and completion.
+
+Tool visibility and execution authorization must be two projections of the same capability model.
+
+## 11. Execution Gateway
+
+Dynamic tool visibility improves the normal Agent action space but cannot replace execution-time authorization. State may change after a tool call is generated, and one model output may contain multiple calls whose legality changes after an earlier call executes.
+
+Every consequential execution therefore remains subject to fresh authority checks:
+
+```text
+tool call
   ↓
-PindieRuntime
+refresh authoritative facts
   ↓
-Reducer
+derive fresh Snapshot
   ↓
-State Store
+derive Capabilities
+  ↓
+classify required effect/capability
+  ↓
+allow or block
 ```
 
-Tools never bypass `PindieRuntime`. The runtime persists a successful reducer result before publishing it as current in-memory State. Project disk State is authoritative across Runtime processes; Runtime memory is only a working snapshot. `before_agent_start` refreshes disk State before taking run-start Task/Gate/completion identity snapshots. Consequential `tool_call` preflight refreshes State and makes a Run read-only when an external change is discovered. Every semantic dispatch takes a short project-scoped filesystem lock, reloads and structurally compares authoritative State, then reduces, atomically saves, and publishes. A runtime-only external-State epoch marks a Run stale without persisting concurrency metadata. Stale Runs permit only the existing read-only observation tools and cannot queue active-task continuation. `invalidate_verification` is the sole internal event allowed to rebase onto changed authority; it can revoke a concurrent completed/passed Task to stale unfinished State after known project mutation. Pindie uses no State watchers, polling, revisions, database, CAS protocol, or second loop. The lock is a `state.lock` directory with token/PID ownership; valid confirmed-dead owners are reclaimed only after an exclusive in-lock reclaim claim rechecks the exact owner identity. Live or uncertain owners are never stolen, and missing/corrupt ownership metadata is fail-closed rather than age-reclaimed. The lock is never held across model calls, project tools, Gates, or verification commands.
+The Gateway handles runtime legality. The reducer handles State integrity.
 
-The implemented Pi lifecycle path is:
+A normal unchanged world should satisfy:
 
 ```text
-session_start
-  → canonical project resolver
-  → Runtime.load
-
-before_agent_start
-  → refresh authoritative project State before any run-start identity snapshots
-  → reset extension-local active-Task continuation fuse
-  → start runtime-only Run timer, Run Cost, and Current Activity (thinking)
-  → request Auto Medium through Pi; Manual leaves Pi's thinking level unchanged
-  → snapshot pre-existing unfinished-task, Human Gate, and completed-task identity
-  → append one stable Core Policy block
-  → derive and publish one Pindie semantic status line
-
-context (before every LLM call)
-  → preserve existing Pi/session messages while removing any prior synthetic Pindie Runtime Context message
-  → read current authoritative Runtime State and append one fresh deterministic Runtime Context message
-  → never persist Runtime Context or manage Pi prompt caching
-
-tool_execution_start / tool_execution_end
-  → update runtime-only Current Activity from public tool execution lifecycle
-  → immediately refresh the one Pindie semantic status line
-
-agent_end
-  → Pindie decides whether active semantic work should continue
-  → when the active Task is executable and the final assistant message stopped normally, queue one hidden Pi-native continuation probe that first re-evaluates latest user intent
-  → the probe settles normally rather than resuming consequential Task work when that intent no longer calls for execution
-  → Pi's existing follow-up queue and `agent.continue()` machinery execute that continuation; Pindie creates no second Agent Loop
-
-tool_call
-  → allow only existing read-only observation, including `pindie_git_observe`, without freshness preflight
-  → otherwise enforce unavailable-State and stale-Run freshness / authoritative refresh
-  → require a current Task, allowing only `pindie_state(start_task)` when idle
-  → otherwise enforce existing Task-boundary, Human Gate, terminal-task, and same-run guards
-
-turn_end (only turns with tool results)
-  → runtime-only Auto reasoning chooses the next requested Low, Medium, or High from tool errors, current verification, current request, and successful built-in edit/write results
-  → Pi clamps and reports the effective thinking level
-
-thinking_level_select
-  → synchronize only the runtime-only effective thinking level; never infer mode
-
-tool_result
-  → successful edit/write
-  → Runtime.dispatch(invalidate_verification)
-  → ambiguous consequential tool with runtime-only probe: compare BEFORE/AFTER Git-visible worktree fingerprint
-  → unchanged preserves verification; changed or unknown dispatches invalidate_verification
-  → refresh the derived Pindie status line
-
-agent_settled
-  → remains the final Agent Run settlement boundary after Pi retries, compaction, and queued follow-ups
-  → ignore an obsolete stale ExtensionContext after Pi session replacement/reload
-  → otherwise finalize runtime-only Run timer and clear Current Activity
-  → consistency validation only; never auto-complete
-
-session_shutdown
-  → clear runtime-only Run timer, Run Cost, Current Activity, adaptive reasoning mode, and Pindie status presentation
-  → unload transient Runtime context
+model-visible(T) ⇔ semantically legal(T)
 ```
 
-Successful Pindie State and Human Gate tool transitions also refresh the status line after persistence. Tool execution start/end events refresh Current Activity immediately. Run timer ticks remain the only periodic trigger; they re-read current runtime State and do not persist timing or presentation.
+Guard rejection should mainly represent races, stale calls, integration bugs, or other exceptional conditions rather than ordinary Agent navigation.
 
-The Agent-run snapshot is extension-local and resets at each `before_agent_start`. It records only object identity for an unfinished replaceable Task, gate, or completed task that already existed at the run boundary plus a one-shot active-Task continuation fuse; it is neither persisted State nor a second state machine. `replace_task` may replace only that untouched run-start unfinished Task, once: a Task started, replaced, or semantically mutated during the Run is not replaceable. This permits abandoning a pre-existing Gate with a clearly different Task while preventing a Gate opened during the Run from being bypassed. The fuse permits at most one hidden Pi-native follow-up for one user-driven Agent Run and is not reset by that follow-up.
+## 12. Human Gate
 
-`pindie_git_observe` provides exactly eight fixed semantic read-only Git actions (`status`, `branch`, `root`, `diff`, `diff_cached`, `diff_check`, `log`, and `remote`). It invokes fixed `git` argv directly without a shell, disables prompts, optional locks, lazy fetch, fsmonitor, external diff/textconv, and pager behavior, and cannot mutate Pindie State. It is read-only for guards; generic `bash` remains consequential and is never parsed for Git exceptions.
+A Human Gate is an explicit authority boundary.
 
-Project Mutation Freshness keeps one runtime-only overlapping mutation window for admitted ambiguous consequential tools (`bash` and unknown/custom consequential tools). Only after State/coherence, Task, replace, Gate, and completion guards pass, its first call captures a BEFORE Git-visible worktree fingerprint and later overlapping calls join that same baseline by `toolCallId`; results consume their IDs and compare current reality with the shared baseline until the final pending result closes the window. Known unchanged content preserves current verification, while changed or unknown freshness dispatches the existing `invalidate_verification`. Successful edit/write retain direct invalidation; failed edit/write, Safe Observation, and Pindie State/Gate tools do not probe. Fingerprints are not persisted or model-facing, and generic shell commands are never parsed.
+When a Gate opens, consequential model authority stops and control returns to the human. A Gate opened during the current Run is not resolvable in that same Run. If the Gate already existed when a new user-driven Run begins, the model may interpret the new user input and choose among currently legal actions such as resolve, refine, or replace.
 
-Execution Hygiene is a Core execution invariant. `pi-smoke` is narrow tooling for repeated Pindie dogfood verification, not State, Runtime, Skill lifecycle, bash parsing, or a second Agent Loop.
+Human Gate State remains durable because it must survive session boundaries. Gate lifecycle capability is runtime-derived.
 
-Adaptive reasoning is runtime-only and never enters `PindieState`, the State Store, project files, or Pi session entries. Its controller requests a level with Pi's public `setThinkingLevel()` then reads the effective level from public `getThinkingLevel()`; Pi remains authoritative for model support and clamping. Auto starts each Agent Run at Medium and only requests Low, Medium, or High. Manual mode, selected through `/reasoning`, leaves thinking-level control to Pi's native `/thinking` interface. The controller does not route models, infer Core Loop phases, classify with an LLM, or retain history.
+## 13. Verification
 
-## 8. Persistence target
+State invariants and completion coverage remain mandatory.
 
-Primary Pindie State should be project-scoped and independent of a single Pi session:
+The v0.2 target further separates two kinds of ownership:
 
 ```text
-canonical project root
-        ↓ SHA-256
-~/.pindie/projects/<project-id>/state.json
+Harness → factual evidence from observed tool/runtime reality
+Model   → semantic judgment about which success criteria that evidence covers
 ```
 
-The Core Extension resolves the canonical project root (the canonical Git root when available, otherwise canonical cwd). `FileStateStore` assumes the provided project root is already canonical and only hashes it to derive the project ID.
+Raw logs and full execution history remain reconstructable reality and should not be copied into State. Durable verification should keep the minimum semantic proof needed for the Task.
 
-Pi session history may retain snapshots, but it is not the authoritative current-work State. Pindie Core Policy is stable system-prompt content; dynamic semantic State is instead projected as one ephemeral custom Runtime Context message immediately before each LLM call. That projection is deterministic, includes the derived statuses and populated Task Contract/open-loop/verification/Human Gate semantics, and is not saved to a Pi session or Pindie State. Pi alone owns prompt cache behavior.
+Verification evidence ownership is a later migration milestone; the Semantic Foundation and capability layers must not prematurely redesign the current persisted verification schema.
 
-## 9. Skill Integration v0.1
+## 14. Continuation
+
+Automatic continuation remains subordinate to latest user intent.
+
+Harness-owned deterministic eligibility includes facts such as unfinished Task, no Gate, no blocker, coherent State, normal stop, no pending Pi message, and continuation fuse availability.
+
+The remaining question — whether the latest user intent still authorizes consequential execution of the current Task — is semantic and remains model-owned.
+
+The v0.2 target replaces the current large hidden continuation policy with deterministic eligibility plus a thin semantic intent probe. Pindie still uses Pi's own follow-up/continuation machinery and never creates another Agent Loop.
+
+## 15. Observation, mutation freshness, activity, reasoning, and Skills
+
+Project Mutation Freshness remains a good architectural pattern: observe Reality before/after ambiguous consequential tools and invalidate verification from observed change rather than model self-report. Its implementation may move closer to the execution/effect layer without changing its core mechanism.
+
+Current Activity remains runtime-only presentation derived from Pi lifecycle/tool execution and is a reference pattern for deterministic observation-driven behavior.
+
+Adaptive reasoning remains runtime-only and is not part of semantic correctness. It should stay independent during the v0.2 core migration and be optimized later.
+
+Pi continues to own Skill discovery and Skill runtime. Pindie Skills are optional procedures. As capability enforcement improves, bundled Skills should stop repeating Core legality rules and become procedure-focused.
+
+## 16. Architectural invariants
+
+v0.2 preserves these design invariants:
+
+1. **Reality determines reconstructable facts.**
+2. **State stores minimal durable semantic facts.**
+3. **Run Facts store no durable data.**
+4. **Semantic Snapshot is derived, never persisted.**
+5. **Capabilities are derived, never persisted.**
+6. **Knowledge Surface and Capability Surface describe the same semantic world.**
+7. **Tool visibility and Gateway legality derive from the same capabilities.**
+8. **Reducer knows semantic events, not Pi tools.**
+9. **Harness closes deterministic branches; the model retains genuine semantic choices.**
+10. **Human authority is explicit for consequential judgment.**
+11. **Pi remains the only low-level agent loop and Skill runtime.**
+
+## 17. Migration plan
+
+The repository is migrating incrementally from the implemented v0.1 runtime to this v0.2 target. Target docs are authoritative even while implementation temporarily lags them.
 
 ```text
-Pindie
-├── Core Policy
-├── State / Verification / Human Gate
-├── Skill semantic contract
-└── bundled Skills
-    └── git-workflow
-          │
-          ▼
-Pi Skill Runtime
-├── discovery
-├── validation
-├── Skill index
-├── progressive disclosure
-├── Skill loading
-├── explicit invocation
-└── source/trust handling
+M0 Semantic Foundation
+M1 Capability Gateway
+M2 Model Tool Surface
+M3 Policy Reduction
+M4 Gate & Blocked Alignment
+M5 Completion Alignment
+M6 Verification v0.2
+M7 Continuation Simplification
+M8 Skill / Docs Prune
+M9 Extension Composition
 ```
 
-Skills specialize the Pindie Core Loop. Skills do not replace the Pindie Core Loop. Pindie does not implement a second Skill runtime.
+### M0 boundary
 
-Pi owns Skill discovery and directory scanning, metadata parsing and validation, index construction, progressive disclosure, loading `SKILL.md`, explicit `/skill:<name>` invocation, source resolution, collisions, project trust, and Skill reload/runtime mechanics. Pindie exposes bundled resources through `pi.skills: ["./skills"]`; it does not scan, load, select, validate, resolve, or invoke Skills itself.
+M0 adds only pure semantic derivation and focused tests. It must not change current runtime behavior, tools, guards, State schema, reducer, persistence, Core Policy, or extension lifecycle.
 
-Pindie owns only the Skill semantic contract: a Skill is an optional specialized procedure, subordinate to runtime and safety constraints, latest user intent, observed project reality, Core invariants, the current Task Contract, Verification, and Human Gates. Core Task establishment and reconciliation precede consequential Git action; git-workflow's Git inspection requirement does not outrank that Core boundary. A Skill cannot bypass guards, change completed-task rules, silently expand scope, or treat stale State as more authoritative than reality. Skill-guided calls use the ordinary Pi tool path and existing Pindie guards.
+This deliberate migration seam allows the target semantic truth to be tested independently before any existing consumer begins using it.
 
-Skills have no Pindie lifecycle or persistent State. Pindie does not infer an active Skill from reading `SKILL.md`, add Skill status presentation, or create Skill-specific verification logic. Reading is observational; existing successful `edit` and `write` invalidation remains authoritative. Skill configuration failures remain Pi resource/configuration failures and never make Pindie State unavailable.
-
-Pindie creates no parallel Skill locations or source/trust policy. `git-workflow` is the first bundled Skill: a narrow procedure for safe branch → commit → push → PR delivery of one code-changing task. A specialized Skill is added only after dogfooding demonstrates a stable, narrow, reusable procedure; no catalog is preselected. Observe, Understand, Decide, Act, Verify, and Update State are Core Loop semantics, not Skills.
-
-### Skill authoring
-
-- Use Pi-compatible `SKILL.md`.
-- Add a Skill only after repeated dogfooding reveals a stable, narrow, reusable procedure.
-- Skills specialize the Pindie Core Loop; they do not reproduce or replace it.
-- Skills remain subordinate to current user intent, observed project reality, the Task Contract, Verification, Human Gates, and Pindie hard invariants.
-- Skill-local workflow progress is not persistent Pindie State.
-- Optional `references/`, `scripts/`, and other supporting resources should be loaded only when needed.
-- A Skill description should clearly state what it does and when to use it.
-
-## 10. Implementation sequence
-
-Implemented Core v0.1 sequence:
-
-1. State Model
-2. State Machine / Reducer
-3. State Store
-4. Pindie custom tools
-5. Pi Core Extension wiring
-
-Current phase:
-
-6. Real-world dogfooding of the existing Pindie Core and its first bundled `git-workflow` Skill
-
-`git-workflow` was added after repeated dogfooding established a stable, narrow delivery procedure. Further Skills remain unplanned until the same evidence exists.
-
-Each slice should remain testable without prematurely implementing later layers.
+Until a later milestone explicitly consumes v0.2 semantics, existing v0.1 source and integration tests remain the runtime regression baseline. They are not the target architectural authority.
