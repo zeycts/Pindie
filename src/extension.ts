@@ -1,7 +1,4 @@
 import {
-  isEditToolResult,
-  isToolCallEventType,
-  isWriteToolResult,
   type ExtensionAPI,
   type ExtensionContext,
   type ToolCallEvent,
@@ -13,6 +10,11 @@ import {
   injectPindieCore,
   isPindieRuntimeContextMessage,
 } from "./context.ts";
+import {
+  authorizeToolEffect,
+  classifyToolEffect,
+  type ToolEffect,
+} from "./execution-semantics.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
 import {
   captureProjectFingerprint as defaultCaptureProjectFingerprint,
@@ -26,13 +28,20 @@ import {
 import { RunActivityTracker } from "./run-activity.ts";
 import { RunCostTracker } from "./run-cost.ts";
 import { RunTimer } from "./run-timer.ts";
-import { PindieRuntime } from "./runtime.ts";
-import { StateLockBusyError } from "./store.ts";
 import {
-  validateState,
-  type HumanGate,
-  type PindieTask,
-} from "./state.ts";
+  beginAgentRunFacts,
+  deriveSemanticRunFacts,
+  recordSuccessfulCapability,
+  type AgentRunFactsContext,
+} from "./run-facts.ts";
+import { PindieRuntime } from "./runtime.ts";
+import {
+  deriveCapabilities,
+  deriveSemanticSnapshot,
+  type SemanticSnapshot,
+} from "./semantics.ts";
+import { StateLockBusyError } from "./store.ts";
+import { validateState } from "./state.ts";
 import {
   deriveStatusLayout,
   renderStatusLayout,
@@ -48,10 +57,6 @@ import { createPindieGitObserveTool } from "./tools/git-observe.ts";
 import { createPindieStateTool } from "./tools/state.ts";
 
 type ProjectRootResolver = (cwd: string) => Promise<string>;
-
-interface ActionInput extends Record<string, unknown> {
-  action?: unknown;
-}
 
 export interface PindieExtensionOptions {
   store?: PindieStateStore;
@@ -84,24 +89,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isReadOnlyObservation(event: ToolCallEvent): boolean {
-  return (
-    isToolCallEventType("read", event) ||
-    isToolCallEventType("grep", event) ||
-    isToolCallEventType("find", event) ||
-    isToolCallEventType("ls", event) ||
-    isToolCallEventType("pindie_git_observe", event)
-  );
-}
-
-function isAmbiguousConsequentialTool(event: ToolCallEvent): boolean {
-  return !isReadOnlyObservation(event) &&
-    !isToolCallEventType("pindie_state", event) &&
-    !isToolCallEventType("pindie_gate", event) &&
-    !isToolCallEventType("edit", event) &&
-    !isToolCallEventType("write", event);
-}
-
 interface MutationWindow {
   projectRoot: string;
   baseline: ProjectFingerprint;
@@ -114,15 +101,17 @@ function isStaleExtensionContextError(error: unknown): boolean {
   return error instanceof Error && error.message.startsWith(STALE_EXTENSION_CONTEXT_ERROR);
 }
 
-function hasAction<TName extends string>(
-  event: ToolCallEvent,
-  toolName: TName,
-  action: string,
-): boolean {
-  return (
-    isToolCallEventType<TName, ActionInput>(toolName, event) &&
-    event.input.action === action
-  );
+function gatewayDenialReason(
+  snapshot: SemanticSnapshot,
+  requiredCapability: ToolEffect["requiredCapability"],
+): string {
+  const authority = snapshot.authority === "coherent"
+    ? ""
+    : ` Agent Run authority is ${snapshot.authority};`;
+  if (snapshot.authority === "unavailable") {
+    return `Pindie blocked this call:${authority} missing capability '${requiredCapability}'.`;
+  }
+  return `Pindie blocked this call:${authority} missing capability '${requiredCapability}'. Task status: ${snapshot.taskStatus}. Verification: ${snapshot.verificationStatus}.`;
 }
 
 export function registerPindieExtension(
@@ -143,6 +132,7 @@ export function registerPindieExtension(
   const captureProjectFingerprint =
     options.captureProjectFingerprint ?? defaultCaptureProjectFingerprint;
   let mutationWindow: MutationWindow | null = null;
+  const authorizedToolEffects = new Map<string, ToolEffect>();
   const subscriptionUsageProvider =
     options.subscriptionUsageProvider ?? chatGptSubscriptionUsageProvider;
   const scheduleActivityRefresh = (
@@ -160,11 +150,8 @@ export function registerPindieExtension(
   let lastUsageFetchAt: number | null = null;
   let stateUnavailableReason: string | null = null;
   let statusContext: ExtensionContext | null = null;
-  let gateAtAgentRunStart: HumanGate | null = null;
-  let replaceableTaskAtAgentRunStart: PindieTask | null = null;
-  let completedTaskAtAgentRunStart: PindieTask | null = null;
+  let agentRunFactsContext: AgentRunFactsContext | null = null;
   let activeTaskContinuationAttempted = false;
-  let externalStateEpochAtAgentRunStart = 0;
   let activityLingerTimer: ReturnType<typeof setTimeout> | null = null;
   let activityLingerGeneration = 0;
 
@@ -196,12 +183,26 @@ export function registerPindieExtension(
     }
   };
 
-  const clearAgentRunSnapshot = (): void => {
-    gateAtAgentRunStart = null;
-    replaceableTaskAtAgentRunStart = null;
-    completedTaskAtAgentRunStart = null;
+  const clearAgentRunBookkeeping = (): void => {
+    agentRunFactsContext = null;
     activeTaskContinuationAttempted = false;
-    externalStateEpochAtAgentRunStart = 0;
+    authorizedToolEffects.clear();
+  };
+
+  const currentAuthoritativeState = () =>
+    runtime.projectRoot === null || stateUnavailableReason !== null
+      ? null
+      : runtime.state;
+
+  const currentSemanticRunFacts = () => deriveSemanticRunFacts(
+    agentRunFactsContext,
+    currentAuthoritativeState(),
+    runtime.externalStateEpoch,
+  );
+
+  const currentAgentRunIsStale = (): boolean => {
+    const facts = currentSemanticRunFacts();
+    return facts.stateAvailable && !facts.runCoherent;
   };
 
   const presentStatusBestEffort = (
@@ -230,9 +231,8 @@ export function registerPindieExtension(
         stateUnavailableReason,
         runStale:
           runTimer.active &&
-          runtime.projectRoot !== null &&
-          stateUnavailableReason === null &&
-          runtime.externalStateEpoch !== externalStateEpochAtAgentRunStart,
+          currentAuthoritativeState() !== null &&
+          currentAgentRunIsStale(),
         subscriptionUsage,
       }, now());
       return renderStatusLayout(ctx!.ui.theme, layout, getStatusWidth());
@@ -269,7 +269,7 @@ export function registerPindieExtension(
   const markUnavailable = (reason: string): void => {
     runtime.unload();
     stateUnavailableReason = reason;
-    clearAgentRunSnapshot();
+    clearAgentRunBookkeeping();
     refreshStatus();
   };
 
@@ -336,7 +336,7 @@ export function registerPindieExtension(
     lastUsageFetchAt = null;
     runtime.unload();
     stateUnavailableReason = null;
-    clearAgentRunSnapshot();
+    clearAgentRunBookkeeping();
     mutationWindow = null;
 
     try {
@@ -360,14 +360,15 @@ export function registerPindieExtension(
     clearPindieStatus(ctx);
     runtime.unload();
     stateUnavailableReason = null;
-    clearAgentRunSnapshot();
+    clearAgentRunBookkeeping();
     mutationWindow = null;
     statusContext = null;
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
     statusContext = ctx;
-    clearAgentRunSnapshot();
+    clearAgentRunBookkeeping();
+    mutationWindow = null;
     if (runtime.projectRoot !== null && stateUnavailableReason === null) {
       try {
         await runtime.refresh();
@@ -379,12 +380,13 @@ export function registerPindieExtension(
     }
     // Refresh precedes all identity snapshots so a new Run always begins from
     // authoritative project State rather than a previous session snapshot.
-    const state = runtime.projectRoot === null ? null : runtime.state;
-    const task = stateUnavailableReason === null ? state?.task ?? null : null;
-    gateAtAgentRunStart = task?.humanGate ?? null;
-    replaceableTaskAtAgentRunStart = task && !task.completed ? task : null;
-    completedTaskAtAgentRunStart = task?.completed ? task : null;
-    externalStateEpochAtAgentRunStart = runtime.externalStateEpoch;
+    const state = currentAuthoritativeState();
+    if (state !== null) {
+      agentRunFactsContext = beginAgentRunFacts(
+        state,
+        runtime.externalStateEpoch,
+      );
+    }
     reasoning.beforeAgentStart();
     applyRequestedThinkingLevel();
     clearActivityLingerRefresh();
@@ -398,7 +400,8 @@ export function registerPindieExtension(
   pi.on("agent_end", (event, ctx) => {
     if (activeTaskContinuationAttempted || ctx.hasPendingMessages()) return;
     if (runtime.projectRoot === null || stateUnavailableReason !== null) return;
-    if (runtime.externalStateEpoch !== externalStateEpochAtAgentRunStart) return;
+    const facts = currentSemanticRunFacts();
+    if (!facts.stateAvailable || !facts.runCoherent) return;
 
     const task = runtime.state.task;
     const finalAssistantMessage = [...event.messages]
@@ -455,100 +458,66 @@ export function registerPindieExtension(
   });
 
   pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
-    if (isReadOnlyObservation(event)) return;
+    const classification = classifyToolEffect({
+      toolName: event.toolName,
+      input: event.input,
+    });
+    if (!classification.ok) {
+      return {
+        block: true,
+        reason: `Pindie blocked this call: invalid semantic action for '${classification.error.toolName}'.`,
+      };
+    }
 
-    if (runtime.projectRoot === null || stateUnavailableReason !== null) {
-      return {
-        block: true,
-        reason: `Pindie State is unavailable. ${stateUnavailableReason ?? "Reload the session to restore project State."} Only read-only observation tools are allowed until State is restored.`,
-      };
+    const effect = classification.effect;
+    if (
+      effect.requiredCapability === "observe.project" ||
+      effect.requiredCapability === "observe.git"
+    ) {
+      return;
     }
-    if (runtime.externalStateEpoch !== externalStateEpochAtAgentRunStart) {
-      return {
-        block: true,
-        reason: "Project State changed outside this Agent Run. Pindie refreshed to the latest authoritative State. Return control and begin a new user-driven Agent Run before consequential work. Read-only observation remains available.",
-      };
-    }
-    try {
-      if (await runtime.refresh()) {
-        refreshStatus();
-        return {
-          block: true,
-          reason: "Project State changed outside this Agent Run. Pindie refreshed to the latest authoritative State. Return control and begin a new user-driven Agent Run before consequential work. Read-only observation remains available.",
-        };
+
+    let facts = currentSemanticRunFacts();
+    if (
+      facts.stateAvailable &&
+      facts.runCoherent &&
+      runtime.projectRoot !== null
+    ) {
+      try {
+        if (await runtime.refresh()) refreshStatus();
+      } catch (error) {
+        markUnavailable(
+          `Could not refresh Pindie State before consequential work: ${errorMessage(error)} Restore or repair the project State, then reload the session.`,
+        );
       }
-    } catch (error) {
-      markUnavailable(
-        `Could not refresh Pindie State before consequential work: ${errorMessage(error)} Restore or repair the project State, then reload the session.`,
-      );
+      facts = currentSemanticRunFacts();
+    }
+
+    const state = currentAuthoritativeState();
+    const derivation = deriveSemanticSnapshot(state, facts);
+    if (!derivation.ok) {
+      const reason = derivation.error;
+      markUnavailable(`Internal semantic derivation failed: ${reason}`);
       return {
         block: true,
-        reason: `Pindie State is unavailable. ${stateUnavailableReason} Only read-only observation tools are allowed until State is restored.`,
+        reason: `Pindie blocked this call: internal semantic derivation failed: ${reason}`,
       };
     }
 
-    const task = runtime.state.task;
-    if (task === null && !hasAction(event, "pindie_state", "start_task")) {
+    const snapshot = derivation.snapshot;
+    const authorization = authorizeToolEffect(
+      deriveCapabilities(snapshot),
+      effect,
+    );
+    if (!authorization.allowed) {
       return {
         block: true,
-        reason:
-          "No active Pindie Task exists. Establish the current Task with pindie_state(start_task) before consequential project action. If only read-only observation is needed, use read, grep, find, ls, or pindie_git_observe directly rather than unrestricted bash.",
+        reason: gatewayDenialReason(snapshot, authorization.requiredCapability),
       };
     }
 
-    if (hasAction(event, "pindie_state", "replace_task")) {
-      if (task && !task.completed && task !== replaceableTaskAtAgentRunStart) {
-        return {
-          block: true,
-          reason:
-            "This Agent run may only replace the unfinished Task that existed at the start of the run, before it was semantically mutated. Start or continue a new run before replacing this Task.",
-        };
-      }
-      if (!task || !task.completed) return;
-    }
-
-    if (task?.humanGate) {
-      if (
-        hasAction(event, "pindie_state", "refine_task") ||
-        hasAction(event, "pindie_gate", "resolve")
-      ) {
-        if (task.humanGate === gateAtAgentRunStart) return;
-
-        return {
-          block: true,
-          reason:
-            "This Human Gate was opened during the current Agent run. Wait for new human input before refining the Task Contract or resolving the gate.",
-        };
-      }
-
-      return {
-        block: true,
-        reason: `A Human Gate is open: ${task.humanGate.question} Wait for human input. Only read-only observation, pindie_state(refine_task), and pindie_gate(resolve) are allowed.`,
-      };
-    }
-
-    if (task?.completed) {
-      if (hasAction(event, "pindie_state", "start_task")) {
-        if (task === completedTaskAtAgentRunStart) return;
-
-        return {
-          block: true,
-          reason:
-            "The current task completed during this Agent run. Start a new task only after a new user-driven Agent run begins.",
-        };
-      }
-
-      return {
-        block: true,
-        reason:
-          "The current Pindie Task is completed and terminal. Start a new Task with pindie_state(start_task) before consequential project action. If only read-only observation is needed, use read, grep, find, ls, or pindie_git_observe directly rather than unrestricted bash.",
-      };
-    }
-
-    // This is deliberately after every existing admission guard. A blocked call
-    // has no project-effect probe and generic bash is never parsed.
-    if (isAmbiguousConsequentialTool(event)) {
-      const projectRoot = runtime.projectRoot;
+    if (effect.projectMutation === "ambiguous") {
+      const projectRoot = runtime.projectRoot!;
       if (mutationWindow === null) {
         let baseline: ProjectFingerprint;
         try {
@@ -563,6 +532,14 @@ export function registerPindieExtension(
         mutationWindow.baseline = { kind: "unknown", reason: "Mutation window project root changed." };
       }
       mutationWindow.pendingToolCallIds.add(event.toolCallId);
+    }
+
+    if (
+      effect.projectMutation !== "none" ||
+      effect.requiredCapability === "task.start" ||
+      effect.requiredCapability === "task.replace"
+    ) {
+      authorizedToolEffects.set(event.toolCallId, effect);
     }
   });
 
@@ -592,10 +569,28 @@ export function registerPindieExtension(
   };
 
   pi.on("tool_result", async (event) => {
-    if (!event.isError && (isEditToolResult(event) || isWriteToolResult(event))) {
+    const effect = authorizedToolEffects.get(event.toolCallId);
+    if (!effect) return;
+    authorizedToolEffects.delete(event.toolCallId);
+
+    if (
+      !event.isError &&
+      agentRunFactsContext !== null &&
+      (effect.requiredCapability === "task.start" ||
+        effect.requiredCapability === "task.replace")
+    ) {
+      agentRunFactsContext = recordSuccessfulCapability(
+        agentRunFactsContext,
+        effect.requiredCapability,
+      );
+    }
+
+    if (!event.isError && effect.projectMutation === "known") {
       await invalidateVerificationAfterProjectMutation();
       return;
     }
+
+    if (effect.projectMutation !== "ambiguous") return;
 
     const window = mutationWindow;
     if (!window || !window.pendingToolCallIds.delete(event.toolCallId)) return;
