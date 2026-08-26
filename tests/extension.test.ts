@@ -137,6 +137,39 @@ function verifiedState(): PindieState {
   };
 }
 
+function blockedState(): PindieState {
+  const state = activeState();
+  return {
+    task: {
+      ...state.task!,
+      openLoops: { blockers: ["External dependency unavailable"], questions: [], nextIntent: null },
+    },
+  };
+}
+
+function staleVerificationState(): PindieState {
+  const state = activeState();
+  return {
+    task: {
+      ...state.task!,
+      verification: { stale: true, checks: [] },
+    },
+  };
+}
+
+function failedVerificationState(): PindieState {
+  const state = activeState();
+  return {
+    task: {
+      ...state.task!,
+      verification: {
+        stale: false,
+        checks: [{ name: "tests", status: "failed", covers: [], evidence: "failed" }],
+      },
+    },
+  };
+}
+
 function gatedState(): PindieState {
   const state = activeState();
   return {
@@ -251,6 +284,7 @@ function createHarness(
   const integration = registerPindieExtension(
     api as unknown as ExtensionAPI,
     {
+      subscriptionUsageProvider: { fetchUsage: async () => null },
       ...options,
       store,
       resolveProjectRoot: async (cwd) => resolvedRoots[cwd] ?? cwd,
@@ -609,7 +643,7 @@ test("failed State load is fail-closed and a later session reload recovers", asy
     harness.integration.stateUnavailableReason ?? "",
     /corrupt State file/,
   );
-  assertBlocked(await callGuard(harness, toolCall("edit")), /State is unavailable/i);
+  assertBlocked(await callGuard(harness, toolCall("edit")), /authority is unavailable.*project\.mutate/i);
 
   harness.store.loadErrors.delete("/repo-b");
   await startSession(harness, "/repo-b", "reload");
@@ -696,6 +730,8 @@ test("CP15-CP24 Context lifecycle projects fresh ephemeral Runtime Context", asy
     action: "record_verification",
     check: { name: "tests", status: "passed", covers: ["c1"], evidence: "passed" },
   });
+  await beginAgentRun(harness);
+  assert.equal(await callGuard(harness, toolCall("edit")), undefined);
   await harness.api.handler("tool_result")(toolResult("edit"), context("/repo"));
   const afterEdit = await harness.api.handler("context")(
     { type: "context", messages: afterStateMutation.messages },
@@ -716,7 +752,7 @@ test("unavailable Runtime Context remains consistent with fail-closed guards", a
 
   assert.match(String(projected.messages.at(-1)?.content), /State: unavailable/);
   assert.match(String(projected.messages.at(-1)?.content), /invalid persisted State/);
-  assertBlocked(await callGuard(harness, toolCall("edit")), /State is unavailable/i);
+  assertBlocked(await callGuard(harness, toolCall("edit")), /authority is unavailable.*project\.mutate/i);
 });
 
 test("load failure injects explicit unavailable Runtime Context", async () => {
@@ -741,6 +777,8 @@ test("load failure injects explicit unavailable Runtime Context", async () => {
 test("T44 successful edit invalidates verification and persists it", async () => {
   const harness = createHarness([["/repo", verifiedState()]]);
   await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  assert.equal(await callGuard(harness, toolCall("edit")), undefined);
 
   await harness.api.handler("tool_result")(
     toolResult("edit"),
@@ -755,6 +793,8 @@ test("T44 successful edit invalidates verification and persists it", async () =>
 test("T45 successful write invalidates verification and persists it", async () => {
   const harness = createHarness([["/repo", verifiedState()]]);
   await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  assert.equal(await callGuard(harness, toolCall("write")), undefined);
 
   await harness.api.handler("tool_result")(
     toolResult("write"),
@@ -780,6 +820,7 @@ test("verification invalidation commits when status presentation throws", async 
     },
     uiContext,
   );
+  assert.equal(await callGuard(harness, toolCall("edit")), undefined);
 
   await harness.api.handler("tool_result")(toolResult("edit"), uiContext);
 
@@ -807,6 +848,7 @@ test("runtime failure remains authoritative when status presentation throws", as
     uiContext,
   );
   harness.store.saveError = new Error("disk unavailable");
+  assert.equal(await callGuard(harness, toolCall("edit")), undefined);
 
   await assert.rejects(
     harness.api.handler("tool_result")(toolResult("edit"), uiContext),
@@ -925,7 +967,7 @@ test("PMF-E01 blocked bash creates no probe and unknown before allows then inval
   let captures = 0;
   const gated = createHarness([["/repo", gatedState()]], {}, { captureProjectFingerprint: async () => { captures += 1; return { kind: "unknown", reason: "non-git" }; } });
   await startSession(gated, "/repo"); await beginAgentRun(gated);
-  assertBlocked(await callGuard(gated, toolCall("bash")), /Human Gate/i);
+  assertBlocked(await callGuard(gated, toolCall("bash")), /project\.mutate.*waiting_human/i);
   assert.equal(captures, 0);
   const harness = createHarness([["/repo", verifiedState()]], {}, { captureProjectFingerprint: async () => { captures += 1; return { kind: "unknown", reason: "non-git" }; } });
   await startSession(harness, "/repo"); await beginAgentRun(harness);
@@ -941,7 +983,7 @@ test("H01-H04 Human Gate blocks edit, write, bash, and unknown tools", async () 
   await beginAgentRun(harness);
 
   for (const name of ["edit", "write", "bash", "deploy_custom"]) {
-    assertBlocked(await callGuard(harness, toolCall(name)), /Human Gate is open/i);
+    assertBlocked(await callGuard(harness, toolCall(name)), /project\.mutate.*waiting_human/i);
   }
 });
 
@@ -983,7 +1025,7 @@ test("H08 Human Gate blocks other pindie_state actions", async () => {
       harness,
       toolCall("pindie_state", { action: "set_open_loops" }),
     ),
-    /Human Gate is open/i,
+    /task\.progress.*waiting_human/i,
   );
 });
 
@@ -992,7 +1034,7 @@ test("SO-E02 completed task allows Git observation while bash remains blocked", 
   await startSession(harness, "/repo");
   await beginAgentRun(harness);
   assert.equal(await callGuard(harness, toolCall("pindie_git_observe", { action: "status" })), undefined);
-  assertBlocked(await callGuard(harness, toolCall("bash")), /completed and terminal/i);
+  assertBlocked(await callGuard(harness, toolCall("bash")), /project\.mutate.*Task status: done/i);
 });
 
 test("H09 completed task blocks edit, write, and bash", async () => {
@@ -1001,7 +1043,7 @@ test("H09 completed task blocks edit, write, and bash", async () => {
   await beginAgentRun(harness);
 
   for (const name of ["edit", "write", "bash"]) {
-    assertBlocked(await callGuard(harness, toolCall(name)), /completed and terminal/i);
+    assertBlocked(await callGuard(harness, toolCall(name)), /project\.mutate.*Task status: done/i);
   }
 });
 
@@ -1024,8 +1066,11 @@ test("H11 unavailable Pindie State blocks consequential tools", async () => {
   harness.store.loadErrors.set("/repo", new Error("State cannot be loaded"));
   await startSession(harness, "/repo");
 
-  for (const name of ["edit", "write", "bash", "pindie_state", "custom"]) {
-    assertBlocked(await callGuard(harness, toolCall(name)), /State is unavailable/i);
+  for (const [name, input] of [
+    ["edit", {}], ["write", {}], ["bash", {}],
+    ["pindie_state", { action: "start_task" }], ["custom", {}],
+  ] as Array<[string, Record<string, unknown>]>) {
+    assertBlocked(await callGuard(harness, toolCall(name, input)), /authority is unavailable.*missing capability/i);
   }
   assert.equal(await callGuard(harness, toolCall("read")), undefined);
   const loadsBeforeObserve = harness.store.loads.length;
@@ -1676,13 +1721,13 @@ test("T50 integrated completion terminates and terminal guard blocks mutation", 
   assert.equal(harness.integration.runTimer.active, true);
   assert.equal(harness.integration.runtime.state.task?.completed, true);
   assert.equal(harness.store.states.get("/repo")?.task?.completed, true);
-  assertBlocked(await callGuard(harness, toolCall("edit")), /completed and terminal/i);
+  assertBlocked(await callGuard(harness, toolCall("edit")), /project\.mutate.*Task status: done/i);
   assertBlocked(
     await callGuard(
       harness,
       toolCall("pindie_state", { action: "start_task" }),
     ),
-    /completed during this Agent run/i,
+    /task\.start.*Task status: done/i,
   );
 
   await harness.api.handler("agent_settled")(
@@ -1707,7 +1752,7 @@ test("TB18-TB28 replacement is limited to the untouched unfinished Task at Agent
     assert.equal(await callGuard(harness, toolCall("edit")), undefined);
     assertBlocked(await callGuard(harness, toolCall("pindie_state", {
       action: "replace_task", goal: "Task C", successCriteria: ["Task C works"],
-    })), /only replace the unfinished Task that existed at the start/i);
+    })), /missing capability 'task\.replace'/i);
   }
 });
 
@@ -1724,7 +1769,7 @@ test("SSA-E01 through SSA-E03 stale presentation follows active Run coherence on
   const external = activeState("Task B");
   harness.store.states.set("/repo", external);
 
-  assertBlocked(await callGuard(harness, toolCall("edit")), /changed outside this Agent Run/i);
+  assertBlocked(await callGuard(harness, toolCall("edit")), /authority is stale.*project\.mutate/i);
   assert.match(statuses.at(-1)?.text ?? "", /active • verify 0\/1 • ⚠ stale run/);
   assert.deepEqual(harness.integration.runtime.state, external);
   assert.deepEqual(harness.store.saves, []);
@@ -1752,10 +1797,14 @@ test("PSC-A01-A07 run-start refresh snapshots authority and stale Runs are read-
   // Change authority during this Run. The first consequential preflight adopts it
   // and blocks; every retry remains blocked even though refresh is now equal.
   harness.store.states.set("/repo", activeState("Task C"));
-  assertBlocked(await callGuard(harness, toolCall("edit")), /changed outside this Agent Run/i);
+  assertBlocked(await callGuard(harness, toolCall("edit")), /authority is stale.*project\.mutate/i);
   assert.equal(harness.integration.runtime.state.task?.goal, "Task C");
-  for (const name of ["write", "bash", "pindie_state", "pindie_gate", "unknown"]) {
-    assertBlocked(await callGuard(harness, toolCall(name)), /changed outside this Agent Run/i);
+  for (const [name, input] of [
+    ["write", {}], ["bash", {}],
+    ["pindie_state", { action: "refine_task" }],
+    ["pindie_gate", { action: "open" }], ["unknown", {}],
+  ] as Array<[string, Record<string, unknown>]>) {
+    assertBlocked(await callGuard(harness, toolCall(name, input)), /authority is stale.*missing capability/i);
   }
   for (const name of ["read", "grep", "find", "ls", "pindie_git_observe"]) {
     assert.equal(await callGuard(harness, toolCall(name, name === "pindie_git_observe" ? { action: "status" } : {})), undefined);
@@ -1765,7 +1814,7 @@ test("PSC-A01-A07 run-start refresh snapshots authority and stale Runs are read-
   assert.equal(await callGuard(harness, toolCall("pindie_git_observe", { action: "diff" })), undefined);
   assert.deepEqual(harness.integration.runtime.state, stateBeforeObserve);
   assert.equal(harness.integration.runtime.externalStateEpoch, epochBeforeObserve);
-  assertBlocked(await callGuard(harness, toolCall("edit")), /changed outside this Agent Run/i);
+  assertBlocked(await callGuard(harness, toolCall("edit")), /authority is stale.*project\.mutate/i);
   await beginAgentRun(harness);
   assert.equal(await callGuard(harness, toolCall("edit")), undefined);
 });
@@ -1780,7 +1829,7 @@ test("PSC-A08-A09 stale Run suppresses continuation and equal refresh preserves 
     action: "replace_task", goal: "Task B", successCriteria: ["Works"],
   })), undefined);
   harness.store.states.set("/repo", activeState("External"));
-  assertBlocked(await callGuard(harness, toolCall("edit")), /changed outside this Agent Run/i);
+  assertBlocked(await callGuard(harness, toolCall("edit")), /authority is stale.*project\.mutate/i);
   await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
   assert.deepEqual(harness.api.sentMessages, []);
 });
@@ -1794,13 +1843,16 @@ test("TB21-TB25 same-run task creation or semantic mutation consumes replacement
   });
   assertBlocked(await callGuard(created, toolCall("pindie_state", {
     action: "replace_task", goal: "Task B", successCriteria: ["Task B works"],
-  })), /only replace the unfinished Task that existed at the start/i);
+  })), /missing capability 'task\.replace'/i);
 
   for (const mutate of [
     async (harness: ReturnType<typeof createHarness>) => harness.api.tool("pindie_state").execute("refine", { action: "refine_task", goal: "Refined A" }),
     async (harness: ReturnType<typeof createHarness>) => harness.api.tool("pindie_state").execute("loops", { action: "set_open_loops", blockers: [], questions: ["Question"] }),
     async (harness: ReturnType<typeof createHarness>) => harness.api.tool("pindie_gate").execute("gate", { action: "open", kind: "input", question: "Input?" }),
-    async (harness: ReturnType<typeof createHarness>) => harness.api.handler("tool_result")(toolResult("edit"), context("/repo")),
+    async (harness: ReturnType<typeof createHarness>) => {
+      assert.equal(await callGuard(harness, toolCall("edit")), undefined);
+      await harness.api.handler("tool_result")(toolResult("edit"), context("/repo"));
+    },
   ]) {
     const harness = createHarness([["/repo", activeState()]]);
     await startSession(harness, "/repo");
@@ -1808,7 +1860,7 @@ test("TB21-TB25 same-run task creation or semantic mutation consumes replacement
     await mutate(harness);
     assertBlocked(await callGuard(harness, toolCall("pindie_state", {
       action: "replace_task", goal: "Task B", successCriteria: ["Task B works"],
-    })), /only replace the unfinished Task that existed at the start/i);
+    })), /missing capability 'task\.replace'/i);
   }
 });
 
@@ -1819,7 +1871,7 @@ test("TB25 resolving a run-start Human Gate also consumes replacement eligibilit
   await harness.api.tool("pindie_gate").execute("resolve", { action: "resolve" });
   assertBlocked(await callGuard(harness, toolCall("pindie_state", {
     action: "replace_task", goal: "Task B", successCriteria: ["Task B works"],
-  })), /only replace the unfinished Task that existed at the start/i);
+  })), /missing capability 'task\.replace'/i);
 });
 
 test("TB26-TB27 completed Task start boundaries do not make a same-run Task replaceable", async () => {
@@ -1828,7 +1880,7 @@ test("TB26-TB27 completed Task start boundaries do not make a same-run Task repl
   await beginAgentRun(harness);
   assertBlocked(await callGuard(harness, toolCall("pindie_state", {
     action: "replace_task", goal: "Task B", successCriteria: ["Task B works"],
-  })), /completed and terminal/i);
+  })), /missing capability 'task\.replace'.*Task status: done/i);
   assert.equal(await callGuard(harness, toolCall("pindie_state", {
     action: "start_task", goal: "Task B", successCriteria: ["Task B works"],
   })), undefined);
@@ -1837,7 +1889,7 @@ test("TB26-TB27 completed Task start boundaries do not make a same-run Task repl
   });
   assertBlocked(await callGuard(harness, toolCall("pindie_state", {
     action: "replace_task", goal: "Task C", successCriteria: ["Task C works"],
-  })), /only replace the unfinished Task that existed at the start/i);
+  })), /missing capability 'task\.replace'/i);
 });
 
 test("RG01 a gate opened during the run blocks same-run refinement", async () => {
@@ -1856,7 +1908,7 @@ test("RG01 a gate opened during the run blocks same-run refinement", async () =>
       harness,
       toolCall("pindie_state", { action: "refine_task", goal: "Refined" }),
     ),
-    /opened during the current Agent run/i,
+    /missing capability 'task\.refine'.*waiting_human/i,
   );
 });
 
@@ -1873,7 +1925,7 @@ test("RG02 a gate opened during the run blocks same-run resolution", async () =>
 
   assertBlocked(
     await callGuard(harness, toolCall("pindie_gate", { action: "resolve" })),
-    /opened during the current Agent run/i,
+    /missing capability 'gate\.resolve'.*waiting_human/i,
   );
 });
 
@@ -1918,14 +1970,14 @@ test("RG05 resolving Gate A then opening Gate B does not consume Gate B in the s
 
   assertBlocked(
     await callGuard(harness, toolCall("pindie_gate", { action: "resolve" })),
-    /opened during the current Agent run/i,
+    /missing capability 'gate\.resolve'.*waiting_human/i,
   );
   assertBlocked(
     await callGuard(
       harness,
       toolCall("pindie_state", { action: "refine_task", goal: "Approved" }),
     ),
-    /opened during the current Agent run/i,
+    /missing capability 'task\.refine'.*waiting_human/i,
   );
 });
 
@@ -1944,7 +1996,7 @@ test("RC01 a task completed during the run blocks same-run replacement", async (
       harness,
       toolCall("pindie_state", { action: "start_task" }),
     ),
-    /completed during this Agent run/i,
+    /missing capability 'task\.start'.*Task status: done/i,
   );
 });
 
@@ -1959,7 +2011,7 @@ test("RC02 a task completed during the run blocks same-run mutation", async () =
   });
 
   for (const name of ["edit", "write", "bash"]) {
-    assertBlocked(await callGuard(harness, toolCall(name)), /completed and terminal/i);
+    assertBlocked(await callGuard(harness, toolCall(name)), /project\.mutate.*Task status: done/i);
   }
 });
 
@@ -1996,7 +2048,7 @@ test("TBE-E01-E20 idle State admits only observation and start_task while preser
     ...["replace_task", "refine_task", "set_open_loops", "record_verification", "complete_task"].map((action) => ["pindie_state", { action }]),
     ...["open", "resolve"].map((action) => ["pindie_gate", { action }]),
   ] as Array<[string, Record<string, unknown>]>) {
-    assertBlocked(await callGuard(harness, toolCall(name, input)), /No active Pindie Task.*start_task/i);
+    assertBlocked(await callGuard(harness, toolCall(name, input)), /missing capability.*Task status: idle/i);
   }
 
   await harness.api.tool("pindie_state").execute("start", {
@@ -2008,12 +2060,12 @@ test("TBE-E01-E20 idle State admits only observation and start_task while preser
   }
   assertBlocked(await callGuard(harness, toolCall("pindie_state", {
     action: "replace_task", goal: "Task B", successCriteria: ["Task B works"],
-  })), /only replace the unfinished Task that existed at the start/i);
+  })), /missing capability 'task\.replace'/i);
   await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
   assert.equal(harness.api.sentMessages.length, 1);
 });
 
-test("OC-E01-OC-E08 guards preserve direct observation and give informational recovery guidance", async () => {
+test("OC-E01-OC-E08 guards preserve direct observation and report factual capability denials", async () => {
   for (const [name, state] of [["idle", EMPTY_STATE], ["completed", completedState()]] as const) {
     const harness = createHarness([["/repo", state]]);
     await startSession(harness, "/repo");
@@ -2028,10 +2080,9 @@ test("OC-E01-OC-E08 guards preserve direct observation and give informational re
     }
     for (const command of ["find .", "git status", "cat package.json"]) {
       const result = await callGuard(harness, toolCall("bash", { command }, `${name}-${command}`));
-      assertBlocked(result, name === "idle" ? /No active Pindie Task/i : /completed and terminal/i);
-      assert.match(result.reason, /pindie_state\(start_task\)/i);
-      assert.match(result.reason, /read, grep, find, ls, or pindie_git_observe directly/i);
-      assert.match(result.reason, /unrestricted bash/i);
+      assertBlocked(result, /missing capability 'project\.mutate'/i);
+      assert.match(result.reason, new RegExp(`Task status: ${name === "idle" ? "idle" : "done"}`, "i"));
+      assert.doesNotMatch(result.reason, /pindie_state\(|unrestricted bash/i);
     }
     assert.deepEqual(harness.integration.runtime.state, stateBefore);
     assert.deepEqual(harness.store.saves, []);
@@ -2040,7 +2091,7 @@ test("OC-E01-OC-E08 guards preserve direct observation and give informational re
   const unknown = createHarness();
   await startSession(unknown, "/repo");
   await beginAgentRun(unknown);
-  assertBlocked(await callGuard(unknown, toolCall("future_consequential_tool")), /No active Pindie Task/i);
+  assertBlocked(await callGuard(unknown, toolCall("future_consequential_tool")), /project\.mutate.*Task status: idle/i);
 });
 
 test("TBE-E12-E14 coherence and State unavailability outrank idle task admission", async () => {
@@ -2048,19 +2099,19 @@ test("TBE-E12-E14 coherence and State unavailability outrank idle task admission
   await startSession(changed, "/repo");
   await beginAgentRun(changed);
   changed.store.states.set("/repo", activeState("Task B"));
-  assertBlocked(await callGuard(changed, toolCall("edit")), /changed outside this Agent Run/i);
+  assertBlocked(await callGuard(changed, toolCall("edit")), /authority is stale.*project\.mutate/i);
   assert.equal(changed.integration.runtime.state.task?.goal, "Task B");
 
   const staleIdle = createHarness([["/repo", activeState()]]);
   await startSession(staleIdle, "/repo");
   await beginAgentRun(staleIdle);
   staleIdle.store.states.set("/repo", EMPTY_STATE);
-  assertBlocked(await callGuard(staleIdle, toolCall("pindie_state", { action: "start_task" })), /changed outside this Agent Run/i);
+  assertBlocked(await callGuard(staleIdle, toolCall("pindie_state", { action: "start_task" })), /authority is stale.*task\.start/i);
 
   const unavailable = createHarness();
   unavailable.store.loadErrors.set("/repo", new Error("State cannot be loaded"));
   await startSession(unavailable, "/repo");
-  assertBlocked(await callGuard(unavailable, toolCall("pindie_state", { action: "start_task" })), /State is unavailable/i);
+  assertBlocked(await callGuard(unavailable, toolCall("pindie_state", { action: "start_task" })), /authority is unavailable.*task\.start/i);
 });
 
 test("RC04 replacing Task A then completing Task B does not permit Task C in the same run", async () => {
@@ -2092,6 +2143,145 @@ test("RC04 replacing Task A then completing Task B does not permit Task C in the
       harness,
       toolCall("pindie_state", { action: "start_task" }),
     ),
-    /completed during this Agent run/i,
+    /missing capability 'task\.start'.*Task status: done/i,
   );
+});
+
+test("G01-G08 M2 Task admission and replacement follow Run-derived capabilities", async () => {
+  const idle = createHarness();
+  await startSession(idle, "/repo");
+  await beginAgentRun(idle);
+  assertBlocked(await callGuard(idle, toolCall("edit")), /project\.mutate.*Task status: idle/i);
+
+  const startInput = { action: "start_task", goal: "Task A", successCriteria: ["Task A works"] };
+  assert.equal(await callGuard(idle, toolCall("pindie_state", startInput, "start-a")), undefined);
+  await idle.api.tool("pindie_state").execute("start-a", startInput);
+  await idle.api.handler("tool_result")(toolResult("pindie_state", false, "start-a"), context("/repo"));
+  assert.equal(await callGuard(idle, toolCall("edit")), undefined);
+
+  const done = createHarness([["/repo", completedState()]]);
+  await startSession(done, "/repo");
+  await beginAgentRun(done);
+  assert.equal(await callGuard(done, toolCall("pindie_state", { action: "start_task" })), undefined);
+  assertBlocked(
+    await callGuard(done, toolCall("pindie_state", { action: "replace_task" })),
+    /task\.replace.*Task status: done/i,
+  );
+
+  const replace = createHarness([["/repo", activeState("Task A")]]);
+  await startSession(replace, "/repo");
+  await beginAgentRun(replace);
+  const replacement = { action: "replace_task", goal: "Task B", successCriteria: ["Task B works"] };
+  assert.equal(await callGuard(replace, toolCall("pindie_state", replacement, "replace-b")), undefined);
+  await replace.api.tool("pindie_state").execute("replace-b", replacement);
+  await replace.api.handler("tool_result")(toolResult("pindie_state", false, "replace-b"), context("/repo"));
+  assertBlocked(
+    await callGuard(replace, toolCall("pindie_state", { ...replacement, goal: "Task C" }, "replace-c")),
+    /missing capability 'task\.replace'/i,
+  );
+
+  const failedReplace = createHarness([["/repo", activeState("Task A")]]);
+  await startSession(failedReplace, "/repo");
+  await beginAgentRun(failedReplace);
+  assert.equal(
+    await callGuard(failedReplace, toolCall("pindie_state", replacement, "replace-failed")),
+    undefined,
+  );
+  await failedReplace.api.handler("tool_result")(
+    toolResult("pindie_state", true, "replace-failed"),
+    context("/repo"),
+  );
+  assert.equal(
+    await callGuard(failedReplace, toolCall("pindie_state", replacement, "replace-retry")),
+    undefined,
+  );
+
+  const refined = createHarness([["/repo", activeState("Task A")]]);
+  await startSession(refined, "/repo");
+  await beginAgentRun(refined);
+  const refine = { action: "refine_task", goal: "Refined Task A" };
+  assert.equal(await callGuard(refined, toolCall("pindie_state", refine, "refine-a")), undefined);
+  await refined.api.tool("pindie_state").execute("refine-a", refine);
+  assertBlocked(
+    await callGuard(refined, toolCall("pindie_state", replacement, "replace-after-refine")),
+    /missing capability 'task\.replace'/i,
+  );
+});
+
+test("G09-G11 blocked Tasks deny edit, write, bash, and ambiguous calls without mutation observation", async () => {
+  let captures = 0;
+  const harness = createHarness([["/repo", blockedState()]], {}, {
+    captureProjectFingerprint: async () => {
+      captures += 1;
+      return { kind: "known", digest: "unchanged" };
+    },
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  for (const name of ["edit", "write", "bash", "custom_mutator"]) {
+    assertBlocked(
+      await callGuard(harness, toolCall(name, {}, `blocked-${name}`)),
+      /missing capability 'project\.mutate'.*Task status: blocked/i,
+    );
+  }
+  assert.equal(captures, 0);
+  assert.deepEqual(harness.store.saves, []);
+});
+
+test("G12-G15 completion is authorized only when the M0 Snapshot is completion-ready", async () => {
+  for (const [name, state, verification] of [
+    ["pending", activeState(), "pending"],
+    ["stale", staleVerificationState(), "stale"],
+    ["failed", failedVerificationState(), "failed"],
+  ] as const) {
+    const harness = createHarness([["/repo", state]]);
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+    const before = harness.integration.runtime.state;
+    assertBlocked(
+      await callGuard(harness, toolCall("pindie_state", { action: "complete_task" }, `complete-${name}`)),
+      new RegExp(`missing capability 'task\\.complete'.*Verification: ${verification}`, "i"),
+    );
+    assert.equal(harness.integration.runtime.state, before);
+    assert.deepEqual(harness.store.saves, []);
+  }
+
+  const ready = createHarness([["/repo", verifiedState()]]);
+  await startSession(ready, "/repo");
+  await beginAgentRun(ready);
+  const input = { action: "complete_task", summary: "Verified and complete." };
+  assert.equal(await callGuard(ready, toolCall("pindie_state", input, "complete-ready")), undefined);
+  await ready.api.tool("pindie_state").execute("complete-ready", input);
+  assert.equal(ready.integration.runtime.state.task?.completed, true);
+});
+
+test("M07 and malformed semantic calls never enter Project Mutation Freshness", async () => {
+  let captures = 0;
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    captureProjectFingerprint: async () => {
+      captures += 1;
+      return { kind: "known", digest: "unchanged" };
+    },
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  assert.equal(
+    await callGuard(harness, toolCall("pindie_state", { action: "refine_task" }, "semantic-state")),
+    undefined,
+  );
+  assert.equal(
+    await callGuard(harness, toolCall("pindie_gate", { action: "open" }, "semantic-gate")),
+    undefined,
+  );
+  assertBlocked(
+    await callGuard(harness, toolCall("pindie_state", {}, "malformed-state")),
+    /invalid semantic action/i,
+  );
+  assertBlocked(
+    await callGuard(harness, toolCall("pindie_gate", { action: "unknown" }, "malformed-gate")),
+    /invalid semantic action/i,
+  );
+  assert.equal(captures, 0);
 });
