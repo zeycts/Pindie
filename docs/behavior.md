@@ -283,7 +283,7 @@ project.mutate
 task.complete
 ```
 
-This is a v0.2 target semantic. Existing v0.1 runtime mutation behavior remains unchanged until the approved Gate & Blocked Alignment milestone consumes this capability model.
+This is target v0.2 semantic truth. Existing v0.1 runtime mutation behavior remains the regression baseline only until M2 — Semantic Gateway Cutover makes the live authorization path consume this capability model.
 
 ### Waiting Human — Gate opened during current Run
 
@@ -359,41 +359,107 @@ Ambiguous consequential tools continue to rely on observed project reality rathe
 
 Generic `bash` is never made read-only through command-text parsing. Unknown tools fail safe until explicitly classified by the Tool Effect Model.
 
-## 14. Tool Surface and Gateway consistency
+The Tool Effect Model is the shared execution classification source. Once the live cutover occurs, Project Mutation Freshness should consume that classification rather than maintain an independent taxonomy of known/ambiguous tool effects.
 
-v0.2 introduces two projections from the same capability model:
+## 14. Tool Effect and Gateway consistency
+
+v0.2 separates semantic capability from concrete tool effect.
+
+A capability says what the semantic world permits. A Tool Effect says what semantic capability a concrete call requires and whether project mutation is absent, known, or ambiguous.
+
+Initial effect mapping:
+
+```text
+read / grep / find / ls
+→ requires observe.project
+→ project mutation: none
+
+pindie_git_observe
+→ requires observe.git
+→ project mutation: none
+
+edit / write
+→ requires project.mutate
+→ project mutation: known
+
+bash / unknown/custom tool
+→ requires project.mutate
+→ project mutation: ambiguous
+
+pindie_state(start_task)
+→ requires task.start
+
+pindie_state(replace_task)
+→ requires task.replace
+
+pindie_state(refine_task)
+→ requires task.refine
+
+pindie_state(set_open_loops)
+→ requires task.progress
+
+pindie_state(record_verification)
+→ requires verification.record
+
+pindie_state(complete_task)
+→ requires task.complete
+
+pindie_gate(open)
+→ requires gate.open
+
+pindie_gate(resolve)
+→ requires gate.resolve
+```
+
+The `pindie_state`/`pindie_gate` mappings are migration adapters for the current broad model-facing tools. Later Model Tool Surface work replaces those broad enums with narrow semantic tools; internal reducer events may remain unchanged.
+
+Unknown/custom tools never produce “no classification”. Unknown is explicitly conservative: `project.mutate` plus ambiguous project mutation.
+
+Authorization is intentionally thin:
+
+```text
+allowed = capabilities.has(effect.requiredCapability)
+```
+
+The authorization layer must not independently reimplement Task status, Gate, blocker, verification, or Task-boundary rules.
+
+Tool-effect/authorization decisions should report semantic facts such as required/missing capability, not duplicate natural-language policy explanations.
+
+## 15. Tool Surface / Gateway relationship
+
+v0.2 ultimately has two projections from the same capability model:
 
 ```text
 Capabilities → model-visible Tool Surface
 Capabilities → execution authorization
 ```
 
-For an unchanged coherent world, a Pindie-owned semantic action should satisfy:
+For an unchanged coherent world after Model Tool Surface migration, a Pindie-owned semantic action should satisfy:
 
 ```text
 visible(action) ⇔ semantically legal(action)
 ```
 
-A normal semantic mismatch that repeatedly produces “visible tool → Guard rejection” is an architecture defect, not a desirable navigation mechanism.
-
-Execution-time authorization remains necessary for stale pre-generated calls, tool batching, races, external State change, integration bugs, and unknown/custom effects.
+Execution-time authorization remains necessary for stale pre-generated calls, tool batching, races, external State change, integration bugs, malformed calls, and unknown/custom effects.
 
 The reducer remains the final State-integrity authority after authorization.
 
-## 15. Knowledge / Capability coherence
+During migration, M2 intentionally makes Gateway legality authoritative before M3 aligns model-visible Tool Surface. Temporary legacy visibility may therefore still expose actions that the Gateway correctly rejects. That mismatch is transitional and must be removed by M3 rather than normalized into a second capability model.
+
+## 16. Knowledge / Capability coherence
 
 Runtime Context and capabilities must describe the same world.
 
 Examples:
 
-- `Task status: done` must not coexist with model-visible refine/replace of that completed Task.
+- `Task status: done` must not coexist with target refine/replace authority for that completed Task.
 - `Verification: pending` must not coexist with `task.complete` capability.
 - a Gate opened during the current Run must not coexist with `gate.resolve`.
 - unavailable or stale semantic authority exposes observation only.
 
 Knowledge Surface should describe facts. Deterministic legality should live in capability projection rather than repeated natural-language warnings.
 
-## 16. Continuation
+## 17. Continuation
 
 Automatic continuation has two layers.
 
@@ -413,7 +479,7 @@ The target continuation probe should be thin and must not re-teach the entire Co
 
 Pi remains responsible for actual follow-up execution and the low-level Agent Loop.
 
-## 17. Skills, Activity, Reasoning, Status
+## 18. Skills, Activity, Reasoning, Status
 
 - Pi owns Skill discovery and Skill runtime.
 - Skills are procedures and cannot override Core semantic legality.
@@ -422,61 +488,129 @@ Pi remains responsible for actual follow-up execution and the low-level Agent Lo
 - Adaptive reasoning is runtime-only optimization and does not determine semantic correctness.
 - Status is a projection of authoritative State/runtime facts and stores no independent semantic truth.
 
-These systems are not part of M0 semantic migration unless an approved later milestone explicitly changes them.
+These systems remain outside the execution-semantics milestones unless an approved later milestone explicitly changes them.
 
-## 18. M0 — Semantic Foundation contract
+## 19. M0 — Semantic Foundation contract
 
 M0 creates the target semantic model without changing current runtime behavior.
 
-Allowed production scope:
+M0 production scope was:
 
 ```text
-CREATE src/semantics.ts
-CREATE tests/semantics.test.ts
+src/semantics.ts
+tests/semantics.test.ts
 ```
 
-M0 must not modify:
+M0 does not modify the PindieState schema, reducer/transitions, Runtime persistence/concurrency, existing model-facing tools, Core Policy / Runtime Context, current `tool_call` Guards, Pi lifecycle wiring, Skills, reasoning/activity/status systems, or existing runtime behavior.
+
+`src/semantics.ts` depends on State semantics only. It does not import Pi Extension APIs, `extension.ts`, tool events, reasoning controllers, or runtime UI code.
+
+M0 tests construct Run Facts directly and verify pure derivation. The initially unused semantic layer is an intentional migration seam.
+
+M0 is implemented.
+
+## 20. M1 — Execution Semantics Foundation contract
+
+M1 creates the pure bridge between concrete tool calls and the capability model without changing live Runtime behavior.
+
+M1 should provide:
 
 ```text
-PindieState schema
-Reducer/transitions
-Runtime persistence/concurrency
-existing model-facing tools
-Core Policy / Runtime Context
-current tool_call guards
-Pi lifecycle wiring
-Skills
-reasoning/activity/status systems
-existing runtime behavior
+Tool Call
+  ↓
+Tool Effect classification
+  ├─ required PindieCapability
+  └─ project mutation effect: none | known | ambiguous
+
+Capabilities + Tool Effect
+  ↓
+pure AuthorizationDecision
 ```
 
-`src/semantics.ts` should depend on State semantics only. It must not import Pi Extension APIs, `extension.ts`, tool events, reasoning controllers, or runtime UI code.
+M1 requirements:
 
-M0 tests construct Run Facts directly and verify pure derivation. No production caller is required in M0; the unused semantic layer is an intentional migration seam.
+- known built-in observation tools map exactly to `observe.project`;
+- `pindie_git_observe` maps exactly to `observe.git`;
+- `edit`/`write` require `project.mutate` and are known project mutation;
+- `bash` requires `project.mutate` and is ambiguous project mutation;
+- unknown/custom tools require `project.mutate` and are ambiguous project mutation;
+- all current `pindie_state` and `pindie_gate` actions map to their exact semantic capabilities;
+- authorization is membership of the required capability in the supplied capability set;
+- Tool Effect classification contains no Task/Gate/verification policy;
+- authorization contains no Task/Gate/verification policy;
+- no semantic decision returns “unclassified” for an unknown tool;
+- result/reason data remains semantic/structured rather than duplicating Guard policy prose.
 
-Required M0 test coverage includes:
+M1 must not:
 
-- unavailable authority → observation only;
-- stale authority → observation only;
-- idle → start + observation;
-- done before Run → start + observation;
-- done during Run → observation only;
-- active pre-existing untouched Task → replace available;
-- active introduced/changed Task → replace unavailable;
-- pending verification → complete unavailable;
-- completionReady → complete available;
-- blocker/question/Gate effects on completion;
-- blocked target capabilities;
-- Gate existed-before-Run vs opened-during-Run;
-- impossible State/RunFacts relationships fail closed;
-- exact capability-set comparison, so accidental extra capabilities fail tests.
+- construct real `SemanticRunFacts` from `extension.ts`;
+- change existing run-start identity tracking;
+- replace or modify the live `tool_call` Guard path;
+- change model-facing tool visibility;
+- change blocked, Gate, completion, or other runtime behavior;
+- reclassify shell commands by parsing command text;
+- add dynamic tools;
+- change Project Mutation Freshness behavior yet;
+- introduce compatibility capabilities or a second semantic policy model.
 
-Run `pnpm run check` after implementation. Existing tests must remain green.
+M1 tests should be pure and should cover both exact Tool Effect mapping and composed M0+M1 authorization examples such as idle edit denied, idle start allowed, active edit allowed, blocked edit denied, premature completion denied, completion-ready completion allowed, same-Run Gate resolve denied, and pre-existing Gate resolve allowed.
 
-## 19. Migration compatibility
+The live Agent still uses the existing v0.1 Guard after M1. This is intentional.
 
-The target v0.2 semantic model may intentionally disagree with current v0.1 Tool visibility or Guard navigation before later milestones consume it. That is expected.
+## 21. M2 — Semantic Gateway Cutover contract
 
-Do not “fix” M0 semantics to mirror legacy visibility merely because current `pindie_state`, `pindie_gate`, or Guard code still exposes actions that v0.2 considers semantically unavailable.
+M2 is the first milestone that intentionally changes the live semantic authorization path.
 
-Conversely, do not change those runtime consumers early. Each migration milestone should move one responsibility onto the new semantic source while preserving unrelated behavior.
+M2 must:
+
+1. adapt authoritative runtime/run-start facts into `SemanticRunFacts`;
+2. derive a fresh `SemanticSnapshot` and capabilities from current authoritative State;
+3. classify each concrete tool call through the shared Tool Effect Model;
+4. authorize the call through the capability set;
+5. preserve reducer validation and Runtime concurrency/state-integrity behavior;
+6. preserve authoritative State refresh and external-State stale-run handling;
+7. preserve malformed model-facing tool payload validation;
+8. make Project Mutation Freshness consume the shared Tool Effect classification where appropriate;
+9. remove or delegate semantic Guard branches that duplicate the capability model.
+
+M2 intentionally makes target v0.2 semantics live. It must not add compatibility exceptions merely to preserve conflicting v0.1 behavior.
+
+Therefore, at M2 cutover:
+
+- blocked Tasks no longer authorize `project.mutate`;
+- incomplete verification no longer authorizes semantic Task completion;
+- same-Run-opened Human Gates expose observation-only semantic authority;
+- run-boundary Task start/replace/refine/resolve authority follows the M0 Run Facts/capability model;
+- unavailable or stale authority is observation-only.
+
+M2 may temporarily leave broad legacy model-facing tools visible. M3 owns visibility/model affordance alignment.
+
+Gateway rejection after M2 should be grounded in the current Snapshot/capability/effect result. Natural-language integration messages may explain the missing capability, but they must not become a second source of semantic rules.
+
+## 22. M3 and later migration boundary
+
+M3 aligns model-visible Tool Surface with live capability legality by replacing broad semantic action enums with narrow capability-shaped tools and dynamic visibility.
+
+M4 removes redundant Core Policy, tool-description, and Guard instructions made unnecessary by capability-shaped execution.
+
+M5 separates Harness-owned factual verification evidence from model-owned semantic coverage judgment.
+
+M6 simplifies active continuation to deterministic eligibility plus a thin model-owned intent probe.
+
+M7 prunes duplicated Skill/Core rules and stale migration documentation.
+
+M8 leaves `extension.ts` primarily as Pi lifecycle wiring.
+
+## 23. Migration compatibility
+
+The target v0.2 semantic model may intentionally disagree with legacy v0.1 Tool visibility or Guard navigation while migration is incomplete. That disagreement is not a reason to weaken target semantics.
+
+The migration rule is:
+
+```text
+M0/M1: build target semantic/execution truth without live consumption
+M2: cut live semantic authorization over to that truth
+M3: align model-visible affordances with live legality
+```
+
+Do not create a parallel “legacy capability” or “compatibility semantic” system. Preserve old behavior only before the milestone that explicitly owns its cutover; once that milestone arrives, use the target semantic source directly and preserve only unrelated runtime behavior.
