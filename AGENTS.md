@@ -69,15 +69,15 @@ M3 aligns model-visible affordances with the already-live M2 legality model. It 
 Replace the broad model-facing semantic tools with narrow capability-shaped tools:
 
 ```text
-pindie_task_start         → task.start
-pindie_task_replace       → task.replace
-pindie_task_refine        → task.refine
-pindie_task_progress      → task.progress
+pindie_task_start          → task.start
+pindie_task_replace        → task.replace
+pindie_task_refine         → task.refine
+pindie_task_progress       → task.progress
 pindie_verification_record → verification.record
-pindie_task_complete      → task.complete
-pindie_gate_open          → gate.open
-pindie_gate_resolve       → gate.resolve
-pindie_git_observe        → observe.git
+pindie_task_complete       → task.complete
+pindie_gate_open           → gate.open
+pindie_gate_resolve        → gate.resolve
+pindie_git_observe         → observe.git
 ```
 
 Internal reducer events remain unchanged. M3 does not redesign verification data, Gate semantics, or State.
@@ -87,14 +87,16 @@ Pindie is pinned to Pi v0.84.3. Its exact active-tool API is replacement-style: 
 Therefore M3 uses a runtime-only **Run Tool Baseline**:
 
 ```text
-Run baseline = Pi/user active tools captured before Pindie restriction
+Run baseline = Pi/user active tools captured at the authoritative `before_agent_start` Run boundary
 Effective tools = Run baseline ∩ tools allowed by current Pindie capabilities
 ```
 
-Pindie may only remove tools from that baseline during the Run. It must never activate a tool that the baseline did not contain. Restore the exact baseline when the Run settles; the next user-driven Run captures a fresh baseline.
+Pindie may only remove tools from that baseline during the Run. It must never activate a tool that the baseline did not contain. Restore the exact baseline when the Run settles; the next actual Run captures a fresh baseline.
+
+Do **not** pre-apply semantic tool restriction from the `input` event. In Pi v0.84.3, `input` occurs before model/auth preflight and may be handled or rejected without an Agent Run, so mutating active tools there can strand a narrowed set and corrupt the next baseline. `before_agent_start` is the single authority boundary for both Run Facts and Run Tool Baseline.
 
 Within an active Run, recompute the effective Tool Surface after semantic capability changes, project-mutation verification invalidation, and stale/unavailable authority changes. The M2 Gateway remains authoritative for races and already-generated calls.
 
-Pi v0.84.3 has one integration limitation: Pindie's current `before_agent_start` Core Policy injection creates a system-prompt override for the high-level Run. Mid-Run `setActiveTools()` updates actual tool schemas but cannot cleanly rebuild that already-overridden prompt. Do not parse/rebuild Pi's private system prompt or import private Pi internals. Pre-apply the initial Tool Surface before `before_agent_start` when feasible so the first-turn prompt starts from the correct surface. M4 owns removal/restructuring of the Core Policy override so prompt text and dynamic Tool Surface can fully converge.
+Pi v0.84.3 has one integration limitation: Pindie's current `before_agent_start` Core Policy injection creates a system-prompt override for the high-level Run. `setActiveTools()` at `before_agent_start` still makes the actual tool schemas/action space correct before model execution, but selected-tool text already present in the prompt input may lag; mid-Run changes may also leave stale text in the existing override. Do not parse/rebuild Pi's private system prompt or import private Pi internals. M4 owns removal/restructuring of the Core Policy override so prompt text and dynamic Tool Surface can fully converge.
 
 M3 must not prune Core Policy, redesign verification, redesign continuation, or invent a custom tool-registry framework.
