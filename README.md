@@ -54,24 +54,25 @@ See:
 
 ## Migration status
 
-The current repository has a working v0.1 Runtime baseline and is migrating incrementally to the v0.2 architecture.
+The repository has a working v0.1 Runtime baseline and is migrating incrementally to the v0.2 architecture.
 
 Migration sequence:
 
 ```text
-M0 Semantic Foundation
-M1 Capability Gateway
-M2 Model Tool Surface
-M3 Policy Reduction
-M4 Gate & Blocked Alignment
-M5 Completion Alignment
-M6 Verification v0.2
-M7 Continuation Simplification
-M8 Skill / Docs Prune
-M9 Extension Composition
+M0 Semantic Foundation              — implemented
+M1 Execution Semantics Foundation   — next
+M2 Semantic Gateway Cutover
+M3 Model Tool Surface
+M4 Policy Reduction
+M5 Verification v0.2
+M6 Continuation Simplification
+M7 Skill / Docs Prune
+M8 Extension Composition
 ```
 
-M0 intentionally adds pure semantic derivation and tests without changing Runtime behavior. Existing v0.1 integration behavior remains the regression baseline until a later milestone explicitly moves that responsibility onto v0.2 semantics.
+M0 established pure `Run Facts → Semantic Snapshot → Capabilities` derivation without changing Runtime behavior. M1 adds a pure Tool Effect Model and capability-authorization layer, still without changing the live `tool_call` path. M2 is the first intentional runtime semantic cutover: real Agent-run facts are adapted into the semantic model and live execution authorization begins consuming the v0.2 capability truth.
+
+This staging avoids maintaining two competing semantic rule systems. Target capability semantics may intentionally differ from legacy v0.1 Guard/tool affordances until M2 moves that live responsibility onto v0.2.
 
 ## Current implemented baseline
 
@@ -80,14 +81,15 @@ The repository already includes:
 - minimal persistent current-Task State;
 - deterministic State reducer and invariants;
 - project-scoped Runtime persistence and conflict handling;
-- current `pindie_state`, `pindie_gate`, and `pindie_git_observe` model-facing tools;
+- v0.2 Semantic Foundation (`SemanticRunFacts`, `SemanticSnapshot`, capability derivation);
+- current legacy `pindie_state`, `pindie_gate`, and `pindie_git_observe` model-facing tools;
 - verification invalidation from known/observed project mutation;
 - Human Gate lifecycle;
 - runtime-only Current Activity, Run Timer, Run Cost, status presentation, and adaptive reasoning;
 - `/efficiency` inspection;
 - bundled `git-workflow` Skill through Pi's Skill runtime.
 
-Some of those model-facing/runtime mechanisms are intentionally legacy v0.1 shapes that later v0.2 milestones will reshape. Target semantics in the v0.2 docs should not be redesigned back toward those legacy shapes merely to match current implementation.
+Some model-facing/runtime mechanisms are intentionally legacy v0.1 shapes that later v0.2 milestones will reshape. Target semantics in the v0.2 docs should not be redesigned back toward those legacy shapes merely to match current implementation.
 
 ## Development
 
