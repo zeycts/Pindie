@@ -36,6 +36,7 @@ Pindie must not implement a second agent loop, workflow engine, persisted phase 
 - Reducer transitions remain tool-agnostic; Pi tool names must not leak into State semantics.
 - Guards are execution-time backstops, not the primary way the normal Agent Loop learns what is legal.
 - Prefer the smallest implementation that directly represents the approved architecture.
+- Do not create a second temporary semantic truth merely to preserve legacy v0.1 affordances during migration. Build pure target semantics first, then cut runtime consumers over at the milestone that explicitly owns that behavior change.
 
 ## Development workflow
 
@@ -50,15 +51,14 @@ For each approved milestone:
 
 ## Approved v0.2 migration sequence
 
-- **M0 — Semantic Foundation:** pure `RunFacts → SemanticSnapshot → Capabilities` derivation and tests; no runtime behavior change.
-- **M1 — Capability Gateway:** Tool Effect Model and capability-based execution authorization while preserving behavior.
-- **M2 — Model Tool Surface:** narrow semantic tools and capability-driven dynamic tool visibility.
-- **M3 — Policy Reduction:** remove Core Policy and guard instructions made redundant by architecture.
-- **M4 — Gate & Blocked Alignment:** align Human Gate authority and blocker semantics with capabilities.
-- **M5 — Completion Alignment:** expose completion only when derived completion readiness is true.
-- **M6 — Verification v0.2:** separate Harness-owned factual evidence from model-owned semantic coverage.
-- **M7 — Continuation Simplification:** deterministic continuation eligibility plus a thin semantic intent probe.
-- **M8 — Skill / Docs Prune:** remove duplicated Core correctness rules from Skills and prune stale documentation.
-- **M9 — Extension Composition:** leave `extension.ts` primarily as Pi lifecycle wiring.
+- **M0 — Semantic Foundation:** pure `RunFacts → SemanticSnapshot → Capabilities` derivation and tests; no runtime behavior change. Implemented.
+- **M1 — Execution Semantics Foundation:** pure Tool Effect Model plus capability-based authorization helpers; no `extension.ts`/Guard cutover and no runtime behavior change.
+- **M2 — Semantic Gateway Cutover:** adapt real Agent-run/runtime facts into `SemanticRunFacts` and make capability authorization the semantic execution authority. This is the first intentional runtime semantic cutover and includes the already-approved blocker, Human Gate, and completion capability semantics rather than preserving them through a parallel compatibility policy.
+- **M3 — Model Tool Surface:** replace broad model-facing semantic action enums with narrow semantic tools and capability-driven dynamic tool visibility.
+- **M4 — Policy Reduction:** remove Core Policy, tool-description, and Guard instructions made redundant by the semantic/capability architecture.
+- **M5 — Verification v0.2:** separate Harness-owned factual evidence from model-owned semantic coverage judgment.
+- **M6 — Continuation Simplification:** deterministic continuation eligibility plus a thin semantic intent probe.
+- **M7 — Skill / Docs Prune:** remove duplicated Core correctness rules from Skills and prune stale migration documentation.
+- **M8 — Extension Composition:** leave `extension.ts` primarily as Pi lifecycle wiring over semantic/runtime subsystems.
 
-Implement only the current approved milestone. Do not prematurely consume a later v0.2 capability or change runtime behavior before its milestone.
+Implement only the current approved milestone. M1 must not wire the new authorization path into live `tool_call` handling. M2 must not preserve target/legacy differences by inventing a second compatibility capability model; it intentionally moves the live semantic authorization boundary onto the v0.2 capability truth.
