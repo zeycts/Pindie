@@ -10,6 +10,12 @@ import {
   isPindieRuntimeContextMessage,
 } from "./context.ts";
 import {
+  PINDIE_CONTINUATION_PROBE_MESSAGE,
+  PINDIE_CONTINUATION_PROBE_TYPE,
+  isPindieContinuationProbeMessage,
+  shouldProbeContinuation,
+} from "./continuation.ts";
+import {
   authorizeToolEffect,
   classifyToolEffect,
   type ToolEffect,
@@ -99,8 +105,6 @@ export interface PindieExtensionIntegration {
 }
 
 const PINDIE_STATUS_ID = "pindie-status";
-const PINDIE_ACTIVE_TASK_CONTINUATION_TYPE = "pindie-active-task-continuation";
-const PINDIE_ACTIVE_TASK_CONTINUATION_MESSAGE = "The current Pindie Task is still unfinished. First re-evaluate whether the latest actual user intent calls for consequential execution of this current Task. If it clearly requests a different Task, reconcile it through pindie_task_replace when this Agent Run boundary permits, then continue only the new current Task. If it asks to stop, pause, return control, or only inspect, explain, or discuss, do not resume consequential Task work; allow this Agent Run to settle normally. If the Task boundary is consequentially ambiguous, use the existing Human Gate or return control appropriately. Otherwise continue this current Task now. Re-observe only what is necessary, then take the smallest safe next action. Do not stop merely to summarize remaining work, restate next steps, re-plan, or because more implementation, test, or verification iterations are required. If consequential human judgment is genuinely required, use the existing Human Gate. If a real external blocker prevents progress, record it. Otherwise continue toward current verified completion. Persisting nextIntent records continuation context; it is not permission to yield.";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -520,30 +524,26 @@ export function registerPindieExtension(
   });
 
   pi.on("agent_end", (event, ctx) => {
-    if (activeTaskContinuationAttempted || ctx.hasPendingMessages()) return;
-    if (runtime.projectRoot === null || stateUnavailableReason !== null) return;
-    const facts = currentSemanticRunFacts();
-    if (!facts.stateAvailable || !facts.runCoherent) return;
-
-    const task = runtime.state.task;
+    const derivation = deriveSemanticSnapshot(
+      currentAuthoritativeState(),
+      currentSemanticRunFacts(),
+    );
+    if (!derivation.ok) return;
     const finalAssistantMessage = [...event.messages]
       .reverse()
       .find((message) => message.role === "assistant");
-    if (
-      !task ||
-      task.completed ||
-      task.humanGate !== null ||
-      task.openLoops.blockers.length > 0 ||
-      finalAssistantMessage?.stopReason !== "stop"
-    ) {
-      return;
-    }
+    const shouldProbe = shouldProbeContinuation(derivation.snapshot, {
+      probeAlreadyAttempted: activeTaskContinuationAttempted,
+      hasPendingMessages: ctx.hasPendingMessages(),
+      stoppedNormally: finalAssistantMessage?.stopReason === "stop",
+    });
+    if (!shouldProbe) return;
 
     activeTaskContinuationAttempted = true;
     pi.sendMessage(
       {
-        customType: PINDIE_ACTIVE_TASK_CONTINUATION_TYPE,
-        content: PINDIE_ACTIVE_TASK_CONTINUATION_MESSAGE,
+        customType: PINDIE_CONTINUATION_PROBE_TYPE,
+        content: PINDIE_CONTINUATION_PROBE_MESSAGE,
         display: false,
       },
       { deliverAs: "followUp" },
@@ -551,8 +551,19 @@ export function registerPindieExtension(
   });
 
   pi.on("context", (event) => {
-    const messages = event.messages.filter(
-      (message) => !isPindieRuntimeContextMessage(message),
+    let latestContinuationProbeIndex = -1;
+    if (activeTaskContinuationAttempted) {
+      for (let index = event.messages.length - 1; index >= 0; index -= 1) {
+        if (isPindieContinuationProbeMessage(event.messages[index])) {
+          latestContinuationProbeIndex = index;
+          break;
+        }
+      }
+    }
+    const messages = event.messages.filter((message, index) =>
+      !isPindieRuntimeContextMessage(message) &&
+      (!isPindieContinuationProbeMessage(message) ||
+        index === latestContinuationProbeIndex)
     );
     let state = currentAuthoritativeState();
     let derivation = deriveSemanticSnapshot(state, currentSemanticRunFacts());
