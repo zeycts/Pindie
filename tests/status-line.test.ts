@@ -286,6 +286,23 @@ test("subscription status independently renders full, compact, and minimum quota
   assert.deepEqual(usageLayout([]).right, []);
 });
 
+test("compact layout removes near-expiry detail even when its segment count matches full", () => {
+  const layout = usageLayout([
+    { usedPercent: 20, windowMinutes: 300 },
+    { usedPercent: 30, windowMinutes: 10_080 },
+  ], now + 2 * day);
+  assert.deepEqual(layout.right.map(({ text }) => text), ["5h 80%", "wk 70%", "⟳ 1 · 2d"]);
+  assert.deepEqual(layout.compactRight?.map(({ text }) => text), ["5h 80%", "wk 70%", "⟳ 1"]);
+
+  const theme = { fg: (_tone: string, text: string) => text };
+  const compactWidth = visibleWidth(renderStatusSegments(theme, layout.compactRight!));
+  const rendered = renderStatusLayout(theme, {
+    ...layout,
+    left: [{ text: "run", tone: "text" }],
+  }, visibleWidth("run") + 2 + compactWidth)!;
+  assert.match(rendered, /5h 80% • wk 70% • ⟳ 1$/);
+});
+
 test("quota tones use displayed remaining-percent boundaries", () => {
   for (const [usedPercent, tone] of [[89, "dim"], [90, "warning"], [94, "warning"], [95, "error"], [100, "error"]] as const) {
     const layout = usageLayout([{ usedPercent, windowMinutes: 300 }, { usedPercent, windowMinutes: 10_080 }]);

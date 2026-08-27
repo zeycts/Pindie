@@ -39,8 +39,9 @@ export interface SubscriptionUsageProviderOptions {
 }
 
 const FIVE_HOUR_MINUTES = 5 * 60;
+const FIVE_HOUR_TOLERANCE_MINUTES = 5;
 const WEEKLY_MINUTES = 7 * 24 * 60;
-const WINDOW_TOLERANCE_MINUTES = 60;
+const WEEKLY_TOLERANCE_MINUTES = 60;
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const CODEX_ACCOUNT_CLAIM = "https://api.openai.com/auth";
@@ -161,10 +162,11 @@ export function parseResetCreditDetails(payload: unknown): ResetCredit[] | undef
 function selectWindowByDuration(
   snapshot: SubscriptionUsageSnapshot | null,
   durationMinutes: number,
+  toleranceMinutes: number,
 ): SubscriptionUsageWindow | null {
   return snapshot?.windows.find((window) =>
     window.windowMinutes !== undefined &&
-    Math.abs(window.windowMinutes - durationMinutes) <= WINDOW_TOLERANCE_MINUTES,
+    Math.abs(window.windowMinutes - durationMinutes) <= toleranceMinutes,
   ) ?? null;
 }
 
@@ -172,14 +174,14 @@ function selectWindowByDuration(
 export function selectFiveHourWindow(
   snapshot: SubscriptionUsageSnapshot | null,
 ): SubscriptionUsageWindow | null {
-  return selectWindowByDuration(snapshot, FIVE_HOUR_MINUTES);
+  return selectWindowByDuration(snapshot, FIVE_HOUR_MINUTES, FIVE_HOUR_TOLERANCE_MINUTES);
 }
 
 /** Selects a weekly window by its declared duration, never array position. */
 export function selectWeeklyWindow(
   snapshot: SubscriptionUsageSnapshot | null,
 ): SubscriptionUsageWindow | null {
-  return selectWindowByDuration(snapshot, WEEKLY_MINUTES);
+  return selectWindowByDuration(snapshot, WEEKLY_MINUTES, WEEKLY_TOLERANCE_MINUTES);
 }
 
 export function getRemainingPercent(usedPercent: number): number {

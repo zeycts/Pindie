@@ -171,6 +171,15 @@ interface QuotaPresentation {
   actionable: boolean;
 }
 
+function sameSegments(
+  first: readonly StatusSegment[],
+  second: readonly StatusSegment[],
+): boolean {
+  return first.length === second.length && first.every((segment, index) =>
+    segment.text === second[index]?.text && segment.tone === second[index]?.tone,
+  );
+}
+
 function quotaTone(remaining: number): StatusTone {
   if (remaining <= 5) return "error";
   if (remaining <= 10) return "warning";
@@ -231,7 +240,7 @@ export function deriveStatusLayout(
   return {
     left: deriveStatusSegments(snapshot),
     right,
-    ...(compactRight.length !== right.length ? { compactRight } : {}),
+    ...(!sameSegments(compactRight, right) ? { compactRight } : {}),
     ...(attentionRight ? { attentionRight } : {}),
     ...(minimumRight.length > 0 && minimumRight.length !== compactRight.length ? { minimumRight } : {}),
   };

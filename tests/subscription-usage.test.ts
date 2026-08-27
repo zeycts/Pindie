@@ -67,6 +67,23 @@ test("five-hour and weekly windows are selected by duration, independently of or
   assert.deepEqual(selectWeeklyWindow(weeklyFirst)?.usedPercent, 23);
 });
 
+test("five-hour selection excludes unrelated nearby durations", () => {
+  const snapshot = {
+    fetchedAt: 10,
+    windows: [
+      { usedPercent: 40, windowMinutes: 240 },
+      { usedPercent: 50, windowMinutes: 360 },
+      { usedPercent: 60, windowMinutes: 300 },
+      { usedPercent: 70, windowMinutes: 10_080 },
+    ],
+  };
+
+  assert.equal(selectFiveHourWindow({ ...snapshot, windows: [snapshot.windows[0]!] }), null);
+  assert.equal(selectFiveHourWindow({ ...snapshot, windows: [snapshot.windows[1]!] }), null);
+  assert.equal(selectFiveHourWindow(snapshot)?.usedPercent, 60);
+  assert.equal(selectWeeklyWindow(snapshot)?.usedPercent, 70);
+});
+
 test("parser supports nested rate-limit groups and compatibility minute aliases", () => {
   const snapshot = parseSubscriptionUsage({
     rate_limits: {
