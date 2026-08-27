@@ -7,6 +7,11 @@ import {
   PINDIE_RUNTIME_CONTEXT_TYPE,
 } from "../src/context.ts";
 import {
+  PINDIE_CONTINUATION_PROBE_MESSAGE,
+  PINDIE_CONTINUATION_PROBE_TYPE,
+  isPindieContinuationProbeMessage,
+} from "../src/continuation.ts";
+import {
   registerPindieExtension,
   type PindieExtensionOptions,
 } from "../src/extension.ts";
@@ -301,6 +306,19 @@ function agentEnd(stopReason: "stop" | "aborted" | "error" | "length" = "stop"):
   };
 }
 
+function continuationProbe(
+  content: string,
+  timestamp: number,
+): Record<string, unknown> {
+  return {
+    role: "custom",
+    customType: PINDIE_CONTINUATION_PROBE_TYPE,
+    content,
+    display: false,
+    timestamp,
+  };
+}
+
 function createHarness(
   entries: Array<[string, PindieState]> = [],
   resolvedRoots: Record<string, string> = {},
@@ -532,14 +550,19 @@ test("F03 the Extension registers narrow Pindie tools and no input hook", () => 
   assert.equal(api.handlers.has("input"), false);
 });
 
-test("AC01-AC15 active executable tasks queue one hidden Pi-native follow-up per Agent Run", async () => {
+test("E01-E02/E08-E10 active Tasks queue one read-only hidden follow-up per Run", async () => {
   const state = activeState();
   state.task!.openLoops.questions = ["Should the release note mention this?"];
   const harness = createHarness([["/repo", state]]);
   await startSession(harness, "/repo");
   await beginAgentRun(harness);
+  const { ref: evidenceRef } = await captureObservationEvidence(
+    harness,
+    "continuation-evidence",
+  );
   const stateBefore = structuredClone(harness.integration.runtime.state);
   const reasoningBefore = harness.integration.reasoning.snapshot;
+  const activeToolsBefore = harness.api.getActiveTools();
 
   await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
 
@@ -551,18 +574,12 @@ test("AC01-AC15 active executable tasks queue one hidden Pi-native follow-up per
   const continuationMessage = (harness.api.sentMessages[0] as {
     message: { customType: string; content: string; display: boolean };
   }).message;
-  assert.equal(continuationMessage.customType, "pindie-active-task-continuation");
+  assert.equal(continuationMessage.customType, PINDIE_CONTINUATION_PROBE_TYPE);
   assert.equal(continuationMessage.display, false);
-  const continuationContent = continuationMessage.content;
-  assert.match(continuationContent, /consequential execution of this current Task/i);
-  assert.match(continuationContent, /different Task.*pindie_task_replace/i);
-  assert.match(continuationContent, /stop, pause, return control, or only inspect, explain, or discuss/i);
-  assert.ok(
-    continuationContent.indexOf("First re-evaluate") <
-      continuationContent.indexOf("Otherwise continue this current Task now."),
-  );
+  assert.equal(continuationMessage.content, PINDIE_CONTINUATION_PROBE_MESSAGE);
   assert.deepEqual(harness.integration.runtime.state, stateBefore);
   assert.deepEqual(harness.integration.reasoning.snapshot, reasoningBefore);
+  assert.deepEqual(harness.api.getActiveTools(), activeToolsBefore);
   assert.deepEqual(harness.store.saves, []);
   assert.equal(harness.integration.runTimer.active, true);
   assert.equal(harness.integration.runCost.snapshot([] as any)?.active, true);
@@ -570,16 +587,34 @@ test("AC01-AC15 active executable tasks queue one hidden Pi-native follow-up per
   await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
   assert.equal(harness.api.sentMessages.length, 1);
 
+  await harness.api.tool("pindie_verification_record").execute("verify-after-probe", {
+    check: {
+      name: "continuation evidence remains live",
+      status: "passed",
+      covers: ["c1"],
+      evidenceRefs: [evidenceRef],
+    },
+  });
+  assert.match(
+    harness.integration.runtime.state.task?.verification.checks[0]?.evidence ?? "",
+    /Tool: read/,
+  );
+
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    context("/repo"),
+  );
+  assert.equal(harness.integration.runTimer.active, false);
+  assert.equal(harness.integration.runCost.snapshot([] as any)?.active, false);
+  assert.equal(harness.integration.runActivity.activity, null);
+
   await beginAgentRun(harness);
   await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
   assert.equal(harness.api.sentMessages.length, 2);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
-  assert.equal(harness.integration.runTimer.active, false);
-  assert.equal(harness.integration.runCost.snapshot([] as any)?.active, false);
-  assert.equal(harness.integration.runActivity.activity, null);
 });
 
-test("AC04-AC13 continuation eligibility suppresses every ineligible agent end", async () => {
+test("E03-E05/E07 semantic, authority, stop, and queue facts suppress ineligible probes", async () => {
   const cases: Array<{
     name: string;
     state: PindieState | undefined;
@@ -835,6 +870,174 @@ test("P04 Context lifecycle projects one fresh coherent Snapshot-driven Runtime 
     context("/repo"),
   ) as { messages: Array<Record<string, unknown>> };
   assert.match(String(afterEdit.messages.at(-1)?.content), /Verification status: stale/);
+});
+
+test("H01 a fresh Run filters every historical continuation probe", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  const projected = await harness.api.handler("context")(
+    {
+      type: "context",
+      messages: [
+        { role: "user", content: "Continue", timestamp: 1 },
+        continuationProbe("old probe one", 2),
+        { role: "assistant", content: [], stopReason: "stop", timestamp: 3 },
+        continuationProbe("old probe two", 4),
+      ],
+    },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+
+  assert.equal(
+    projected.messages.filter(isPindieContinuationProbeMessage).length,
+    0,
+  );
+  assert.equal(
+    projected.messages.filter(
+      (message) => message.customType === PINDIE_RUNTIME_CONTEXT_TYPE,
+    ).length,
+    1,
+  );
+  assert.equal(
+    projected.messages.at(-1)?.customType,
+    PINDIE_RUNTIME_CONTEXT_TYPE,
+  );
+});
+
+test("H02-H04 an active follow-up keeps only the latest probe at its original position", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(harness.api.sentMessages.length, 1);
+
+  const user = { role: "user", content: "Continue", timestamp: 1 };
+  const assistantBefore = {
+    role: "assistant",
+    content: [],
+    stopReason: "stop",
+    timestamp: 2,
+  };
+  const oldProbe = continuationProbe("old historical probe", 3);
+  const currentProbe = continuationProbe(
+    PINDIE_CONTINUATION_PROBE_MESSAGE,
+    4,
+  );
+  const assistantAfter = {
+    role: "assistant",
+    content: [{ type: "toolCall", id: "call-read", name: "read", arguments: {} }],
+    stopReason: "toolUse",
+    timestamp: 5,
+  };
+  const toolResultAfter = {
+    role: "toolResult",
+    toolCallId: "call-read",
+    toolName: "read",
+    content: [{ type: "text", text: "result" }],
+    isError: false,
+    timestamp: 6,
+  };
+  const projected = await harness.api.handler("context")(
+    {
+      type: "context",
+      messages: [
+        user,
+        assistantBefore,
+        oldProbe,
+        currentProbe,
+        assistantAfter,
+        toolResultAfter,
+      ],
+    },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+
+  assert.deepEqual(projected.messages.slice(0, 5), [
+    user,
+    assistantBefore,
+    currentProbe,
+    assistantAfter,
+    toolResultAfter,
+  ]);
+  assert.equal(
+    projected.messages.filter(isPindieContinuationProbeMessage).length,
+    1,
+  );
+  assert.equal(projected.messages[2], currentProbe);
+  assert.equal(
+    projected.messages.at(-1)?.customType,
+    PINDIE_RUNTIME_CONTEXT_TYPE,
+  );
+
+  const laterToolResult = {
+    role: "toolResult",
+    toolCallId: "call-grep",
+    toolName: "grep",
+    content: [{ type: "text", text: "later result" }],
+    isError: false,
+    timestamp: 7,
+  };
+  const projectedAgain = await harness.api.handler("context")(
+    {
+      type: "context",
+      messages: [
+        ...projected.messages.slice(0, -1),
+        laterToolResult,
+        projected.messages.at(-1),
+      ],
+    },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+
+  assert.equal(projectedAgain.messages[2], currentProbe);
+  assert.ok(projectedAgain.messages.indexOf(laterToolResult) > 2);
+  assert.equal(
+    projectedAgain.messages.filter(isPindieContinuationProbeMessage).length,
+    1,
+  );
+  assert.equal(
+    projectedAgain.messages.filter(
+      (message) => message.customType === PINDIE_RUNTIME_CONTEXT_TYPE,
+    ).length,
+    1,
+  );
+  assert.equal(
+    projectedAgain.messages.at(-1)?.customType,
+    PINDIE_RUNTIME_CONTEXT_TYPE,
+  );
+});
+
+test("H05 the next fresh user Run removes the prior current probe", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  const priorCurrentProbe = continuationProbe(
+    PINDIE_CONTINUATION_PROBE_MESSAGE,
+    2,
+  );
+
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    context("/repo"),
+  );
+  await beginAgentRun(harness);
+  const projected = await harness.api.handler("context")(
+    {
+      type: "context",
+      messages: [
+        { role: "user", content: "New request", timestamp: 1 },
+        priorCurrentProbe,
+      ],
+    },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+
+  assert.equal(
+    projected.messages.filter(isPindieContinuationProbeMessage).length,
+    0,
+  );
 });
 
 test("P06 unavailable Runtime Context remains factual and consistent with fail-closed guards", async () => {
