@@ -70,7 +70,7 @@ Capabilities + Tool Effect
 authorizeToolEffect()
 ```
 
-M0–M4 are implemented: semantic truth drives live authorization, model-visible Tool Surface, and factual Runtime Context; Pi owns its native system prompt without a duplicated Pindie Core Policy.
+M0–M5 are implemented: semantic truth drives live authorization, model-visible Tool Surface, factual Runtime Context, and Harness-owned verification evidence provenance/freshness; Pi owns its native system prompt and low-level Agent Loop.
 
 ## 4. Durable State and Run Facts
 
@@ -197,11 +197,9 @@ SemanticSnapshot
 
 Natural-language policy is a last resort, not a source of deterministic correctness.
 
-## 8. Verification v0.2 — M5 target
+## 8. Verification v0.2 — implemented M5
 
-M5 fixes evidence ownership while deliberately preserving the durable Verification State shape.
-
-### 8.1 Ownership boundary
+M5 fixes evidence ownership while preserving the durable Verification State shape.
 
 ```text
 Actual Pi tool execution
@@ -224,13 +222,7 @@ Reducer / State
 
 Harness owns `what happened`. Model owns `what it proves`.
 
-A tool result being an error does not imply semantic verification failure: an error may correctly demonstrate rejection behavior. Therefore Pindie must not derive `VerificationCheck.status` from Pi `isError`.
-
-### 8.2 Durable schema remains compatible
-
-M5 does **not** redesign persisted `PindieState.verification`.
-
-Durable checks remain conceptually:
+Durable checks remain:
 
 ```text
 VerificationCheck
@@ -240,117 +232,94 @@ VerificationCheck
 └── evidence: string
 ```
 
-The difference is provenance: new `evidence` strings are generated deterministically by the Harness from selected current evidence refs instead of being free-written by the model.
+Runtime refs use actual tool-call identity (`ev:<toolCallId>`), are never persisted, and are scoped to one actual Agent Run. Factual materialization is bounded and deterministic. Existing legacy verification records remain compatible without migration.
 
-Existing verification records are grandfathered. There is no State migration, schema version, forced stale-on-load behavior, or persisted evidence-ref format.
-
-### 8.3 Recent Evidence Registry
-
-M5 introduces a runtime-only Recent Evidence Registry scoped to the current actual Agent Run.
-
-A candidate has a deterministic temporary ref, preferably:
-
-```text
-ev:<toolCallId>
-```
-
-The ref must never be persisted. A model may use it only through the current `pindie_verification_record` call, where the Harness resolves it to factual data.
-
-Unrecorded candidates are discarded at Agent settlement/session shutdown and do not become a permanent tool-result log.
-
-### 8.4 Evidence eligibility
-
-Evidence candidates are observations of Reality, not arbitrary Pindie semantic transitions.
-
-Eligible while a coherent unfinished current Task exists:
-
-```text
-observe.project
-observe.git
-```
-
-Ambiguous project-effect tools such as `bash` or unknown custom tools may become evidence only after M2 Project Mutation Freshness proves project reality unchanged for that execution window.
-
-Known project mutations (`edit`/`write`) are not evidence candidates. Pindie Task/Gate/verification semantic tools are not evidence candidates.
-
-Failed tool results may still be factual evidence if otherwise eligible.
-
-### 8.5 Evidence freshness generation
-
-Clearing a registry alone is insufficient because parallel/late tool results can complete after the verification basis changes.
-
-M5 therefore uses a runtime-only evidence generation/freshness token:
-
-```text
-Authorized Tool Call
-→ remember generation-at-call
-
-Verification basis changes
-→ advance generation
-→ clear current candidates
-
-Tool Result arrives
-→ candidate eligible only if call generation === current generation
-```
-
-This prevents a result that began against old Reality/Task semantics from becoming current evidence after a mutation or Task-boundary change.
-
-Generation/freshness is runtime-only and never enters `PindieState`.
-
-Advance it when the verification basis changes, including at least:
-
-```text
-new actual Agent Run
-successful task.start / task.replace
-successful task.refine
-known project mutation
-detected or unknown ambiguous project mutation
-external authority discontinuity / State unavailable
-```
-
-Do not advance merely for observation, Task progress, Gate open/resolve, or verification record.
-
-### 8.6 Mutation-before-evidence ordering
-
-For ambiguous project-effect tools:
-
-```text
-tool_result
-→ existing M2 mutation observation first
-→ mutation detected/unknown?
-   ├ yes → invalidate verification + advance evidence generation; no candidate
-   └ no  → candidate may be captured if all other eligibility conditions hold
-```
-
-The result of an ambiguous tool that changed project reality is not current verification evidence; the model should perform a fresh verification action afterward.
-
-### 8.7 Bounded factual materialization
-
-Pindie must not automatically persist raw tool-result logs.
-
-Recent candidates may retain enough runtime data to support deterministic materialization, but only refs explicitly selected by `pindie_verification_record` become durable evidence.
-
-Harness materialization must be bounded and deterministic, using concise factual metadata/excerpts plus digests for longer/non-text data. The model does not write or summarize the durable evidence string.
-
-The first implementation should keep this intentionally small rather than create a general evidence database.
+Recent evidence uses a runtime-only generation token. Calls remember generation-at-call; verification-basis changes advance the generation and clear candidates. Project Mutation Freshness runs before evidence capture for ambiguous tools, so mutating/unknown results cannot become current evidence.
 
 ## 9. Human authority
 
 A Human Gate is an explicit authority boundary. A Gate opened during the current Run has observation-only capability space until new human input. A pre-existing Gate may expose `gate.resolve` and legal Task-boundary choices; the model interprets human input among those choices.
 
-## 10. Continuation, activity, reasoning, skills
+## 10. Continuation — M6 target
 
-Continuation remains subordinate to latest user intent and is redesigned only in M6.
+Continuation is the remaining place where Pindie intentionally asks the model a semantic question after deterministic facts have been closed.
+
+Pi owns the low-level run lifecycle. In Pi 0.84.3, `agent_end` marks the end of a low-level run, while Pi may still retry, compact/retry, or process queued follow-up messages before `agent_settled`. Pindie must remain subordinate to that lifecycle.
+
+### 10.1 Deterministic eligibility
+
+M6 derives continuation-probe eligibility from one semantic world plus minimal Pi runtime facts:
+
+```text
+SemanticSnapshot
++
+probe already attempted?
+pending Pi messages?
+Pi will retry?
+final assistant stopped normally?
+        ↓
+Continuation probe eligible?
+```
+
+Eligibility is true only when:
+
+```text
+snapshot.authority == coherent
+snapshot.taskStatus == active
+probe not already attempted
+no pending Pi messages
+Pi will not retry
+final stopReason == stop
+```
+
+`taskStatus == active` already closes completed, Human Gate, and blocker branches. Continuation code must not independently re-read those Task fields as a second policy source. Unresolved questions may coexist with active work and therefore do not automatically suppress the probe.
+
+### 10.2 Semantic probe
+
+Once deterministic eligibility is satisfied, one genuinely semantic question remains:
+
+> Does the latest actual user intent still call for consequential execution now?
+
+Pindie must not infer this from `nextIntent`, unfinished status, prior tool usage, or a workflow phase.
+
+The model receives one thin runtime-generated hidden follow-up probe and may choose among the currently visible/legal semantic actions. The probe must not enumerate lifecycle rules or specific tool sequences; Tool Surface, Gateway, Runtime Context, and reducer invariants already express those constraints.
+
+The probe must explicitly state that it is **not user intent and not a new request**.
+
+### 10.3 One-shot Pi-native continuation
+
+Keep Pi's native mechanism:
+
+```text
+agent_end
+→ deterministic eligibility
+→ at most one hidden Pindie custom message
+→ sendMessage(..., { deliverAs: "followUp" })
+→ Pi continues its own low-level Agent lifecycle
+→ agent_settled only after no automatic continuation remains
+```
+
+The fuse is runtime-only and resets for a fresh user-driven Agent Run. M6 must not add recursion, direct model calls, background loops, repeated probes, a phase machine, or a second Agent Loop.
+
+### 10.4 Ephemeral probe context
+
+Pi custom messages participate in model context. Historical continuation probes must therefore not accumulate as durable semantic instructions.
+
+During the actual continuation follow-up, model context should retain only the current/latest Pindie continuation probe. On a fresh user-driven Run, prior Pindie continuation probes should be filtered from model context entirely.
+
+This is context projection only. The session may still contain hidden custom entries for audit/history; they simply stop affecting later LLM context.
+
+## 11. Activity, reasoning, skills
 
 Activity, timer, cost, status, and adaptive reasoning remain runtime-only systems. Pi remains the sole Skill runtime.
 
-## 11. Architectural invariants
+## 12. Architectural invariants
 
 1. Reality determines reconstructable facts.
 2. State stores only durable semantic current-work facts.
 3. Run Facts are runtime-only and minimal.
 4. Snapshot and capabilities are derived, never persisted.
-5. Knowledge Surface, Tool Surface, and Gateway legality derive from one semantic world.
+5. Knowledge Surface, Tool Surface, Gateway legality, and deterministic continuation eligibility derive from one semantic world.
 6. Effective tools are a subset of the captured Pi/user Run baseline.
 7. Reducer knows semantic events, not Pi tools.
 8. Harness closes deterministic branches; model retains genuine semantic choices.
@@ -358,11 +327,12 @@ Activity, timer, cost, status, and adaptive reasoning remain runtime-only system
 10. Gateway remains defense in depth after Tool Surface alignment.
 11. Global natural-language policy must not duplicate deterministic Harness authority.
 12. Verification factual evidence/provenance/freshness belongs to Harness; verification meaning/coverage belongs to the model.
-13. Runtime evidence refs/generations are temporary and never persisted.
+13. Runtime evidence refs/generations and continuation fuses are temporary and never persisted.
 14. Durable Verification State remains compact; Pindie is not a tool-result log database.
-15. Pi owns the low-level Agent Loop, Skill runtime, concrete tool registry, and native system-prompt construction.
+15. Historical runtime probes must not become persistent model policy through context accumulation.
+16. Pi owns the low-level Agent Loop, Skill runtime, concrete tool registry, native system-prompt construction, retries, compaction, and follow-up delivery.
 
-## 12. Migration plan
+## 13. Migration plan
 
 ```text
 M0 Semantic Foundation              — implemented
@@ -370,10 +340,10 @@ M1 Execution Semantics Foundation   — implemented
 M2 Semantic Gateway Cutover         — implemented
 M3 Model Tool Surface               — implemented
 M4 Policy Reduction                 — implemented
-M5 Verification v0.2                — next
-M6 Continuation Simplification
+M5 Verification v0.2                — implemented
+M6 Continuation Simplification      — next
 M7 Skill / Docs Prune
 M8 Extension Composition
 ```
 
-M5 changes evidence authority/provenance and freshness, not the persisted verification schema or reducer event vocabulary.
+M6 simplifies continuation authority and context hygiene; it does not redesign Task/verification semantics, Tool Surface, Gateway legality, or Pi's low-level Agent Loop.
