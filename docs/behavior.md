@@ -14,19 +14,26 @@ This document defines the approved v0.2 semantic and behavioral contract. Target
 8. Completed Task implies current verification status `passed`.
 9. Every Task has at least one success criterion.
 
-Persistent State must not store runtime capabilities, active tools, Run authority, or workflow phases.
+Persistent State must not store runtime capabilities, active tools, Run authority, workflow phases, recent evidence refs, or evidence generations.
 
 ## 2. Ownership
 
 ```text
 Reality → reconstructable facts
-Harness → deterministic truth, legality, lifecycle, freshness
-Model   → intent interpretation, planning, semantic choice, coverage judgment
+Harness → deterministic truth, legality, lifecycle, factual evidence, freshness
+Model   → intent interpretation, planning, semantic choice, verification meaning/coverage
 Human   → goals, taste, consequential judgment, approval
 Pi      → concrete tool registry/execution, native system prompt, low-level Agent Loop
 ```
 
 Deterministic facts close deterministic branches; genuine semantic ambiguity remains model-owned within the legal capability space.
+
+For verification specifically:
+
+```text
+Harness → what happened
+Model   → what it proves
+```
 
 ## 3. Derived semantic truth
 
@@ -154,7 +161,7 @@ projectMutation = ambiguous
 
 Denied calls create no mutation window. Failed ambiguous tools are still observed afterward because partial project mutation may have occurred.
 
-## 7. M3 narrow semantic tools and Tool Surface — implemented
+## 7. Narrow semantic tools and Tool Surface — implemented
 
 Model-facing semantic tools:
 
@@ -184,229 +191,311 @@ Tools whose required capability is present
 
 The Run Tool Baseline is captured at `before_agent_start`, restored at `agent_settled`, and never persisted. Pindie never enables a baseline-absent tool. Unknown/custom baseline-active tools require `project.mutate`.
 
-## 8. M4 global policy removal
+## 8. Policy/Knowledge Surface — implemented M4
 
-M4 removes Pindie's global Core Policy/system-prompt override.
+Pindie no longer injects a global Core Policy or returns a Pindie-owned system-prompt override. Pi owns native system-prompt construction.
 
-Required behavior:
+Runtime Context is factual Knowledge Surface driven by `SemanticSnapshot`. It may show coherent/stale/unavailable authority, Task/verification status, current Task contents, verification records, Human Gate, and factual unavailable reason. It must not restate structural legality as lifecycle instructions.
 
-```text
-before_agent_start
-→ establish authoritative Run facts
-→ apply capability-driven Tool Surface
-→ do not return a Pindie-owned systemPrompt replacement
-```
+## 9. M5 Verification v0.2 ownership
 
-Pindie must not retain or recreate a global lifecycle policy through:
+M5 changes evidence authority without changing durable State schema or reducer vocabulary.
 
-- `PINDIE_CORE_POLICY`;
-- `<PINDIE_CORE>` blocks;
-- hidden custom messages;
-- Runtime Context instructions;
-- duplicated lifecycle rules in tool descriptions;
-- procedural Gateway denial text;
-- private reconstruction of Pi's system prompt.
-
-Pi's native system-prompt construction remains authoritative and may naturally track active-tool changes made through its public API.
-
-Natural-language policy is a last resort. Rules already enforced by State/Snapshot/Capabilities/Tool Surface/Gateway/Reducer must not be repeated globally for the model to remember.
-
-## 9. M4 Runtime Context / Knowledge Surface
-
-Runtime Context remains hidden model context but becomes a factual Knowledge Surface.
-
-The context must identify itself as runtime metadata, not user intent or a new request.
-
-### Coherent authority
-
-A coherent context may render:
+Durable `VerificationCheck` remains:
 
 ```text
-Pindie Runtime Context
-
-Runtime metadata only; not user intent or a new request.
-
-Agent Run authority: coherent
-Task status: active
-Verification status: pending
-
-Goal:
-...
-
-Constraints:
-...
-
-Success criteria:
-...
-
-Blockers:
-...
-
-Questions:
-...
-
-Next intent:
-...
-
-Verification checks:
-...
-
-Human gate:
-...
+name: string
+status: passed | failed
+covers: string[]
+evidence: string
 ```
 
-Optional sections are omitted when empty.
+Existing records remain valid. No State migration or schema version is introduced.
 
-### Stale authority
+### 9.1 Model-facing verification input
 
-If current State is available but the current Agent Run is incoherent/stale, Runtime Context must explicitly render:
+`pindie_verification_record` must stop accepting free-form durable `evidence: string` from the model.
+
+Target semantic input is conceptually:
 
 ```text
-Agent Run authority: stale
+check.name
+check.status
+check.covers
+evidenceRefs[]
 ```
 
-It may still show the current authoritative Task facts, but must not imply that consequential authority remains coherent.
+The model owns `name`, `status`, and `covers`.
 
-Do not add procedural text such as "begin a new Run", "call X", or "do not mutate" to the Runtime Context.
+The Harness owns validation/resolution of `evidenceRefs` and constructs the durable `evidence` string before dispatching the existing `record_verification` event.
 
-### Unavailable authority
+Unknown/stale refs reject the operation and leave State unchanged.
 
-If authoritative Pindie State is unavailable, Runtime Context renders only factual unavailability information, conceptually:
+### 9.2 Recent Evidence Registry
+
+Evidence refs are current-Agent-Run runtime handles, preferably `ev:<toolCallId>`.
+
+They are:
+
+- derived from actual Pi tool results;
+- never persisted;
+- reusable within the current evidence scope;
+- discarded at `agent_settled` and session shutdown;
+- reset for the next actual Agent Run.
+
+A verification record does not consume the underlying candidate; one factual result may legitimately support multiple checks/criteria.
+
+### 9.3 Evidence candidate eligibility
+
+Evidence is captured only while current semantic authority is coherent and there is a current unfinished Task.
+
+Eligible:
 
 ```text
-Pindie Runtime Context
-
-Runtime metadata only; not user intent or a new request.
-
-Agent Run authority: unavailable
-Reason: ...
+observe.project
+observe.git
 ```
 
-It must not append lifecycle instructions such as "Do not make consequential project changes" because Tool Surface and Gateway already close those branches.
+Known project mutations (`edit`/`write`) are not candidates.
 
-### Shared semantic truth
+Pindie semantic State/Gate/verification tools are not candidates.
 
-Runtime Context authority/task/verification status must consume `SemanticSnapshot` rather than independently recomputing those statuses from State.
+Ambiguous project-effect tools (`bash`, unknown/custom) are candidates only if existing M2 Project Mutation Freshness proves that project Reality did not change. If mutation is detected or the before/after comparison is unknown, no evidence ref is exposed for that result.
 
-The same semantic world therefore drives:
+`event.isError === true` does not by itself make a result ineligible. The Harness records the error fact; the model decides whether that fact proves a passed or failed semantic check.
+
+### 9.4 Evidence generation/freshness
+
+M5 must handle parallel/late results. Clearing the registry alone is insufficient.
+
+Maintain a runtime-only evidence generation token.
+
+At authorization, every tool call that may later participate in evidence bookkeeping records its current generation.
+
+A result can become current evidence only when:
 
 ```text
-SemanticSnapshot
-├→ Capabilities → Tool Surface / Gateway
-└→ Runtime Context status facts
+callGeneration === currentGeneration
 ```
 
-Current State still supplies the detailed Task Contract, open loops, verification records, and Human Gate contents.
+after mutation bookkeeping for that result has finished.
 
-## 10. Tool descriptions and Gateway text
+Advance the generation and clear current candidates when the verification basis changes.
 
-Narrow tool descriptions explain operation meaning and input fields. They must not become lifecycle policy manuals.
+Required generation advances:
 
-Gateway denials should remain concise factual diagnostics centered on current authority/status and missing capability. They must not teach a replacement workflow.
+```text
+new actual Agent Run
+successful task.start
+successful task.replace
+successful task.refine
+successful known project mutation
+detected/unknown ambiguous project mutation
+external authority discontinuity / markUnavailable
+```
 
-Operation-specific exceptional recovery text may remain when it describes an actual conflict, lock, persistence failure, or result-specific next safety step. M4 does not mechanically delete every instruction-like sentence.
+Do not advance merely for:
+
+```text
+observation
+task.progress
+gate.open
+gate.resolve
+verification.record
+```
+
+A successful no-op refinement may conservatively advance evidence generation; M5 does not need extra identity machinery solely to optimize this case.
+
+### 9.5 Mutation-before-evidence ordering
+
+Ambiguous results obey:
+
+```text
+tool_result
+→ finish M2 mutation observation
+→ if mutation/unknown: invalidate verification, advance evidence generation, no candidate
+→ if unchanged: candidate may be captured if all other conditions hold
+```
+
+An ambiguous command that changes Reality must be followed by fresh verification; its own result does not prove the newly changed Reality.
+
+### 9.6 Model-visible evidence refs
+
+When an eligible current candidate is captured, append a concise factual marker to that tool result, for example:
+
+```text
+[Pindie evidence ref: ev:<toolCallId>]
+```
+
+Do not add lifecycle instructions around the ref.
+
+No evidence marker is required for idle/task-free observation, stale/unavailable authority, ineligible tools, stale-generation results, or ambiguous results that mutated/possibly mutated Reality.
+
+### 9.7 Durable evidence materialization
+
+Selected evidence refs are materialized deterministically by Harness code.
+
+The model must not write or summarize the durable evidence string.
+
+Materialization should contain enough factual provenance to identify:
+
+- tool name;
+- success/error outcome;
+- bounded deterministic input excerpt/representation;
+- bounded deterministic result excerpt/representation;
+- digest(s) where data is truncated or non-text.
+
+Do not persist whole raw logs automatically.
+
+Initial limits must be fixed, tested, and intentionally small. A reasonable target is at most 4 evidence refs per verification check, with bounded per-ref input/result text.
+
+Only explicitly selected refs persist; unrelated Recent Evidence candidates remain runtime-only.
+
+### 9.8 Legacy verification compatibility
+
+Old persisted verification records are grandfathered.
+
+M5 must not:
+
+- invalidate all existing verification on load;
+- add schema versioning solely for evidence provenance;
+- migrate old `evidence` strings;
+- reject a previously valid State merely because its evidence was recorded before M5.
+
+Once existing verification is naturally invalidated by project/Task changes, subsequent newly recorded verification follows the M5 evidence-ref path.
+
+## 10. M5 acceptance examples
+
+V01 — observation evidence
+
+```text
+coherent unfinished Task
+read succeeds
+→ result receives current evidence ref
+```
+
+V02 — idle observation
+
+```text
+no current Task
+read succeeds
+→ no evidence ref
+```
+
+V03 — failed observation
+
+```text
+coherent unfinished Task
+eligible observation returns error
+→ factual error result may receive evidence ref
+→ Harness does not infer semantic failed status
+```
+
+V04 — known mutation
+
+```text
+edit succeeds
+→ verification invalidated
+→ evidence generation advances
+→ edit result gets no evidence ref
+```
+
+V05 — non-mutating bash
+
+```text
+bash runs test command
+before/after fingerprint unchanged
+→ result may receive evidence ref
+```
+
+V06 — mutating/unknown bash
+
+```text
+bash changes project or mutation cannot be proven absent
+→ verification invalidated
+→ generation advances
+→ no evidence ref for that bash result
+```
+
+V07 — stale parallel result
+
+```text
+read begins at generation N
+project mutation advances to N+1
+old read result arrives
+→ no current evidence candidate/ref
+```
+
+V08 — valid record
+
+```text
+model calls pindie_verification_record with current evidence refs
+→ Harness resolves refs
+→ durable bounded factual evidence string constructed
+→ existing reducer receives normal VerificationCheck
+```
+
+V09 — fabricated/stale ref
+
+```text
+pindie_verification_record references unknown/stale ref
+→ operation errors
+→ State unchanged
+```
+
+V10 — semantic freedom
+
+```text
+error evidence + criterion "invalid input is rejected"
+→ model may record status passed
+→ Harness does not override semantic judgment
+```
+
+V11 — legacy State
+
+```text
+old valid evidence:string record loaded after M5
+→ State remains valid without migration
+```
 
 ## 11. Human Gate
 
 A Human Gate is an explicit authority boundary. A Gate opened during the current Run has observation-only capability space until new human input. A pre-existing Gate may expose `gate.resolve` and legal Task-boundary choices; the model interprets the human reply among those choices.
 
-M4 does not change Gate semantics.
+M5 does not change Gate semantics.
 
 ## 12. Continuation boundary
 
-M6 owns continuation simplification.
+M6 owns continuation simplification. M5 must not redesign continuation eligibility, follow-up prompts, or continuation fuses.
 
-M4 must preserve current continuation eligibility and hidden follow-up behavior except for the smallest literal rename required by M3 narrow tool names, for example replacing a stale reference to `replace_task` with `pindie_task_replace`.
+## 13. Non-goals for M5
 
-Do not rewrite continuation into a new policy system in M4.
+M5 must not:
 
-## 13. M4 acceptance examples
+- change `PindieState`/`VerificationCheck` persisted shape;
+- add State migration/versioning for evidence provenance;
+- redesign `getVerificationStatus()` semantics;
+- change reducer event vocabulary;
+- infer verification `status` from Pi success/error;
+- infer criterion coverage automatically;
+- weaken M2 Project Mutation Freshness;
+- change M0 capabilities or M3 Tool Surface legality;
+- add a verification log database;
+- persist Recent Evidence refs or generation tokens;
+- redesign continuation, Skills, reasoning, or Human Gate behavior.
 
-P01 — Core removal
-
-```text
-before_agent_start
-→ no Pindie systemPrompt override
-```
-
-P02 — no hidden policy relocation
-
-```text
-no PINDIE_CORE block
-no replacement custom policy message
-```
-
-P03 — coherent Knowledge Surface
-
-```text
-SemanticSnapshot.authority = coherent
-→ Runtime Context says authority coherent
-→ task/verification status exactly match Snapshot
-```
-
-P04 — stale Knowledge Surface
-
-```text
-SemanticSnapshot.authority = stale
-→ Runtime Context says authority stale
-→ no procedural stale-run instruction
-```
-
-P05 — unavailable Knowledge Surface
-
-```text
-SemanticSnapshot.authority = unavailable
-→ Runtime Context says authority unavailable + reason
-→ no mutation prohibition prose
-```
-
-P06 — tool/prompt convergence
-
-```text
-before_agent_start applies M3 Tool Surface
-→ Pindie does not pin a separate systemPrompt override
-→ M2 Gateway remains unchanged
-```
-
-P07 — structural legality unchanged
-
-```text
-M0 capability matrix
-M1 Tool Effects
-M2 Gateway
-M3 Tool Surface
-Reducer backstops
-→ unchanged
-```
-
-## 14. Non-goals for M4
-
-M4 must not:
-
-- change M0 capability semantics;
-- weaken M2 Gateway authorization;
-- change M3 Tool Surface projection or Run baseline lifecycle;
-- redesign verification evidence ownership;
-- redesign Human Gate semantics;
-- redesign continuation;
-- redesign Skills;
-- parse or reconstruct Pi's system prompt;
-- import private Pi internals;
-- move global policy into a custom message;
-- create a second Knowledge Surface or semantic truth.
-
-## 15. Migration status
+## 14. Migration status
 
 ```text
 M0 Semantic Foundation              — implemented
 M1 Execution Semantics Foundation   — implemented
 M2 Semantic Gateway Cutover         — implemented
 M3 Model Tool Surface               — implemented
-M4 Policy Reduction                 — next
-M5 Verification v0.2
+M4 Policy Reduction                 — implemented
+M5 Verification v0.2                — next
 M6 Continuation Simplification
 M7 Skill / Docs Prune
 M8 Extension Composition
 ```
 
-M4's acceptance target is deletion and convergence: deterministic correctness remains structural, Pi owns its native system prompt, and Pindie Runtime Context reports facts from the same Semantic Snapshot that drives capabilities.
+M5 is complete when newly recorded durable evidence can only originate from current Harness-captured factual tool results, while the model retains semantic pass/fail and criterion-coverage judgment and old persisted verification remains compatible.

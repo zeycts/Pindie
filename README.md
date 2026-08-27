@@ -8,8 +8,8 @@ Pindie carries one development task from intent to verified completion while kee
 
 ```text
 Human  → goals, taste, consequential judgment, approval
-Model  → interpretation, planning, semantic choice
-Pindie → durable semantic State, legality, capability, verification, lifecycle
+Model  → interpretation, planning, semantic choice, verification meaning/coverage
+Pindie → durable semantic State, legality, capability, factual evidence/freshness, lifecycle
 Pi     → LLM execution, tool registry/execution, sessions, low-level Agent Loop
 ```
 
@@ -55,16 +55,16 @@ M0 Semantic Foundation              — implemented
 M1 Execution Semantics Foundation   — implemented
 M2 Semantic Gateway Cutover         — implemented
 M3 Model Tool Surface               — implemented
-M4 Policy Reduction                 — next
-M5 Verification v0.2
+M4 Policy Reduction                 — implemented
+M5 Verification v0.2                — next
 M6 Continuation Simplification
 M7 Skill / Docs Prune
 M8 Extension Composition
 ```
 
-M0–M2 established semantic truth, Tool Effects, and live capability authorization. M3 aligned the model-visible action space with that legality model by replacing broad semantic action enums with narrow tools and filtering Pi's per-Run active-tool baseline through current capabilities.
+M0–M4 established one semantic truth for legality, aligned model-visible tools with that truth, cut the live Gateway over to it, and removed the duplicated global Core Policy/system-prompt override. Runtime Context is now factual Knowledge Surface derived from the same Semantic Snapshot that drives capabilities.
 
-M4 removes the remaining global natural-language policy layer. Pindie will stop overriding Pi's system prompt with a duplicated lifecycle manual; Pi's native prompt will track the actual active Tool Surface, while Pindie's Runtime Context becomes a factual Knowledge Surface derived from the same Semantic Snapshot that drives capabilities.
+M5 fixes verification evidence ownership without changing the durable State schema. Actual tool results become temporary Harness-owned evidence candidates; the model judges pass/fail meaning and criterion coverage using runtime evidence refs; Pindie then materializes selected bounded factual evidence into the existing durable `VerificationCheck.evidence` string. Runtime evidence refs and freshness generations are never persisted.
 
 ## Current implemented baseline
 
@@ -89,6 +89,7 @@ The repository includes:
   - `pindie_gate_resolve`
   - `pindie_git_observe`;
 - capability-driven active Tool Surface narrowing over a fresh per-Run Pi/user baseline;
+- factual Snapshot-aligned Runtime Context with no global Pindie lifecycle-policy prompt;
 - Human Gate lifecycle and verification freshness;
 - runtime-only Activity, Run Timer, Run Cost, status presentation, adaptive reasoning, and `/efficiency`;
 - bundled `git-workflow` Skill through Pi's Skill runtime.
