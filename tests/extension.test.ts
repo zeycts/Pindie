@@ -4,7 +4,6 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import {
-  PINDIE_CORE_START,
   PINDIE_RUNTIME_CONTEXT_TYPE,
 } from "../src/context.ts";
 import {
@@ -349,8 +348,8 @@ async function beginAgentRun(
   harness: ReturnType<typeof createHarness>,
   cwd = "/repo",
   sessionEntries: unknown[] = [],
-): Promise<string> {
-  const result = await harness.api.handler("before_agent_start")(
+): Promise<void> {
+  await harness.api.handler("before_agent_start")(
     {
       type: "before_agent_start",
       prompt: "Continue",
@@ -358,9 +357,7 @@ async function beginAgentRun(
       systemPromptOptions: {},
     },
     context(cwd, sessionEntries),
-  ) as { systemPrompt: string };
-
-  return result.systemPrompt;
+  );
 }
 
 async function callGuard(
@@ -491,7 +488,7 @@ test("AC01-AC15 active executable tasks queue one hidden Pi-native follow-up per
   assert.equal(continuationMessage.display, false);
   const continuationContent = continuationMessage.content;
   assert.match(continuationContent, /consequential execution of this current Task/i);
-  assert.match(continuationContent, /different Task.*replace_task/i);
+  assert.match(continuationContent, /different Task.*pindie_task_replace/i);
   assert.match(continuationContent, /stop, pause, return control, or only inspect, explain, or discuss/i);
   assert.ok(
     continuationContent.indexOf("First re-evaluate") <
@@ -688,11 +685,11 @@ test("failed State load is fail-closed and a later session reload recovers", asy
   assert.equal(harness.integration.runtime.state.task?.goal, "Project B");
 });
 
-test("T41-T43 before_agent_start preserves Pi prompt and injects one current Core block", async () => {
+test("P01/P07 before_agent_start returns no Pindie systemPrompt override or Core block", async () => {
   const harness = createHarness([["/repo", activeState()]]);
   await startSession(harness, "/repo");
   const handler = harness.api.handler("before_agent_start");
-  const first = await handler(
+  const result = await handler(
     {
       type: "before_agent_start",
       prompt: "Continue",
@@ -700,26 +697,15 @@ test("T41-T43 before_agent_start preserves Pi prompt and injects one current Cor
       systemPromptOptions: {},
     },
     context("/repo"),
-  ) as { systemPrompt: string };
-  const second = await handler(
-    {
-      type: "before_agent_start",
-      prompt: "Continue",
-      systemPrompt: first.systemPrompt,
-      systemPromptOptions: {},
-    },
-    context("/repo"),
-  ) as { systemPrompt: string };
+  ) as { systemPrompt?: string } | undefined;
 
-  assert.match(second.systemPrompt, /^Pi system prompt/);
-  assert.match(second.systemPrompt, /Pindie Core Policy/);
-  assert.doesNotMatch(second.systemPrompt, /Pindie Current State|Task status:|Wire Pi extension/);
-  assert.equal(second.systemPrompt.split(PINDIE_CORE_START).length - 1, 1);
+  assert.equal(result?.systemPrompt, undefined);
 });
 
-test("CP15-CP24 Context lifecycle projects fresh ephemeral Runtime Context", async () => {
+test("P04 Context lifecycle projects one fresh coherent Snapshot-driven Runtime Context", async () => {
   const harness = createHarness([["/repo", verifiedState()]]);
   await startSession(harness, "/repo");
+  await beginAgentRun(harness);
   const originalMessages = [
     { role: "user", content: "Continue", timestamp: 1 },
     {
@@ -741,6 +727,8 @@ test("CP15-CP24 Context lifecycle projects fresh ephemeral Runtime Context", asy
   assert.deepEqual(first.messages.slice(0, 2), [originalMessages[0], originalMessages[2]]);
   assert.equal(first.messages.filter((message) => message.customType === PINDIE_RUNTIME_CONTEXT_TYPE).length, 1);
   assert.equal(first.messages.at(-1)?.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
+  assert.match(String(first.messages.at(-1)?.content), /Agent Run authority: coherent/);
+  assert.match(String(first.messages.at(-1)?.content), /Task status: active/);
   assert.match(String(first.messages.at(-1)?.content), /Verification status: passed/);
   assert.deepEqual(harness.integration.runtime.state, semanticState);
   assert.deepEqual(harness.store.saves, []);
@@ -773,7 +761,7 @@ test("CP15-CP24 Context lifecycle projects fresh ephemeral Runtime Context", asy
   assert.match(String(afterEdit.messages.at(-1)?.content), /Verification status: stale/);
 });
 
-test("unavailable Runtime Context remains consistent with fail-closed guards", async () => {
+test("P06 unavailable Runtime Context remains factual and consistent with fail-closed guards", async () => {
   const harness = createHarness();
   harness.store.loadErrors.set("/repo", new Error("invalid persisted State"));
   await startSession(harness, "/repo");
@@ -783,12 +771,15 @@ test("unavailable Runtime Context remains consistent with fail-closed guards", a
     context("/repo"),
   ) as { messages: Array<Record<string, unknown>> };
 
-  assert.match(String(projected.messages.at(-1)?.content), /State: unavailable/);
-  assert.match(String(projected.messages.at(-1)?.content), /invalid persisted State/);
+  const content = String(projected.messages.at(-1)?.content);
+  assert.match(content, /Agent Run authority: unavailable/);
+  assert.match(content, /Could not load Pindie State for '\/repo': invalid persisted State/);
+  assert.doesNotMatch(content, /Do not make consequential|Restore|Reload|call (?:a|the|pindie_)/i);
+  assert.doesNotMatch(harness.integration.stateUnavailableReason ?? "", /Restore|Reload/);
   assertBlocked(await callGuard(harness, toolCall("edit")), /authority is unavailable.*project\.mutate/i);
 });
 
-test("load failure injects explicit unavailable Runtime Context", async () => {
+test("unavailable before_agent_start also returns no systemPrompt override", async () => {
   const harness = createHarness();
   harness.store.loadErrors.set("/repo", new Error("invalid persisted State"));
   await startSession(harness, "/repo");
@@ -801,10 +792,9 @@ test("load failure injects explicit unavailable Runtime Context", async () => {
       systemPromptOptions: {},
     },
     context("/repo"),
-  ) as { systemPrompt: string };
+  ) as { systemPrompt?: string } | undefined;
 
-  assert.doesNotMatch(result.systemPrompt, /Pindie State is unavailable|invalid persisted State|"task": null/);
-  assert.match(result.systemPrompt, new RegExp(PINDIE_CORE_START));
+  assert.equal(result?.systemPrompt, undefined);
 });
 
 test("T44 successful edit invalidates verification and persists it", async () => {
@@ -2454,6 +2444,17 @@ test("M3 T15/T17 stale external State narrows the surface and Gateway denies a p
   harness.store.states.set("/repo", activeState("External Task"));
   assertBlocked(await callGuard(harness, toolCall("edit", {}, "pre-generated")), /authority is stale.*project\.mutate/i);
   assert.deepEqual(harness.api.getActiveTools(), ["read"]);
+
+  const projected = await harness.api.handler("context")(
+    { type: "context", messages: [{ role: "user", content: "Continue", timestamp: 1 }] },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+  const content = String(projected.messages.at(-1)?.content);
+  assert.match(content, /Agent Run authority: stale/);
+  assert.match(content, /Task status: active/);
+  assert.match(content, /Verification status: pending/);
+  assert.match(content, /Goal:\nExternal Task/);
+  assert.doesNotMatch(content, /start a new Run|return control|do not mutate|call (?:a|the|pindie_)/i);
 });
 
 test("M3 T16 unavailable State narrows an active Run to baseline observations", async () => {
