@@ -60,6 +60,10 @@ For an approved task:
 5. Preserve unrelated runtime behavior and user work.
 6. Run `pnpm run check` before declaring completion.
 
-## Current maintenance focus
+## Maintenance posture
 
-The remaining v0.2 internal cleanup is **Extension Composition**: reduce `src/extension.ts` toward Pi lifecycle wiring over existing semantic/runtime subsystems without changing the established behavior above. Do not redesign semantics merely to make file decomposition easier.
+The v0.2 architecture baseline is complete.
+
+Future architecture changes should be driven by concrete dogfood failures, explicit user goals, or verified incompatibilities with Pi/runtime reality.
+
+Do not create new architectural milestones or refactor established ownership boundaries merely for additional cleanup.
