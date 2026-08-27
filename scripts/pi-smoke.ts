@@ -2,6 +2,7 @@ import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { finished } from "node:stream/promises";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const TERMINATION_GRACE_MS = 1_000;
@@ -160,11 +161,15 @@ export async function runOwnedSmoke(options: OwnedSmokeOptions): Promise<OwnedSm
     const child = spawn(options.command, options.args ?? [], spawnOptions);
     child.stdout?.on("data", (chunk: Buffer) => { stdout = appendTail(stdout, chunk); });
     child.stderr?.on("data", (chunk: Buffer) => { stderr = appendTail(stderr, chunk); });
+    const outputSettled = Promise.allSettled([
+      child.stdout ? finished(child.stdout, { cleanup: true }) : Promise.resolve(),
+      child.stderr ? finished(child.stderr, { cleanup: true }) : Promise.resolve(),
+    ]);
 
     let settle!: (value: { exitCode: number | null; signal: NodeJS.Signals | null; error?: Error }) => void;
     const settled = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null; error?: Error }>((resolve) => { settle = resolve; });
     child.once("error", (error) => settle({ exitCode: null, signal: null, error }));
-    child.once("close", (exitCode, signal) => settle({ exitCode, signal }));
+    child.once("exit", (exitCode, signal) => settle({ exitCode, signal }));
     const exited = settled.then(() => undefined);
     let timeoutHandle: ReturnType<typeof setTimeout>;
     const timeout = new Promise<{ kind: "timeout" }>((resolve) => {
@@ -176,14 +181,21 @@ export async function runOwnedSmoke(options: OwnedSmokeOptions): Promise<OwnedSm
     ]);
     clearTimeout(timeoutHandle!);
 
+    let final;
+    let timedOut;
     if (outcome.kind === "timeout") {
       if (child.pid !== undefined) await terminateOwnedGroup(child.pid, exited);
-      const final = await settled;
-      result = { workspace, retainedWorkspace: null, exitCode: final.exitCode, signal: final.signal, timedOut: true, stdoutTail: stdout.toString(), stderrTail: stderr.toString() };
+      final = await settled;
+      timedOut = true;
     } else {
-      if (outcome.value.error) throw outcome.value.error;
-      result = { workspace, retainedWorkspace: null, exitCode: outcome.value.exitCode, signal: outcome.value.signal, timedOut: false, stdoutTail: stdout.toString(), stderrTail: stderr.toString() };
+      final = outcome.value;
+      timedOut = false;
     }
+    if (final.error) throw final.error;
+    const streamResults = await outputSettled;
+    const streamFailure = streamResults.find((streamResult) => streamResult.status === "rejected");
+    if (streamFailure) throw streamFailure.reason;
+    result = { workspace, retainedWorkspace: null, exitCode: final.exitCode, signal: final.signal, timedOut, stdoutTail: stdout.toString(), stderrTail: stderr.toString() };
   } finally {
     if (keepArtifacts && result) {
       result.retainedWorkspace = workspace;
