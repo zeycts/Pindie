@@ -56,7 +56,7 @@ deriveSemanticSnapshot()
 deriveCapabilities()
 ```
 
-Concrete execution semantics are separate:
+Concrete execution semantics remain separate:
 
 ```text
 Tool Call
@@ -70,11 +70,11 @@ Capabilities + Tool Effect
 authorizeToolEffect()
 ```
 
-M0–M2 implement these layers and make capability authorization the live runtime authority.
+M0–M3 are implemented: semantic truth drives both live execution authorization and model-visible Tool Surface.
 
-## 4. State, reducer, Runtime, and Run Facts
+## 4. Durable State and Run Facts
 
-`PindieState` remains the minimal durable current-work model:
+`PindieState` stores one durable current Task or `null`:
 
 ```text
 PindieState
@@ -100,11 +100,11 @@ CompletionRunRelation not_completed | completed_before_run | completed_during_ru
 GateRunRelation       none | existed_before_run | opened_during_run
 ```
 
-M2 derives these from the current immutable Runtime State plus a minimal Run context: run-start Task/Gate references, run-start external-State epoch, and whether successful `task.start`/`task.replace` introduced the current Task. Object identity is only a coherent-Run change detector, never persistent semantic identity.
+Object identity is only a coherent-Run immutable-State change detector, never persistent semantic identity.
 
-## 5. Capabilities
+## 5. Capabilities and live execution
 
-Initial capabilities are:
+Capability vocabulary:
 
 ```text
 observe.project
@@ -123,9 +123,9 @@ gate.open
 gate.resolve
 ```
 
-Capabilities are pure derived semantic authority and are never persisted.
+Capabilities are pure derived authority and are never persisted.
 
-Important consequences include:
+Important consequences:
 
 ```text
 unavailable/stale authority → observation only
@@ -137,26 +137,9 @@ same-Run-opened Gate       → observation only
 task.complete              → only when completionReady
 ```
 
-`completionReady` requires an unfinished Task, passed current verification, no blockers, no unresolved questions, and no Human Gate.
+The live Gateway authorizes every non-observation call through current capabilities after authoritative refresh/coherence checks. Reducer and Runtime remain deeper integrity backstops.
 
-## 6. Live Execution Gateway
-
-M2 is implemented. Known observation tools remain a fast path. Every non-observation call follows the same authority chain:
-
-```text
-classify Tool Effect
-→ refresh authoritative State / detect stale Run
-→ derive SemanticRunFacts
-→ derive SemanticSnapshot
-→ derive Capabilities
-→ authorize required capability
-→ if allowed, establish mutation observation when required
-→ execute
-```
-
-The Gateway does not reimplement Task/Gate/verification policy. Reducer and Runtime remain deeper integrity backstops.
-
-Project Mutation Freshness consumes the same Tool Effect taxonomy:
+Project Mutation Freshness uses the same Tool Effect taxonomy:
 
 ```text
 mutation none      → no project-mutation observation
@@ -164,15 +147,9 @@ mutation known     → successful mutation invalidates prior verification
 mutation ambiguous → before/after Reality fingerprint observation
 ```
 
-A denied call creates no mutation-observation side effects.
+## 6. Model Tool Surface — implemented M3
 
-## 7. M3 Model Tool Surface
-
-M3 aligns what the model can see with the already-live capability legality model.
-
-### Narrow semantic tools
-
-The broad model-facing `pindie_state(action=...)` and `pindie_gate(action=...)` interfaces are transitional APIs and should be replaced with narrow capability-shaped tools:
+Model-facing semantic tools are narrow capability-shaped adapters:
 
 ```text
 pindie_task_start          → task.start
@@ -186,11 +163,9 @@ pindie_gate_resolve        → gate.resolve
 pindie_git_observe         → observe.git
 ```
 
-These tools are adapters to the existing semantic `PindieEvent`s. Reducer events and persistent State do not change. M3 also does not redesign the verification record schema; that belongs to M5.
+Internal reducer events remain unchanged.
 
-### Tool Surface projection
-
-For every actual Agent Run:
+For each actual Agent Run:
 
 ```text
 Run Tool Baseline
@@ -200,123 +175,122 @@ Tools allowed by current capabilities
 Effective Tool Surface
 ```
 
-The **Run Tool Baseline** is the Pi/user active-tool set captured at the authoritative `before_agent_start` boundary before Pindie applies semantic restriction. Pindie may narrow that set but must never enable a tool absent from the baseline.
+The Run Tool Baseline is the Pi/user active set captured at the authoritative `before_agent_start` boundary before Pindie applies restriction. Pindie may narrow it but never enable a tool absent from the baseline. The exact baseline is restored when the Run settles and a fresh one is captured for the next Run.
 
-For a baseline-active tool `T` in an unchanged semantic world:
+The M2 Gateway remains authoritative for races, stale pre-generated calls, and temporary visibility mismatch.
 
-```text
-visible(T)
-⇔
-current capabilities contain T's required capability
-```
+## 7. M4 Policy Reduction and Knowledge Surface
 
-Unknown/custom tools retain the conservative M1 effect `project.mutate / ambiguous`; therefore they are visible only when `project.mutate` is available and only if they were already baseline-active.
+M4 removes the remaining global Pindie natural-language policy layer.
 
-### Pi v0.84.3 active-tool contract
+### No Pindie-owned global lifecycle prompt
 
-Pindie is pinned to Pi v0.84.3. Its public API provides:
+The current `PINDIE_CORE_POLICY`/Core-block injection is transitional and must be deleted in M4.
 
-```text
-pi.getActiveTools() → current active names
-pi.getAllTools()    → configured tool metadata
-pi.setActiveTools(names)
-```
+Pindie must not replace it with:
 
-`setActiveTools` is replacement-style, ignores unknown names, rebuilds Pi's base system prompt, and changes the active tool set for the next agent turn. Pi v0.84.3 exposes no composable active-tool overlay and no active-tool-change event.
+- a hidden custom message;
+- Runtime Context instructions;
+- duplicated tool-description legality;
+- long Gateway guidance;
+- a private reconstruction of Pi's system prompt.
 
-M3 therefore owns a simple Run-scoped overlay contract:
+Natural-language policy is a last resort, not a source of deterministic correctness. If State, Snapshot, Capabilities, Tool Surface, Gateway, or Reducer already determine a rule, that rule must not be repeated as a global prompt instruction.
 
-1. At `before_agent_start`, refresh authoritative Pindie State and establish the actual Run Facts boundary.
-2. Capture the current Pi/user active tools as the Run Tool Baseline before Pindie restricts them.
-3. Derive the effective set by filtering that baseline through current capabilities.
-4. Reapply from the same baseline whenever semantic capabilities change during the Run.
-5. Restore the exact baseline when the Run settles.
-6. Capture a fresh baseline for the next actual Agent Run.
+### Pi owns the system prompt
 
-Do not maintain a second persistent active-tool configuration. Do not restore/enable tools that were absent from the captured baseline.
+M3 changes active tools through Pi's public `setActiveTools()` API. Pi v0.84.3 rebuilds its base system prompt when the active tool set changes.
 
-Concurrent changes to active tools by another extension during an already-running Agent Run cannot be perfectly composed with Pi v0.84.3 because no overlay/change-event API exists. M3 documents that limitation rather than adding heuristic synchronization or another state machine.
-
-### Why `input` is not the baseline boundary
-
-Pi v0.84.3 emits the extension `input` event before model/auth preflight. That input may be handled or rejected without `before_agent_start`, without an Agent Run, and without `agent_settled`.
-
-Therefore Pindie must **not** capture-and-restrict the active Tool Surface from `input`. Doing so could leave Pi idle with a narrowed active set and cause a later input to capture that restricted set as a false baseline.
-
-`before_agent_start` is the single authority boundary for both:
+The remaining mismatch exists because Pindie's current `before_agent_start` handler returns a Pindie-modified `systemPrompt`, causing Pi to retain a run-level override. M4 removes that override. After M4:
 
 ```text
-actual Agent Run Facts
-Run Tool Baseline
+before_agent_start
+→ establish Run facts
+→ apply capability-driven Tool Surface
+→ do not return a Pindie systemPrompt replacement
+→ Pi uses its current native base prompt
 ```
 
-This deliberately favors lifecycle correctness over speculative pre-Run prompt-text synchronization.
+This lets Pi's prompt text track the actual active tool set without Pindie parsing or rebuilding Pi internals.
 
-### Refresh points
+Do not move the Core Policy into a `CustomMessage`: Pi converts extension custom messages to LLM-compatible user-role messages, so using one as global policy would blur the latest-user-intent boundary.
 
-The effective Tool Surface must be recomputed when capability truth can change, including:
+### Runtime Context is factual Knowledge Surface
+
+The Pindie Runtime Context remains a hidden context message, but its role is factual projection only.
+
+It may contain:
 
 ```text
-initial before_agent_start Run admission
-successful semantic Task/Gate/verification transitions
-project mutation that invalidates verification
-external State change that makes the Run stale
-State becoming unavailable
-Task completion
+Agent Run authority: coherent | stale | unavailable
+Task status
+Verification status
+Goal
+Constraints
+Success criteria
+Blockers
+Questions
+Next intent
+Verification records
+Human Gate
+Unavailable-State reason
 ```
 
-The M2 Gateway remains authoritative for races, stale pre-generated calls, and any temporary visibility mismatch.
+It must not contain procedural lifecycle instructions or restate actions already enforced by capabilities.
 
-## 8. Pi system-prompt integration boundary
+Runtime Context should consume the same `SemanticSnapshot` used by capability derivation for authority/task/verification status rather than independently calling separate status derivation helpers.
 
-Pi v0.84.3 rebuilds its base system prompt when active tools change. However, Pindie's current `before_agent_start` Core Policy injection returns a system-prompt override for the high-level Agent Run. The hook receives a prompt value that was prepared before Pindie's handler narrows the tools, and the returned override remains active during subsequent turns of the same Run.
+The projection therefore becomes:
 
-Therefore M3 guarantees the actual tool schemas/action space, not perfect synchronization of every selected-tool text fragment in the existing prompt override. `setActiveTools()` during `before_agent_start` still changes the actual tools before model execution; mid-Run surface changes likewise update actual schemas for later turns. The M2 Gateway remains correct for stale/pre-generated calls.
+```text
+PindieState + SemanticRunFacts
+        ↓
+SemanticSnapshot
+        ├→ Capabilities → Tool Surface / Gateway
+        └→ Knowledge Surface + current State details
+```
 
-M3 must not parse/rebuild Pi's private prompt, import private Pi internals, or add compensating lifecycle prose. It also must not pre-restrict tools at `input` merely to improve prompt text.
+This ensures stale/unavailable authority is visible in context and prevents Knowledge Surface from describing a different semantic world than Tool Surface.
 
-M4 owns Policy Reduction and restructuring/removal of the Core Policy override so prompt text and dynamic Tool Surface can fully converge.
+## 8. Human authority
 
-## 9. Knowledge Surface and Human authority
+A Human Gate is an explicit authority boundary. A Gate opened during the current Run has observation-only capability space until new human input. A pre-existing Gate may expose `gate.resolve` and legal Task-boundary choices; the model interprets human input among those choices.
 
-Runtime Context describes the semantic world: Task status, verification status, Task Contract, open loops, verification records, and Human Gate. It should not become a second lifecycle rule system.
+## 9. Verification, continuation, activity, reasoning, skills
 
-A Human Gate is an explicit authority boundary. A Gate opened during the current Run has observation-only capability space until new human input. A pre-existing Gate may expose `gate.resolve` and legal Task-boundary choices; the model interprets the human input among those choices.
+M4 does not redesign verification evidence. M5 later separates Harness-owned factual evidence from model-owned semantic coverage judgment.
 
-## 10. Verification, continuation, activity, reasoning, skills
+Continuation remains subordinate to latest user intent and is redesigned only in M6. M4 may only update a stale literal tool name in the existing continuation probe if required by the M3 narrow-tool rename.
 
-M3 does not redesign verification evidence. M5 later separates Harness-owned factual evidence from model-owned semantic coverage judgment.
+Activity, timer, cost, status, and adaptive reasoning remain runtime-only systems. Pi remains the sole Skill runtime.
 
-Continuation remains subordinate to latest user intent and is redesigned only in M6. Activity, timer, cost, status, and adaptive reasoning remain runtime-only systems. Pi remains the sole Skill runtime.
-
-## 11. Architectural invariants
+## 10. Architectural invariants
 
 1. Reality determines reconstructable facts.
 2. State stores only durable semantic current-work facts.
 3. Run Facts are runtime-only and minimal.
 4. Snapshot and capabilities are derived, never persisted.
-5. Tool visibility and Gateway legality derive from the same capabilities.
+5. Knowledge Surface, Tool Surface, and Gateway legality derive from one semantic world.
 6. Effective tools are a subset of the captured Pi/user Run baseline.
-7. Run Tool Baseline is captured only for an actual Agent Run at `before_agent_start`, never speculatively at `input`.
-8. Tool Effect classification is shared execution semantics, not a second policy system.
-9. Reducer knows semantic events, not Pi tools.
-10. Harness closes deterministic branches; model retains genuine semantic choices.
-11. Human authority is explicit for consequential judgment.
-12. Gateway remains a defense-in-depth backstop after Tool Surface alignment.
-13. Pi remains the only low-level agent loop and Skill runtime.
+7. Reducer knows semantic events, not Pi tools.
+8. Harness closes deterministic branches; model retains genuine semantic choices.
+9. Human authority is explicit for consequential judgment.
+10. Gateway remains defense in depth after Tool Surface alignment.
+11. Global natural-language policy must not duplicate deterministic Harness authority.
+12. Pi owns the low-level Agent Loop, Skill runtime, concrete tool registry, and native system-prompt construction.
 
-## 12. Migration plan
+## 11. Migration plan
 
 ```text
 M0 Semantic Foundation              — implemented
 M1 Execution Semantics Foundation   — implemented
 M2 Semantic Gateway Cutover         — implemented
-M3 Model Tool Surface               — next
-M4 Policy Reduction
+M3 Model Tool Surface               — implemented
+M4 Policy Reduction                 — next
 M5 Verification v0.2
 M6 Continuation Simplification
 M7 Skill / Docs Prune
 M8 Extension Composition
 ```
 
-M3 changes model-facing semantic tools and dynamic visibility, but does not change M0 capability truth, reducer semantics, persisted State, Verification v0.2 ownership, continuation, Skills, or Core Policy content. M4 follows immediately to remove policy text and the remaining system-prompt override mismatch made visible by dynamic tools.
+M4 is intentionally deletion-heavy: remove the global Core Policy/system-prompt override, make Runtime Context factual and Snapshot-aligned, and leave M0–M3 runtime authority unchanged.
