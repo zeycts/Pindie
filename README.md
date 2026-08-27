@@ -44,8 +44,8 @@ The semantic layer is deliberately small and is not a second Agent Loop or workf
 
 See:
 
-- `docs/architecture.md` — approved target v0.2 architecture;
-- `docs/behavior.md` — approved semantic/behavioral contract;
+- `docs/architecture.md` — target v0.2 architecture;
+- `docs/behavior.md` — semantic/behavioral contract;
 - `AGENTS.md` — repository instructions and milestone authority.
 
 ## Migration status
@@ -54,19 +54,17 @@ See:
 M0 Semantic Foundation              — implemented
 M1 Execution Semantics Foundation   — implemented
 M2 Semantic Gateway Cutover         — implemented
-M3 Model Tool Surface               — next
-M4 Policy Reduction
+M3 Model Tool Surface               — implemented
+M4 Policy Reduction                 — next
 M5 Verification v0.2
 M6 Continuation Simplification
 M7 Skill / Docs Prune
 M8 Extension Composition
 ```
 
-M0 established `Run Facts → Semantic Snapshot → Capabilities`. M1 established shared Tool Effect classification and capability authorization. M2 connected those layers to the live Runtime, so capability truth now authorizes real tool execution and Project Mutation Freshness consumes the same Tool Effect classification.
+M0–M2 established semantic truth, Tool Effects, and live capability authorization. M3 aligned the model-visible action space with that legality model by replacing broad semantic action enums with narrow tools and filtering Pi's per-Run active-tool baseline through current capabilities.
 
-M3 aligns model-visible affordances with that already-live legality model. It replaces the broad `pindie_state` / `pindie_gate` action enums with narrow semantic tools and dynamically narrows Pi's active Tool Surface from a fresh per-Run Pi/user baseline. Pindie may remove baseline tools when current capabilities do not permit them, but it must never re-enable a tool that Pi/user had disabled.
-
-The Run Tool Baseline is captured only at the actual `before_agent_start` Run boundary. Pindie does not pre-restrict tools from Pi's `input` event because Pi v0.84.3 emits `input` before model/auth preflight; an input can be handled or fail without an Agent Run, which would otherwise risk leaving a narrowed tool set behind. M4 later removes/restructures redundant Core Policy injection so Pi's system-prompt text can fully track dynamic Tool Surface changes.
+M4 removes the remaining global natural-language policy layer. Pindie will stop overriding Pi's system prompt with a duplicated lifecycle manual; Pi's native prompt will track the actual active Tool Surface, while Pindie's Runtime Context becomes a factual Knowledge Surface derived from the same Semantic Snapshot that drives capabilities.
 
 ## Current implemented baseline
 
@@ -75,12 +73,22 @@ The repository includes:
 - minimal persistent current-Task State;
 - deterministic reducer and State invariants;
 - project-scoped Runtime persistence, refresh, locking, and conflict handling;
-- v0.2 Semantic Foundation (`SemanticRunFacts`, `SemanticSnapshot`, capabilities);
-- v0.2 Execution Semantics (Tool Effect classification and authorization);
-- live Semantic Gateway authorization through M0/M1 truth;
+- `SemanticRunFacts → SemanticSnapshot → Capabilities`;
+- shared Tool Effect classification and capability authorization;
+- live Semantic Gateway authorization;
 - runtime-only Agent Run facts and stale/unavailable authority handling;
 - Project Mutation Freshness using the shared Tool Effect model;
-- current transitional broad `pindie_state` / `pindie_gate` tools plus `pindie_git_observe`;
+- narrow model-facing semantic tools:
+  - `pindie_task_start`
+  - `pindie_task_replace`
+  - `pindie_task_refine`
+  - `pindie_task_progress`
+  - `pindie_verification_record`
+  - `pindie_task_complete`
+  - `pindie_gate_open`
+  - `pindie_gate_resolve`
+  - `pindie_git_observe`;
+- capability-driven active Tool Surface narrowing over a fresh per-Run Pi/user baseline;
 - Human Gate lifecycle and verification freshness;
 - runtime-only Activity, Run Timer, Run Cost, status presentation, adaptive reasoning, and `/efficiency`;
 - bundled `git-workflow` Skill through Pi's Skill runtime.
