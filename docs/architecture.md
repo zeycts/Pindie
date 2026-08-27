@@ -7,7 +7,7 @@ Pindie is a personal AI agent for indie development built on Pi. Pi remains the 
 ```text
 Human  → goals, taste, consequential judgment, approval
 Model  → meaning, interpretation, planning, semantic choice
-Pindie → truth, legality, capability, lifecycle, evidence freshness
+Pindie → truth, legality, capability, lifecycle, factual evidence freshness
 Pi     → LLM execution, tool registry/execution, sessions, low-level agent loop
 ```
 
@@ -15,7 +15,7 @@ Pindie should eliminate meaningless choices, not meaningful choices.
 
 ## 2. Non-goals
 
-Pindie v0.2 does not add a second agent loop, workflow engine, persisted phase machine, task queue, planner framework, memory database, second Skill runtime, universal shell parser, or second source of project truth.
+Pindie v0.2 does not add a second agent loop, workflow engine, persisted phase machine, task queue, planner framework, memory database, verification-log database, second Skill runtime, universal shell parser, or second source of project truth.
 
 ## 3. Semantic architecture
 
@@ -70,7 +70,7 @@ Capabilities + Tool Effect
 authorizeToolEffect()
 ```
 
-M0–M3 are implemented: semantic truth drives both live execution authorization and model-visible Tool Surface.
+M0–M4 are implemented: semantic truth drives live authorization, model-visible Tool Surface, and factual Runtime Context; Pi owns its native system prompt without a duplicated Pindie Core Policy.
 
 ## 4. Durable State and Run Facts
 
@@ -88,7 +88,7 @@ PindieState
     └── completed
 ```
 
-Task/verification statuses are derived. Capabilities, active tools, Run authority, presentation, reasoning state, continuation fuses, Git fingerprints, and workflow phases are never persisted.
+Task/verification statuses are derived. Capabilities, active tools, Run authority, presentation, reasoning state, continuation fuses, Git fingerprints, recent evidence refs, evidence generations, and workflow phases are never persisted.
 
 The reducer remains the authority for hard State invariants and consumes semantic `PindieEvent`s, not Pi tool names. Runtime owns project-scoped load/save, authoritative refresh, locking, external-State conflict detection, reducer dispatch, and save-before-publish.
 
@@ -179,68 +179,13 @@ The Run Tool Baseline is the Pi/user active set captured at the authoritative `b
 
 The M2 Gateway remains authoritative for races, stale pre-generated calls, and temporary visibility mismatch.
 
-## 7. M4 Policy Reduction and Knowledge Surface
+## 7. Knowledge Surface / prompt ownership — implemented M4
 
-M4 removes the remaining global Pindie natural-language policy layer.
+Pindie no longer owns a global lifecycle-policy system prompt. Pi owns its native system-prompt construction.
 
-### No Pindie-owned global lifecycle prompt
+Runtime Context remains a hidden factual Knowledge Surface driven by the same `SemanticSnapshot` used by capabilities. It may report authority, Task/verification status, current Task details, verification records, Human Gate, and factual unavailable reason; it must not duplicate structural legality as procedural instructions.
 
-The current `PINDIE_CORE_POLICY`/Core-block injection is transitional and must be deleted in M4.
-
-Pindie must not replace it with:
-
-- a hidden custom message;
-- Runtime Context instructions;
-- duplicated tool-description legality;
-- long Gateway guidance;
-- a private reconstruction of Pi's system prompt.
-
-Natural-language policy is a last resort, not a source of deterministic correctness. If State, Snapshot, Capabilities, Tool Surface, Gateway, or Reducer already determine a rule, that rule must not be repeated as a global prompt instruction.
-
-### Pi owns the system prompt
-
-M3 changes active tools through Pi's public `setActiveTools()` API. Pi v0.84.3 rebuilds its base system prompt when the active tool set changes.
-
-The remaining mismatch exists because Pindie's current `before_agent_start` handler returns a Pindie-modified `systemPrompt`, causing Pi to retain a run-level override. M4 removes that override. After M4:
-
-```text
-before_agent_start
-→ establish Run facts
-→ apply capability-driven Tool Surface
-→ do not return a Pindie systemPrompt replacement
-→ Pi uses its current native base prompt
-```
-
-This lets Pi's prompt text track the actual active tool set without Pindie parsing or rebuilding Pi internals.
-
-Do not move the Core Policy into a `CustomMessage`: Pi converts extension custom messages to LLM-compatible user-role messages, so using one as global policy would blur the latest-user-intent boundary.
-
-### Runtime Context is factual Knowledge Surface
-
-The Pindie Runtime Context remains a hidden context message, but its role is factual projection only.
-
-It may contain:
-
-```text
-Agent Run authority: coherent | stale | unavailable
-Task status
-Verification status
-Goal
-Constraints
-Success criteria
-Blockers
-Questions
-Next intent
-Verification records
-Human Gate
-Unavailable-State reason
-```
-
-It must not contain procedural lifecycle instructions or restate actions already enforced by capabilities.
-
-Runtime Context should consume the same `SemanticSnapshot` used by capability derivation for authority/task/verification status rather than independently calling separate status derivation helpers.
-
-The projection therefore becomes:
+The projection is:
 
 ```text
 PindieState + SemanticRunFacts
@@ -250,21 +195,156 @@ SemanticSnapshot
         └→ Knowledge Surface + current State details
 ```
 
-This ensures stale/unavailable authority is visible in context and prevents Knowledge Surface from describing a different semantic world than Tool Surface.
+Natural-language policy is a last resort, not a source of deterministic correctness.
 
-## 8. Human authority
+## 8. Verification v0.2 — M5 target
+
+M5 fixes evidence ownership while deliberately preserving the durable Verification State shape.
+
+### 8.1 Ownership boundary
+
+```text
+Actual Pi tool execution
+        ↓
+Harness observes factual result
+        ↓
+Recent factual Evidence Candidate
+        ↓
+Model semantic judgment
+  - check name
+  - passed | failed meaning
+  - success-criterion coverage
+        ↓
+Harness resolves selected evidence refs
+        ↓
+Existing durable VerificationCheck
+        ↓
+Reducer / State
+```
+
+Harness owns `what happened`. Model owns `what it proves`.
+
+A tool result being an error does not imply semantic verification failure: an error may correctly demonstrate rejection behavior. Therefore Pindie must not derive `VerificationCheck.status` from Pi `isError`.
+
+### 8.2 Durable schema remains compatible
+
+M5 does **not** redesign persisted `PindieState.verification`.
+
+Durable checks remain conceptually:
+
+```text
+VerificationCheck
+├── name
+├── status: passed | failed
+├── covers: criterion ids[]
+└── evidence: string
+```
+
+The difference is provenance: new `evidence` strings are generated deterministically by the Harness from selected current evidence refs instead of being free-written by the model.
+
+Existing verification records are grandfathered. There is no State migration, schema version, forced stale-on-load behavior, or persisted evidence-ref format.
+
+### 8.3 Recent Evidence Registry
+
+M5 introduces a runtime-only Recent Evidence Registry scoped to the current actual Agent Run.
+
+A candidate has a deterministic temporary ref, preferably:
+
+```text
+ev:<toolCallId>
+```
+
+The ref must never be persisted. A model may use it only through the current `pindie_verification_record` call, where the Harness resolves it to factual data.
+
+Unrecorded candidates are discarded at Agent settlement/session shutdown and do not become a permanent tool-result log.
+
+### 8.4 Evidence eligibility
+
+Evidence candidates are observations of Reality, not arbitrary Pindie semantic transitions.
+
+Eligible while a coherent unfinished current Task exists:
+
+```text
+observe.project
+observe.git
+```
+
+Ambiguous project-effect tools such as `bash` or unknown custom tools may become evidence only after M2 Project Mutation Freshness proves project reality unchanged for that execution window.
+
+Known project mutations (`edit`/`write`) are not evidence candidates. Pindie Task/Gate/verification semantic tools are not evidence candidates.
+
+Failed tool results may still be factual evidence if otherwise eligible.
+
+### 8.5 Evidence freshness generation
+
+Clearing a registry alone is insufficient because parallel/late tool results can complete after the verification basis changes.
+
+M5 therefore uses a runtime-only evidence generation/freshness token:
+
+```text
+Authorized Tool Call
+→ remember generation-at-call
+
+Verification basis changes
+→ advance generation
+→ clear current candidates
+
+Tool Result arrives
+→ candidate eligible only if call generation === current generation
+```
+
+This prevents a result that began against old Reality/Task semantics from becoming current evidence after a mutation or Task-boundary change.
+
+Generation/freshness is runtime-only and never enters `PindieState`.
+
+Advance it when the verification basis changes, including at least:
+
+```text
+new actual Agent Run
+successful task.start / task.replace
+successful task.refine
+known project mutation
+detected or unknown ambiguous project mutation
+external authority discontinuity / State unavailable
+```
+
+Do not advance merely for observation, Task progress, Gate open/resolve, or verification record.
+
+### 8.6 Mutation-before-evidence ordering
+
+For ambiguous project-effect tools:
+
+```text
+tool_result
+→ existing M2 mutation observation first
+→ mutation detected/unknown?
+   ├ yes → invalidate verification + advance evidence generation; no candidate
+   └ no  → candidate may be captured if all other eligibility conditions hold
+```
+
+The result of an ambiguous tool that changed project reality is not current verification evidence; the model should perform a fresh verification action afterward.
+
+### 8.7 Bounded factual materialization
+
+Pindie must not automatically persist raw tool-result logs.
+
+Recent candidates may retain enough runtime data to support deterministic materialization, but only refs explicitly selected by `pindie_verification_record` become durable evidence.
+
+Harness materialization must be bounded and deterministic, using concise factual metadata/excerpts plus digests for longer/non-text data. The model does not write or summarize the durable evidence string.
+
+The first implementation should keep this intentionally small rather than create a general evidence database.
+
+## 9. Human authority
 
 A Human Gate is an explicit authority boundary. A Gate opened during the current Run has observation-only capability space until new human input. A pre-existing Gate may expose `gate.resolve` and legal Task-boundary choices; the model interprets human input among those choices.
 
-## 9. Verification, continuation, activity, reasoning, skills
+## 10. Continuation, activity, reasoning, skills
 
-M4 does not redesign verification evidence. M5 later separates Harness-owned factual evidence from model-owned semantic coverage judgment.
-
-Continuation remains subordinate to latest user intent and is redesigned only in M6. M4 may only update a stale literal tool name in the existing continuation probe if required by the M3 narrow-tool rename.
+Continuation remains subordinate to latest user intent and is redesigned only in M6.
 
 Activity, timer, cost, status, and adaptive reasoning remain runtime-only systems. Pi remains the sole Skill runtime.
 
-## 10. Architectural invariants
+## 11. Architectural invariants
 
 1. Reality determines reconstructable facts.
 2. State stores only durable semantic current-work facts.
@@ -277,20 +357,23 @@ Activity, timer, cost, status, and adaptive reasoning remain runtime-only system
 9. Human authority is explicit for consequential judgment.
 10. Gateway remains defense in depth after Tool Surface alignment.
 11. Global natural-language policy must not duplicate deterministic Harness authority.
-12. Pi owns the low-level Agent Loop, Skill runtime, concrete tool registry, and native system-prompt construction.
+12. Verification factual evidence/provenance/freshness belongs to Harness; verification meaning/coverage belongs to the model.
+13. Runtime evidence refs/generations are temporary and never persisted.
+14. Durable Verification State remains compact; Pindie is not a tool-result log database.
+15. Pi owns the low-level Agent Loop, Skill runtime, concrete tool registry, and native system-prompt construction.
 
-## 11. Migration plan
+## 12. Migration plan
 
 ```text
 M0 Semantic Foundation              — implemented
 M1 Execution Semantics Foundation   — implemented
 M2 Semantic Gateway Cutover         — implemented
 M3 Model Tool Surface               — implemented
-M4 Policy Reduction                 — next
-M5 Verification v0.2
+M4 Policy Reduction                 — implemented
+M5 Verification v0.2                — next
 M6 Continuation Simplification
 M7 Skill / Docs Prune
 M8 Extension Composition
 ```
 
-M4 is intentionally deletion-heavy: remove the global Core Policy/system-prompt override, make Runtime Context factual and Snapshot-aligned, and leave M0–M3 runtime authority unchanged.
+M5 changes evidence authority/provenance and freshness, not the persisted verification schema or reducer event vocabulary.
