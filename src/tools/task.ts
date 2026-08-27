@@ -7,6 +7,10 @@ import { PindieStateConflictError, type PindieRuntime } from "../runtime.ts";
 import { StateLockBusyError } from "../store.ts";
 import type { PindieState, VerificationCheck } from "../state.ts";
 import type { PindieEvent } from "../transitions.ts";
+import {
+  MAX_EVIDENCE_REFS_PER_CHECK,
+  type VerificationEvidenceResolver,
+} from "../verification-evidence.ts";
 
 const GoalSchema = Type.String({
   description: "Durable outcome the Task is trying to achieve.",
@@ -65,16 +69,24 @@ const TaskProgressParameters = Type.Object(
 
 const VerificationCheckSchema = Type.Object(
   {
-    name: Type.String({ description: "Unique name of this verification check." }),
+    name: Type.String({
+      minLength: 1,
+      description: "Unique name of this verification check.",
+    }),
     status: StringEnum(["passed", "failed"] as const, {
-      description: "Observed result of the check.",
+      description:
+        "Semantic judgment of whether the cited factual evidence passes or fails this verification check.",
     }),
     covers: Type.Array(Type.String(), {
       description:
         "Success criterion IDs from the current Task Contract, for example ['c1', 'c2']; use criterion IDs, not descriptions.",
     }),
-    evidence: Type.String({
-      description: "Concrete evidence produced by the check.",
+    evidenceRefs: Type.Array(Type.String(), {
+      minItems: 1,
+      maxItems: MAX_EVIDENCE_REFS_PER_CHECK,
+      uniqueItems: true,
+      description:
+        "Current Pindie evidence refs shown in actual tool results for this Agent Run.",
     }),
   },
   { additionalProperties: false },
@@ -102,6 +114,10 @@ export interface PindieTaskToolDetails {
 export interface PindieTaskToolOptions {
   getRunDuration?: () => number | null;
   onStateChange?: () => void;
+}
+
+export interface PindieVerificationToolOptions extends PindieTaskToolOptions {
+  resolveEvidence: VerificationEvidenceResolver;
 }
 
 async function dispatchOrThrow(
@@ -176,6 +192,66 @@ function assertTaskDefinitionInput(
   if (!Array.isArray(params.successCriteria) || params.successCriteria.length === 0) {
     throw new Error(
       `Invalid ${toolName} input: provide at least one success criterion.`,
+    );
+  }
+}
+
+function assertVerificationRecordInput(params: unknown): asserts params is {
+  check: {
+    name: string;
+    status: "passed" | "failed";
+    covers: string[];
+    evidenceRefs: string[];
+  };
+} {
+  if (typeof params !== "object" || params === null) {
+    throw new Error("Invalid pindie_verification_record input: check is required.");
+  }
+  const check = (params as { check?: unknown }).check;
+  if (typeof check !== "object" || check === null) {
+    throw new Error("Invalid pindie_verification_record input: check is required.");
+  }
+  const value = check as Record<string, unknown>;
+  if ("evidence" in value) {
+    throw new Error(
+      "Invalid pindie_verification_record input: free-text evidence is not accepted.",
+    );
+  }
+  if (typeof value.name !== "string" || value.name.trim() === "") {
+    throw new Error(
+      "Invalid pindie_verification_record input: non-empty check name is required.",
+    );
+  }
+  if (value.status !== "passed" && value.status !== "failed") {
+    throw new Error(
+      "Invalid pindie_verification_record input: status must be 'passed' or 'failed'.",
+    );
+  }
+  if (
+    !Array.isArray(value.covers) ||
+    !value.covers.every((criterionId) => typeof criterionId === "string")
+  ) {
+    throw new Error(
+      "Invalid pindie_verification_record input: covers must contain criterion IDs.",
+    );
+  }
+  if (
+    !Array.isArray(value.evidenceRefs) ||
+    !value.evidenceRefs.every((ref) => typeof ref === "string") ||
+    value.evidenceRefs.length === 0
+  ) {
+    throw new Error(
+      "Invalid pindie_verification_record input: provide at least one evidence reference.",
+    );
+  }
+  if (value.evidenceRefs.length > MAX_EVIDENCE_REFS_PER_CHECK) {
+    throw new Error(
+      `Invalid pindie_verification_record input: provide at most ${MAX_EVIDENCE_REFS_PER_CHECK} evidence references.`,
+    );
+  }
+  if (new Set(value.evidenceRefs).size !== value.evidenceRefs.length) {
+    throw new Error(
+      "Invalid pindie_verification_record input: evidence references must be unique.",
     );
   }
 }
@@ -294,7 +370,7 @@ export function createPindieTaskProgressTool(
 
 export function createPindieVerificationRecordTool(
   runtime: PindieRuntime,
-  options: PindieTaskToolOptions = {},
+  options: PindieVerificationToolOptions,
 ) {
   return defineTool({
     name: "pindie_verification_record",
@@ -303,9 +379,17 @@ export function createPindieVerificationRecordTool(
     parameters: VerificationRecordParameters,
     executionMode: "sequential",
     async execute(_toolCallId, params) {
+      assertVerificationRecordInput(params);
+      const evidence = options.resolveEvidence(params.check.evidenceRefs);
+      const check: VerificationCheck = {
+        name: params.check.name,
+        status: params.check.status,
+        covers: params.check.covers,
+        evidence,
+      };
       const state = await dispatchOrThrow(runtime, {
         type: "record_verification",
-        check: params.check as VerificationCheck,
+        check,
       }, options.onStateChange);
       return result(`Verification check '${params.check.name}' recorded.`, state);
     },

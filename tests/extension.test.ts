@@ -10,7 +10,11 @@ import {
   registerPindieExtension,
   type PindieExtensionOptions,
 } from "../src/extension.ts";
-import { EMPTY_STATE, type PindieState } from "../src/state.ts";
+import {
+  EMPTY_STATE,
+  getVerificationStatus,
+  type PindieState,
+} from "../src/state.ts";
 import type { PindieStateStore } from "../src/store.ts";
 
 type CapturedHandler = (
@@ -271,13 +275,15 @@ function toolResult(
   toolName: string,
   isError = false,
   toolCallId = `call-${toolName}`,
+  content: Array<Record<string, unknown>> = [],
+  input: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {
     type: "tool_result",
     toolCallId,
     toolName,
-    input: {},
-    content: [],
+    input,
+    content,
     details: undefined,
     isError,
   };
@@ -365,6 +371,67 @@ async function callGuard(
   event: Record<string, unknown>,
 ): Promise<any> {
   return harness.api.handler("tool_call")(event, context("/repo"));
+}
+
+async function captureObservationEvidence(
+  harness: ReturnType<typeof createHarness>,
+  toolCallId = "evidence-read",
+  options: {
+    toolName?: string;
+    input?: Record<string, unknown>;
+    content?: Array<Record<string, unknown>>;
+    isError?: boolean;
+  } = {},
+): Promise<{ ref: string; result: { content: Array<{ type: string; text?: string }> } }> {
+  const toolName = options.toolName ?? "read";
+  const input = options.input ?? { path: "src/index.ts" };
+  assert.equal(
+    await callGuard(harness, toolCall(toolName, input, toolCallId)),
+    undefined,
+  );
+  const result = await harness.api.handler("tool_result")(
+    toolResult(
+      toolName,
+      options.isError ?? false,
+      toolCallId,
+      options.content ?? [{ type: "text", text: "Observed current project reality." }],
+      input,
+    ),
+    context("/repo"),
+  ) as { content: Array<{ type: string; text?: string }> };
+  const marker = textOf(result).match(/\[Pindie evidence ref: (ev:[^\]]+)\]/);
+  assert.ok(marker, `Expected a Pindie evidence marker for ${toolCallId}.`);
+  return { ref: marker[1], result };
+}
+
+async function executeSemanticTool(
+  harness: ReturnType<typeof createHarness>,
+  toolName: string,
+  toolCallId: string,
+  input: Record<string, unknown>,
+): Promise<{
+  executionResult: { content: Array<Record<string, unknown>> };
+  resultPatch: unknown;
+}> {
+  assert.equal(
+    await callGuard(harness, toolCall(toolName, input, toolCallId)),
+    undefined,
+  );
+  const executionResult = await harness.api.tool(toolName).execute(
+    toolCallId,
+    input,
+  ) as { content: Array<Record<string, unknown>> };
+  const resultPatch = await harness.api.handler("tool_result")(
+    toolResult(
+      toolName,
+      false,
+      toolCallId,
+      executionResult.content,
+      input,
+    ),
+    context("/repo"),
+  );
+  return { executionResult, resultPatch };
 }
 
 function textOf(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -748,8 +815,17 @@ test("P04 Context lifecycle projects one fresh coherent Snapshot-driven Runtime 
   ) as { messages: Array<Record<string, unknown>> };
   assert.match(String(afterStateMutation.messages.at(-1)?.content), /Goal:\nRefined runtime goal/);
 
+  const { ref: contextEvidenceRef } = await captureObservationEvidence(
+    harness,
+    "context-evidence",
+  );
   await harness.api.tool("pindie_verification_record").execute("verify", {
-    check: { name: "tests", status: "passed", covers: ["c1"], evidence: "passed" },
+    check: {
+      name: "tests",
+      status: "passed",
+      covers: ["c1"],
+      evidenceRefs: [contextEvidenceRef],
+    },
   });
   await beginAgentRun(harness);
   assert.equal(await callGuard(harness, toolCall("edit")), undefined);
@@ -1587,12 +1663,16 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
     uiContext,
   );
 
+  const { ref: statusEvidenceRef } = await captureObservationEvidence(
+    harness,
+    "status-evidence",
+  );
   await harness.api.tool("pindie_verification_record").execute("verify", {
     check: {
       name: "tests",
       status: "passed",
       covers: ["c1"],
-      evidence: "passed",
+      evidenceRefs: [statusEvidenceRef],
     },
   });
   assert.deepEqual(statuses.at(-1), {
@@ -1657,8 +1737,17 @@ test("SIR-E01 through SIR-E06 status follows the real idle-to-done lifecycle", a
   timers[0].callback();
   assert.match(status(), /thinking • active • verify 0\/1/);
 
+  const { ref: lifecycleEvidenceRef } = await captureObservationEvidence(
+    harness,
+    "lifecycle-evidence",
+  );
   await harness.api.tool("pindie_verification_record").execute("verify", {
-    check: { name: "status", status: "passed", covers: ["c1"], evidence: "passed" },
+    check: {
+      name: "status",
+      status: "passed",
+      covers: ["c1"],
+      evidenceRefs: [lifecycleEvidenceRef],
+    },
   });
   assert.match(status(), /active • ✓ 1\/1/);
   assert.doesNotMatch(status(), /done/);
@@ -1687,12 +1776,16 @@ test("State and Gate commits survive a status presentation failure", async () =>
     uiContext,
   );
 
+  const { ref: presentationEvidenceRef } = await captureObservationEvidence(
+    harness,
+    "presentation-evidence",
+  );
   const verification = await harness.api.tool("pindie_verification_record").execute("verify", {
     check: {
       name: "tests",
       status: "passed",
       covers: ["c1"],
-      evidence: "passed",
+      evidenceRefs: [presentationEvidenceRef],
     },
   });
   const gate = await harness.api.tool("pindie_gate_open").execute("gate", {
@@ -2139,12 +2232,16 @@ test("RC04 replacing Task A then completing Task B does not permit Task C in the
     goal: "Task B",
     successCriteria: ["Task B works"],
   });
+  const { ref: replacementEvidenceRef } = await captureObservationEvidence(
+    harness,
+    "replacement-evidence",
+  );
   await harness.api.tool("pindie_verification_record").execute("verify-b", {
     check: {
       name: "tests",
       status: "passed",
       covers: ["c1"],
-      evidence: "Task B tests passed.",
+      evidenceRefs: [replacementEvidenceRef],
     },
   });
   await harness.api.tool("pindie_task_complete").execute("complete-b", {
@@ -2359,8 +2456,17 @@ test("M3 T07/T08 completion readiness exposes complete and known mutation invali
   await beginAgentRun(harness);
   assert.deepEqual(harness.api.getActiveTools(), ["read", "edit", "pindie_verification_record"]);
 
+  const { ref: readinessEvidenceRef } = await captureObservationEvidence(
+    harness,
+    "readiness-evidence",
+  );
   await harness.api.tool("pindie_verification_record").execute("verify", {
-    check: { name: "tests", status: "passed", covers: ["c1"], evidence: "passed" },
+    check: {
+      name: "tests",
+      status: "passed",
+      covers: ["c1"],
+      evidenceRefs: [readinessEvidenceRef],
+    },
   });
   assert.deepEqual(harness.api.getActiveTools(), ["read", "edit", "pindie_verification_record", "pindie_task_complete"]);
 
@@ -2513,4 +2619,494 @@ test("M3 T21 unknown/custom baseline tools appear only while project.mutate exis
   idle.api.setActiveTools(["read", "custom_tool"]);
   await beginAgentRun(idle);
   assert.deepEqual(idle.api.getActiveTools(), ["read"]);
+});
+
+test("M5 I01-I02/I07/I14/I20 captures factual observations and records Harness evidence end to end", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  const successful = await captureObservationEvidence(harness, "read-success", {
+    input: { path: "src/extension.ts" },
+    content: [{ type: "text", text: "current source" }],
+  });
+  assert.equal(successful.ref, "ev:read-success");
+  assert.match(textOf(successful.result), /current source/);
+  assert.match(textOf(successful.result), /\[Pindie evidence ref: ev:read-success\]/);
+
+  const failed = await captureObservationEvidence(harness, "read-error", {
+    isError: true,
+    content: [{ type: "text", text: "ENOENT" }],
+  });
+  assert.equal(failed.ref, "ev:read-error");
+
+  const git = await captureObservationEvidence(harness, "git-observe", {
+    toolName: "pindie_git_observe",
+    input: { action: "status" },
+    content: [{ type: "text", text: "clean" }],
+  });
+  assert.equal(git.ref, "ev:git-observe");
+
+  const verification = await executeSemanticTool(
+    harness,
+    "pindie_verification_record",
+    "verification-record",
+    {
+      check: {
+        name: "source inspection",
+        status: "passed",
+        covers: ["c1"],
+        evidenceRefs: [successful.ref, failed.ref, git.ref],
+      },
+    },
+  );
+  assert.equal(verification.resultPatch, undefined);
+  const stored = harness.integration.runtime.state.task?.verification.checks[0];
+  assert.equal(stored?.status, "passed");
+  assert.deepEqual(stored?.covers, ["c1"]);
+  assert.match(stored?.evidence ?? "", /Tool: read\nOutcome: success/);
+  assert.match(stored?.evidence ?? "", /Tool: read\nOutcome: error/);
+  assert.match(stored?.evidence ?? "", /Tool: pindie_git_observe/);
+  assert.doesNotMatch(stored?.evidence ?? "", /ev:|read-success|generation/i);
+  assert.equal(getVerificationStatus(harness.integration.runtime.state.task!), "passed");
+
+  await harness.api.tool("pindie_verification_record").execute("reuse", {
+    check: {
+      name: "reused observation",
+      status: "passed",
+      covers: [],
+      evidenceRefs: [successful.ref],
+    },
+  });
+  assert.equal(harness.integration.runtime.state.task?.verification.checks.length, 2);
+
+  const beforeFabricated = structuredClone(harness.integration.runtime.state);
+  await assert.rejects(
+    harness.api.tool("pindie_verification_record").execute("fabricated", {
+      check: {
+        name: "fabricated",
+        status: "passed",
+        covers: ["c1"],
+        evidenceRefs: ["ev:not-real"],
+      },
+    }),
+    /Unknown or stale Pindie evidence reference: ev:not-real/,
+  );
+  assert.deepEqual(harness.integration.runtime.state, beforeFabricated);
+});
+
+test("M5 I03-I06 observations outside coherent unfinished work receive no marker", async () => {
+  const idle = createHarness();
+  await startSession(idle, "/repo");
+  await beginAgentRun(idle);
+  assert.equal(await callGuard(idle, toolCall("read", {}, "idle-read")), undefined);
+  assert.equal(
+    await idle.api.handler("tool_result")(toolResult("read", false, "idle-read"), context("/repo")),
+    undefined,
+  );
+
+  const completed = createHarness([["/repo", completedState()]]);
+  await startSession(completed, "/repo");
+  await beginAgentRun(completed);
+  assert.equal(await callGuard(completed, toolCall("read", {}, "done-read")), undefined);
+  assert.equal(
+    await completed.api.handler("tool_result")(toolResult("read", false, "done-read"), context("/repo")),
+    undefined,
+  );
+
+  const stale = createHarness([["/repo", activeState("Original")]]);
+  await startSession(stale, "/repo");
+  await beginAgentRun(stale);
+  stale.store.states.set("/repo", activeState("Externally replaced"));
+  assertBlocked(await callGuard(stale, toolCall("edit", {}, "detect-stale")), /authority is stale/);
+  assert.equal(await callGuard(stale, toolCall("read", {}, "stale-read")), undefined);
+  assert.equal(
+    await stale.api.handler("tool_result")(toolResult("read", false, "stale-read"), context("/repo")),
+    undefined,
+  );
+
+  const unavailable = createHarness();
+  unavailable.store.loadErrors.set("/repo", new Error("unavailable"));
+  await startSession(unavailable, "/repo");
+  await beginAgentRun(unavailable);
+  assert.equal(await callGuard(unavailable, toolCall("read", {}, "unavailable-read")), undefined);
+  assert.equal(
+    await unavailable.api.handler("tool_result")(
+      toolResult("read", false, "unavailable-read"),
+      context("/repo"),
+    ),
+    undefined,
+  );
+});
+
+test("M5 I08-I09 known mutations never become evidence and only successful mutations invalidate", async () => {
+  const successful = createHarness([["/repo", verifiedState()]]);
+  await startSession(successful, "/repo");
+  await beginAgentRun(successful);
+  const prior = await captureObservationEvidence(successful, "before-edit");
+  assert.equal(await callGuard(successful, toolCall("edit", {}, "edit-success")), undefined);
+  assert.equal(
+    await successful.api.handler("tool_result")(
+      toolResult("edit", false, "edit-success", [{ type: "text", text: "edited" }]),
+      context("/repo"),
+    ),
+    undefined,
+  );
+  assert.equal(successful.integration.runtime.state.task?.verification.stale, true);
+  await assert.rejects(
+    successful.api.tool("pindie_verification_record").execute("old-ref", {
+      check: { name: "old", status: "passed", covers: ["c1"], evidenceRefs: [prior.ref] },
+    }),
+    /Unknown or stale/,
+  );
+
+  const failed = createHarness([["/repo", verifiedState()]]);
+  await startSession(failed, "/repo");
+  await beginAgentRun(failed);
+  const stillCurrent = await captureObservationEvidence(failed, "before-failed-edit");
+  assert.equal(await callGuard(failed, toolCall("edit", {}, "edit-failed")), undefined);
+  assert.equal(
+    await failed.api.handler("tool_result")(
+      toolResult("edit", true, "edit-failed", [{ type: "text", text: "rejected" }]),
+      context("/repo"),
+    ),
+    undefined,
+  );
+  assert.equal(failed.integration.runtime.state.task?.verification.stale, false);
+  await failed.api.tool("pindie_verification_record").execute("still-current", {
+    check: {
+      name: "still current",
+      status: "passed",
+      covers: [],
+      evidenceRefs: [stillCurrent.ref],
+    },
+  });
+});
+
+test("M5 I10-I13 ambiguous mutation observation completes before evidence capture", async () => {
+  const unchanged = createHarness([["/repo", activeState()]], {}, {
+    captureProjectFingerprint: async () => ({ kind: "known", digest: "same" }),
+  });
+  await startSession(unchanged, "/repo");
+  await beginAgentRun(unchanged);
+  const bash = await captureObservationEvidence(unchanged, "bash-unchanged", {
+    toolName: "bash",
+    input: { command: "pnpm test" },
+    content: [{ type: "text", text: "tests passed" }],
+  });
+  assert.equal(bash.ref, "ev:bash-unchanged");
+  const bashError = await captureObservationEvidence(unchanged, "bash-error-unchanged", {
+    toolName: "bash",
+    input: { command: "invalid-config" },
+    content: [{ type: "text", text: "configuration rejected" }],
+    isError: true,
+  });
+  await unchanged.api.tool("pindie_verification_record").execute("error-passes", {
+    check: {
+      name: "invalid config rejected",
+      status: "passed",
+      covers: ["c1"],
+      evidenceRefs: [bashError.ref],
+    },
+  });
+  assert.equal(unchanged.integration.runtime.state.task?.verification.checks[0]?.status, "passed");
+  assert.match(
+    unchanged.integration.runtime.state.task?.verification.checks[0]?.evidence ?? "",
+    /Outcome: error/,
+  );
+
+  const changedFingerprints = [
+    { kind: "known" as const, digest: "before" },
+    { kind: "known" as const, digest: "after" },
+  ];
+  const changed = createHarness([["/repo", verifiedState()]], {}, {
+    captureProjectFingerprint: async () => changedFingerprints.shift()!,
+  });
+  await startSession(changed, "/repo");
+  await beginAgentRun(changed);
+  const changedPrior = await captureObservationEvidence(changed, "before-bash-change");
+  assert.equal(await callGuard(changed, toolCall("bash", {}, "bash-changed")), undefined);
+  assert.equal(
+    await changed.api.handler("tool_result")(
+      toolResult("bash", false, "bash-changed", [{ type: "text", text: "mutated" }]),
+      context("/repo"),
+    ),
+    undefined,
+  );
+  assert.equal(changed.integration.runtime.state.task?.verification.stale, true);
+  await assert.rejects(
+    changed.api.tool("pindie_verification_record").execute("stale", {
+      check: { name: "stale", status: "passed", covers: [], evidenceRefs: [changedPrior.ref] },
+    }),
+    /Unknown or stale/,
+  );
+
+  const unknown = createHarness([["/repo", verifiedState()]], {}, {
+    captureProjectFingerprint: async () => ({ kind: "unknown", reason: "cannot inspect" }),
+  });
+  await startSession(unknown, "/repo");
+  await beginAgentRun(unknown);
+  const unknownPrior = await captureObservationEvidence(unknown, "before-unknown-bash");
+  assert.equal(await callGuard(unknown, toolCall("bash", {}, "bash-unknown")), undefined);
+  assert.equal(
+    await unknown.api.handler("tool_result")(toolResult("bash", true, "bash-unknown"), context("/repo")),
+    undefined,
+  );
+  assert.equal(unknown.integration.runtime.state.task?.verification.stale, true);
+  await assert.rejects(
+    unknown.api.tool("pindie_verification_record").execute("stale", {
+      check: { name: "stale", status: "passed", covers: [], evidenceRefs: [unknownPrior.ref] },
+    }),
+    /Unknown or stale/,
+  );
+});
+
+test("M5 I15-I17 successful Task start, replace, and refine invalidate older call generations", async () => {
+  const start = createHarness();
+  await startSession(start, "/repo");
+  await beginAgentRun(start);
+  assert.equal(await callGuard(start, toolCall("read", {}, "read-before-start")), undefined);
+  await executeSemanticTool(start, "pindie_task_start", "task-start", {
+    goal: "New task",
+    successCriteria: ["Works"],
+  });
+  assert.equal(
+    await start.api.handler("tool_result")(
+      toolResult("read", false, "read-before-start"),
+      context("/repo"),
+    ),
+    undefined,
+  );
+
+  const replace = createHarness([["/repo", activeState("Task A")]]);
+  await startSession(replace, "/repo");
+  await beginAgentRun(replace);
+  const beforeReplace = await captureObservationEvidence(
+    replace,
+    "read-before-replace",
+  );
+  await executeSemanticTool(replace, "pindie_task_replace", "task-replace", {
+    goal: "Task B",
+    successCriteria: ["Task B works"],
+  });
+  await assert.rejects(
+    replace.api.tool("pindie_verification_record").execute("after-replace", {
+      check: {
+        name: "old Task evidence",
+        status: "passed",
+        covers: ["c1"],
+        evidenceRefs: [beforeReplace.ref],
+      },
+    }),
+    /Unknown or stale/,
+  );
+
+  const refine = createHarness([["/repo", activeState()]]);
+  await startSession(refine, "/repo");
+  await beginAgentRun(refine);
+  const beforeRefine = await captureObservationEvidence(
+    refine,
+    "read-before-refine",
+  );
+  await executeSemanticTool(refine, "pindie_task_refine", "task-refine", {
+    goal: "Refined task",
+  });
+  await assert.rejects(
+    refine.api.tool("pindie_verification_record").execute("after-refine", {
+      check: {
+        name: "pre-refinement evidence",
+        status: "passed",
+        covers: ["c1"],
+        evidenceRefs: [beforeRefine.ref],
+      },
+    }),
+    /Unknown or stale/,
+  );
+});
+
+test("M5 I18-I20 progress, Gate operations, and verification recording retain current candidates", async () => {
+  const progress = createHarness([["/repo", activeState()]]);
+  await startSession(progress, "/repo");
+  await beginAgentRun(progress);
+  const progressRef = await captureObservationEvidence(progress, "before-progress");
+  await executeSemanticTool(progress, "pindie_task_progress", "task-progress", {
+    blockers: [], questions: [], nextIntent: "Continue",
+  });
+  await progress.api.tool("pindie_verification_record").execute("after-progress", {
+    check: { name: "progress", status: "passed", covers: ["c1"], evidenceRefs: [progressRef.ref] },
+  });
+  await progress.api.tool("pindie_verification_record").execute("reuse-progress", {
+    check: { name: "progress reused", status: "passed", covers: [], evidenceRefs: [progressRef.ref] },
+  });
+
+  const opened = createHarness([["/repo", activeState()]]);
+  await startSession(opened, "/repo");
+  await beginAgentRun(opened);
+  const openRef = await captureObservationEvidence(opened, "before-gate-open");
+  await executeSemanticTool(opened, "pindie_gate_open", "gate-open", {
+    kind: "approval", question: "Approve?",
+  });
+  await opened.api.tool("pindie_verification_record").execute("after-open", {
+    check: { name: "open retained", status: "passed", covers: [], evidenceRefs: [openRef.ref] },
+  });
+
+  const resolved = createHarness([["/repo", gatedState()]]);
+  await startSession(resolved, "/repo");
+  await beginAgentRun(resolved);
+  const resolveRef = await captureObservationEvidence(resolved, "before-gate-resolve");
+  await executeSemanticTool(resolved, "pindie_gate_resolve", "gate-resolve", {});
+  await resolved.api.tool("pindie_verification_record").execute("after-resolve", {
+    check: { name: "resolve retained", status: "passed", covers: ["c1"], evidenceRefs: [resolveRef.ref] },
+  });
+});
+
+test("M5 I21-I23 parallel observation results cannot outlive a project mutation generation", async () => {
+  const late = createHarness([["/repo", activeState()]]);
+  await startSession(late, "/repo");
+  await beginAgentRun(late);
+  assert.equal(await callGuard(late, toolCall("read", {}, "late-read")), undefined);
+  assert.equal(await callGuard(late, toolCall("edit", {}, "edit-first")), undefined);
+  await late.api.handler("tool_result")(toolResult("edit", false, "edit-first"), context("/repo"));
+  assert.equal(
+    await late.api.handler("tool_result")(toolResult("read", false, "late-read"), context("/repo")),
+    undefined,
+  );
+
+  const inverse = createHarness([["/repo", activeState()]]);
+  await startSession(inverse, "/repo");
+  await beginAgentRun(inverse);
+  const visibleFirst = await captureObservationEvidence(inverse, "visible-before-edit");
+  assert.equal(await callGuard(inverse, toolCall("edit", {}, "later-edit")), undefined);
+  await inverse.api.handler("tool_result")(toolResult("edit", false, "later-edit"), context("/repo"));
+  await assert.rejects(
+    inverse.api.tool("pindie_verification_record").execute("stale-visible", {
+      check: { name: "stale", status: "passed", covers: ["c1"], evidenceRefs: [visibleFirst.ref] },
+    }),
+    /Unknown or stale/,
+  );
+
+  const current = createHarness([["/repo", activeState()]]);
+  await startSession(current, "/repo");
+  await beginAgentRun(current);
+  const first = await captureObservationEvidence(current, "current-read");
+  const second = await captureObservationEvidence(current, "current-grep", {
+    toolName: "grep",
+    input: { pattern: "verification" },
+  });
+  await current.api.tool("pindie_verification_record").execute("both", {
+    check: {
+      name: "two observations",
+      status: "passed",
+      covers: ["c1"],
+      evidenceRefs: [first.ref, second.ref],
+    },
+  });
+  assert.match(
+    current.integration.runtime.state.task?.verification.checks[0]?.evidence ?? "",
+    /Tool: read[\s\S]*Tool: grep/,
+  );
+});
+
+test("M5 I24 a mutating ambiguous result prevents a pending old-generation ambiguous result from becoming evidence", async () => {
+  const fingerprints = [
+    { kind: "known" as const, digest: "S0" },
+    { kind: "known" as const, digest: "S1" },
+    { kind: "known" as const, digest: "S1" },
+  ];
+  const harness = createHarness([["/repo", verifiedState()]], {}, {
+    captureProjectFingerprint: async () => fingerprints.shift()!,
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  assert.equal(await callGuard(harness, toolCall("bash", {}, "ambiguous-a")), undefined);
+  assert.equal(await callGuard(harness, toolCall("custom_tool", {}, "ambiguous-b")), undefined);
+  assert.equal(
+    await harness.api.handler("tool_result")(
+      toolResult("bash", false, "ambiguous-a"),
+      context("/repo"),
+    ),
+    undefined,
+  );
+  const betweenResults = await captureObservationEvidence(
+    harness,
+    "between-ambiguous-results",
+  );
+  assert.equal(
+    await harness.api.handler("tool_result")(
+      toolResult("custom_tool", false, "ambiguous-b"),
+      context("/repo"),
+    ),
+    undefined,
+  );
+  assert.equal(harness.integration.runtime.state.task?.verification.stale, true);
+  await assert.rejects(
+    harness.api.tool("pindie_verification_record").execute("between-stale", {
+      check: {
+        name: "between results",
+        status: "passed",
+        covers: ["c1"],
+        evidenceRefs: [betweenResults.ref],
+      },
+    }),
+    /Unknown or stale/,
+  );
+});
+
+test("M5 I25-I28 Agent settlement, next Run, and session shutdown discard Recent Evidence", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  const firstRun = await captureObservationEvidence(harness, "first-run-ref");
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  await assert.rejects(
+    harness.api.tool("pindie_verification_record").execute("after-settle", {
+      check: { name: "settled", status: "passed", covers: ["c1"], evidenceRefs: [firstRun.ref] },
+    }),
+    /Unknown or stale/,
+  );
+
+  await beginAgentRun(harness);
+  await assert.rejects(
+    harness.api.tool("pindie_verification_record").execute("next-run-old", {
+      check: { name: "old run", status: "passed", covers: ["c1"], evidenceRefs: [firstRun.ref] },
+    }),
+    /Unknown or stale/,
+  );
+  const secondRun = await captureObservationEvidence(harness, "second-run-ref");
+  assert.equal(secondRun.ref, "ev:second-run-ref");
+
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "done" },
+    context("/repo"),
+  );
+  await assert.rejects(
+    harness.api.tool("pindie_verification_record").execute("after-shutdown", {
+      check: { name: "shutdown", status: "passed", covers: ["c1"], evidenceRefs: [secondRun.ref] },
+    }),
+    /Unknown or stale/,
+  );
+
+  await startSession(harness, "/repo", "reload");
+  await beginAgentRun(harness);
+  await assert.rejects(
+    harness.api.tool("pindie_verification_record").execute("fresh-run-empty", {
+      check: { name: "fresh", status: "passed", covers: ["c1"], evidenceRefs: [secondRun.ref] },
+    }),
+    /Unknown or stale/,
+  );
+});
+
+test("M5 external State unavailability clears refs collected under prior semantic authority", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  const prior = await captureObservationEvidence(harness, "before-unavailable");
+  harness.store.loadErrors.set("/repo", new Error("State disappeared"));
+  assertBlocked(await callGuard(harness, toolCall("edit", {}, "mark-unavailable")), /authority is unavailable/);
+  await assert.rejects(
+    harness.api.tool("pindie_verification_record").execute("prior-authority", {
+      check: { name: "prior", status: "passed", covers: ["c1"], evidenceRefs: [prior.ref] },
+    }),
+    /Unknown or stale/,
+  );
 });
