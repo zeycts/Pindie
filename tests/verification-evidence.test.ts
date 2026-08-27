@@ -8,7 +8,6 @@ import {
   advanceEvidenceGeneration,
   captureEvidenceCandidate,
   createVerificationEvidenceScope,
-  evidenceRefForToolCall,
   materializeVerificationEvidence,
   resolveEvidenceRefs,
 } from "../src/verification-evidence.ts";
@@ -29,15 +28,21 @@ function capture(
   return { scope, candidate };
 }
 
-test("E01 evidence ref is deterministically derived from the Pi toolCallId", () => {
-  assert.equal(evidenceRefForToolCall("toolu_01AbCd"), "ev:toolu_01AbCd");
-  assert.equal(evidenceRefForToolCall("toolu_01AbCd"), "ev:toolu_01AbCd");
+test("E01 evidence refs are short Pindie-owned opaque handles", () => {
+  const toolCallId =
+    "call_FccSunaPr01Ht5kd0YVx8WoB|fc_07cbfcb752e64889016a9021_more-provider-data";
+  const { candidate } = capture(toolCallId);
+  assert.match(candidate.ref, /^ev:[A-Za-z0-9_-]+:\d+$/);
+  assert.ok(candidate.ref.length < 32);
+  assert.doesNotMatch(candidate.ref, /call_FccSuna|fc_07cb|\|/);
+  assert.equal(candidate.toolCallId, toolCallId);
 });
 
 test("E02 a fresh evidence scope starts empty", () => {
   const scope = createVerificationEvidenceScope();
   assert.equal(scope.generation, 0);
   assert.equal(scope.candidates.size, 0);
+  assert.equal(scope.issuedRefs.size, 0);
 });
 
 test("E03 capturing a candidate makes its ref resolvable", () => {
@@ -52,12 +57,12 @@ test("E04 generation advance increments once and clears current candidates", () 
   assert.equal(scope.candidates.size, 0);
 });
 
-test("E05 generation advance makes a prior ref unknown or stale", () => {
+test("E05 generation advance makes a prior ref explicitly stale", () => {
   const { scope, candidate } = capture();
   advanceEvidenceGeneration(scope);
   assert.throws(
     () => resolveEvidenceRefs(scope, [candidate.ref]),
-    /Unknown or stale Pindie evidence reference: ev:toolu_01AbCd/,
+    /Stale Pindie evidence reference: ev:.*\nThe referenced evidence is no longer valid for the current project state\.\nRun the relevant verification again\./,
   );
 });
 
@@ -69,10 +74,48 @@ test("E06 resolving a candidate repeatedly does not consume it", () => {
 });
 
 test("E07 unknown evidence refs reject", () => {
+  const scope = createVerificationEvidenceScope();
   assert.throws(
-    () => resolveEvidenceRefs(createVerificationEvidenceScope(), ["ev:invented"]),
-    /Unknown or stale Pindie evidence reference: ev:invented/,
+    () => resolveEvidenceRefs(scope, [`ev:${scope.namespace}:99`]),
+    /Unknown Pindie evidence reference:/,
   );
+});
+
+test("E07b multiple candidates in one scope receive distinct handles", () => {
+  const scope = createVerificationEvidenceScope();
+  const first = captureEvidenceCandidate(scope, {
+    toolCallId: "same-provider-id",
+    toolName: "read",
+    input: {},
+    content: [],
+    isError: false,
+  });
+  const second = captureEvidenceCandidate(scope, {
+    toolCallId: "same-provider-id",
+    toolName: "read",
+    input: {},
+    content: [],
+    isError: false,
+  });
+  assert.notEqual(first.ref, second.ref);
+});
+
+test("E07c invalidated handles are never rebound to newer evidence", () => {
+  const { scope, candidate: first } = capture("first-provider-id");
+  advanceEvidenceGeneration(scope);
+  const second = captureEvidenceCandidate(scope, {
+    toolCallId: "second-provider-id",
+    toolName: "read",
+    input: {},
+    content: [],
+    isError: false,
+  });
+  assert.notEqual(first.ref, second.ref);
+  assert.throws(
+    () => resolveEvidenceRefs(scope, [first.ref]),
+    /Stale Pindie evidence reference:/,
+  );
+  assert.equal(resolveEvidenceRefs(scope, [second.ref])[0], second);
 });
 
 test("E08 duplicate evidence refs reject", () => {
@@ -168,7 +211,8 @@ test("E18 materialization preserves the supplied ref resolution order", () => {
 test("E19 durable materialization omits the runtime evidence ref and toolCallId", () => {
   const { candidate } = capture("toolu_secret_identity");
   const evidence = materializeVerificationEvidence([candidate]);
-  assert.doesNotMatch(evidence, /ev:toolu_secret_identity|toolu_secret_identity/);
+  assert.equal(evidence.includes(candidate.ref), false);
+  assert.doesNotMatch(evidence, /toolu_secret_identity/);
 });
 
 test("E20 durable materialization omits evidence generation metadata", () => {

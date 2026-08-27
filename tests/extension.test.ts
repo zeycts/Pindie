@@ -2829,26 +2829,30 @@ test("M5 I01-I02/I07/I14/I20 captures factual observations and records Harness e
   await startSession(harness, "/repo");
   await beginAgentRun(harness);
 
-  const successful = await captureObservationEvidence(harness, "read-success", {
+  const longToolCallId =
+    "call_FccSunaPr01Ht5kd0YVx8WoB|fc_07cbfcb752e64889016a9021_more-provider-data";
+  const successful = await captureObservationEvidence(harness, longToolCallId, {
     input: { path: "src/extension.ts" },
     content: [{ type: "text", text: "current source" }],
   });
-  assert.equal(successful.ref, "ev:read-success");
+  assert.match(successful.ref, /^ev:[A-Za-z0-9_-]+:\d+$/);
+  assert.doesNotMatch(successful.ref, /call_FccSuna|fc_07cb|\|/);
   assert.match(textOf(successful.result), /current source/);
-  assert.match(textOf(successful.result), /\[Pindie evidence ref: ev:read-success\]/);
+  assert.match(textOf(successful.result), /\[Pindie evidence ref: ev:[A-Za-z0-9_-]+:\d+\]/);
+  assert.doesNotMatch(textOf(successful.result), /call_FccSuna|fc_07cb|\|/);
 
   const failed = await captureObservationEvidence(harness, "read-error", {
     isError: true,
     content: [{ type: "text", text: "ENOENT" }],
   });
-  assert.equal(failed.ref, "ev:read-error");
+  assert.notEqual(failed.ref, successful.ref);
 
   const git = await captureObservationEvidence(harness, "git-observe", {
     toolName: "pindie_git_observe",
     input: { action: "status" },
     content: [{ type: "text", text: "clean" }],
   });
-  assert.equal(git.ref, "ev:git-observe");
+  assert.notEqual(git.ref, failed.ref);
 
   const verification = await executeSemanticTool(
     harness,
@@ -2870,7 +2874,7 @@ test("M5 I01-I02/I07/I14/I20 captures factual observations and records Harness e
   assert.match(stored?.evidence ?? "", /Tool: read\nOutcome: success/);
   assert.match(stored?.evidence ?? "", /Tool: read\nOutcome: error/);
   assert.match(stored?.evidence ?? "", /Tool: pindie_git_observe/);
-  assert.doesNotMatch(stored?.evidence ?? "", /ev:|read-success|generation/i);
+  assert.doesNotMatch(stored?.evidence ?? "", /ev:|call_FccSuna|fc_07cb|generation/i);
   assert.equal(getVerificationStatus(harness.integration.runtime.state.task!), "passed");
 
   await harness.api.tool("pindie_verification_record").execute("reuse", {
@@ -2893,7 +2897,7 @@ test("M5 I01-I02/I07/I14/I20 captures factual observations and records Harness e
         evidenceRefs: ["ev:not-real"],
       },
     }),
-    /Unknown or stale Pindie evidence reference: ev:not-real/,
+    /Unknown Pindie evidence reference: ev:not-real/,
   );
   assert.deepEqual(harness.integration.runtime.state, beforeFabricated);
 });
@@ -2960,7 +2964,7 @@ test("M5 I08-I09 known mutations never become evidence and only successful mutat
     successful.api.tool("pindie_verification_record").execute("old-ref", {
       check: { name: "old", status: "passed", covers: ["c1"], evidenceRefs: [prior.ref] },
     }),
-    /Unknown or stale/,
+    /Stale Pindie evidence reference/,
   );
 
   const failed = createHarness([["/repo", verifiedState()]]);
@@ -2997,7 +3001,7 @@ test("M5 I10-I13 ambiguous mutation observation completes before evidence captur
     input: { command: "pnpm test" },
     content: [{ type: "text", text: "tests passed" }],
   });
-  assert.equal(bash.ref, "ev:bash-unchanged");
+  assert.match(bash.ref, /^ev:[A-Za-z0-9_-]+:\d+$/);
   const bashError = await captureObservationEvidence(unchanged, "bash-error-unchanged", {
     toolName: "bash",
     input: { command: "invalid-config" },
@@ -3041,7 +3045,7 @@ test("M5 I10-I13 ambiguous mutation observation completes before evidence captur
     changed.api.tool("pindie_verification_record").execute("stale", {
       check: { name: "stale", status: "passed", covers: [], evidenceRefs: [changedPrior.ref] },
     }),
-    /Unknown or stale/,
+    /Stale Pindie evidence reference/,
   );
 
   const unknown = createHarness([["/repo", verifiedState()]], {}, {
@@ -3060,7 +3064,7 @@ test("M5 I10-I13 ambiguous mutation observation completes before evidence captur
     unknown.api.tool("pindie_verification_record").execute("stale", {
       check: { name: "stale", status: "passed", covers: [], evidenceRefs: [unknownPrior.ref] },
     }),
-    /Unknown or stale/,
+    /Stale Pindie evidence reference/,
   );
 });
 
@@ -3101,7 +3105,7 @@ test("M5 I15-I17 successful Task start, replace, and refine invalidate older cal
         evidenceRefs: [beforeReplace.ref],
       },
     }),
-    /Unknown or stale/,
+    /Stale Pindie evidence reference/,
   );
 
   const refine = createHarness([["/repo", activeState()]]);
@@ -3123,7 +3127,7 @@ test("M5 I15-I17 successful Task start, replace, and refine invalidate older cal
         evidenceRefs: [beforeRefine.ref],
       },
     }),
-    /Unknown or stale/,
+    /Stale Pindie evidence reference/,
   );
 });
 
@@ -3185,7 +3189,7 @@ test("M5 I21-I23 parallel observation results cannot outlive a project mutation 
     inverse.api.tool("pindie_verification_record").execute("stale-visible", {
       check: { name: "stale", status: "passed", covers: ["c1"], evidenceRefs: [visibleFirst.ref] },
     }),
-    /Unknown or stale/,
+    /Stale Pindie evidence reference/,
   );
 
   const current = createHarness([["/repo", activeState()]]);
@@ -3251,7 +3255,7 @@ test("M5 I24 a mutating ambiguous result prevents a pending old-generation ambig
         evidenceRefs: [betweenResults.ref],
       },
     }),
-    /Unknown or stale/,
+    /Stale Pindie evidence reference/,
   );
 });
 
@@ -3265,7 +3269,7 @@ test("M5 I25-I28 Agent settlement, next Run, and session shutdown discard Recent
     harness.api.tool("pindie_verification_record").execute("after-settle", {
       check: { name: "settled", status: "passed", covers: ["c1"], evidenceRefs: [firstRun.ref] },
     }),
-    /Unknown or stale/,
+    /Unknown Pindie evidence reference/,
   );
 
   await beginAgentRun(harness);
@@ -3273,10 +3277,11 @@ test("M5 I25-I28 Agent settlement, next Run, and session shutdown discard Recent
     harness.api.tool("pindie_verification_record").execute("next-run-old", {
       check: { name: "old run", status: "passed", covers: ["c1"], evidenceRefs: [firstRun.ref] },
     }),
-    /Unknown or stale/,
+    /Unknown Pindie evidence reference/,
   );
   const secondRun = await captureObservationEvidence(harness, "second-run-ref");
-  assert.equal(secondRun.ref, "ev:second-run-ref");
+  assert.match(secondRun.ref, /^ev:[A-Za-z0-9_-]+:\d+$/);
+  assert.notEqual(secondRun.ref, firstRun.ref);
 
   await harness.api.handler("session_shutdown")(
     { type: "session_shutdown", reason: "done" },
@@ -3286,7 +3291,7 @@ test("M5 I25-I28 Agent settlement, next Run, and session shutdown discard Recent
     harness.api.tool("pindie_verification_record").execute("after-shutdown", {
       check: { name: "shutdown", status: "passed", covers: ["c1"], evidenceRefs: [secondRun.ref] },
     }),
-    /Unknown or stale/,
+    /Unknown Pindie evidence reference/,
   );
 
   await startSession(harness, "/repo", "reload");
@@ -3295,7 +3300,7 @@ test("M5 I25-I28 Agent settlement, next Run, and session shutdown discard Recent
     harness.api.tool("pindie_verification_record").execute("fresh-run-empty", {
       check: { name: "fresh", status: "passed", covers: ["c1"], evidenceRefs: [secondRun.ref] },
     }),
-    /Unknown or stale/,
+    /Unknown Pindie evidence reference/,
   );
 });
 
@@ -3310,6 +3315,6 @@ test("M5 external State unavailability clears refs collected under prior semanti
     harness.api.tool("pindie_verification_record").execute("prior-authority", {
       check: { name: "prior", status: "passed", covers: ["c1"], evidenceRefs: [prior.ref] },
     }),
-    /Unknown or stale/,
+    /Unknown Pindie evidence reference/,
   );
 });

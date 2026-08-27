@@ -249,10 +249,10 @@ The model owns `name`, `status`, and `covers`. The Harness resolves current refs
 Runtime evidence refs:
 
 ```text
-ev:<toolCallId>
+ev:<scope>:<sequence>
 ```
 
-They are temporary, reusable within the current evidence scope, and never enter persisted State.
+They are short, opaque, Pindie-owned, reusable within the current evidence scope, and never enter persisted State. Pi tool-call identity remains runtime-internal provenance and is not exposed through the handle.
 
 Evidence-candidate rules:
 

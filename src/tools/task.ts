@@ -86,7 +86,7 @@ const VerificationCheckSchema = Type.Object(
       maxItems: MAX_EVIDENCE_REFS_PER_CHECK,
       uniqueItems: true,
       description:
-        "Current Pindie evidence refs shown in actual tool results for this Agent Run.",
+        "Opaque Pindie evidence handles returned by actual tool results in the current Agent Run. Pass each handle exactly as returned; do not derive, reconstruct, or modify it.",
     }),
   },
   { additionalProperties: false },
