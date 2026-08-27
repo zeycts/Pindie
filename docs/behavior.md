@@ -23,7 +23,7 @@ Reality → reconstructable facts
 Harness → deterministic truth, legality, lifecycle, freshness
 Model   → intent interpretation, planning, semantic choice, coverage judgment
 Human   → goals, taste, consequential judgment, approval
-Pi      → concrete tool registry/execution and low-level Agent Loop
+Pi      → concrete tool registry/execution, native system prompt, low-level Agent Loop
 ```
 
 Deterministic facts close deterministic branches; genuine semantic ambiguity remains model-owned within the legal capability space.
@@ -115,11 +115,9 @@ waiting_human / existed_before_run
 
 Questions may coexist with useful work but prevent completion. A Task-level blocker means consequential project mutation is not currently safe/effective.
 
-## 5. Live Gateway behavior
+## 5. Live Gateway and Tool Effects
 
-M2 is implemented. Concrete Tool Effects are classified and non-observation calls are authorized through current capabilities after authoritative State refresh/coherence checks.
-
-Current shared effects include:
+Concrete Tool Effects are classified and non-observation calls are authorized through current capabilities after authoritative State refresh/coherence checks.
 
 ```text
 read / grep / find / ls → observe.project / none
@@ -137,7 +135,7 @@ Authorization is exactly:
 allowed = capabilities.has(effect.requiredCapability)
 ```
 
-The Gateway remains live after M3 as a defense-in-depth backstop for races, stale already-generated calls, malformed calls, and external-State changes.
+The Gateway remains defense in depth for races, stale already-generated calls, and external-State changes.
 
 ## 6. Project Mutation Freshness
 
@@ -156,9 +154,9 @@ projectMutation = ambiguous
 
 Denied calls create no mutation window. Failed ambiguous tools are still observed afterward because partial project mutation may have occurred.
 
-## 7. M3 narrow model-facing semantic tools
+## 7. M3 narrow semantic tools and Tool Surface — implemented
 
-M3 removes the broad model-facing action enums and exposes narrow tools aligned one-to-one with semantic capabilities:
+Model-facing semantic tools:
 
 ```text
 pindie_task_start          → task.start
@@ -172,174 +170,230 @@ pindie_gate_resolve        → gate.resolve
 pindie_git_observe         → observe.git
 ```
 
-The legacy model-facing `pindie_state` and `pindie_gate` tools are removed from registration in M3. Internal reducer events remain unchanged.
+The legacy broad `pindie_state` and `pindie_gate` model-facing tools are retired. Internal reducer events remain unchanged.
 
-All semantic mutation tools remain sequential so same-batch semantic changes are visible before later sequential calls are prepared/executed.
-
-M3 does not redesign current verification record fields. `pindie_verification_record` continues to accept the current check semantics until M5.
-
-Tool descriptions explain only the operation's meaning and input contract. They must not repeat lifecycle legality such as when the operation is allowed; visibility and the Gateway own that.
-
-## 8. M3 Tool Surface projection
-
-For each actual Agent Run, Pindie captures a runtime-only **Run Tool Baseline** at `before_agent_start` before applying semantic restriction.
+For each actual Agent Run:
 
 ```text
 Effective tools
 =
 Run Tool Baseline
 ∩
-Tools whose required capability is currently present
+Tools whose required capability is present
 ```
 
-Behavioral rules:
+The Run Tool Baseline is captured at `before_agent_start`, restored at `agent_settled`, and never persisted. Pindie never enables a baseline-absent tool. Unknown/custom baseline-active tools require `project.mutate`.
 
-1. Pindie may remove tools from the baseline but never add a tool absent from it.
-2. Baseline order is preserved.
-3. Unknown/custom baseline-active tools require `project.mutate`; they disappear when that capability is absent.
-4. The baseline is runtime-only and never enters `PindieState`.
-5. The baseline is created only for an actual Agent Run, not speculatively from `input`.
-6. Pindie restores the exact baseline when the high-level Agent Run settles.
-7. The next actual Run captures a fresh baseline, so Pi/user changes made while idle become authoritative for that Run.
-8. Pindie does not create or persist a second user tool preference store.
+## 8. M4 global policy removal
 
-For every baseline-active recognized tool `T` in an unchanged semantic world:
+M4 removes Pindie's global Core Policy/system-prompt override.
+
+Required behavior:
 
 ```text
-visible(T)
-⇔
-capabilities.has(requiredCapability(T))
-```
-
-The M2 Gateway must agree with the same capability truth.
-
-## 9. Pi v0.84.3 overlay and lifecycle constraint
-
-The pinned Pi v0.84.3 API exposes `getActiveTools()`, `getAllTools()`, and replacement-style `setActiveTools(names)`. It exposes no composable overlay primitive and no active-tool-change event.
-
-Therefore M3 does not promise perfect composition with another extension that mutates active tools during the same already-running Agent Run. Pindie owns its Run-scoped semantic narrowing and restores the captured baseline at settlement. Do not add polling, heuristic diff-merging, or a second configuration state machine to pretend this limitation does not exist.
-
-Pi v0.84.3 also emits extension `input` before model/auth preflight. That input may be handled or rejected without an Agent Run and therefore without `before_agent_start`/`agent_settled`.
-
-Required rule:
-
-```text
-input
-→ must NOT capture-and-restrict the Run Tool Baseline
-
 before_agent_start
-→ authoritative Run Facts boundary
-→ authoritative Run Tool Baseline boundary
-→ initial capability-driven Tool Surface application
+→ establish authoritative Run facts
+→ apply capability-driven Tool Surface
+→ do not return a Pindie-owned systemPrompt replacement
 ```
 
-This prevents a failed/handled input from leaving Pi idle with a semantically narrowed active-tool set or causing a later Run to capture a false narrowed baseline.
+Pindie must not retain or recreate a global lifecycle policy through:
 
-## 10. Initial and mid-Run Tool Surface refresh
+- `PINDIE_CORE_POLICY`;
+- `<PINDIE_CORE>` blocks;
+- hidden custom messages;
+- Runtime Context instructions;
+- duplicated lifecycle rules in tool descriptions;
+- procedural Gateway denial text;
+- private reconstruction of Pi's system prompt.
 
-At `before_agent_start`:
+Pi's native system-prompt construction remains authoritative and may naturally track active-tool changes made through its public API.
 
-1. capture the current Pi/user active tools as the fresh Run Tool Baseline;
-2. refresh authoritative Pindie State using the existing M2 safety path;
-3. establish actual Run Facts;
-4. derive Snapshot + Capabilities;
-5. derive and apply the effective Tool Surface from the captured baseline.
+Natural-language policy is a last resort. Rules already enforced by State/Snapshot/Capabilities/Tool Surface/Gateway/Reducer must not be repeated globally for the model to remember.
 
-Do not create a prospective next-Run semantic context from `input`.
+## 9. M4 Runtime Context / Knowledge Surface
 
-Within the Run, recompute the effective surface after any event that can change capabilities, including:
+Runtime Context remains hidden model context but becomes a factual Knowledge Surface.
+
+The context must identify itself as runtime metadata, not user intent or a new request.
+
+### Coherent authority
+
+A coherent context may render:
 
 ```text
-successful task start/replace/refine/progress
-verification record
-Gate open/resolve
-Task completion
-project mutation causing verification invalidation
-external State change causing stale authority
-State becoming unavailable
+Pindie Runtime Context
+
+Runtime metadata only; not user intent or a new request.
+
+Agent Run authority: coherent
+Task status: active
+Verification status: pending
+
+Goal:
+...
+
+Constraints:
+...
+
+Success criteria:
+...
+
+Blockers:
+...
+
+Questions:
+...
+
+Next intent:
+...
+
+Verification checks:
+...
+
+Human gate:
+...
 ```
 
-A Tool Surface update affects the actual tool schemas available on the next agent turn. Gateway authorization remains the final authority for any call produced against stale visibility.
+Optional sections are omitted when empty.
 
-## 11. Core Policy / Pi system-prompt limitation during M3
+### Stale authority
 
-Pindie's current Core Policy is injected from `before_agent_start` as a system-prompt override for the high-level Run. Pi v0.84.3 rebuilds its base system prompt when active tools change, but the `before_agent_start` hook receives a prompt input that was prepared before Pindie's handler narrows tools, and the returned override can keep old selected-tool text during the Run.
-
-M3 must not solve this by:
-
-- pre-restricting tools from `input`;
-- importing private Pi internals;
-- parsing/rebuilding Pi's default system prompt;
-- adding compensating natural-language rules.
-
-Required M3 behavior:
-
-- make the actual tool schemas/action space correct before model execution by applying the initial surface in `before_agent_start`;
-- keep actual dynamic tool schemas and the M2 Gateway correct throughout the Run;
-- accept/document temporary prompt-text lag under the existing Core override.
-
-M4 owns Policy Reduction and removal/restructuring of that override so prompt text and dynamic Tool Surface fully converge.
-
-## 12. Key M3 examples
-
-Assuming the relevant tools were baseline-active:
+If current State is available but the current Agent Run is incoherent/stale, Runtime Context must explicitly render:
 
 ```text
-idle
-→ observation + pindie_task_start
-→ no edit/write/bash/replace/refine/complete
-
-successful pindie_task_start
-→ project mutation/refine/progress/verification/gate-open tools can appear next turn
-→ pindie_task_replace remains absent for same-Run-introduced Task
-
-blocked
-→ observation + legal Task semantic tools
-→ edit/write/bash/custom consequential tools absent
-→ complete absent
-
-completionReady active Task
-→ pindie_task_complete visible
-
-successful project mutation invalidates verification
-→ pindie_task_complete disappears if readiness is lost
-
-Gate opened during this Run
-→ observation only
-
-Gate existing before a fresh Run
-→ gate resolve/refine and eligible replacement become visible
-
-Task completed during Run
-→ observation only; pindie_task_start remains absent until the next Run
-
-stale/unavailable authority
-→ observation only
+Agent Run authority: stale
 ```
 
-## 13. Surface restoration and races
+It may still show the current authoritative Task facts, but must not imply that consequential authority remains coherent.
 
-When the Agent Run settles, restore the exact captured Run baseline and discard the Run Tool Surface context. Session shutdown/replacement must not leak a restricted surface into a later session.
+Do not add procedural text such as "begin a new Run", "call X", or "do not mutate" to the Runtime Context.
 
-If authority becomes stale/unavailable during a Run, shrink the next-turn surface to observation-only where possible. An already-generated consequential call may still reach the M2 Gateway and must be denied there.
+### Unavailable authority
 
-Tool Surface is an affordance projection; Gateway is execution-time authorization. Neither replaces the other.
+If authoritative Pindie State is unavailable, Runtime Context renders only factual unavailability information, conceptually:
 
-## 14. Non-goals for M3
+```text
+Pindie Runtime Context
 
-M3 must not:
+Runtime metadata only; not user intent or a new request.
+
+Agent Run authority: unavailable
+Reason: ...
+```
+
+It must not append lifecycle instructions such as "Do not make consequential project changes" because Tool Surface and Gateway already close those branches.
+
+### Shared semantic truth
+
+Runtime Context authority/task/verification status must consume `SemanticSnapshot` rather than independently recomputing those statuses from State.
+
+The same semantic world therefore drives:
+
+```text
+SemanticSnapshot
+├→ Capabilities → Tool Surface / Gateway
+└→ Runtime Context status facts
+```
+
+Current State still supplies the detailed Task Contract, open loops, verification records, and Human Gate contents.
+
+## 10. Tool descriptions and Gateway text
+
+Narrow tool descriptions explain operation meaning and input fields. They must not become lifecycle policy manuals.
+
+Gateway denials should remain concise factual diagnostics centered on current authority/status and missing capability. They must not teach a replacement workflow.
+
+Operation-specific exceptional recovery text may remain when it describes an actual conflict, lock, persistence failure, or result-specific next safety step. M4 does not mechanically delete every instruction-like sentence.
+
+## 11. Human Gate
+
+A Human Gate is an explicit authority boundary. A Gate opened during the current Run has observation-only capability space until new human input. A pre-existing Gate may expose `gate.resolve` and legal Task-boundary choices; the model interprets the human reply among those choices.
+
+M4 does not change Gate semantics.
+
+## 12. Continuation boundary
+
+M6 owns continuation simplification.
+
+M4 must preserve current continuation eligibility and hidden follow-up behavior except for the smallest literal rename required by M3 narrow tool names, for example replacing a stale reference to `replace_task` with `pindie_task_replace`.
+
+Do not rewrite continuation into a new policy system in M4.
+
+## 13. M4 acceptance examples
+
+P01 — Core removal
+
+```text
+before_agent_start
+→ no Pindie systemPrompt override
+```
+
+P02 — no hidden policy relocation
+
+```text
+no PINDIE_CORE block
+no replacement custom policy message
+```
+
+P03 — coherent Knowledge Surface
+
+```text
+SemanticSnapshot.authority = coherent
+→ Runtime Context says authority coherent
+→ task/verification status exactly match Snapshot
+```
+
+P04 — stale Knowledge Surface
+
+```text
+SemanticSnapshot.authority = stale
+→ Runtime Context says authority stale
+→ no procedural stale-run instruction
+```
+
+P05 — unavailable Knowledge Surface
+
+```text
+SemanticSnapshot.authority = unavailable
+→ Runtime Context says authority unavailable + reason
+→ no mutation prohibition prose
+```
+
+P06 — tool/prompt convergence
+
+```text
+before_agent_start applies M3 Tool Surface
+→ Pindie does not pin a separate systemPrompt override
+→ M2 Gateway remains unchanged
+```
+
+P07 — structural legality unchanged
+
+```text
+M0 capability matrix
+M1 Tool Effects
+M2 Gateway
+M3 Tool Surface
+Reducer backstops
+→ unchanged
+```
+
+## 14. Non-goals for M4
+
+M4 must not:
 
 - change M0 capability semantics;
 - weaken M2 Gateway authorization;
-- add persisted active tools or capability State;
+- change M3 Tool Surface projection or Run baseline lifecycle;
 - redesign verification evidence ownership;
-- rewrite Core Policy content;
+- redesign Human Gate semantics;
 - redesign continuation;
 - redesign Skills;
-- create a generic plugin/tool policy framework;
-- parse shell commands;
-- import private Pi prompt-building internals;
-- mutate active tools from `input` to speculate about a future Run.
+- parse or reconstruct Pi's system prompt;
+- import private Pi internals;
+- move global policy into a custom message;
+- create a second Knowledge Surface or semantic truth.
 
 ## 15. Migration status
 
@@ -347,12 +401,12 @@ M3 must not:
 M0 Semantic Foundation              — implemented
 M1 Execution Semantics Foundation   — implemented
 M2 Semantic Gateway Cutover         — implemented
-M3 Model Tool Surface               — next
-M4 Policy Reduction
+M3 Model Tool Surface               — implemented
+M4 Policy Reduction                 — next
 M5 Verification v0.2
 M6 Continuation Simplification
 M7 Skill / Docs Prune
 M8 Extension Composition
 ```
 
-M3's acceptance target is simple: in a stable semantic world, a baseline-active tool is model-visible exactly when its required Pindie capability exists, while the M2 Gateway continues to enforce the same truth at execution time.
+M4's acceptance target is deletion and convergence: deterministic correctness remains structural, Pi owns its native system prompt, and Pindie Runtime Context reports facts from the same Semantic Snapshot that drives capabilities.
