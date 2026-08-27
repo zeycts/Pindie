@@ -11,6 +11,7 @@ import {
   parseResetCreditDetails,
   parseSubscriptionUsage,
   selectEarliestResetCreditExpiry,
+  selectFiveHourWindow,
   selectWeeklyWindow,
 } from "../src/subscription-usage.ts";
 
@@ -48,24 +49,22 @@ function realUsagePayload(primarySeconds: number, secondarySeconds: number) {
   };
 }
 
-test("real Codex rate_limit windows select the seven-day duration, not position", () => {
-  const snapshot = parseSubscriptionUsage(realUsagePayload(18_000, 604_800), 10)!;
+test("five-hour and weekly windows are selected by duration, independently of order", () => {
+  const fiveHourFirst = parseSubscriptionUsage(realUsagePayload(18_000, 604_800), 10)!;
+  const weeklyFirst = parseSubscriptionUsage(realUsagePayload(604_800, 18_000), 10)!;
 
-  assert.deepEqual(selectWeeklyWindow(snapshot), {
+  assert.deepEqual(selectFiveHourWindow(fiveHourFirst), {
+    usedPercent: 23,
+    windowMinutes: 300,
+    resetsAt: 1_700_000_000_000,
+  });
+  assert.deepEqual(selectWeeklyWindow(fiveHourFirst), {
     usedPercent: 48,
     windowMinutes: 10_080,
     resetsAt: 1_700_100_000_000,
   });
-});
-
-test("real Codex weekly window is selected when it precedes a five-hour window", () => {
-  const snapshot = parseSubscriptionUsage(realUsagePayload(604_800, 18_000), 10)!;
-
-  assert.deepEqual(selectWeeklyWindow(snapshot), {
-    usedPercent: 23,
-    windowMinutes: 10_080,
-    resetsAt: 1_700_000_000_000,
-  });
+  assert.deepEqual(selectFiveHourWindow(weeklyFirst)?.usedPercent, 48);
+  assert.deepEqual(selectWeeklyWindow(weeklyFirst)?.usedPercent, 23);
 });
 
 test("parser supports nested rate-limit groups and compatibility minute aliases", () => {
@@ -77,7 +76,9 @@ test("parser supports nested rate-limit groups and compatibility minute aliases"
   }, 10)!;
 
   assert.equal(snapshot.windows.length, 3);
+  assert.equal(selectFiveHourWindow(snapshot)?.usedPercent, 23);
   assert.equal(selectWeeklyWindow(snapshot)?.usedPercent, 48);
+  assert.equal(selectFiveHourWindow({ windows: [{ usedPercent: 48 }], fetchedAt: 10 }), null);
   assert.equal(selectWeeklyWindow({ windows: [{ usedPercent: 48 }], fetchedAt: 10 }), null);
 });
 
@@ -101,10 +102,10 @@ test("reset countdown uses compact floor-based, timezone-independent units", () 
   const hour = 60 * minute;
   const day = 24 * hour;
 
-  assert.equal(formatResetCountdown(now + 6 * day + 23 * hour + 59 * minute, now), "6d23h");
-  assert.equal(formatResetCountdown(now + day, now), "1d0h");
-  assert.equal(formatResetCountdown(now + 23 * hour + 42 * minute, now), "23h42m");
-  assert.equal(formatResetCountdown(now + 3 * hour + 8 * minute, now), "3h8m");
+  assert.equal(formatResetCountdown(now + 6 * day + 23 * hour + 59 * minute, now), "6d+");
+  assert.equal(formatResetCountdown(now + day, now), "1d+");
+  assert.equal(formatResetCountdown(now + 23 * hour + 42 * minute, now), "23h+");
+  assert.equal(formatResetCountdown(now + 3 * hour + 8 * minute, now), "3h+");
   assert.equal(formatResetCountdown(now + 42 * minute, now), "42m");
   assert.equal(formatResetCountdown(now + 17_000, now), "<1m");
 });
@@ -115,9 +116,9 @@ test("reset countdown handles boundaries and expired timestamps", () => {
   const hour = 60 * minute;
   const day = 24 * hour;
 
-  assert.equal(formatResetCountdown(now + day, now), "1d0h");
-  assert.equal(formatResetCountdown(now + day - 1, now), "23h59m");
-  assert.equal(formatResetCountdown(now + hour, now), "1h0m");
+  assert.equal(formatResetCountdown(now + day, now), "1d+");
+  assert.equal(formatResetCountdown(now + day - 1, now), "23h+");
+  assert.equal(formatResetCountdown(now + hour, now), "1h+");
   assert.equal(formatResetCountdown(now + hour - 1, now), "59m");
   assert.equal(formatResetCountdown(now + minute, now), "1m");
   assert.equal(formatResetCountdown(now + minute - 1, now), "<1m");
@@ -217,7 +218,7 @@ test("credit expiry countdown uses compact lower-precision, timezone-independent
   const day = 24 * hour;
   assert.equal(formatCreditExpiryCountdown(now + 29 * day + 8 * hour, now), "29d");
   assert.equal(formatCreditExpiryCountdown(now + day + 23 * hour, now), "1d");
-  assert.equal(formatCreditExpiryCountdown(now + 18 * hour + 32 * minute, now), "18h32m");
+  assert.equal(formatCreditExpiryCountdown(now + 18 * hour + 32 * minute, now), "18h");
   assert.equal(formatCreditExpiryCountdown(now + 42 * minute, now), "42m");
   assert.equal(formatCreditExpiryCountdown(now + 17_000, now), "<1m");
   assert.equal(formatCreditExpiryCountdown(now, now), null);

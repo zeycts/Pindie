@@ -15,6 +15,7 @@ import {
   formatResetCountdown,
   getRemainingPercent,
   selectEarliestResetCreditExpiry,
+  selectFiveHourWindow,
   selectWeeklyWindow,
   type SubscriptionUsageSnapshot,
 } from "./subscription-usage.ts";
@@ -51,8 +52,14 @@ export interface PindieStatusSnapshot {
 
 export interface PindieStatusLayout {
   left: StatusSegment[];
+  /** Full account-usage presentation. */
   right: StatusSegment[];
+  /** Removes ordinary resets and credit expiry. */
   compactRight?: StatusSegment[];
+  /** Preserves actionable resets before reset-credit information. */
+  attentionRight?: StatusSegment[];
+  /** Preserves the independently known quota percentages only. */
+  minimumRight?: StatusSegment[];
 }
 
 /** Counts distinct success criteria covered by current passing checks. */
@@ -158,36 +165,76 @@ export function deriveStatusSegments(
   return segments;
 }
 
+interface QuotaPresentation {
+  quota: StatusSegment;
+  reset: StatusSegment | null;
+  actionable: boolean;
+}
+
+function quotaTone(remaining: number): StatusTone {
+  if (remaining <= 5) return "error";
+  if (remaining <= 10) return "warning";
+  return "dim";
+}
+
+function quotaPresentation(
+  label: "5h" | "wk",
+  window: ReturnType<typeof selectFiveHourWindow>,
+  now: number,
+): QuotaPresentation | null {
+  if (!window) return null;
+  const remaining = getRemainingPercent(window.usedPercent);
+  const resetCountdown = window.resetsAt === undefined
+    ? null
+    : formatResetCountdown(window.resetsAt, now);
+  return {
+    quota: { text: `${label} ${remaining}%`, tone: quotaTone(remaining) },
+    reset: resetCountdown === null ? null : { text: `↻ ${resetCountdown}`, tone: "dim" },
+    actionable: remaining <= 10,
+  };
+}
+
 export function deriveStatusLayout(
   snapshot: PindieStatusSnapshot,
   now = Date.now(),
 ): PindieStatusLayout {
-  const weekly = selectWeeklyWindow(snapshot.subscriptionUsage ?? null);
-  const resetCountdown = weekly?.resetsAt === undefined
-    ? null
-    : formatResetCountdown(weekly.resetsAt, now);
-  const resetCredits = snapshot.subscriptionUsage?.resetCredits;
+  const usage = snapshot.subscriptionUsage ?? null;
+  const fiveHour = quotaPresentation("5h", selectFiveHourWindow(usage), now);
+  const weekly = quotaPresentation("wk", selectWeeklyWindow(usage), now);
+  const quotas = [fiveHour, weekly].filter((quota): quota is QuotaPresentation => quota !== null);
+  const resetCredits = usage?.resetCredits;
   const creditExpiry = selectEarliestResetCreditExpiry(resetCredits, now);
-  const creditCountdown = creditExpiry === undefined
+  const creditCountdown = creditExpiry === undefined || creditExpiry - now > 5 * 24 * 60 * 60 * 1_000
     ? null
     : formatCreditExpiryCountdown(creditExpiry, now);
   const creditCount = resetCredits?.availableCount ?? 0;
   const creditSegment = creditCount > 0
     ? { text: `⟳ ${creditCount}${creditCountdown === null ? "" : ` · ${creditCountdown}`}`, tone: "dim" as const }
     : null;
-  const right = weekly
-    ? [
-        { text: `◉ ${getRemainingPercent(weekly.usedPercent)}%`, tone: "dim" as const },
-        ...(resetCountdown === null
-          ? []
-          : [{ text: `↻ ${resetCountdown}`, tone: "dim" as const }]),
-        ...(creditSegment ? [creditSegment] : []),
-      ]
-    : [];
-  const compactRight = weekly && creditSegment && creditCountdown !== null
-    ? [...right.slice(0, -1), { text: `⟳ ${creditCount}`, tone: "dim" as const }]
+  const compactCreditSegment = creditCount > 0
+    ? { text: `⟳ ${creditCount}`, tone: "dim" as const }
+    : null;
+
+  const right = [
+    ...quotas.flatMap((quota) => [quota.quota, ...(quota.reset ? [quota.reset] : [])]),
+    ...(creditSegment ? [creditSegment] : []),
+  ];
+  const compactRight = [
+    ...quotas.flatMap((quota) => [quota.quota, ...(quota.actionable && quota.reset ? [quota.reset] : [])]),
+    ...(compactCreditSegment ? [compactCreditSegment] : []),
+  ];
+  const attentionRight = quotas.some((quota) => quota.actionable && quota.reset)
+    ? quotas.flatMap((quota) => [quota.quota, ...(quota.actionable && quota.reset ? [quota.reset] : [])])
     : undefined;
-  return { left: deriveStatusSegments(snapshot), right, ...(compactRight ? { compactRight } : {}) };
+  const minimumRight = quotas.map((quota) => quota.quota);
+
+  return {
+    left: deriveStatusSegments(snapshot),
+    right,
+    ...(compactRight.length !== right.length ? { compactRight } : {}),
+    ...(attentionRight ? { attentionRight } : {}),
+    ...(minimumRight.length > 0 && minimumRight.length !== compactRight.length ? { minimumRight } : {}),
+  };
 }
 
 /** Renders semantic status segments with the active Pi theme. */
@@ -213,14 +260,32 @@ export function renderStatusLayout(
   width?: number,
 ): string | undefined {
   const left = renderStatusSegments(theme, layout.left);
-  const fullRight = renderStatusSegments(theme, layout.right);
-  const compactRight = layout.compactRight
-    ? renderStatusSegments(theme, layout.compactRight)
-    : fullRight;
-  const right = width && width > 0 && fullRight !== compactRight &&
-      visibleWidth(left) + 2 + visibleWidth(fullRight) > width
-    ? compactRight
-    : fullRight;
+  const rightVariants = [
+    layout.right,
+    ...(layout.compactRight ? [layout.compactRight] : []),
+    ...(layout.attentionRight ? [layout.attentionRight] : []),
+    ...(layout.minimumRight ? [layout.minimumRight] : []),
+  ].filter((variant, index, variants) =>
+    variants.findIndex((other) => other === variant) === index,
+  );
+  const renderedVariants = rightVariants.map((variant) => renderStatusSegments(theme, variant));
+  const fullRight = renderedVariants[0] ?? "";
+  let right = fullRight;
+  if (width && width > 0) {
+    const fitting = renderedVariants.find((candidate) =>
+      visibleWidth(left) + 2 + visibleWidth(candidate) <= width,
+    );
+    if (fitting) {
+      right = fitting;
+    } else {
+      const actionable = layout.attentionRight
+        ? renderStatusSegments(theme, layout.attentionRight)
+        : undefined;
+      right = actionable && visibleWidth(actionable) <= width
+        ? actionable
+        : renderedVariants.find((candidate) => visibleWidth(candidate) <= width) ?? fullRight;
+    }
+  }
   if (!left && !right) return undefined;
   if (!right) return left;
   if (!left) {
