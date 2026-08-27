@@ -33,7 +33,7 @@ Pindie must not implement a second agent loop, workflow engine, persisted phase 
 - **Harness owns facts; model owns meaning.** Verification evidence provenance/freshness is deterministic Harness authority, while evidence interpretation and success-criterion coverage remain model-owned.
 - Model-visible affordances and runtime legality are projections of the same semantic capability model.
 - Persist only durable semantic current-work information that cannot be reliably reconstructed from reality.
-- Capabilities, active tools, Run authority, presentation, reasoning mode, recent evidence refs, evidence generation, and workflow phases are runtime-derived and never persisted in `PindieState`.
+- Capabilities, active tools, Run authority, presentation, reasoning mode, recent evidence refs, evidence generation, continuation fuses, and workflow phases are runtime-derived and never persisted in `PindieState`.
 - Reducer transitions remain tool-agnostic; Pi tool names and runtime evidence refs must not leak into persisted State semantics.
 - The Execution Gateway remains a defense-in-depth backstop after Tool Surface alignment.
 - Pindie may narrow Pi/user tool availability for the current Run but must not enable tools absent from the captured Run baseline.
@@ -58,84 +58,58 @@ For each approved milestone:
 - **M2 — Semantic Gateway Cutover:** live execution authorization consumes M0/M1 truth. Implemented.
 - **M3 — Model Tool Surface:** narrow semantic tools and capability-driven active Tool Surface over a per-Run Pi/user baseline. Implemented.
 - **M4 — Policy Reduction:** global Pindie Core Policy/system-prompt override removed; Runtime Context is factual Snapshot-aligned Knowledge Surface. Implemented.
-- **M5 — Verification v0.2:** next. Harness owns factual evidence capture/provenance/freshness; model owns semantic pass/fail and criterion coverage judgment.
-- **M6 — Continuation Simplification:** deterministic continuation eligibility plus a thin semantic intent probe.
+- **M5 — Verification v0.2:** Harness-owned factual evidence provenance/freshness with model-owned semantic judgment and criterion coverage. Implemented.
+- **M6 — Continuation Simplification:** next. Deterministic continuation eligibility plus one thin semantic latest-user-intent probe.
 - **M7 — Skill / Docs Prune:** remove duplicated correctness rules from Skills and stale migration documentation.
 - **M8 — Extension Composition:** leave `extension.ts` primarily as Pi lifecycle wiring over semantic/runtime subsystems.
 
-## M5 implementation authority
+## M6 implementation authority
 
-M5 changes verification evidence provenance without redesigning persisted verification State.
+M6 simplifies Active Task Continuation without creating another loop or converting semantic intent into a finite-state workflow.
 
-### Persisted verification schema stays compatible
+### Deterministic eligibility belongs to the Harness
 
-Do **not** change the durable `VerificationCheck` shape merely to add runtime evidence references. Existing State continues to persist:
+Continuation probing is eligible only when all deterministic facts agree that a semantic continuation decision is meaningful:
 
-```text
-name
-status: passed | failed
-covers: string[]
-evidence: string
-```
+- current `SemanticSnapshot.authority` is `coherent`;
+- current `SemanticSnapshot.taskStatus` is `active`;
+- the final assistant message ended normally (`stopReason === "stop"`);
+- Pi is not already going to retry the low-level run;
+- Pi has no pending steering/follow-up messages;
+- Pindie's one-probe fuse has not already been consumed for the current high-level Agent Run.
 
-Existing v0.1 verification records are grandfathered. Do not introduce State migration, schema-version machinery, forced stale-on-load behavior, or a verification log database.
+`taskStatus === "active"` is the semantic source for unfinished/no-Gate/no-blocker eligibility. Do not duplicate those checks by directly re-reading `task.completed`, `humanGate`, or blockers in continuation code.
 
-### Runtime evidence references are temporary
+Questions do not by themselves suppress continuation because they may coexist with useful active work.
 
-Recent evidence refs are runtime-only handles tied to actual Pi tool results, preferably `ev:<toolCallId>` or an equivalent deterministic handle. They must never be persisted into `PindieState`.
+### Latest user intent remains model-owned
 
-`pindie_verification_record` should accept model-owned semantic judgment plus runtime evidence refs; the Harness resolves those refs and materializes bounded factual evidence into the existing durable `evidence: string` field before dispatching the existing reducer event.
+Once deterministic eligibility is satisfied, the remaining question is semantic:
 
-### Evidence ownership
+> Does the latest actual user intent still call for consequential execution now?
 
-Harness owns:
+The Harness must not infer that answer from Task status, `nextIntent`, prior tool usage, or workflow heuristics.
 
-- which actual tool result a ref denotes;
-- tool/result success-vs-error fact;
-- factual bounded input/result excerpts and deterministic digests;
-- evidence freshness and invalidation;
-- refusing unknown/stale refs.
+The model may choose any currently visible/legal semantic action, including continuing the current work, refining/replacing the Task when legal, or returning control. Tool Surface and Gateway already constrain legality.
 
-Model owns:
+### Probe stays thin
 
-- verification check name;
-- `status: passed | failed` semantic interpretation;
-- success-criterion coverage.
+Keep at most one hidden Pi-native `followUp` custom message per high-level Agent Run.
 
-Do not derive `status` from `isError`; an error result may legitimately prove a criterion such as rejection of invalid input.
+The probe must explicitly identify itself as runtime-generated metadata, **not user intent and not a new request**. It should ask only for re-evaluation of latest actual user intent and whether consequential execution should continue.
 
-### Evidence eligibility
+Do not repeat lifecycle instructions such as when to replace, Gate, record blockers, re-observe, verify, or complete. Those branches are already represented by Runtime Context, Tool Surface, Gateway, and reducer invariants.
 
-Evidence candidates are factual observations, not arbitrary semantic-State mutations.
+### Probe context is ephemeral
 
-- `observe.project` / `observe.git`: eligible while a coherent unfinished Task exists.
-- ambiguous project-effect tools such as `bash`/unknown custom tools: eligible only after M2 mutation observation proves project reality unchanged.
-- known project mutations (`edit`/`write`): not evidence candidates.
-- Pindie Task/Gate/verification semantic tools: not evidence candidates.
+Pi custom messages participate in model context. Historical Pindie continuation probes must therefore not accumulate as durable semantic instructions in future model turns.
 
-### Evidence freshness
+During the actual continuation follow-up, keep only the current/latest Pindie continuation probe in the projected model context. On a fresh user-driven Run, filter prior Pindie continuation probes out of model context entirely.
 
-Use a runtime-only evidence generation/freshness token so parallel or late results from an older project/Task basis cannot become current evidence.
+This is context projection only; do not add a continuation database, persisted flag, or session migration.
 
-An authorized call records the generation at call time. A result may be captured only if its call generation still equals the current generation after existing mutation bookkeeping has completed.
+### Preserve Pi ownership
 
-Advance/clear recent evidence when the verification basis changes, including at least:
+Use Pi's existing `agent_end` + `sendMessage(..., { deliverAs: "followUp" })` lifecycle and existing `agent_settled` boundary. Do not add recursive calls, background loops, repeated probes, direct model calls, or a second Agent Loop.
 
-- actual Agent Run start;
-- successful Task start/replace;
-- successful Task refinement;
-- known project mutation;
-- detected/unknown ambiguous project mutation;
-- external authority discontinuity / State unavailable.
-
-Do not advance merely for observation, Task progress, Gate open/resolve, or verification record.
-
-### Mutation ordering
-
-For ambiguous tools, existing Project Mutation Freshness must run before evidence capture. If project mutation is detected or cannot be proven absent, invalidate verification/evidence freshness and do not expose that tool result as current evidence.
-
-### Bounded persistence
-
-Do not persist raw tool-result logs automatically. Recent candidates remain runtime-only. Only evidence refs explicitly selected in `pindie_verification_record` are materialized into durable evidence, using deterministic Harness-side bounding/excerpts/digests.
-
-M5 must not redesign continuation, Skills, capability semantics, Tool Surface, Gateway legality, or reducer transition vocabulary.
+M6 must not redesign M0–M5 semantics, Tool Surface, Gateway, verification evidence, reasoning, Human Gate, Skills, or persisted State.
