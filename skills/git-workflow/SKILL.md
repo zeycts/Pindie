@@ -1,52 +1,84 @@
 ---
 name: git-workflow
-description: Carry a code-changing task through a safe Git branch, commit, push, and pull-request workflow. Use when changes in a Git repository should be delivered through a reviewable branch or pull request.
+description: Carry repository changes through a safe branch, commit, push, and pull-request workflow. Use when code or documentation changes should be delivered through Git for review.
 ---
 
 # Git Workflow
 
 ## Purpose
 
-Deliver one code-changing Pindie task through a focused, reviewable Git branch and pull request without taking over Pindie Core decisions.
+Provide a focused Git delivery procedure. This Skill does not decide Pindie Task semantics, verification meaning, Human Gate lifecycle, or completion legality; those remain owned by the Pindie Harness and current model-visible action space.
 
 ## Procedure
 
-### 1. Inspect
+### 1. Inspect Git reality
 
-Pindie Core owns Task establishment and reconciliation. When latest user intent begins or replaces a code-changing Task, establish the correct current Pindie Task before consequential Git action; minimal read-only observation may precede that reconciliation when needed. Then, before consequential Git mutation, observe the branch, working tree, and repository context. Prefer `pindie_git_observe` for its supported read-only Git inspection; ordinary Git mutations use consequential `bash`, and unsupported inspection through `bash` remains subject to current Pindie Core guards. “Inspect before consequential Git mutation” does not require Git inspection before Pindie Task establishment/reconciliation. Inspect remote, upstream, recent commits, or PR context only when needed. Do not assume existing modified, untracked, or staged changes belong to this Task.
+Before Git mutation, inspect the current branch and working tree. Prefer `pindie_git_observe` for supported read-only Git observation. Inspect remote/upstream/recent commits only when relevant.
 
-### 2. Prepare the branch
+Do not assume existing modified, staged, or untracked files belong to the current work.
 
-Reuse a branch that clearly belongs to the Task. For a new code-changing task on clean `main` or `master`, create a focused branch before normal implementation when practical. If confirmed Task changes already exist on `main` or `master`, create or switch to the focused Task branch while preserving them before committing; preserve ambiguous changes and follow Human Gate guidance. Follow repository branch and delivery conventions; use a simple semantic prefix only when none exist.
+### 2. Prepare a focused branch
 
-### 3. Work
+Reuse a branch that clearly belongs to the current work, or create a focused branch before normal delivery work when practical.
 
-Normal Pindie Core Loop implementation and Verification remain authoritative. Use Git checkpoints at useful delivery boundaries, not after every edit or Core Loop step.
+If relevant changes already exist on `main`/`master`, move them onto the focused branch without discarding unrelated local work.
+
+Follow repository naming conventions when present; otherwise use a concise semantic branch name.
+
+### 3. Work without unnecessary Git churn
+
+Use normal implementation/verification tools. Git checkpoints are delivery boundaries, not a required step after every edit or test.
+
+Do not create commits merely to record intermediate agent-loop steps.
 
 ### 4. Inspect before commit
 
-Re-observe `git status` and the actual diff, including staged changes when relevant. Identify only the Task changes and preserve unrelated work; never silently include, discard, restore, clean, or stash unknown changes.
+Re-observe `git status` and the actual diff, including staged changes when relevant.
+
+Identify the intended changes precisely. Preserve unrelated work; never silently restore, clean, stash, delete, or include unknown changes.
 
 ### 5. Commit
 
-Stage the identified Task changes after inspection. Follow the repository's commit convention; otherwise use a concise semantic message describing the committed change.
+Stage only the intended changes and create a focused commit using the repository's commit convention. If no convention exists, use a concise semantic message describing the change.
 
 ### 6. Push
 
-Push normally: set upstream for a new branch and use the existing upstream thereafter. Do not rewrite remote history by default.
+Push normally. Set upstream for a new branch; use the existing upstream thereafter.
+
+Do not rewrite remote history by default.
 
 ### 7. Pull request
 
-Open or update one focused PR, using an existing PR template when present. Otherwise report concise `## Summary` and `## Verification` sections with only actual evidence. A PR is ready for review, not merge authorization.
+Open or update one focused PR against the intended base branch.
+
+Use the repository PR template when present. Otherwise keep the description compact, typically:
+
+```text
+## Summary
+- what changed
+
+## Verification
+- what was actually run/observed
+```
+
+A PR is a review boundary. Do not merge it unless the current user request explicitly authorizes merging.
 
 ### 8. Review cycle
 
-Read actual review feedback and inspect current branch/code reality. Make targeted changes, re-verify after mutation, inspect the resulting diff, then commit and push the existing branch/PR.
+For review feedback:
+
+1. inspect the current branch/code reality;
+2. make only the targeted changes;
+3. re-run relevant verification;
+4. inspect the resulting diff;
+5. commit and push the same branch/PR.
+
+Do not open a replacement PR unless the existing PR cannot represent the work correctly.
 
 ## Safety
 
-Never discard unknown local work. Destructive or history-rewriting actions require consequence-aware observation; prefer safer options and use the existing Pindie Human Gate when consequential judgment is required. Obey current user intent, repository reality, the Task Contract, Verification, and Core invariants.
-
-## Completion
-
-Branch, commit, push, and PR milestones are Git delivery milestones only. This Skill never decides whether the Pindie Task is complete.
+- Never discard unknown local work.
+- Avoid destructive cleanup and history rewriting unless explicitly required and authorized.
+- Do not force-push by default.
+- Do not fabricate verification results in commits or PR descriptions.
+- Keep Git delivery procedure separate from Pindie semantic correctness; current Tool Surface and Gateway remain authoritative for what actions are legal.

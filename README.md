@@ -2,20 +2,20 @@
 
 > Pindie is a personal AI agent for indie development, built on Pi.
 
-Pindie carries one development task from intent to verified completion while keeping consequential human judgment explicit. Pi remains responsible for the low-level model/tool Agent Loop; Pindie adds a minimal semantic operating layer above it.
+Pindie carries one development task from intent to verified completion while keeping consequential human judgment explicit. Pi remains the low-level Agent Harness; Pindie adds a small semantic operating layer above it.
 
-## Core ownership
+## Ownership
 
 ```text
 Human  → goals, taste, consequential judgment, approval
 Model  → interpretation, planning, semantic choice, verification meaning/coverage
 Pindie → durable semantic State, legality, capability, factual evidence/freshness, lifecycle
-Pi     → LLM execution, tool registry/execution, sessions, low-level Agent Loop
+Pi     → LLM execution, tools, sessions, Skills, low-level Agent Loop
 ```
 
 > Eliminate meaningless choices, preserve meaningful choices.
 
-## v0.2 architecture
+## Architecture
 
 ```text
 Reality
@@ -40,62 +40,42 @@ Capabilities
        Reality
 ```
 
-The semantic layer is deliberately small and is not a second Agent Loop or workflow engine.
+The semantic layer is deliberately small. Pindie does not add a second Agent Loop, workflow engine, task queue, planner framework, or separate Skill runtime.
 
-See:
+## What Pindie adds
 
-- `docs/architecture.md` — target v0.2 architecture;
-- `docs/behavior.md` — semantic/behavioral contract;
-- `AGENTS.md` — repository instructions and milestone authority.
+- one durable current Task with explicit success criteria, open loops, verification, and Human Gate;
+- pure `SemanticRunFacts → SemanticSnapshot → Capabilities` derivation;
+- capability-driven model Tool Surface over the current Pi/user tool baseline;
+- an execution Gateway that re-authorizes consequential calls against fresh authority;
+- factual Snapshot-aligned Runtime Context instead of a global lifecycle-policy prompt;
+- Project Mutation Freshness for keeping verification current with project Reality;
+- Harness-owned verification evidence provenance/freshness while the model owns semantic pass/fail and criterion coverage;
+- a one-shot continuation probe that asks only whether latest actual user intent still calls for consequential execution;
+- runtime-only activity, timer, cost, status presentation, adaptive reasoning, and `/efficiency`;
+- a bundled `git-workflow` Skill implemented through Pi's native Skill runtime.
 
-## Migration status
+Model-facing Pindie semantic tools are narrow affordances:
 
 ```text
-M0 Semantic Foundation              — implemented
-M1 Execution Semantics Foundation   — implemented
-M2 Semantic Gateway Cutover         — implemented
-M3 Model Tool Surface               — implemented
-M4 Policy Reduction                 — implemented
-M5 Verification v0.2                — implemented
-M6 Continuation Simplification      — next
-M7 Skill / Docs Prune
-M8 Extension Composition
+pindie_task_start
+pindie_task_replace
+pindie_task_refine
+pindie_task_progress
+pindie_verification_record
+pindie_task_complete
+pindie_gate_open
+pindie_gate_resolve
+pindie_git_observe
 ```
 
-M0–M4 established one semantic truth for legality, aligned model-visible tools with that truth, cut the live Gateway over to it, and removed the duplicated global Core Policy/system-prompt override. Runtime Context is factual Knowledge Surface derived from the same Semantic Snapshot that drives capabilities.
+## Documentation
 
-M5 moved durable verification evidence provenance/freshness into the Harness without changing the persisted `VerificationCheck` schema. Actual tool results become temporary current-Run evidence candidates; the model selects factual refs and still owns semantic pass/fail and criterion coverage; Pindie materializes selected bounded factual evidence into the existing durable `evidence` string.
+- `docs/architecture.md` — current architecture and ownership boundaries.
+- `docs/behavior.md` — current semantic and behavioral contract.
+- `AGENTS.md` — repository instructions for agents working on Pindie.
 
-M6 simplifies continuation. Deterministic eligibility comes from the current Semantic Snapshot plus Pi runtime facts; only the genuinely semantic question — whether the latest actual user intent still calls for consequential execution — remains a one-shot hidden model probe. Historical continuation probes must not accumulate in future model context.
-
-## Current implemented baseline
-
-The repository includes:
-
-- minimal persistent current-Task State;
-- deterministic reducer and State invariants;
-- project-scoped Runtime persistence, refresh, locking, and conflict handling;
-- `SemanticRunFacts → SemanticSnapshot → Capabilities`;
-- shared Tool Effect classification and capability authorization;
-- live Semantic Gateway authorization;
-- runtime-only Agent Run facts and stale/unavailable authority handling;
-- Project Mutation Freshness using the shared Tool Effect model;
-- narrow model-facing semantic tools:
-  - `pindie_task_start`
-  - `pindie_task_replace`
-  - `pindie_task_refine`
-  - `pindie_task_progress`
-  - `pindie_verification_record`
-  - `pindie_task_complete`
-  - `pindie_gate_open`
-  - `pindie_gate_resolve`
-  - `pindie_git_observe`;
-- capability-driven active Tool Surface narrowing over a fresh per-Run Pi/user baseline;
-- factual Snapshot-aligned Runtime Context with no global Pindie lifecycle-policy prompt;
-- Harness-owned runtime verification evidence refs/freshness with bounded durable materialization;
-- Human Gate lifecycle and verification freshness;
-- runtime-only Activity, Run Timer, Run Cost, status presentation, adaptive reasoning, and `/efficiency`;
-- bundled `git-workflow` Skill through Pi's Skill runtime.
+Git history and tests are the record of the v0.2 migration; stable docs describe the system as it exists now.
 
 ## Development
 

@@ -1,23 +1,21 @@
 # Pindie Architecture v0.2
 
-## 1. Purpose
+## 1. Purpose and ownership
 
-Pindie is a personal AI agent for indie development built on Pi. Pi remains the low-level agent harness. Pindie adds a small semantic operating layer above it.
+Pindie is a personal AI agent for indie development built on Pi. Pi remains the low-level Agent Harness; Pindie adds a small semantic operating layer above it.
 
 ```text
 Human  → goals, taste, consequential judgment, approval
 Model  → meaning, interpretation, planning, semantic choice
-Pindie → truth, legality, capability, lifecycle, factual evidence freshness
-Pi     → LLM execution, tool registry/execution, sessions, low-level agent loop
+Pindie → durable semantic truth, legality, capability, factual evidence/freshness, lifecycle
+Pi     → LLM execution, concrete tools, sessions, Skills, low-level Agent Loop
 ```
 
 Pindie should eliminate meaningless choices, not meaningful choices.
 
-## 2. Non-goals
+Pindie does not add a second Agent Loop, workflow engine, persisted phase machine, task queue, planner framework, memory database, verification-log database, universal shell parser, or second Skill runtime.
 
-Pindie v0.2 does not add a second agent loop, workflow engine, persisted phase machine, task queue, planner framework, memory database, verification-log database, second Skill runtime, universal shell parser, or second source of project truth.
-
-## 3. Semantic architecture
+## 2. Semantic center
 
 ```text
 Reality
@@ -46,7 +44,7 @@ Surface            │                  │
                        Reality
 ```
 
-The semantic center is deliberately small:
+The semantic source of truth is deliberately small:
 
 ```text
 PindieState + SemanticRunFacts
@@ -56,7 +54,7 @@ deriveSemanticSnapshot()
 deriveCapabilities()
 ```
 
-Concrete execution semantics remain separate:
+Concrete tool semantics remain separate:
 
 ```text
 Tool Call
@@ -70,9 +68,9 @@ Capabilities + Tool Effect
 authorizeToolEffect()
 ```
 
-M0–M5 are implemented: semantic truth drives live authorization, model-visible Tool Surface, factual Runtime Context, and Harness-owned verification evidence provenance/freshness; Pi owns its native system prompt and low-level Agent Loop.
+Harness code closes deterministic branches. The model chooses among the remaining semantically meaningful actions.
 
-## 4. Durable State and Run Facts
+## 3. Durable State and runtime facts
 
 `PindieState` stores one durable current Task or `null`:
 
@@ -88,9 +86,9 @@ PindieState
     └── completed
 ```
 
-Task/verification statuses are derived. Capabilities, active tools, Run authority, presentation, reasoning state, continuation fuses, Git fingerprints, recent evidence refs, evidence generations, and workflow phases are never persisted.
+Task/verification statuses are derived. Capabilities, active tools, Run authority, presentation state, reasoning state, continuation fuses, Git fingerprints, recent evidence refs, evidence generations, and workflow phases are never persisted.
 
-The reducer remains the authority for hard State invariants and consumes semantic `PindieEvent`s, not Pi tool names. Runtime owns project-scoped load/save, authoritative refresh, locking, external-State conflict detection, reducer dispatch, and save-before-publish.
+The reducer owns hard State invariants and consumes semantic `PindieEvent`s, not Pi tool names. Runtime owns project-scoped load/save, authoritative refresh, locking, external-State conflict detection, reducer dispatch, and save-before-publish.
 
 Run-boundary legality uses runtime-only relationships:
 
@@ -100,9 +98,9 @@ CompletionRunRelation not_completed | completed_before_run | completed_during_ru
 GateRunRelation       none | existed_before_run | opened_during_run
 ```
 
-Object identity is only a coherent-Run immutable-State change detector, never persistent semantic identity.
+Run-start object identity is only a coherent-Run immutable-State change detector. It is never persistent Task identity.
 
-## 5. Capabilities and live execution
+## 4. Capabilities and execution authority
 
 Capability vocabulary:
 
@@ -125,7 +123,7 @@ gate.resolve
 
 Capabilities are pure derived authority and are never persisted.
 
-Important consequences:
+Important capability consequences:
 
 ```text
 unavailable/stale authority → observation only
@@ -139,17 +137,33 @@ task.complete              → only when completionReady
 
 The live Gateway authorizes every non-observation call through current capabilities after authoritative refresh/coherence checks. Reducer and Runtime remain deeper integrity backstops.
 
-Project Mutation Freshness uses the same Tool Effect taxonomy:
+## 5. Tool Effects and Project Mutation Freshness
+
+Concrete Tool Effects connect Pi tools to semantic authority:
+
+```text
+read / grep / find / ls → observe.project / mutation none
+pindie_git_observe      → observe.git / mutation none
+edit / write            → project.mutate / mutation known
+bash / unknown/custom   → project.mutate / mutation ambiguous
+semantic Pindie tool    → exact semantic capability / mutation none
+```
+
+Unknown/custom tools are conservative. Generic shell commands are not parsed into read-only exceptions.
+
+Project Mutation Freshness uses the same effect taxonomy:
 
 ```text
 mutation none      → no project-mutation observation
 mutation known     → successful mutation invalidates prior verification
-mutation ambiguous → before/after Reality fingerprint observation
+mutation ambiguous → compare project Reality before/after execution
 ```
 
-## 6. Model Tool Surface — implemented M3
+Denied calls create no mutation observation. Failed ambiguous tools are still observed afterward because partial mutation may have occurred.
 
-Model-facing semantic tools are narrow capability-shaped adapters:
+## 6. Model Tool Surface
+
+Model-facing Pindie semantic tools are narrow capability-shaped adapters:
 
 ```text
 pindie_task_start          → task.start
@@ -163,7 +177,7 @@ pindie_gate_resolve        → gate.resolve
 pindie_git_observe         → observe.git
 ```
 
-Internal reducer events remain unchanged.
+Internal reducer events remain tool-agnostic.
 
 For each actual Agent Run:
 
@@ -175,17 +189,24 @@ Tools allowed by current capabilities
 Effective Tool Surface
 ```
 
-The Run Tool Baseline is the Pi/user active set captured at the authoritative `before_agent_start` boundary before Pindie applies restriction. Pindie may narrow it but never enable a tool absent from the baseline. The exact baseline is restored when the Run settles and a fresh one is captured for the next Run.
+The Run Tool Baseline is the Pi/user active set captured at `before_agent_start` before Pindie applies semantic restriction. Pindie may narrow it but never enable a tool absent from that baseline. The exact baseline is restored at `agent_settled`; the next Run captures a fresh Pi/user baseline.
 
-The M2 Gateway remains authoritative for races, stale pre-generated calls, and temporary visibility mismatch.
+The Gateway remains authoritative for races, stale pre-generated calls, and calls generated before a same-Run semantic change narrows the surface.
 
-## 7. Knowledge Surface / prompt ownership — implemented M4
+## 7. Knowledge Surface and prompt ownership
 
-Pindie no longer owns a global lifecycle-policy system prompt. Pi owns its native system-prompt construction.
+Pindie does not own a global lifecycle-policy system prompt. Pi owns native system-prompt construction and rebuilds it from the active tool set.
 
-Runtime Context remains a hidden factual Knowledge Surface driven by the same `SemanticSnapshot` used by capabilities. It may report authority, Task/verification status, current Task details, verification records, Human Gate, and factual unavailable reason; it must not duplicate structural legality as procedural instructions.
+Pindie Runtime Context is hidden factual Knowledge Surface driven by the same `SemanticSnapshot` used by capabilities. It may report:
 
-The projection is:
+- coherent/stale/unavailable Run authority;
+- Task and verification status;
+- current Task contract and open loops;
+- current verification records;
+- Human Gate details;
+- factual unavailability reason.
+
+It must not restate structural legality as procedural lifecycle instructions.
 
 ```text
 PindieState + SemanticRunFacts
@@ -197,32 +218,9 @@ SemanticSnapshot
 
 Natural-language policy is a last resort, not a source of deterministic correctness.
 
-## 8. Verification v0.2 — implemented M5
+## 8. Verification evidence ownership
 
-M5 fixes evidence ownership while preserving the durable Verification State shape.
-
-```text
-Actual Pi tool execution
-        ↓
-Harness observes factual result
-        ↓
-Recent factual Evidence Candidate
-        ↓
-Model semantic judgment
-  - check name
-  - passed | failed meaning
-  - success-criterion coverage
-        ↓
-Harness resolves selected evidence refs
-        ↓
-Existing durable VerificationCheck
-        ↓
-Reducer / State
-```
-
-Harness owns `what happened`. Model owns `what it proves`.
-
-Durable checks remain:
+Durable verification keeps the compact State shape:
 
 ```text
 VerificationCheck
@@ -232,91 +230,87 @@ VerificationCheck
 └── evidence: string
 ```
 
-Runtime refs use actual tool-call identity (`ev:<toolCallId>`), are never persisted, and are scoped to one actual Agent Run. Factual materialization is bounded and deterministic. Existing legacy verification records remain compatible without migration.
+Evidence provenance/freshness is Harness-owned while semantic interpretation remains model-owned:
 
-Recent evidence uses a runtime-only generation token. Calls remember generation-at-call; verification-basis changes advance the generation and clear candidates. Project Mutation Freshness runs before evidence capture for ambiguous tools, so mutating/unknown results cannot become current evidence.
+```text
+Actual Pi tool execution
+        ↓
+Harness observes factual result
+        ↓
+Recent factual Evidence Candidate
+        ↓
+Model selects current evidence refs
+and judges status + criterion coverage
+        ↓
+Harness materializes bounded factual evidence
+        ↓
+Existing VerificationCheck
+        ↓
+Reducer / State
+```
+
+Runtime evidence refs use actual tool-call identity (`ev:<toolCallId>`), exist only within the current evidence scope, and are never persisted. Selected evidence is deterministically bounded and hashed before being materialized into the existing durable `evidence` string.
+
+A runtime-only evidence generation prevents late/parallel results from crossing a changed verification basis. Project Mutation Freshness runs before evidence capture for ambiguous tools; mutating or unknown ambiguous results therefore cannot become current evidence.
+
+Existing legacy `evidence: string` State remains valid without migration.
 
 ## 9. Human authority
 
-A Human Gate is an explicit authority boundary. A Gate opened during the current Run has observation-only capability space until new human input. A pre-existing Gate may expose `gate.resolve` and legal Task-boundary choices; the model interprets human input among those choices.
+A Human Gate is an explicit authority boundary.
 
-## 10. Continuation — M6 target
+A Gate opened during the current Run produces observation-only capability space until new human input. A Gate that existed before the current user-driven Run may expose `gate.resolve` and any other legal Task-boundary choices. The model interprets the human reply within that legal space.
 
-Continuation is the remaining place where Pindie intentionally asks the model a semantic question after deterministic facts have been closed.
+Human Gate lifecycle legality is encoded structurally; tool descriptions and global prompts do not duplicate it.
 
-Pi owns the low-level run lifecycle. In pinned Pi 0.84.3, the public extension `agent_end` event contains only `type` and `messages`; Pi's internal session-event stream computes a `willRetry` value separately, but that value is not part of the public extension API. Pindie must not reach into private Pi internals or recreate retry classification to obtain it.
+## 10. Continuation
 
-### 10.1 Deterministic eligibility
+Continuation intentionally retains one model-owned semantic judgment after deterministic branches are closed.
 
-M6 derives continuation-probe eligibility from one semantic world plus only public Pi runtime facts:
-
-```text
-SemanticSnapshot
-+
-probe already attempted?
-pending Pi messages?
-final assistant stopped normally?
-        ↓
-Continuation probe eligible?
-```
-
-Eligibility is true only when:
+Deterministic eligibility is:
 
 ```text
 snapshot.authority == coherent
 snapshot.taskStatus == active
 probe not already attempted
 no pending Pi messages
-final stopReason == stop
+final assistant stopReason == stop
 ```
 
-`taskStatus == active` already closes completed, Human Gate, and blocker branches. Continuation code must not independently re-read those Task fields as a second policy source. Unresolved questions may coexist with active work and therefore do not automatically suppress the probe.
+`taskStatus == active` already closes idle, completed, blocked, and waiting-human branches. Continuation code does not independently re-read those Task fields.
 
-The normal-stop condition is also the correct public retry boundary for M6. Pi's turn-level automatic retry path operates on retryable error outcomes, while an assistant response with `stopReason == stop` is a successful completion and is not that retry case. Pindie therefore does not need a private/internal `willRetry` signal for an otherwise normal-stop probe.
+When eligible, Pindie sends at most one hidden Pi-native follow-up probe asking only whether the latest actual user intent still calls for consequential execution. The probe explicitly identifies itself as runtime-generated metadata, not user intent and not a new request.
 
-### 10.2 Semantic probe
+The model may then choose any currently visible/legal action or return control. Tool Surface and Gateway own legality; the probe does not teach lifecycle rules or tool sequences.
 
-Once deterministic eligibility is satisfied, one genuinely semantic question remains:
-
-> Does the latest actual user intent still call for consequential execution now?
-
-Pindie must not infer this from `nextIntent`, unfinished status, prior tool usage, or a workflow phase.
-
-The model receives one thin runtime-generated hidden follow-up probe and may choose among the currently visible/legal semantic actions. The probe must not enumerate lifecycle rules or specific tool sequences; Tool Surface, Gateway, Runtime Context, and reducer invariants already express those constraints.
-
-The probe must explicitly state that it is **not user intent and not a new request**.
-
-### 10.3 One-shot Pi-native continuation
-
-Keep Pi's native mechanism:
+Delivery stays inside Pi's native lifecycle:
 
 ```text
 agent_end
 → deterministic eligibility
-→ at most one hidden Pindie custom message
+→ one hidden continuation custom message at most
 → sendMessage(..., { deliverAs: "followUp" })
-→ Pi performs its own post-run handling
-→ queued probe is delivered if Pi continues for queued work
-→ agent_settled only after no automatic continuation remains
+→ Pi handles its own post-run continuation/compaction/retry machinery
+→ agent_settled after automatic work is exhausted
 ```
 
-For a successful normal stop, Pi may perform non-retrying auto-compaction before draining the queued follow-up. That remains Pi-owned and does not require Pindie to predict compaction/retry internals.
+Pindie uses only Pi's public extension contract. It does not infer private retry state, call the model directly, recurse, or create another loop.
 
-The fuse is runtime-only and resets for a fresh user-driven Agent Run. M6 must not add recursion, direct model calls, background loops, repeated probes, a phase machine, or a second Agent Loop.
+Historical continuation probes remain in session history if Pi stores them, but context projection filters them so they do not accumulate as future model policy. During the active continuation follow-up, only the current/latest probe remains model-visible and its chronological position is preserved.
 
-### 10.4 Ephemeral probe context
+## 11. Runtime-only presentation and reasoning
 
-Pi custom messages participate in model context. Historical continuation probes must therefore not accumulate as durable semantic instructions.
+Activity, Run Timer, Run Cost, status presentation, subscription usage observation, and adaptive reasoning are runtime-only systems. They may present or tune execution but are not semantic State.
 
-During the actual continuation follow-up, model context should retain only the current/latest Pindie continuation probe. On a fresh user-driven Run, prior Pindie continuation probes should be filtered from model context entirely.
+Run Activity follows actual Pi tool lifecycle rather than model-authored status. Status presentation consumes authoritative/derived runtime facts rather than becoming an independent source of truth.
 
-This is context projection only. The session may still contain hidden custom entries for audit/history; they simply stop affecting later LLM context.
+## 12. Skills
 
-## 11. Activity, reasoning, skills
+Pi is the only Skill runtime. Pindie may bundle procedural Skills, but a Skill must not become another semantic authority layer.
 
-Activity, timer, cost, status, and adaptive reasoning remain runtime-only systems. Pi remains the sole Skill runtime.
+A Skill may describe a reusable procedure such as Git delivery. It must not duplicate Task admission, capability legality, verification authority, Human Gate lifecycle, or completion rules already enforced by the Harness.
 
-## 12. Architectural invariants
+## 13. Architectural invariants
 
 1. Reality determines reconstructable facts.
 2. State stores only durable semantic current-work facts.
@@ -333,20 +327,5 @@ Activity, timer, cost, status, and adaptive reasoning remain runtime-only system
 13. Runtime evidence refs/generations and continuation fuses are temporary and never persisted.
 14. Durable Verification State remains compact; Pindie is not a tool-result log database.
 15. Historical runtime probes must not become persistent model policy through context accumulation.
-16. Pi owns the low-level Agent Loop, Skill runtime, concrete tool registry, native system-prompt construction, retries, compaction, and follow-up delivery. Pindie uses only Pi's public extension contract.
-
-## 13. Migration plan
-
-```text
-M0 Semantic Foundation              — implemented
-M1 Execution Semantics Foundation   — implemented
-M2 Semantic Gateway Cutover         — implemented
-M3 Model Tool Surface               — implemented
-M4 Policy Reduction                 — implemented
-M5 Verification v0.2                — implemented
-M6 Continuation Simplification      — next
-M7 Skill / Docs Prune
-M8 Extension Composition
-```
-
-M6 simplifies continuation authority and context hygiene; it does not redesign Task/verification semantics, Tool Surface, Gateway legality, or Pi's low-level Agent Loop.
+16. Skills are procedural and do not own semantic correctness.
+17. Pi owns the low-level Agent Loop, Skill runtime, concrete tool registry, native system-prompt construction, retries, compaction, and follow-up delivery.
