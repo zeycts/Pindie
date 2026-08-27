@@ -1446,7 +1446,7 @@ test("failed usage refresh retains the previous runtime-only snapshot", async ()
     },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /◉ 52%/);
+  assert.match(statuses.at(-1)?.text ?? "", /wk 52%/);
 
   currentTime += 5 * 60_000;
   await harness.api.handler("agent_settled")(
@@ -1455,7 +1455,7 @@ test("failed usage refresh retains the previous runtime-only snapshot", async ()
   );
 
   assert.equal(calls, 2);
-  assert.match(statuses.at(-1)?.text ?? "", /◉ 52%/);
+  assert.match(statuses.at(-1)?.text ?? "", /wk 52%/);
 });
 
 test("complete reset-credit observation renders through the single existing status key", async () => {
@@ -1491,7 +1491,7 @@ test("complete reset-credit observation renders through the single existing stat
   );
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.match(statuses.at(-1)?.text ?? "", /◉ 68% • ↻ 6d23h • ⟳ 1 · 29d$/);
+  assert.match(statuses.at(-1)?.text ?? "", /wk 68% • ↻ 6d\+ • ⟳ 1$/);
   assert.deepEqual([...new Set(statuses.map(({ id }) => id))], ["pindie-status"]);
 });
 
@@ -1529,7 +1529,7 @@ test("RunTimer status ticks render cached usage without fetching again", async (
   await new Promise((resolve) => setTimeout(resolve, 1_100));
 
   assert.equal(fetches, 1);
-  assert.match(statuses.at(-1)?.text ?? "", /◉ 52%/);
+  assert.match(statuses.at(-1)?.text ?? "", /wk 52%/);
   await harness.api.handler("agent_settled")(
     { type: "agent_settled" },
     uiContext,

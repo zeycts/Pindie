@@ -38,6 +38,8 @@ export interface SubscriptionUsageProviderOptions {
   fetch?: SubscriptionUsageFetch;
 }
 
+const FIVE_HOUR_MINUTES = 5 * 60;
+const FIVE_HOUR_TOLERANCE_MINUTES = 5;
 const WEEKLY_MINUTES = 7 * 24 * 60;
 const WEEKLY_TOLERANCE_MINUTES = 60;
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -157,14 +159,29 @@ export function parseResetCreditDetails(payload: unknown): ResetCredit[] | undef
   });
 }
 
+function selectWindowByDuration(
+  snapshot: SubscriptionUsageSnapshot | null,
+  durationMinutes: number,
+  toleranceMinutes: number,
+): SubscriptionUsageWindow | null {
+  return snapshot?.windows.find((window) =>
+    window.windowMinutes !== undefined &&
+    Math.abs(window.windowMinutes - durationMinutes) <= toleranceMinutes,
+  ) ?? null;
+}
+
+/** Selects a five-hour window by its declared duration, never array position. */
+export function selectFiveHourWindow(
+  snapshot: SubscriptionUsageSnapshot | null,
+): SubscriptionUsageWindow | null {
+  return selectWindowByDuration(snapshot, FIVE_HOUR_MINUTES, FIVE_HOUR_TOLERANCE_MINUTES);
+}
+
 /** Selects a weekly window by its declared duration, never array position. */
 export function selectWeeklyWindow(
   snapshot: SubscriptionUsageSnapshot | null,
 ): SubscriptionUsageWindow | null {
-  return snapshot?.windows.find((window) =>
-    window.windowMinutes !== undefined &&
-    Math.abs(window.windowMinutes - WEEKLY_MINUTES) <= WEEKLY_TOLERANCE_MINUTES,
-  ) ?? null;
+  return selectWindowByDuration(snapshot, WEEKLY_MINUTES, WEEKLY_TOLERANCE_MINUTES);
 }
 
 export function getRemainingPercent(usedPercent: number): number {
@@ -199,16 +216,8 @@ export function formatResetCountdown(
   const hourMs = 60 * minuteMs;
   const dayMs = 24 * hourMs;
 
-  if (remainingMs >= dayMs) {
-    const days = Math.floor(remainingMs / dayMs);
-    const hours = Math.floor((remainingMs % dayMs) / hourMs);
-    return `${days}d${hours}h`;
-  }
-  if (remainingMs >= hourMs) {
-    const hours = Math.floor(remainingMs / hourMs);
-    const minutes = Math.floor((remainingMs % hourMs) / minuteMs);
-    return `${hours}h${minutes}m`;
-  }
+  if (remainingMs >= dayMs) return `${Math.floor(remainingMs / dayMs)}d+`;
+  if (remainingMs >= hourMs) return `${Math.floor(remainingMs / hourMs)}h+`;
   if (remainingMs >= minuteMs) return `${Math.floor(remainingMs / minuteMs)}m`;
   return "<1m";
 }
@@ -224,11 +233,7 @@ export function formatCreditExpiryCountdown(
   const hourMs = 60 * minuteMs;
   const dayMs = 24 * hourMs;
   if (remainingMs >= dayMs) return `${Math.floor(remainingMs / dayMs)}d`;
-  if (remainingMs >= hourMs) {
-    const hours = Math.floor(remainingMs / hourMs);
-    const minutes = Math.floor((remainingMs % hourMs) / minuteMs);
-    return `${hours}h${minutes}m`;
-  }
+  if (remainingMs >= hourMs) return `${Math.floor(remainingMs / hourMs)}h`;
   if (remainingMs >= minuteMs) return `${Math.floor(remainingMs / minuteMs)}m`;
   return "<1m";
 }

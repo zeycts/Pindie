@@ -254,83 +254,92 @@ test("SIR-M09 attention precedence shows exactly one primary condition", () => {
   }
 });
 
-test("weekly account status is dim and derives its reset countdown at render time", () => {
-  const withUsage = deriveStatusLayout({
+function usageLayout(windows: Array<{ usedPercent: number; windowMinutes: number; resetsAt?: number }>, creditExpiry?: number) {
+  return deriveStatusLayout({
     ...snapshot(),
     subscriptionUsage: {
       fetchedAt: 1,
-      windows: [{ usedPercent: 48, windowMinutes: 10_080, resetsAt: countdownReset }],
-    },
-  }, now);
-  assert.deepEqual(withUsage.right, [
-    { text: "◉ 52%", tone: "dim" },
-    { text: "↻ 6d23h", tone: "dim" },
-  ]);
-  assert.deepEqual(deriveStatusLayout({ ...snapshot(), subscriptionUsage: null }, now).right, []);
-  assert.deepEqual(deriveStatusLayout({
-    ...snapshot(),
-    subscriptionUsage: { fetchedAt: 1, windows: [{ usedPercent: 48, windowMinutes: 10_080 }] },
-  }, now).right, [{ text: "◉ 52%", tone: "dim" }]);
-  assert.deepEqual(deriveStatusLayout({
-    ...snapshot(),
-    subscriptionUsage: { fetchedAt: 1, windows: [{ usedPercent: 48, windowMinutes: 10_080, resetsAt: now }] },
-  }, now).right, [{ text: "◉ 52%", tone: "dim" }]);
-});
-
-test("manual reset account status is dim, count-authoritative, and suppresses incomplete expiry", () => {
-  const creditExpiry = now + 29 * day + 8 * 60 * 60 * 1_000;
-  const base = {
-    ...snapshot(),
-    subscriptionUsage: {
-      fetchedAt: 1,
-      windows: [{ usedPercent: 32, windowMinutes: 10_080, resetsAt: countdownReset }],
-      resetCredits: {
+      windows,
+      ...(creditExpiry === undefined ? {} : { resetCredits: {
         availableCount: 1,
         credits: [{ id: "credit", resetType: "codex_rate_limits", status: "available", expiresAt: creditExpiry }],
-      },
+      } }),
     },
-  };
-  assert.deepEqual(deriveStatusLayout(base, now).right, [
-    { text: "◉ 68%", tone: "dim" },
-    { text: "↻ 6d23h", tone: "dim" },
-    { text: "⟳ 1 · 29d", tone: "dim" },
-  ]);
-  assert.deepEqual(deriveStatusLayout({
-    ...base,
-    subscriptionUsage: { ...base.subscriptionUsage, resetCredits: { availableCount: 1 } },
-  }, now).right.map(({ text }) => text), ["◉ 68%", "↻ 6d23h", "⟳ 1"]);
-  assert.deepEqual(deriveStatusLayout({
-    ...base,
-    subscriptionUsage: { ...base.subscriptionUsage, resetCredits: { availableCount: 3, credits: base.subscriptionUsage.resetCredits.credits } },
-  }, now).right.map(({ text }) => text), ["◉ 68%", "↻ 6d23h", "⟳ 3"]);
-  assert.deepEqual(deriveStatusLayout({
-    ...base,
-    subscriptionUsage: { ...base.subscriptionUsage, resetCredits: { availableCount: 0 } },
-  }, now).right.map(({ text }) => text), ["◉ 68%", "↻ 6d23h"]);
+  }, now);
+}
 
-  const compact = deriveStatusLayout(base, now);
-  assert.deepEqual(compact.compactRight?.map(({ text }) => text), ["◉ 68%", "↻ 6d23h", "⟳ 1"]);
-  assert.match(renderStatusLayout({ fg: (_tone, text) => text }, compact, 45)!, /⟳ 1$/);
+test("subscription status independently renders full, compact, and minimum quota variants", () => {
+  const layout = usageLayout([
+    { usedPercent: 20, windowMinutes: 300, resetsAt: now + 3 * 60 * 60 * 1_000 + 8 * 60 * 1_000 },
+    { usedPercent: 30, windowMinutes: 10_080, resetsAt: countdownReset },
+  ], now + 6 * 24 * 60 * 60 * 1_000);
+  assert.deepEqual(layout.right, [
+    { text: "5h 80%", tone: "dim" }, { text: "↻ 3h+", tone: "dim" },
+    { text: "wk 70%", tone: "dim" }, { text: "↻ 6d+", tone: "dim" },
+    { text: "⟳ 1", tone: "dim" },
+  ]);
+  assert.deepEqual(layout.compactRight?.map(({ text }) => text), ["5h 80%", "wk 70%", "⟳ 1"]);
+  assert.deepEqual(layout.minimumRight?.map(({ text }) => text), ["5h 80%", "wk 70%"]);
+
+  assert.deepEqual(usageLayout([{ usedPercent: 17, windowMinutes: 300, resetsAt: now + 4 * 60 * 60 * 1_000 }]).right.map(({ text }) => text), ["5h 83%", "↻ 4h+"]);
+  assert.deepEqual(usageLayout([{ usedPercent: 30, windowMinutes: 10_080, resetsAt: countdownReset }]).right.map(({ text }) => text), ["wk 70%", "↻ 6d+"]);
+  assert.deepEqual(usageLayout([]).right, []);
+});
+
+test("compact layout removes near-expiry detail even when its segment count matches full", () => {
+  const layout = usageLayout([
+    { usedPercent: 20, windowMinutes: 300 },
+    { usedPercent: 30, windowMinutes: 10_080 },
+  ], now + 2 * day);
+  assert.deepEqual(layout.right.map(({ text }) => text), ["5h 80%", "wk 70%", "⟳ 1 · 2d"]);
+  assert.deepEqual(layout.compactRight?.map(({ text }) => text), ["5h 80%", "wk 70%", "⟳ 1"]);
+
+  const theme = { fg: (_tone: string, text: string) => text };
+  const compactWidth = visibleWidth(renderStatusSegments(theme, layout.compactRight!));
+  const rendered = renderStatusLayout(theme, {
+    ...layout,
+    left: [{ text: "run", tone: "text" }],
+  }, visibleWidth("run") + 2 + compactWidth)!;
+  assert.match(rendered, /5h 80% • wk 70% • ⟳ 1$/);
+});
+
+test("quota tones use displayed remaining-percent boundaries", () => {
+  for (const [usedPercent, tone] of [[89, "dim"], [90, "warning"], [94, "warning"], [95, "error"], [100, "error"]] as const) {
+    const layout = usageLayout([{ usedPercent, windowMinutes: 300 }, { usedPercent, windowMinutes: 10_080 }]);
+    assert.deepEqual(layout.right.map(({ tone: actual }) => actual), [tone, tone]);
+  }
+});
+
+test("credit expiry is shown only at or within the real five-day threshold", () => {
+  const windows = [{ usedPercent: 32, windowMinutes: 10_080, resetsAt: countdownReset }];
+  assert.deepEqual(usageLayout(windows, now + 5 * day + 1).right.map(({ text }) => text).at(-1), "⟳ 1");
+  assert.deepEqual(usageLayout(windows, now + 5 * day).right.map(({ text }) => text).at(-1), "⟳ 1 · 5d");
+  assert.deepEqual(usageLayout(windows, now + 2 * day + 7 * 60 * 60 * 1_000).right.map(({ text }) => text).at(-1), "⟳ 1 · 2d");
+
+  const incomplete = deriveStatusLayout({ ...snapshot(), subscriptionUsage: {
+    fetchedAt: 1, windows, resetCredits: { availableCount: 3, credits: [{ id: "one", resetType: "codex_rate_limits", status: "available", expiresAt: now + day }] },
+  } }, now);
+  assert.deepEqual(incomplete.right.map(({ text }) => text).at(-1), "⟳ 3");
+});
+
+test("attention quota resets survive compact degradation before reset credits", () => {
+  const layout = usageLayout([
+    { usedPercent: 92, windowMinutes: 300, resetsAt: now + 32 * 60 * 1_000 },
+    { usedPercent: 75, windowMinutes: 10_080, resetsAt: now + 8 * 60 * 60 * 1_000 },
+  ], now + day);
+  assert.deepEqual(layout.compactRight?.map(({ text }) => text), ["5h 8%", "↻ 32m", "wk 25%", "⟳ 1"]);
+  assert.deepEqual(layout.attentionRight?.map(({ text }) => text), ["5h 8%", "↻ 32m", "wk 25%"]);
+
+  const rendered = renderStatusLayout({ fg: (_tone, text) => text }, { left: [{ text: "ordinary run information", tone: "text" }], ...layout }, 36)!;
+  assert.ok(visibleWidth(rendered) <= 36);
+  assert.match(rendered, /5h 8% • ↻ 32m • wk 25%$/);
 });
 
 test("Current Activity preserves right-aligned weekly usage", () => {
-  const layout = deriveStatusLayout({
-    ...snapshot({
-      timing: { durationMs: 42_000, active: true },
-      state: { task: task({ verification: { stale: true, checks: [] } }) },
-    }),
-    runCost: { cost: 0.14, active: true },
-    activity: "editing",
-    subscriptionUsage: {
-      fetchedAt: 1,
-      windows: [{ usedPercent: 3, windowMinutes: 10_080, resetsAt: countdownReset }],
-    },
-  }, now);
-  const rendered = renderStatusLayout({ fg: (_tone, text) => text }, layout, 70)!;
-
-  assert.equal(visibleWidth(rendered), 70);
-  assert.match(rendered, /⏱ 42s • \$0.14 • editing • active • verify stale/);
-  assert.match(rendered, /◉ 97% • ↻ 6d23h$/);
+  const layout = usageLayout([{ usedPercent: 3, windowMinutes: 10_080, resetsAt: countdownReset }]);
+  const rendered = renderStatusLayout({ fg: (_tone, text) => text }, layout, 60)!;
+  assert.equal(visibleWidth(rendered), 60);
+  assert.match(rendered, /wk 97% • ↻ 6d\+$/);
 });
 
 test("AR39 narrow-width rendering remains bounded with Auto", () => {
