@@ -65,6 +65,13 @@ import {
   createPindieTaskStartTool,
   createPindieVerificationRecordTool,
 } from "./tools/task.ts";
+import {
+  advanceEvidenceGeneration,
+  captureEvidenceCandidate,
+  createVerificationEvidenceScope,
+  resolveAndMaterializeEvidence,
+  type VerificationEvidenceScope,
+} from "./verification-evidence.ts";
 
 type ProjectRootResolver = (cwd: string) => Promise<string>;
 
@@ -105,6 +112,11 @@ interface MutationWindow {
   pendingToolCallIds: Set<string>;
 }
 
+interface AuthorizedToolExecution {
+  readonly effect: ToolEffect;
+  readonly evidenceGenerationAtCall: number;
+}
+
 const STALE_EXTENSION_CONTEXT_ERROR = "This extension ctx is stale after session replacement or reload.";
 
 function isStaleExtensionContextError(error: unknown): boolean {
@@ -142,7 +154,9 @@ export function registerPindieExtension(
   const captureProjectFingerprint =
     options.captureProjectFingerprint ?? defaultCaptureProjectFingerprint;
   let mutationWindow: MutationWindow | null = null;
-  const authorizedToolEffects = new Map<string, ToolEffect>();
+  const authorizedToolExecutions = new Map<string, AuthorizedToolExecution>();
+  let evidenceScope: VerificationEvidenceScope | null = null;
+  let evidenceExternalStateEpoch = 0;
   const subscriptionUsageProvider =
     options.subscriptionUsageProvider ?? chatGptSubscriptionUsageProvider;
   const scheduleActivityRefresh = (
@@ -197,7 +211,27 @@ export function registerPindieExtension(
   const clearAgentRunBookkeeping = (): void => {
     agentRunFactsContext = null;
     activeTaskContinuationAttempted = false;
-    authorizedToolEffects.clear();
+    authorizedToolExecutions.clear();
+  };
+
+  const discardVerificationEvidence = (): void => {
+    evidenceScope = null;
+    authorizedToolExecutions.clear();
+  };
+
+  const advanceCurrentEvidenceGeneration = (): void => {
+    if (evidenceScope !== null) advanceEvidenceGeneration(evidenceScope);
+  };
+
+  const invalidateEvidenceForExternalStateAdoption = (): void => {
+    if (
+      evidenceScope === null ||
+      evidenceExternalStateEpoch === runtime.externalStateEpoch
+    ) {
+      return;
+    }
+    advanceEvidenceGeneration(evidenceScope);
+    evidenceExternalStateEpoch = runtime.externalStateEpoch;
   };
 
   const currentAuthoritativeState = () =>
@@ -308,6 +342,8 @@ export function registerPindieExtension(
   };
 
   const markUnavailable = (reason: string): void => {
+    advanceCurrentEvidenceGeneration();
+    discardVerificationEvidence();
     runtime.unload();
     stateUnavailableReason = reason;
     clearAgentRunBookkeeping();
@@ -329,8 +365,16 @@ export function registerPindieExtension(
   };
 
   const semanticStateChanged = (): void => {
+    invalidateEvidenceForExternalStateAdoption();
     refreshStatus();
     refreshToolSurface();
+  };
+
+  const resolveVerificationEvidence = (refs: readonly string[]): string => {
+    return resolveAndMaterializeEvidence(
+      evidenceScope ?? createVerificationEvidenceScope(),
+      refs,
+    );
   };
 
   const taskToolOptions = {
@@ -341,7 +385,10 @@ export function registerPindieExtension(
   pi.registerTool(createPindieTaskReplaceTool(runtime, taskToolOptions));
   pi.registerTool(createPindieTaskRefineTool(runtime, taskToolOptions));
   pi.registerTool(createPindieTaskProgressTool(runtime, taskToolOptions));
-  pi.registerTool(createPindieVerificationRecordTool(runtime, taskToolOptions));
+  pi.registerTool(createPindieVerificationRecordTool(runtime, {
+    ...taskToolOptions,
+    resolveEvidence: resolveVerificationEvidence,
+  }));
   pi.registerTool(createPindieTaskCompleteTool(runtime, taskToolOptions));
   pi.registerTool(createPindieGateOpenTool(runtime, { onStateChange: semanticStateChanged }));
   pi.registerTool(createPindieGateResolveTool(runtime, { onStateChange: semanticStateChanged }));
@@ -403,6 +450,7 @@ export function registerPindieExtension(
     runtime.unload();
     stateUnavailableReason = null;
     clearAgentRunBookkeeping();
+    discardVerificationEvidence();
     mutationWindow = null;
 
     try {
@@ -428,6 +476,7 @@ export function registerPindieExtension(
     runtime.unload();
     stateUnavailableReason = null;
     clearAgentRunBookkeeping();
+    discardVerificationEvidence();
     mutationWindow = null;
     statusContext = null;
   });
@@ -438,6 +487,7 @@ export function registerPindieExtension(
       runToolBaseline = [...pi.getActiveTools()];
     }
     clearAgentRunBookkeeping();
+    discardVerificationEvidence();
     mutationWindow = null;
     if (runtime.projectRoot !== null && stateUnavailableReason === null) {
       try {
@@ -450,6 +500,8 @@ export function registerPindieExtension(
     }
     // Refresh precedes all identity snapshots so a new Run always begins from
     // authoritative project State rather than a previous session snapshot.
+    evidenceScope = createVerificationEvidenceScope();
+    evidenceExternalStateEpoch = runtime.externalStateEpoch;
     const state = currentAuthoritativeState();
     if (state !== null) {
       agentRunFactsContext = beginAgentRunFacts(
@@ -546,6 +598,10 @@ export function registerPindieExtension(
       effect.requiredCapability === "observe.project" ||
       effect.requiredCapability === "observe.git"
     ) {
+      authorizedToolExecutions.set(event.toolCallId, {
+        effect,
+        evidenceGenerationAtCall: evidenceScope?.generation ?? -1,
+      });
       return;
     }
 
@@ -596,7 +652,11 @@ export function registerPindieExtension(
         } catch (error) {
           baseline = { kind: "unknown", reason: errorMessage(error) };
         }
-        mutationWindow = { projectRoot, baseline, pendingToolCallIds: new Set() };
+        mutationWindow = {
+          projectRoot,
+          baseline,
+          pendingToolCallIds: new Set(),
+        };
       } else if (mutationWindow.projectRoot !== projectRoot) {
         // A session has one loaded project. Do not mix an impossible second root
         // into a known window; fail closed for verification instead.
@@ -605,16 +665,14 @@ export function registerPindieExtension(
       mutationWindow.pendingToolCallIds.add(event.toolCallId);
     }
 
-    if (
-      effect.projectMutation !== "none" ||
-      effect.requiredCapability === "task.start" ||
-      effect.requiredCapability === "task.replace"
-    ) {
-      authorizedToolEffects.set(event.toolCallId, effect);
-    }
+    authorizedToolExecutions.set(event.toolCallId, {
+      effect,
+      evidenceGenerationAtCall: evidenceScope?.generation ?? -1,
+    });
   });
 
   const invalidateVerificationAfterProjectMutation = async (): Promise<void> => {
+    advanceCurrentEvidenceGeneration();
     if (runtime.projectRoot === null || stateUnavailableReason !== null || !runtime.state.task) return;
     try {
       const result = await runtime.dispatch({
@@ -639,10 +697,34 @@ export function registerPindieExtension(
     semanticStateChanged();
   };
 
+  const mayCaptureEvidence = (execution: AuthorizedToolExecution): boolean => {
+    const scope = evidenceScope;
+    if (
+      scope === null ||
+      execution.evidenceGenerationAtCall !== scope.generation
+    ) {
+      return false;
+    }
+    const facts = currentSemanticRunFacts();
+    const state = currentAuthoritativeState();
+    if (
+      !facts.stateAvailable ||
+      !facts.runCoherent ||
+      state?.task === null ||
+      state?.task.completed
+    ) {
+      return false;
+    }
+    return execution.effect.requiredCapability === "observe.project" ||
+      execution.effect.requiredCapability === "observe.git" ||
+      execution.effect.projectMutation === "ambiguous";
+  };
+
   pi.on("tool_result", async (event) => {
-    const effect = authorizedToolEffects.get(event.toolCallId);
-    if (!effect) return;
-    authorizedToolEffects.delete(event.toolCallId);
+    const execution = authorizedToolExecutions.get(event.toolCallId);
+    if (!execution) return;
+    authorizedToolExecutions.delete(event.toolCallId);
+    const { effect } = execution;
 
     if (
       !event.isError &&
@@ -657,30 +739,59 @@ export function registerPindieExtension(
       refreshToolSurface();
     }
 
+    if (
+      !event.isError &&
+      (effect.requiredCapability === "task.start" ||
+        effect.requiredCapability === "task.replace" ||
+        effect.requiredCapability === "task.refine")
+    ) {
+      advanceCurrentEvidenceGeneration();
+    }
+
     if (!event.isError && effect.projectMutation === "known") {
       await invalidateVerificationAfterProjectMutation();
       return;
     }
 
-    if (effect.projectMutation !== "ambiguous") return;
+    if (effect.projectMutation === "ambiguous") {
+      const window = mutationWindow;
+      if (!window || !window.pendingToolCallIds.delete(event.toolCallId)) return;
+      // Consume before observation/dispatch so duplicate results cannot act twice.
+      if (window.pendingToolCallIds.size === 0) mutationWindow = null;
+      if (window.baseline.kind === "unknown") {
+        await invalidateVerificationAfterProjectMutation();
+        return;
+      }
+      let after: ProjectFingerprint;
+      try {
+        after = await captureProjectFingerprint(window.projectRoot);
+      } catch (error) {
+        after = { kind: "unknown", reason: errorMessage(error) };
+      }
+      if (after.kind !== "known" || after.digest !== window.baseline.digest) {
+        await invalidateVerificationAfterProjectMutation();
+        return;
+      }
+    }
 
-    const window = mutationWindow;
-    if (!window || !window.pendingToolCallIds.delete(event.toolCallId)) return;
-    // Consume before observation/dispatch so duplicate results cannot act twice.
-    if (window.pendingToolCallIds.size === 0) mutationWindow = null;
-    if (window.baseline.kind === "unknown") {
-      await invalidateVerificationAfterProjectMutation();
-      return;
-    }
-    let after: ProjectFingerprint;
-    try {
-      after = await captureProjectFingerprint(window.projectRoot);
-    } catch (error) {
-      after = { kind: "unknown", reason: errorMessage(error) };
-    }
-    if (after.kind !== "known" || after.digest !== window.baseline.digest) {
-      await invalidateVerificationAfterProjectMutation();
-    }
+    if (!mayCaptureEvidence(execution)) return;
+    const scope = evidenceScope!;
+    const candidate = captureEvidenceCandidate(scope, {
+      toolCallId: event.toolCallId,
+      toolName: event.toolName,
+      input: event.input,
+      content: event.content,
+      isError: event.isError,
+    });
+    return {
+      content: [
+        ...event.content,
+        {
+          type: "text",
+          text: `[Pindie evidence ref: ${candidate.ref}]`,
+        },
+      ],
+    };
   });
 
   pi.on("turn_end", (event, ctx) => {
@@ -710,6 +821,8 @@ export function registerPindieExtension(
     }
 
     statusContext = ctx;
+    discardVerificationEvidence();
+    mutationWindow = null;
     restoreRunToolBaseline();
     clearActivityLingerRefresh();
     runActivity.settle();

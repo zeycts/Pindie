@@ -131,6 +131,33 @@ test("save and load round-trip State", async (t) => {
   assert.deepEqual(await fixture.store.load("/workspace/round-trip"), state);
 });
 
+test("M5 legacy free-text verification evidence remains loadable and semantically valid", async (t) => {
+  const fixture = await createTestStore();
+  t.after(() => rm(fixture.baseDir, { recursive: true, force: true }));
+  const state = activeState();
+  const legacyState: PindieState = {
+    task: {
+      ...state.task!,
+      verification: {
+        stale: false,
+        checks: [{
+          name: "legacy tests",
+          status: "passed",
+          covers: ["c1"],
+          evidence: "Tests passed.",
+        }],
+      },
+    },
+  };
+
+  await fixture.store.save("/workspace/legacy-verification", legacyState);
+
+  assert.deepEqual(
+    await fixture.store.load("/workspace/legacy-verification"),
+    legacyState,
+  );
+});
+
 test("project IDs are deterministic and distinct roots use different paths", async (t) => {
   const fixture = await createTestStore();
   t.after(() => rm(fixture.baseDir, { recursive: true, force: true }));

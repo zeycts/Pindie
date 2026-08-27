@@ -78,18 +78,29 @@ function gatedState(): PindieState {
   };
 }
 
-async function harness(initialState: PindieState = EMPTY_STATE) {
+async function harness(
+  initialState: PindieState = EMPTY_STATE,
+  resolveEvidence: (refs: readonly string[]) => string = (refs) =>
+    `Harness factual evidence for ${refs.join(", ")}.`,
+) {
   const store = new ToolTestStore(initialState);
   const runtime = new PindieRuntime(store);
   await runtime.load("/repo");
   let changes = 0;
+  const resolverCalls: string[][] = [];
   const options = { onStateChange: () => { changes += 1; } };
   const tools = {
     start: createPindieTaskStartTool(runtime, options),
     replace: createPindieTaskReplaceTool(runtime, options),
     refine: createPindieTaskRefineTool(runtime, options),
     progress: createPindieTaskProgressTool(runtime, options),
-    verify: createPindieVerificationRecordTool(runtime, options),
+    verify: createPindieVerificationRecordTool(runtime, {
+      ...options,
+      resolveEvidence: (refs) => {
+        resolverCalls.push([...refs]);
+        return resolveEvidence(refs);
+      },
+    }),
     complete: createPindieTaskCompleteTool(runtime, {
       ...options,
       getRunDuration: () => 522_000,
@@ -97,7 +108,13 @@ async function harness(initialState: PindieState = EMPTY_STATE) {
     gateOpen: createPindieGateOpenTool(runtime, options),
     gateResolve: createPindieGateResolveTool(runtime, options),
   };
-  return { store, runtime, tools, get changes() { return changes; } };
+  return {
+    store,
+    runtime,
+    tools,
+    resolverCalls,
+    get changes() { return changes; },
+  };
 }
 
 function textOf(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -182,12 +199,138 @@ test("progress dispatches set_open_loops with blockers/questions/nextIntent", as
   });
 });
 
-test("verification record preserves the current VerificationCheck semantics", async () => {
-  const h = await harness(activeState());
-  const check = { name: "tests", status: "passed" as const, covers: ["c1"], evidence: "passed" };
-  await h.tools.verify.execute("verify", { check });
-  assert.deepEqual(h.runtime.state.task?.verification.checks, [check]);
-  assert.match(JSON.stringify(h.tools.verify.parameters), /criterion IDs.*not descriptions/i);
+test("T01-T05 verification record accepts refs, calls the resolver exactly, and stores Harness evidence", async () => {
+  const h = await harness(activeState(), () => "Tool: read\nOutcome: success");
+  const schemaText = JSON.stringify(h.tools.verify.parameters);
+  assert.doesNotMatch(schemaText, /"evidence"/);
+  assert.match(schemaText, /evidenceRefs/);
+
+  await assert.rejects(
+    (h.tools.verify.execute as any)("verify-free-text", {
+      check: { name: "tests", status: "passed", covers: ["c1"], evidence: "invented" },
+    }),
+    /free-text evidence is not accepted/,
+  );
+  await h.tools.verify.execute("verify", {
+    check: {
+      name: "tests",
+      status: "passed",
+      covers: ["c1"],
+      evidenceRefs: ["ev:read-1"],
+    },
+  });
+
+  assert.deepEqual(h.resolverCalls, [["ev:read-1"]]);
+  assert.deepEqual(h.runtime.state.task?.verification.checks, [{
+    name: "tests",
+    status: "passed",
+    covers: ["c1"],
+    evidence: "Tool: read\nOutcome: success",
+  }]);
+  assert.match(schemaText, /criterion IDs.*not descriptions/i);
+});
+
+test("T02-T03 verification schema requires one to four unique current refs", async () => {
+  const { tools } = await harness(activeState());
+  const checkSchema = (tools.verify.parameters as any).properties.check;
+  assert.deepEqual(checkSchema.required, ["name", "status", "covers", "evidenceRefs"]);
+  assert.equal(checkSchema.properties.evidenceRefs.minItems, 1);
+  assert.equal(checkSchema.properties.evidenceRefs.maxItems, 4);
+  assert.equal(checkSchema.properties.evidenceRefs.uniqueItems, true);
+  assert.match(
+    checkSchema.properties.evidenceRefs.description,
+    /actual tool results.*Agent Run/i,
+  );
+});
+
+test("T06-T07 model status and coverage are preserved while reducer validates criterion IDs", async () => {
+  const passedErrorEvidence = await harness(activeState(), () => "Tool: read\nOutcome: error");
+  await passedErrorEvidence.tools.verify.execute("verify", {
+    check: {
+      name: "rejection",
+      status: "passed",
+      covers: ["c1"],
+      evidenceRefs: ["ev:error-result"],
+    },
+  });
+  assert.deepEqual(passedErrorEvidence.runtime.state.task?.verification.checks[0], {
+    name: "rejection",
+    status: "passed",
+    covers: ["c1"],
+    evidence: "Tool: read\nOutcome: error",
+  });
+
+  const invalidCoverage = await harness(activeState());
+  await assert.rejects(
+    invalidCoverage.tools.verify.execute("verify", {
+      check: {
+        name: "tests",
+        status: "failed",
+        covers: ["c999"],
+        evidenceRefs: ["ev:read-1"],
+      },
+    }),
+    /unknown_success_criterion.*c999/i,
+  );
+  assert.deepEqual(invalidCoverage.runtime.state.task?.verification.checks, []);
+});
+
+test("T08 resolver failures prevent dispatch and leave State unchanged", async () => {
+  const h = await harness(activeState(), (refs) => {
+    throw new Error(`Unknown or stale Pindie evidence reference: ${refs[0]}`);
+  });
+  const before = structuredClone(h.runtime.state);
+  await assert.rejects(
+    h.tools.verify.execute("verify", {
+      check: {
+        name: "tests",
+        status: "passed",
+        covers: ["c1"],
+        evidenceRefs: ["ev:fabricated"],
+      },
+    }),
+    /Unknown or stale Pindie evidence reference: ev:fabricated/,
+  );
+  assert.deepEqual(h.runtime.state, before);
+  assert.deepEqual(h.store.saves, []);
+  assert.equal(h.changes, 0);
+});
+
+test("T09-T11 direct execution rejects empty, excessive, and duplicate refs", async () => {
+  const { tools } = await harness(activeState());
+  const check = { name: "tests", status: "passed", covers: ["c1"] };
+  await assert.rejects(
+    (tools.verify.execute as any)("empty", { check: { ...check, evidenceRefs: [] } }),
+    /at least one evidence reference/,
+  );
+  await assert.rejects(
+    (tools.verify.execute as any)("many", {
+      check: { ...check, evidenceRefs: ["ev:1", "ev:2", "ev:3", "ev:4", "ev:5"] },
+    }),
+    /at most 4 evidence references/,
+  );
+  await assert.rejects(
+    (tools.verify.execute as any)("duplicate", {
+      check: { ...check, evidenceRefs: ["ev:1", "ev:1"] },
+    }),
+    /must be unique/,
+  );
+});
+
+test("T12-T13 factual error evidence may support passed judgment and result text stays concise", async () => {
+  const rawLog = "raw-log-line".repeat(1000);
+  const h = await harness(activeState(), () => `Tool: bash\nOutcome: error\nResult:\n${rawLog}`);
+  const verification = await h.tools.verify.execute("verify", {
+    check: {
+      name: "invalid input rejected",
+      status: "passed",
+      covers: ["c1"],
+      evidenceRefs: ["ev:bash-error"],
+    },
+  });
+  assert.equal(h.runtime.state.task?.verification.checks[0]?.status, "passed");
+  assert.match(textOf(verification), /Verification check 'invalid input rejected' recorded\./);
+  assert.doesNotMatch(textOf(verification), /raw-log-line/);
 });
 
 test("complete dispatches complete_task, preserves result semantics, and requires a summary", async () => {
