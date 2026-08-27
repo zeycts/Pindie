@@ -244,7 +244,7 @@ M6 removes duplicated lifecycle policy from Active Task Continuation while prese
 
 ### 11.1 Deterministic eligibility
 
-Continuation eligibility must be a pure decision over the current `SemanticSnapshot` plus minimal Pi runtime facts.
+Continuation eligibility must be a pure decision over the current `SemanticSnapshot` plus minimal public Pi runtime facts.
 
 Conceptually:
 
@@ -252,7 +252,6 @@ Conceptually:
 snapshot
 probeAlreadyAttempted
 hasPendingMessages
-willRetry
 stoppedNormally
         ↓
 shouldProbeContinuation
@@ -265,7 +264,6 @@ snapshot.authority === coherent
 snapshot.taskStatus === active
 probeAlreadyAttempted === false
 hasPendingMessages === false
-willRetry === false
 stoppedNormally === true
 ```
 
@@ -275,16 +273,27 @@ Do not independently test `task.completed`, `task.humanGate`, or blockers in con
 
 Unresolved questions do not automatically suppress continuation because questions may coexist with useful active work.
 
-### 11.2 Pi lifecycle precedence
+### 11.2 Pi lifecycle boundary
 
-Pi 0.84.3 `agent_end` is a low-level-run boundary. Pi may still retry, compact/retry, or process queued follow-up messages before `agent_settled`.
+Pinned Pi 0.84.3 has two distinct event surfaces that must not be confused:
 
-Therefore:
+- the public extension `AgentEndEvent` exposes only `type` and `messages`;
+- Pi's internal `AgentSessionEvent` enriches its own session listeners with `willRetry`, but extension handlers do not receive that field.
 
-- `event.willRetry === true` suppresses Pindie's probe;
-- existing pending Pi messages suppress Pindie's probe;
-- Pindie must not race or compete with Pi's already-scheduled automatic continuation;
-- `agent_settled` remains the boundary for final Run settlement/presentation cleanup.
+M6 must use only the public extension contract. Therefore it must not:
+
+- read or cast `event.willRetry` in an extension `agent_end` handler;
+- access private Pi internals;
+- reimplement Pi's retry classifier from message/error text;
+- upgrade or patch Pi solely to expose retry intent.
+
+Pi's turn-level auto-retry path handles retryable error responses. M6 already requires the final assistant response to have `stopReason === "stop"`, so those retryable abnormal outcomes are excluded by the public normal-stop condition.
+
+Existing pending Pi messages still suppress Pindie's probe through `ctx.hasPendingMessages()`, because a queued message may carry newer user intent and should take precedence.
+
+For a successful normal stop, Pi may perform non-retrying auto-compaction before draining a queued follow-up. Pindie leaves that lifecycle entirely to Pi.
+
+`agent_settled` remains the boundary for final Run settlement/presentation cleanup.
 
 ### 11.3 Thin semantic intent probe
 
@@ -356,7 +365,6 @@ active Task
 coherent authority
 stopReason = stop
 no pending messages
-willRetry = false
 probe not attempted
 → exactly one hidden followUp probe
 ```
@@ -375,15 +383,7 @@ idle | done | blocked | waiting_human | stale | unavailable
 → no probe
 ```
 
-C04 — Pi retry precedence
-
-```text
-active coherent Task
-agent_end.willRetry = true
-→ no probe
-```
-
-C05 — pending-message precedence
+C04 — pending-message precedence
 
 ```text
 active coherent Task
@@ -391,14 +391,16 @@ ctx.hasPendingMessages() = true
 → no probe
 ```
 
-C06 — abnormal stop
+C05 — abnormal stop / retry-class outcome
 
 ```text
 stopReason = aborted | error | length
 → no probe
 ```
 
-C07 — one-shot fuse
+No separate public `willRetry` condition exists in M6 because Pi 0.84.3 does not expose that field to extension `agent_end` handlers.
+
+C06 — one-shot fuse
 
 ```text
 first eligible agent_end → one probe
@@ -406,7 +408,7 @@ later agent_end in same high-level Run → no second probe
 fresh user-driven Run → fuse reset
 ```
 
-C08 — probe semantics
+C07 — probe semantics
 
 ```text
 probe text explicitly says it is not user intent/new request
@@ -414,14 +416,14 @@ probe asks only whether latest actual user intent still calls for consequential 
 probe contains no specific lifecycle-tool tutorial
 ```
 
-C09 — context hygiene
+C08 — context hygiene
 
 ```text
 current continuation follow-up → only current/latest probe is model-visible
 next fresh user Run → historical Pindie continuation probes filtered out
 ```
 
-C10 — no semantic mutation
+C09 — no semantic mutation
 
 ```text
 eligibility check / probe injection
@@ -440,6 +442,7 @@ M6 must not:
 - change M3 Tool Surface/baseline semantics;
 - change M5 verification evidence ownership/freshness;
 - infer latest user intent deterministically from Task state or `nextIntent`;
+- access or duplicate private Pi retry internals;
 - create a second Agent Loop, continuation FSM, task queue, or planner;
 - add repeated/recursive continuation probes;
 - redesign reasoning, Skills, Human Gate, activity, timer, cost, or status behavior;
@@ -459,4 +462,4 @@ M7 Skill / Docs Prune
 M8 Extension Composition
 ```
 
-M6 is complete when deterministic continuation eligibility comes from the current SemanticSnapshot + Pi runtime facts, the model sees only one thin latest-user-intent probe when semantic judgment is genuinely needed, and historical probes no longer accumulate as model policy.
+M6 is complete when deterministic continuation eligibility comes from the current SemanticSnapshot + public Pi runtime facts, the model sees only one thin latest-user-intent probe when semantic judgment is genuinely needed, and historical probes no longer accumulate as model policy.
