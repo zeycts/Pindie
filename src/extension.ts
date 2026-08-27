@@ -7,7 +7,6 @@ import {
 
 import {
   createPindieRuntimeContextMessage,
-  injectPindieCore,
   isPindieRuntimeContextMessage,
 } from "./context.ts";
 import {
@@ -94,7 +93,7 @@ export interface PindieExtensionIntegration {
 
 const PINDIE_STATUS_ID = "pindie-status";
 const PINDIE_ACTIVE_TASK_CONTINUATION_TYPE = "pindie-active-task-continuation";
-const PINDIE_ACTIVE_TASK_CONTINUATION_MESSAGE = "The current Pindie Task is still unfinished. First re-evaluate whether the latest actual user intent calls for consequential execution of this current Task. If it clearly requests a different Task, reconcile it through replace_task when this Agent Run boundary permits, then continue only the new current Task. If it asks to stop, pause, return control, or only inspect, explain, or discuss, do not resume consequential Task work; allow this Agent Run to settle normally. If the Task boundary is consequentially ambiguous, use the existing Human Gate or return control appropriately. Otherwise continue this current Task now. Re-observe only what is necessary, then take the smallest safe next action. Do not stop merely to summarize remaining work, restate next steps, re-plan, or because more implementation, test, or verification iterations are required. If consequential human judgment is genuinely required, use the existing Human Gate. If a real external blocker prevents progress, record it. Otherwise continue toward current verified completion. Persisting nextIntent records continuation context; it is not permission to yield.";
+const PINDIE_ACTIVE_TASK_CONTINUATION_MESSAGE = "The current Pindie Task is still unfinished. First re-evaluate whether the latest actual user intent calls for consequential execution of this current Task. If it clearly requests a different Task, reconcile it through pindie_task_replace when this Agent Run boundary permits, then continue only the new current Task. If it asks to stop, pause, return control, or only inspect, explain, or discuss, do not resume consequential Task work; allow this Agent Run to settle normally. If the Task boundary is consequentially ambiguous, use the existing Human Gate or return control appropriately. Otherwise continue this current Task now. Re-observe only what is necessary, then take the smallest safe next action. Do not stop merely to summarize remaining work, restate next steps, re-plan, or because more implementation, test, or verification iterations are required. If consequential human judgment is genuinely required, use the existing Human Gate. If a real external blocker prevents progress, record it. Otherwise continue toward current verified completion. Persisting nextIntent records continuation context; it is not permission to yield.";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -411,7 +410,7 @@ export function registerPindieExtension(
       await runtime.load(projectRoot);
     } catch (error) {
       markUnavailable(
-        `Could not load Pindie State for '${ctx.cwd}': ${errorMessage(error)} Restore or repair the project State, then reload the session.`,
+        `Could not load Pindie State for '${ctx.cwd}': ${errorMessage(error)}`,
       );
     }
     refreshStatus(ctx);
@@ -433,7 +432,7 @@ export function registerPindieExtension(
     statusContext = null;
   });
 
-  pi.on("before_agent_start", async (event, ctx) => {
+  pi.on("before_agent_start", async (_event, ctx) => {
     statusContext = ctx;
     if (runToolBaseline === null) {
       runToolBaseline = [...pi.getActiveTools()];
@@ -445,7 +444,7 @@ export function registerPindieExtension(
         await runtime.refresh();
       } catch (error) {
         markUnavailable(
-          `Could not refresh Pindie State before this Agent Run: ${errorMessage(error)} Restore or repair the project State, then reload the session.`,
+          `Could not refresh Pindie State before this Agent Run: ${errorMessage(error)}`,
         );
       }
     }
@@ -466,7 +465,6 @@ export function registerPindieExtension(
     runCost.start(ctx.sessionManager.getEntries());
     runTimer.start(ctx.hasUI ? () => refreshStatus(ctx) : undefined);
     refreshStatus(ctx);
-    return { systemPrompt: injectPindieCore(event.systemPrompt) };
   });
 
   pi.on("agent_end", (event, ctx) => {
@@ -504,7 +502,16 @@ export function registerPindieExtension(
     const messages = event.messages.filter(
       (message) => !isPindieRuntimeContextMessage(message),
     );
-    const state = runtime.projectRoot === null ? null : runtime.state;
+    let state = currentAuthoritativeState();
+    let derivation = deriveSemanticSnapshot(state, currentSemanticRunFacts());
+    if (!derivation.ok) {
+      markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
+      state = currentAuthoritativeState();
+      derivation = deriveSemanticSnapshot(state, currentSemanticRunFacts());
+    }
+    if (!derivation.ok) {
+      throw new Error(`Pindie unavailable semantic derivation failed: ${derivation.error}`);
+    }
     const unavailableReason =
       stateUnavailableReason ??
       (state === null ? "No project State has been loaded for this session." : null);
@@ -512,7 +519,11 @@ export function registerPindieExtension(
     return {
       messages: [
         ...messages,
-        createPindieRuntimeContextMessage(state, unavailableReason),
+        createPindieRuntimeContextMessage(
+          state,
+          derivation.snapshot,
+          unavailableReason,
+        ),
       ],
     };
   });
@@ -548,7 +559,7 @@ export function registerPindieExtension(
         if (await runtime.refresh()) semanticStateChanged();
       } catch (error) {
         markUnavailable(
-          `Could not refresh Pindie State before consequential work: ${errorMessage(error)} Restore or repair the project State, then reload the session.`,
+          `Could not refresh Pindie State before consequential work: ${errorMessage(error)}`,
         );
       }
       facts = currentSemanticRunFacts();
@@ -611,7 +622,7 @@ export function registerPindieExtension(
       });
       if (!result.ok) {
         markUnavailable(
-          `Pindie could not invalidate verification after project mutation: ${result.error.message} Reload the session after repairing State.`,
+          `Pindie could not invalidate verification after project mutation: ${result.error.message}`,
         );
       }
     } catch (error) {
@@ -620,7 +631,7 @@ export function registerPindieExtension(
         throw error;
       }
       markUnavailable(
-        `Pindie could not persist verification invalidation: ${errorMessage(error)} Reload the session after restoring State persistence.`,
+        `Pindie could not persist verification invalidation: ${errorMessage(error)}`,
       );
       throw error;
     }
@@ -711,7 +722,7 @@ export function registerPindieExtension(
     const validation = validateState(runtime.state);
     if (!validation.ok) {
       markUnavailable(
-        `Pindie in-memory State failed validation: ${validation.errors.join(" ")} Reload the session after repairing State.`,
+        `Pindie in-memory State failed validation: ${validation.errors.join(" ")}`,
       );
     }
   });

@@ -2,18 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  PINDIE_CORE_END,
-  PINDIE_CORE_POLICY,
-  PINDIE_CORE_START,
   PINDIE_RUNTIME_CONTEXT_TYPE,
   PINDIE_RUNTIME_END,
   PINDIE_RUNTIME_START,
   createPindieRuntimeContextMessage,
-  injectPindieCore,
   isPindieRuntimeContextMessage,
-  renderPindieCore,
   renderPindieRuntimeContext,
 } from "../src/context.ts";
+import type { SemanticSnapshot } from "../src/semantics.ts";
 import type { PindieState } from "../src/state.ts";
 
 function completeState(): PindieState {
@@ -46,138 +42,125 @@ function completeState(): PindieState {
   };
 }
 
-test("CP01-CP04 Core contains deterministic policy only and is State-independent", () => {
-  const first = renderPindieCore();
+function activeState(): PindieState {
+  return {
+    task: {
+      ...completeState().task!,
+      openLoops: {
+        blockers: [],
+        questions: ["Which release channel?"],
+        nextIntent: "Run tests",
+      },
+      humanGate: null,
+    },
+  };
+}
 
-  assert.ok(first.includes(PINDIE_CORE_POLICY));
-  assert.match(first, /Latest user intent and observed project reality/);
-  assert.equal(first, renderPindieCore());
-  assert.doesNotMatch(first, /Current State|Task status|Verification status|Wire Pindie|unavailable/);
-});
+const coherentActiveSnapshot: SemanticSnapshot = {
+  authority: "coherent",
+  taskStatus: "active",
+  verificationStatus: "passed",
+  hasBlockers: false,
+  hasQuestions: true,
+  completionReady: false,
+  taskRelation: "preexisting_untouched",
+  completionRelation: "not_completed",
+  gateRelation: "none",
+};
 
-test("D04 Core Policy explains durable success-criterion semantics", () => {
-  assert.match(PINDIE_CORE_POLICY, /final, durable Definition of Done/i);
-  assert.match(PINDIE_CORE_POLICY, /meaningful across sessions/i);
-  assert.match(PINDIE_CORE_POLICY, /session-local sequencing.*checkpoint instructions.*as success criteria/i);
-  assert.match(PINDIE_CORE_POLICY, /nextIntent only for continuation intent/i);
-  assert.match(PINDIE_CORE_POLICY, /unfinished work.*persisted next meaningful step/i);
-});
+const coherentWaitingSnapshot: SemanticSnapshot = {
+  authority: "coherent",
+  taskStatus: "waiting_human",
+  verificationStatus: "passed",
+  hasBlockers: true,
+  hasQuestions: true,
+  completionReady: false,
+  taskRelation: "preexisting_untouched",
+  completionRelation: "not_completed",
+  gateRelation: "existed_before_run",
+};
 
-test("D08 Core Policy distinguishes constraints from success criteria", () => {
-  assert.match(PINDIE_CORE_POLICY, /Constraints are durable task-wide boundaries governing execution/i);
-  assert.match(PINDIE_CORE_POLICY, /success criteria are final observable outcomes required for completion/i);
-});
+const staleTaskSnapshot: SemanticSnapshot = {
+  authority: "stale",
+  taskStatus: "waiting_human",
+  verificationStatus: "passed",
+  hasBlockers: true,
+  hasQuestions: true,
+  completionReady: false,
+};
 
-test("OC-C01-OC-C02 Core Policy names direct observation tools and keeps bash consequential", () => {
-  assert.match(PINDIE_CORE_POLICY, /use read, grep, find, ls, and pindie_git_observe directly/i);
-  assert.match(PINDIE_CORE_POLICY, /rather than wrapping equivalent observation in unrestricted bash/i);
-  assert.match(PINDIE_CORE_POLICY, /unrestricted bash, which remains consequential/i);
-});
-
-test("TBE-C01-C02 Core Policy requires a Task for consequential action but keeps observation Task-free", () => {
-  assert.match(PINDIE_CORE_POLICY, /Consequential project action requires one current Pindie Task/i);
-  assert.match(PINDIE_CORE_POLICY, /Read-only observation alone does not require or create a Task/i);
-});
-
-test("ETA-C01 Core Policy admits a clear new idle or done Task before consequential tools", () => {
-  assert.match(PINDIE_CORE_POLICY, /State is idle or done/i);
-  assert.match(PINDIE_CORE_POLICY, /clearly defines a new consequential outcome/i);
-  assert.match(PINDIE_CORE_POLICY, /enough information for a truthful Task Contract/i);
-  assert.match(PINDIE_CORE_POLICY, /start_task before consequential project execution/i);
-});
-
-test("ETA-C02 Core Policy limits Task-free observation to genuinely needed reconciliation", () => {
-  assert.match(PINDIE_CORE_POLICY, /Task-free read-only observation may precede reconciliation only when genuinely needed/i);
-  assert.match(PINDIE_CORE_POLICY, /intent, project reality, the Task boundary, or the Task Contract/i);
-});
-
-test("ETA-C03 Core Policy keeps observation and return-control intent Task-free", () => {
-  assert.match(PINDIE_CORE_POLICY, /Observation, explanation, discussion, pause, or return-control intent alone does not mutate the Task or authorize consequential continuation/i);
-  assert.match(PINDIE_CORE_POLICY, /Read-only observation alone does not require or create a Task/i);
-});
-
-test("OC-C03 Core Policy assigns bundled Skill discovery to Pi context", () => {
-  assert.match(PINDIE_CORE_POLICY, /Bundled Skill discovery comes from Pi-provided Skill context/i);
-  assert.match(PINDIE_CORE_POLICY, /do not shell-search the project to locate bundled Skills/i);
-});
-
-test("PMF-C01-C02 Core Policy makes freshness depend on known unchanged project reality", () => {
-  assert.match(PINDIE_CORE_POLICY, /Project mutation makes prior verification stale/i);
-  assert.match(PINDIE_CORE_POLICY, /Preserve prior verification only when relevant project reality is known unchanged/i);
-  assert.match(PINDIE_CORE_POLICY, /success or failure alone does not establish freshness/i);
-});
-
-test("EH01 Core Policy requires operation-owned narrow execution cleanup", () => {
-  assert.match(PINDIE_CORE_POLICY, /Temporary resources created during execution or verification are owned by that operation/i);
-  assert.match(PINDIE_CORE_POLICY, /scope them narrowly, clean only resources it created/i);
-  assert.match(PINDIE_CORE_POLICY, /never use broad filesystem or process cleanup/i);
-});
-
-test("TB29-TB32 Core Policy reconciles latest intent with the current Task", () => {
-  assert.match(PINDIE_CORE_POLICY, /Reconcile the current Task as early as latest user intent permits/i);
-  assert.match(PINDIE_CORE_POLICY, /Continue or refine only when latest intent still belongs to this current Task/i);
-  assert.match(PINDIE_CORE_POLICY, /clearly different user-requested Task may replace an unfinished current Task/i);
-  assert.match(PINDIE_CORE_POLICY, /Observation, explanation, discussion, pause, or return-control intent alone does not mutate the Task or authorize consequential continuation/i);
-});
-
-test("AC15 Core Policy contains each active-Task continuation semantic exactly once", () => {
-  assert.equal((PINDIE_CORE_POLICY.match(/An active Task should continue only while the latest actual user intent still calls for consequential execution of this current Task/g) ?? []).length, 1);
-  assert.equal((PINDIE_CORE_POLICY.match(/A hidden continuation follow-up is a probe subordinate to latest user intent/g) ?? []).length, 1);
-  assert.equal((PINDIE_CORE_POLICY.match(/persisting it does not authorize yielding or overriding later user intent/gi) ?? []).length, 1);
-});
-
-test("CP05-CP06 repeated Core injection leaves one block and preserves Pi Skill metadata", () => {
-  const skillIndex = "<available_skills>\n<skill><name>release</name></skill>\n</available_skills>";
-  const first = injectPindieCore(`Pi base system prompt\n\n${skillIndex}`);
-  const second = injectPindieCore(first);
-
-  assert.equal(second, first);
-  assert.equal(second.split(PINDIE_CORE_START).length - 1, 1);
-  assert.equal(second.split(PINDIE_CORE_END).length - 1, 1);
-  assert.ok(second.includes(skillIndex));
-});
-
-test("SI05 Core Policy keeps optional Skills subordinate to Core safeguards", () => {
-  assert.match(PINDIE_CORE_POLICY, /Specialized Skills are optional procedures/i);
-  assert.match(PINDIE_CORE_POLICY, /cannot override latest user intent, observed reality, Pindie Core and State invariants, the Task Contract, Verification, or Human Gates/i);
-  assert.match(PINDIE_CORE_POLICY, /Skill selection and Skill-local progress.*not persistent Pindie State/i);
-});
-
-test("CP07-CP11 Runtime Context deterministically projects the complete active semantic State", () => {
-  const first = renderPindieRuntimeContext(completeState());
-  const second = renderPindieRuntimeContext(completeState());
+test("K01 coherent active Runtime Context projects Snapshot status and current State details", () => {
+  const first = renderPindieRuntimeContext(activeState(), coherentActiveSnapshot);
+  const second = renderPindieRuntimeContext(activeState(), coherentActiveSnapshot);
 
   assert.equal(first, second);
-  assert.match(first, /Runtime metadata only; not user intent\./);
-  assert.match(first, /Latest actual user intent and observed project reality remain authoritative\./);
-  assert.match(first, /Task status: waiting_human/);
+  assert.match(first, /Runtime metadata only; not user intent or a new request\./);
+  assert.match(first, /Agent Run authority: coherent/);
+  assert.match(first, /Task status: active/);
   assert.match(first, /Verification status: passed/);
   assert.match(first, /Goal:\nWire Pindie into Pi/);
   assert.match(first, /Constraints:\n- Preserve Pi's Agent Loop/);
   assert.match(first, /Success criteria:\n- c1: Extension wiring works/);
-  assert.match(first, /Blockers:\n- Awaiting API access/);
   assert.match(first, /Questions:\n- Which release channel\?/);
   assert.match(first, /Next intent:\nRun tests/);
   assert.match(first, /tests — passed — covers: c1\n  Evidence: Extension tests passed\./);
-  assert.match(first, /Human gate:\n- Kind: decision\n- Question: Choose a release strategy\.\n- Options:\n  - Canary\n  - Immediate/);
+  assert.doesNotMatch(first, /Blockers:|Human gate:/);
+  assert.doesNotMatch(first, /Latest actual user intent.*authoritative/);
 });
 
-test("CP12 idle State has minimal meaningful Runtime Context", () => {
-  const runtime = renderPindieRuntimeContext({ task: null });
+test("K02 coherent idle Runtime Context is minimal and omits verification and Task details", () => {
+  const snapshot: SemanticSnapshot = {
+    authority: "coherent",
+    taskStatus: "idle",
+    verificationStatus: "none",
+    hasBlockers: false,
+    hasQuestions: false,
+    completionReady: false,
+    taskRelation: "none",
+    completionRelation: "not_completed",
+    gateRelation: "none",
+  };
+  const runtime = renderPindieRuntimeContext({ task: null }, snapshot);
 
-  assert.equal(runtime, `${PINDIE_RUNTIME_START}\nPindie Runtime Context\n\nRuntime metadata only; not user intent.\nLatest actual user intent and observed project reality remain authoritative.\n\nTask status: idle\n${PINDIE_RUNTIME_END}`);
-  assert.doesNotMatch(runtime, /"task": null/);
+  assert.equal(runtime, `${PINDIE_RUNTIME_START}\nPindie Runtime Context\n\nRuntime metadata only; not user intent or a new request.\n\nAgent Run authority: coherent\nTask status: idle\n${PINDIE_RUNTIME_END}`);
+  assert.doesNotMatch(runtime, /Verification status:|Goal:|Constraints:|Success criteria:|Blockers:|Questions:|Next intent:|Verification checks:|Human gate:/);
 });
 
-test("CP13 unavailable State has fail-closed Runtime Context", () => {
-  const runtime = renderPindieRuntimeContext(null, "Could not parse the project State file.");
+test("K03 stale Runtime Context retains current State facts without procedural guidance", () => {
+  const runtime = renderPindieRuntimeContext(completeState(), staleTaskSnapshot);
 
-  assert.match(runtime, /State: unavailable/);
-  assert.match(runtime, /Could not parse the project State file/);
-  assert.match(runtime, /Do not make consequential project changes/);
+  assert.match(runtime, /Agent Run authority: stale/);
+  assert.match(runtime, /Task status: waiting_human/);
+  assert.match(runtime, /Verification status: passed/);
+  assert.match(runtime, /Goal:\nWire Pindie into Pi/);
+  assert.match(runtime, /Human gate:/);
+  assert.doesNotMatch(runtime, /start a new Run|return control|do not mutate|call (?:a|the|pindie_)/i);
 });
 
-test("CP14 empty optional Runtime Context sections are omitted", () => {
+test("K04 unavailable Runtime Context renders only factual unavailability", () => {
+  const runtime = renderPindieRuntimeContext(
+    completeState(),
+    { authority: "unavailable" },
+    "Could not parse the project State file.",
+  );
+
+  assert.equal(runtime, `${PINDIE_RUNTIME_START}\nPindie Runtime Context\n\nRuntime metadata only; not user intent or a new request.\n\nAgent Run authority: unavailable\nReason: Could not parse the project State file.\n${PINDIE_RUNTIME_END}`);
+  assert.doesNotMatch(runtime, /Task status:|Verification status:|Goal:|Success criteria:|Human gate:/);
+  assert.doesNotMatch(runtime, /Do not make consequential|Restore|Reload|call (?:a|the|pindie_)/i);
+});
+
+test("K05 empty optional Runtime Context sections are omitted", () => {
+  const complete = renderPindieRuntimeContext(
+    completeState(),
+    coherentWaitingSnapshot,
+  );
+  assert.match(complete, /Constraints:/);
+  assert.match(complete, /Blockers:/);
+  assert.match(complete, /Questions:/);
+  assert.match(complete, /Next intent:/);
+  assert.match(complete, /Verification checks:/);
+  assert.match(complete, /Human gate:/);
+
   const state: PindieState = {
     task: {
       ...completeState().task!,
@@ -187,16 +170,34 @@ test("CP14 empty optional Runtime Context sections are omitted", () => {
       humanGate: null,
     },
   };
-  const runtime = renderPindieRuntimeContext(state);
+  const snapshot: SemanticSnapshot = {
+    authority: "coherent",
+    taskStatus: "active",
+    verificationStatus: "pending",
+    hasBlockers: false,
+    hasQuestions: false,
+    completionReady: false,
+    taskRelation: "preexisting_untouched",
+    completionRelation: "not_completed",
+    gateRelation: "none",
+  };
+  const runtime = renderPindieRuntimeContext(state, snapshot);
 
+  assert.match(runtime, /Task status: active/);
+  assert.match(runtime, /Verification status: pending/);
   assert.doesNotMatch(runtime, /Constraints:|Blockers:|Questions:|Next intent:|Verification checks:|Human gate:/);
 });
 
-test("Runtime Context messages use the stable custom type without volatile model-facing content", () => {
-  const message = createPindieRuntimeContextMessage(completeState());
+test("K06 Runtime Context messages use the stable hidden custom-message identity", () => {
+  const message = createPindieRuntimeContextMessage(
+    completeState(),
+    coherentWaitingSnapshot,
+  );
 
   assert.equal(message.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
+  assert.equal(message.display, false);
   assert.equal(message.timestamp, 0);
   assert.ok(isPindieRuntimeContextMessage(message));
+  assert.equal(isPindieRuntimeContextMessage({ ...message, customType: "other" }), false);
   assert.match(String(message.content), new RegExp(PINDIE_RUNTIME_START));
 });
