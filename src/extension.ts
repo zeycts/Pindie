@@ -1,7 +1,5 @@
 import {
   type ExtensionAPI,
-  type ExtensionContext,
-  type ToolCallEvent,
   type ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 
@@ -15,49 +13,32 @@ import {
   isPindieContinuationProbeMessage,
   shouldProbeContinuation,
 } from "./continuation.ts";
+import { ExecutionIntegration } from "./execution-integration.ts";
 import {
   authorizeToolEffect,
   classifyToolEffect,
   type ToolEffect,
 } from "./execution-semantics.ts";
+import { PresentationIntegration } from "./presentation-integration.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
-import {
-  captureProjectFingerprint as defaultCaptureProjectFingerprint,
-  type ProjectFingerprint,
-} from "./project-mutation.ts";
-import { ReasoningController } from "./reasoning.ts";
-import {
-  deriveEfficiencySnapshot,
-  formatEfficiencyReport,
-} from "./efficiency.ts";
-import { RunActivityTracker } from "./run-activity.ts";
-import { RunCostTracker } from "./run-cost.ts";
-import { RunTimer } from "./run-timer.ts";
-import {
-  beginAgentRunFacts,
-  deriveSemanticRunFacts,
-  recordSuccessfulCapability,
-  type AgentRunFactsContext,
-} from "./run-facts.ts";
+import type { ProjectFingerprint } from "./project-mutation.ts";
+import type { ReasoningController } from "./reasoning.ts";
+import type { RunActivityTracker } from "./run-activity.ts";
+import type { RunCostTracker } from "./run-cost.ts";
+import { RunIntegration } from "./run-integration.ts";
+import type { RunTimer } from "./run-timer.ts";
 import { PindieRuntime } from "./runtime.ts";
 import {
   deriveCapabilities,
-  deriveSemanticSnapshot,
   type SemanticSnapshot,
 } from "./semantics.ts";
-import { deriveEffectiveToolNames } from "./tool-surface.ts";
-import { StateLockBusyError } from "./store.ts";
 import { validateState } from "./state.ts";
 import {
-  deriveStatusLayout,
-  renderStatusLayout,
-} from "./status-line.ts";
-import {
-  chatGptSubscriptionUsageProvider,
-  type SubscriptionUsageProvider,
-  type SubscriptionUsageSnapshot,
-} from "./subscription-usage.ts";
-import { FileStateStore, type PindieStateStore } from "./store.ts";
+  FileStateStore,
+  StateLockBusyError,
+  type PindieStateStore,
+} from "./store.ts";
+import type { SubscriptionUsageProvider } from "./subscription-usage.ts";
 import {
   createPindieGateOpenTool,
   createPindieGateResolveTool,
@@ -71,13 +52,6 @@ import {
   createPindieTaskStartTool,
   createPindieVerificationRecordTool,
 } from "./tools/task.ts";
-import {
-  advanceEvidenceGeneration,
-  captureEvidenceCandidate,
-  createVerificationEvidenceScope,
-  resolveAndMaterializeEvidence,
-  type VerificationEvidenceScope,
-} from "./verification-evidence.ts";
 
 type ProjectRootResolver = (cwd: string) => Promise<string>;
 
@@ -104,27 +78,16 @@ export interface PindieExtensionIntegration {
   readonly stateUnavailableReason: string | null;
 }
 
-const PINDIE_STATUS_ID = "pindie-status";
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-interface MutationWindow {
-  projectRoot: string;
-  baseline: ProjectFingerprint;
-  pendingToolCallIds: Set<string>;
-}
-
-interface AuthorizedToolExecution {
-  readonly effect: ToolEffect;
-  readonly evidenceGenerationAtCall: number;
-}
-
-const STALE_EXTENSION_CONTEXT_ERROR = "This extension ctx is stale after session replacement or reload.";
+const STALE_EXTENSION_CONTEXT_ERROR =
+  "This extension ctx is stale after session replacement or reload.";
 
 function isStaleExtensionContextError(error: unknown): boolean {
-  return error instanceof Error && error.message.startsWith(STALE_EXTENSION_CONTEXT_ERROR);
+  return error instanceof Error &&
+    error.message.startsWith(STALE_EXTENSION_CONTEXT_ERROR);
 }
 
 function gatewayDenialReason(
@@ -145,244 +108,75 @@ export function registerPindieExtension(
   options: PindieExtensionOptions = {},
 ): PindieExtensionIntegration {
   const runtime = new PindieRuntime(options.store ?? new FileStateStore());
-  const reasoning = new ReasoningController();
-  const now = options.now ?? Date.now;
-  const runActivity = new RunActivityTracker({
-    now,
-    lingerMs: options.activityLingerMs,
+  const run = new RunIntegration(pi, runtime);
+  const execution = new ExecutionIntegration({
+    captureProjectFingerprint: options.captureProjectFingerprint,
   });
-  const runCost = new RunCostTracker();
-  const runTimer = new RunTimer();
-  const resolveProjectRoot =
-    options.resolveProjectRoot ?? defaultResolveProjectRoot;
-  const captureProjectFingerprint =
-    options.captureProjectFingerprint ?? defaultCaptureProjectFingerprint;
-  let mutationWindow: MutationWindow | null = null;
-  const authorizedToolExecutions = new Map<string, AuthorizedToolExecution>();
-  let evidenceScope: VerificationEvidenceScope | null = null;
-  let evidenceExternalStateEpoch = 0;
-  const subscriptionUsageProvider =
-    options.subscriptionUsageProvider ?? chatGptSubscriptionUsageProvider;
-  const scheduleActivityRefresh = (
-    callback: () => void,
-    delayMs: number,
-  ): ReturnType<typeof setTimeout> =>
-    options.scheduleActivityRefresh?.(callback, delayMs) ??
-    (setTimeout(callback, delayMs) as ReturnType<typeof setTimeout>);
-  const clearActivityRefresh = (timer: ReturnType<typeof setTimeout>): void => {
-    if (options.clearActivityRefresh) options.clearActivityRefresh(timer);
-    else clearTimeout(timer);
-  };
-  const getStatusWidth = options.getStatusWidth ?? (() => process.stdout.columns);
-  let subscriptionUsage: SubscriptionUsageSnapshot | null = null;
-  let lastUsageFetchAt: number | null = null;
-  let stateUnavailableReason: string | null = null;
-  let statusContext: ExtensionContext | null = null;
-  let agentRunFactsContext: AgentRunFactsContext | null = null;
-  let runToolBaseline: readonly string[] | null = null;
-  let activeTaskContinuationAttempted = false;
-  let activityLingerTimer: ReturnType<typeof setTimeout> | null = null;
-  let activityLingerGeneration = 0;
-
-  const clearActivityLingerRefresh = (): void => {
-    activityLingerGeneration += 1;
-    const timer = activityLingerTimer;
-    activityLingerTimer = null;
-    if (timer === null) return;
-    try {
-      clearActivityRefresh(timer);
-    } catch {
-      // Presentation cleanup must not alter semantic or runtime behavior.
-    }
-  };
-
-  const scheduleActivityLingerRefresh = (): void => {
-    clearActivityLingerRefresh();
-    const delayMs = runActivity.nextPresentationChangeInMs;
-    if (delayMs === null) return;
-    const generation = activityLingerGeneration;
-    try {
-      activityLingerTimer = scheduleActivityRefresh(() => {
-        if (generation !== activityLingerGeneration) return;
-        activityLingerTimer = null;
-        refreshStatus();
-      }, delayMs);
-    } catch {
-      // Presentation scheduling must not alter semantic or runtime behavior.
-    }
-  };
-
-  const clearAgentRunBookkeeping = (): void => {
-    agentRunFactsContext = null;
-    activeTaskContinuationAttempted = false;
-    authorizedToolExecutions.clear();
-  };
-
-  const discardVerificationEvidence = (): void => {
-    evidenceScope = null;
-    authorizedToolExecutions.clear();
-  };
-
-  const advanceCurrentEvidenceGeneration = (): void => {
-    if (evidenceScope !== null) advanceEvidenceGeneration(evidenceScope);
-  };
-
-  const invalidateEvidenceForExternalStateAdoption = (): void => {
-    if (
-      evidenceScope === null ||
-      evidenceExternalStateEpoch === runtime.externalStateEpoch
-    ) {
-      return;
-    }
-    advanceEvidenceGeneration(evidenceScope);
-    evidenceExternalStateEpoch = runtime.externalStateEpoch;
-  };
-
-  const currentAuthoritativeState = () =>
-    runtime.projectRoot === null || stateUnavailableReason !== null
-      ? null
-      : runtime.state;
-
-  const currentSemanticRunFacts = () => deriveSemanticRunFacts(
-    agentRunFactsContext,
-    currentAuthoritativeState(),
-    runtime.externalStateEpoch,
-  );
-
-  const currentAgentRunIsStale = (): boolean => {
-    const facts = currentSemanticRunFacts();
-    return facts.stateAvailable && !facts.runCoherent;
-  };
-
-  const sameToolNames = (
-    left: readonly string[],
-    right: readonly string[],
-  ): boolean =>
-    left.length === right.length && left.every((name, index) => name === right[index]);
-
-  const applyToolSurface = (
-    capabilities: ReturnType<typeof deriveCapabilities>,
-  ): void => {
-    if (runToolBaseline === null) return;
-    const effective = deriveEffectiveToolNames(runToolBaseline, capabilities);
-    if (!sameToolNames(pi.getActiveTools(), effective)) {
-      pi.setActiveTools(effective);
-    }
-  };
-
-  const restoreRunToolBaseline = (bestEffort = false): void => {
-    const baseline = runToolBaseline;
-    if (baseline === null) return;
-    try {
-      if (!sameToolNames(pi.getActiveTools(), baseline)) {
-        pi.setActiveTools([...baseline]);
-      }
-      runToolBaseline = null;
-    } catch (error) {
-      if (!bestEffort) throw error;
-      runToolBaseline = null;
-    }
-  };
-
-  const presentStatusBestEffort = (
-    ctx: ExtensionContext | null,
-    getStatus: () => string | undefined,
-  ): void => {
-    try {
-      if (!ctx?.hasUI) return;
-      ctx.ui.setStatus(PINDIE_STATUS_ID, getStatus());
-    } catch {
-      // Status presentation must not alter semantic or runtime behavior.
-    }
-  };
-
-  const refreshStatus = (ctx = statusContext): void => {
-    presentStatusBestEffort(ctx, () => {
-      const layout = deriveStatusLayout({
-        timing:
-          runTimer.durationMs === null
-            ? null
-            : { durationMs: runTimer.durationMs, active: runTimer.active },
-        runCost: runCost.snapshot(ctx!.sessionManager.getEntries()),
-        reasoningMode: reasoning.snapshot.mode,
-        activity: runActivity.activity,
-        state: runtime.projectRoot === null ? null : runtime.state,
-        stateUnavailableReason,
-        runStale:
-          runTimer.active &&
-          currentAuthoritativeState() !== null &&
-          currentAgentRunIsStale(),
-        subscriptionUsage,
-      }, now());
-      return renderStatusLayout(ctx!.ui.theme, layout, getStatusWidth());
-    });
-  };
-
-  const clearPindieStatus = (ctx: ExtensionContext): void => {
-    presentStatusBestEffort(ctx, () => undefined);
-  };
-
-  const applyRequestedThinkingLevel = (): void => {
-    if (reasoning.snapshot.mode === "manual") return;
-    pi.setThinkingLevel(reasoning.snapshot.requestedLevel);
-    reasoning.synchronizeEffective(pi.getThinkingLevel());
-  };
-
-  const reasoningStatus = (): string => {
-    const { mode, requestedLevel, effectiveLevel } = reasoning.snapshot;
-    return `Reasoning: ${mode}; requested ${requestedLevel}; effective ${effectiveLevel}.`;
-  };
-
-  const refreshSubscriptionUsage = async (ctx: ExtensionContext): Promise<void> => {
-    if (lastUsageFetchAt !== null && now() - lastUsageFetchAt < 5 * 60_000) return;
-    lastUsageFetchAt = now();
-    try {
-      const next = await subscriptionUsageProvider.fetchUsage(ctx);
-      if (next) subscriptionUsage = next;
-    } catch {
-      // Account observation is runtime-only and intentionally silent.
-    }
-    refreshStatus(ctx);
-  };
+  const presentation = new PresentationIntegration(pi, {
+    getState: () => runtime.projectRoot === null ? null : runtime.state,
+    getAuthoritativeState: () => run.authoritativeState,
+    getStateUnavailableReason: () => run.stateUnavailableReason,
+    getRunStale: () => run.agentRunIsStale,
+    subscriptionUsageProvider: options.subscriptionUsageProvider,
+    getStatusWidth: options.getStatusWidth,
+    now: options.now,
+    activityLingerMs: options.activityLingerMs,
+    scheduleActivityRefresh: options.scheduleActivityRefresh,
+    clearActivityRefresh: options.clearActivityRefresh,
+  });
+  const resolveProjectRoot = options.resolveProjectRoot ??
+    defaultResolveProjectRoot;
 
   const markUnavailable = (reason: string): void => {
-    advanceCurrentEvidenceGeneration();
-    discardVerificationEvidence();
-    runtime.unload();
-    stateUnavailableReason = reason;
-    clearAgentRunBookkeeping();
-    applyToolSurface(deriveCapabilities({ authority: "unavailable" }));
-    refreshStatus();
+    execution.semanticAuthorityUnavailable();
+    run.markUnavailable(reason);
+    presentation.refreshStatus();
   };
 
-  const refreshToolSurface = (): void => {
-    if (runToolBaseline === null) return;
-    const derivation = deriveSemanticSnapshot(
-      currentAuthoritativeState(),
-      currentSemanticRunFacts(),
-    );
-    if (!derivation.ok) {
-      markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
-      return;
-    }
-    applyToolSurface(deriveCapabilities(derivation.snapshot));
+  const refreshRunToolSurface = (): boolean => {
+    const derivation = run.refreshToolSurface();
+    if (derivation.ok) return true;
+    markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
+    return false;
   };
 
   const semanticStateChanged = (): void => {
-    invalidateEvidenceForExternalStateAdoption();
-    refreshStatus();
-    refreshToolSurface();
+    execution.semanticStateChanged(runtime.externalStateEpoch);
+    if (!refreshRunToolSurface()) return;
+    presentation.refreshStatus();
   };
 
-  const resolveVerificationEvidence = (refs: readonly string[]): string => {
-    return resolveAndMaterializeEvidence(
-      evidenceScope ?? createVerificationEvidenceScope(),
-      refs,
-    );
+  const invalidateVerificationAfterProjectMutation = async (): Promise<void> => {
+    execution.advanceEvidenceGeneration();
+    if (
+      runtime.projectRoot === null ||
+      run.stateUnavailableReason !== null ||
+      !runtime.state.task
+    ) {
+      return;
+    }
+    try {
+      const result = await runtime.dispatch({ type: "invalidate_verification" });
+      if (!result.ok) {
+        markUnavailable(
+          `Pindie could not invalidate verification after project mutation: ${result.error.message}`,
+        );
+      }
+    } catch (error) {
+      if (error instanceof StateLockBusyError) {
+        presentation.refreshStatus();
+        throw error;
+      }
+      markUnavailable(
+        `Pindie could not persist verification invalidation: ${errorMessage(error)}`,
+      );
+      throw error;
+    }
+    semanticStateChanged();
   };
 
   const taskToolOptions = {
-    getRunDuration: () => runTimer.durationMs,
+    getRunDuration: () => presentation.runTimer.durationMs,
     onStateChange: semanticStateChanged,
   };
   pi.registerTool(createPindieTaskStartTool(runtime, taskToolOptions));
@@ -391,29 +185,20 @@ export function registerPindieExtension(
   pi.registerTool(createPindieTaskProgressTool(runtime, taskToolOptions));
   pi.registerTool(createPindieVerificationRecordTool(runtime, {
     ...taskToolOptions,
-    resolveEvidence: resolveVerificationEvidence,
+    resolveEvidence: (refs) => execution.resolveVerificationEvidence(refs),
   }));
   pi.registerTool(createPindieTaskCompleteTool(runtime, taskToolOptions));
-  pi.registerTool(createPindieGateOpenTool(runtime, { onStateChange: semanticStateChanged }));
-  pi.registerTool(createPindieGateResolveTool(runtime, { onStateChange: semanticStateChanged }));
+  pi.registerTool(createPindieGateOpenTool(runtime, {
+    onStateChange: semanticStateChanged,
+  }));
+  pi.registerTool(createPindieGateResolveTool(runtime, {
+    onStateChange: semanticStateChanged,
+  }));
   pi.registerTool(createPindieGitObserveTool());
 
   pi.registerCommand("efficiency", {
     description: "Show read-only runtime efficiency facts",
-    handler: async (args, ctx) => {
-      if (args.trim()) {
-        ctx.ui.notify("Usage: /efficiency", "warning");
-        return;
-      }
-      const entries = ctx.sessionManager.getEntries();
-      const report = formatEfficiencyReport(deriveEfficiencySnapshot({
-        entries,
-        contextUsage: ctx.getContextUsage(),
-        reasoning: reasoning.snapshot,
-        runCost: runCost.snapshot(entries),
-      }));
-      ctx.ui.notify(report, "info");
-    },
+    handler: async (args, ctx) => presentation.handleEfficiencyCommand(args, ctx),
   });
 
   pi.registerCommand("reasoning", {
@@ -421,81 +206,49 @@ export function registerPindieExtension(
     getArgumentCompletions: (prefix) => ["auto", "manual"]
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({ value, label: value })),
-    handler: async (args, ctx) => {
-      let value = args.trim().toLowerCase();
-      if (!value && ctx.mode === "tui") {
-        const selected = await ctx.ui.select("Reasoning", ["auto", "manual"]);
-        if (!selected) return;
-        value = selected;
-      }
-      if (value === "auto") reasoning.setAuto();
-      else if (value === "manual") reasoning.setManual();
-      else {
-        ctx.ui.notify("Usage: /reasoning [auto|manual]", "warning");
-        return;
-      }
-      applyRequestedThinkingLevel();
-      refreshStatus(ctx);
-      ctx.ui.notify(reasoningStatus(), "info");
-    },
+    handler: async (args, ctx) => presentation.handleReasoningCommand(args, ctx),
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    restoreRunToolBaseline(true);
-    statusContext = ctx;
-    clearActivityLingerRefresh();
-    reasoning.reset(pi.getThinkingLevel());
-    runActivity.reset();
-    runCost.reset();
-    runTimer.reset();
-    clearPindieStatus(ctx);
-    subscriptionUsage = null;
-    lastUsageFetchAt = null;
-    runtime.unload();
-    stateUnavailableReason = null;
-    clearAgentRunBookkeeping();
-    discardVerificationEvidence();
-    mutationWindow = null;
+    run.restoreRunToolBaseline(true);
+    presentation.setStatusContext(ctx);
+    presentation.resetTrackers();
+    presentation.clearStatus(ctx);
+    presentation.resetSubscriptionUsage();
+    run.resetStateAuthority();
+    run.clearAgentRunBookkeeping();
+    execution.discardRuntime();
 
     try {
       const projectRoot = await resolveProjectRoot(ctx.cwd);
-      await runtime.load(projectRoot);
+      await run.loadProject(projectRoot);
     } catch (error) {
       markUnavailable(
         `Could not load Pindie State for '${ctx.cwd}': ${errorMessage(error)}`,
       );
     }
-    refreshStatus(ctx);
-    void refreshSubscriptionUsage(ctx);
+    presentation.refreshStatus(ctx);
+    void presentation.refreshSubscriptionUsage(ctx);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
-    restoreRunToolBaseline(true);
-    clearActivityLingerRefresh();
-    reasoning.reset(pi.getThinkingLevel());
-    runActivity.reset();
-    runCost.reset();
-    runTimer.reset();
-    clearPindieStatus(ctx);
-    runtime.unload();
-    stateUnavailableReason = null;
-    clearAgentRunBookkeeping();
-    discardVerificationEvidence();
-    mutationWindow = null;
-    statusContext = null;
+    run.restoreRunToolBaseline(true);
+    presentation.resetTrackers();
+    presentation.clearStatus(ctx);
+    run.resetStateAuthority();
+    run.clearAgentRunBookkeeping();
+    execution.discardRuntime();
+    presentation.setStatusContext(null);
   });
 
   pi.on("before_agent_start", async (_event, ctx) => {
-    statusContext = ctx;
-    if (runToolBaseline === null) {
-      runToolBaseline = [...pi.getActiveTools()];
-    }
-    clearAgentRunBookkeeping();
-    discardVerificationEvidence();
-    mutationWindow = null;
-    if (runtime.projectRoot !== null && stateUnavailableReason === null) {
+    presentation.setStatusContext(ctx);
+    run.captureRunToolBaseline();
+    run.clearAgentRunBookkeeping();
+    execution.discardRuntime();
+    if (run.authoritativeState !== null) {
       try {
-        await runtime.refresh();
+        await run.refreshAuthoritativeState();
       } catch (error) {
         markUnavailable(
           `Could not refresh Pindie State before this Agent Run: ${errorMessage(error)}`,
@@ -504,42 +257,32 @@ export function registerPindieExtension(
     }
     // Refresh precedes all identity snapshots so a new Run always begins from
     // authoritative project State rather than a previous session snapshot.
-    evidenceScope = createVerificationEvidenceScope();
-    evidenceExternalStateEpoch = runtime.externalStateEpoch;
-    const state = currentAuthoritativeState();
-    if (state !== null) {
-      agentRunFactsContext = beginAgentRunFacts(
-        state,
-        runtime.externalStateEpoch,
-      );
-    }
-    refreshToolSurface();
-    reasoning.beforeAgentStart();
-    applyRequestedThinkingLevel();
-    clearActivityLingerRefresh();
-    runActivity.start();
-    runCost.start(ctx.sessionManager.getEntries());
-    runTimer.start(ctx.hasUI ? () => refreshStatus(ctx) : undefined);
-    refreshStatus(ctx);
+    execution.beginEvidenceScope(runtime.externalStateEpoch);
+    run.beginAgentRunFacts();
+    refreshRunToolSurface();
+    presentation.reasoning.beforeAgentStart();
+    presentation.applyRequestedThinkingLevel();
+    presentation.clearActivityLingerRefresh();
+    presentation.runActivity.start();
+    presentation.startCost(ctx.sessionManager.getEntries());
+    presentation.startTimer(ctx);
+    presentation.refreshStatus(ctx);
   });
 
   pi.on("agent_end", (event, ctx) => {
-    const derivation = deriveSemanticSnapshot(
-      currentAuthoritativeState(),
-      currentSemanticRunFacts(),
-    );
+    const derivation = run.deriveSnapshot();
     if (!derivation.ok) return;
     const finalAssistantMessage = [...event.messages]
       .reverse()
       .find((message) => message.role === "assistant");
     const shouldProbe = shouldProbeContinuation(derivation.snapshot, {
-      probeAlreadyAttempted: activeTaskContinuationAttempted,
+      probeAlreadyAttempted: run.activeTaskContinuationAttempted,
       hasPendingMessages: ctx.hasPendingMessages(),
       stoppedNormally: finalAssistantMessage?.stopReason === "stop",
     });
     if (!shouldProbe) return;
 
-    activeTaskContinuationAttempted = true;
+    run.markContinuationAttempted();
     pi.sendMessage(
       {
         customType: PINDIE_CONTINUATION_PROBE_TYPE,
@@ -552,7 +295,7 @@ export function registerPindieExtension(
 
   pi.on("context", (event) => {
     let latestContinuationProbeIndex = -1;
-    if (activeTaskContinuationAttempted) {
+    if (run.activeTaskContinuationAttempted) {
       for (let index = event.messages.length - 1; index >= 0; index -= 1) {
         if (isPindieContinuationProbeMessage(event.messages[index])) {
           latestContinuationProbeIndex = index;
@@ -565,19 +308,22 @@ export function registerPindieExtension(
       (!isPindieContinuationProbeMessage(message) ||
         index === latestContinuationProbeIndex)
     );
-    let state = currentAuthoritativeState();
-    let derivation = deriveSemanticSnapshot(state, currentSemanticRunFacts());
+    let state = run.authoritativeState;
+    let derivation = run.deriveSnapshot();
     if (!derivation.ok) {
       markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
-      state = currentAuthoritativeState();
-      derivation = deriveSemanticSnapshot(state, currentSemanticRunFacts());
+      state = run.authoritativeState;
+      derivation = run.deriveSnapshot();
     }
     if (!derivation.ok) {
-      throw new Error(`Pindie unavailable semantic derivation failed: ${derivation.error}`);
+      throw new Error(
+        `Pindie unavailable semantic derivation failed: ${derivation.error}`,
+      );
     }
-    const unavailableReason =
-      stateUnavailableReason ??
-      (state === null ? "No project State has been loaded for this session." : null);
+    const unavailableReason = run.stateUnavailableReason ??
+      (state === null
+        ? "No project State has been loaded for this session."
+        : null);
 
     return {
       messages: [
@@ -592,15 +338,18 @@ export function registerPindieExtension(
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
-    clearActivityLingerRefresh();
-    runActivity.toolExecutionStart(event.toolCallId, event.toolName);
-    refreshStatus(ctx);
+    presentation.clearActivityLingerRefresh();
+    presentation.runActivity.toolExecutionStart(
+      event.toolCallId,
+      event.toolName,
+    );
+    presentation.refreshStatus(ctx);
   });
 
   pi.on("tool_execution_end", (event, ctx) => {
-    runActivity.toolExecutionEnd(event.toolCallId);
-    scheduleActivityLingerRefresh();
-    refreshStatus(ctx);
+    presentation.runActivity.toolExecutionEnd(event.toolCallId);
+    presentation.scheduleActivityLingerRefresh();
+    presentation.refreshStatus(ctx);
   });
 
   pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
@@ -609,31 +358,27 @@ export function registerPindieExtension(
       effect.requiredCapability === "observe.project" ||
       effect.requiredCapability === "observe.git"
     ) {
-      authorizedToolExecutions.set(event.toolCallId, {
-        effect,
-        evidenceGenerationAtCall: evidenceScope?.generation ?? -1,
-      });
+      execution.recordAuthorizedObservation(event, effect);
       return;
     }
 
-    let facts = currentSemanticRunFacts();
+    let facts = run.semanticRunFacts;
     if (
       facts.stateAvailable &&
       facts.runCoherent &&
       runtime.projectRoot !== null
     ) {
       try {
-        if (await runtime.refresh()) semanticStateChanged();
+        if (await run.refreshAuthoritativeState()) semanticStateChanged();
       } catch (error) {
         markUnavailable(
           `Could not refresh Pindie State before consequential work: ${errorMessage(error)}`,
         );
       }
-      facts = currentSemanticRunFacts();
+      facts = run.semanticRunFacts;
     }
 
-    const state = currentAuthoritativeState();
-    const derivation = deriveSemanticSnapshot(state, facts);
+    const derivation = run.deriveSnapshot();
     if (!derivation.ok) {
       const reason = derivation.error;
       markUnavailable(`Internal semantic derivation failed: ${reason}`);
@@ -645,109 +390,39 @@ export function registerPindieExtension(
 
     const snapshot = derivation.snapshot;
     const capabilities = deriveCapabilities(snapshot);
-    applyToolSurface(capabilities);
+    run.applyToolSurface(capabilities);
     const authorization = authorizeToolEffect(capabilities, effect);
     if (!authorization.allowed) {
       return {
         block: true,
-        reason: gatewayDenialReason(snapshot, authorization.requiredCapability),
+        reason: gatewayDenialReason(
+          snapshot,
+          authorization.requiredCapability,
+        ),
       };
     }
 
-    if (effect.projectMutation === "ambiguous") {
-      const projectRoot = runtime.projectRoot!;
-      if (mutationWindow === null) {
-        let baseline: ProjectFingerprint;
-        try {
-          baseline = await captureProjectFingerprint(projectRoot);
-        } catch (error) {
-          baseline = { kind: "unknown", reason: errorMessage(error) };
-        }
-        mutationWindow = {
-          projectRoot,
-          baseline,
-          pendingToolCallIds: new Set(),
-        };
-      } else if (mutationWindow.projectRoot !== projectRoot) {
-        // A session has one loaded project. Do not mix an impossible second root
-        // into a known window; fail closed for verification instead.
-        mutationWindow.baseline = { kind: "unknown", reason: "Mutation window project root changed." };
-      }
-      mutationWindow.pendingToolCallIds.add(event.toolCallId);
-    }
-
-    authorizedToolExecutions.set(event.toolCallId, {
+    await execution.recordAuthorizedConsequentialCall(
+      event,
       effect,
-      evidenceGenerationAtCall: evidenceScope?.generation ?? -1,
-    });
+      runtime.projectRoot!,
+    );
   });
 
-  const invalidateVerificationAfterProjectMutation = async (): Promise<void> => {
-    advanceCurrentEvidenceGeneration();
-    if (runtime.projectRoot === null || stateUnavailableReason !== null || !runtime.state.task) return;
-    try {
-      const result = await runtime.dispatch({
-        type: "invalidate_verification",
-      });
-      if (!result.ok) {
-        markUnavailable(
-          `Pindie could not invalidate verification after project mutation: ${result.error.message}`,
-        );
-      }
-    } catch (error) {
-      if (error instanceof StateLockBusyError) {
-        refreshStatus();
-        throw error;
-      }
-      markUnavailable(
-        `Pindie could not persist verification invalidation: ${errorMessage(error)}`,
-      );
-      throw error;
-    }
-
-    semanticStateChanged();
-  };
-
-  const mayCaptureEvidence = (execution: AuthorizedToolExecution): boolean => {
-    const scope = evidenceScope;
-    if (
-      scope === null ||
-      execution.evidenceGenerationAtCall !== scope.generation
-    ) {
-      return false;
-    }
-    const facts = currentSemanticRunFacts();
-    const state = currentAuthoritativeState();
-    if (
-      !facts.stateAvailable ||
-      !facts.runCoherent ||
-      state?.task === null ||
-      state?.task.completed
-    ) {
-      return false;
-    }
-    return execution.effect.requiredCapability === "observe.project" ||
-      execution.effect.requiredCapability === "observe.git" ||
-      execution.effect.projectMutation === "ambiguous";
-  };
-
   pi.on("tool_result", async (event) => {
-    const execution = authorizedToolExecutions.get(event.toolCallId);
-    if (!execution) return;
-    authorizedToolExecutions.delete(event.toolCallId);
-    const { effect } = execution;
+    const authorizedExecution = execution.takeAuthorizedExecution(
+      event.toolCallId,
+    );
+    if (!authorizedExecution) return;
+    const { effect } = authorizedExecution;
 
     if (
       !event.isError &&
-      agentRunFactsContext !== null &&
       (effect.requiredCapability === "task.start" ||
         effect.requiredCapability === "task.replace")
     ) {
-      agentRunFactsContext = recordSuccessfulCapability(
-        agentRunFactsContext,
-        effect.requiredCapability,
-      );
-      refreshToolSurface();
+      run.recordSuccessfulCapability(effect.requiredCapability);
+      refreshRunToolSurface();
     }
 
     if (
@@ -756,67 +431,37 @@ export function registerPindieExtension(
         effect.requiredCapability === "task.replace" ||
         effect.requiredCapability === "task.refine")
     ) {
-      advanceCurrentEvidenceGeneration();
+      execution.advanceEvidenceGeneration();
     }
 
-    if (!event.isError && effect.projectMutation === "known") {
+    const mutationSettlement = await execution.settleProjectMutation(
+      event,
+      authorizedExecution,
+    );
+    if (mutationSettlement === "ignore") return;
+    if (mutationSettlement === "invalidate") {
       await invalidateVerificationAfterProjectMutation();
       return;
     }
 
-    if (effect.projectMutation === "ambiguous") {
-      const window = mutationWindow;
-      if (!window || !window.pendingToolCallIds.delete(event.toolCallId)) return;
-      // Consume before observation/dispatch so duplicate results cannot act twice.
-      if (window.pendingToolCallIds.size === 0) mutationWindow = null;
-      if (window.baseline.kind === "unknown") {
-        await invalidateVerificationAfterProjectMutation();
-        return;
-      }
-      let after: ProjectFingerprint;
-      try {
-        after = await captureProjectFingerprint(window.projectRoot);
-      } catch (error) {
-        after = { kind: "unknown", reason: errorMessage(error) };
-      }
-      if (after.kind !== "known" || after.digest !== window.baseline.digest) {
-        await invalidateVerificationAfterProjectMutation();
-        return;
-      }
-    }
-
-    if (!mayCaptureEvidence(execution)) return;
-    const scope = evidenceScope!;
-    const candidate = captureEvidenceCandidate(scope, {
-      toolCallId: event.toolCallId,
-      toolName: event.toolName,
-      input: event.input,
-      content: event.content,
-      isError: event.isError,
-    });
-    return {
-      content: [
-        ...event.content,
-        {
-          type: "text",
-          text: `[Pindie evidence ref: ${candidate.ref}]`,
-        },
-      ],
-    };
+    return execution.captureEvidenceIfEligible(
+      authorizedExecution,
+      event,
+      run.authoritativeState,
+      run.semanticRunFacts,
+    );
   });
 
   pi.on("turn_end", (event, ctx) => {
     if (event.toolResults.length === 0) return;
-    const state = runtime.projectRoot === null ? { task: null } : runtime.state;
-    if (reasoning.decideNext(state, event.toolResults)) {
-      applyRequestedThinkingLevel();
-      refreshStatus(ctx);
-    }
+    const state = runtime.projectRoot === null
+      ? { task: null }
+      : runtime.state;
+    presentation.handleTurnEnd(state, event.toolResults, ctx);
   });
 
   pi.on("thinking_level_select", (event, ctx) => {
-    reasoning.synchronizeEffective(event.level);
-    refreshStatus(ctx);
+    presentation.synchronizeThinkingLevel(event.level, ctx);
   });
 
   pi.on("agent_settled", (_event, ctx) => {
@@ -831,16 +476,15 @@ export function registerPindieExtension(
       throw error;
     }
 
-    statusContext = ctx;
-    discardVerificationEvidence();
-    mutationWindow = null;
-    restoreRunToolBaseline();
-    clearActivityLingerRefresh();
-    runActivity.settle();
-    runCost.finish(entries);
-    runTimer.finish();
-    refreshStatus(ctx);
-    void refreshSubscriptionUsage(ctx);
+    presentation.setStatusContext(ctx);
+    execution.discardRuntime();
+    run.restoreRunToolBaseline();
+    presentation.clearActivityLingerRefresh();
+    presentation.runActivity.settle();
+    presentation.finishCost(entries);
+    presentation.runTimer.finish();
+    presentation.refreshStatus(ctx);
+    void presentation.refreshSubscriptionUsage(ctx);
     if (runtime.projectRoot === null) return;
 
     const validation = validateState(runtime.state);
@@ -853,12 +497,12 @@ export function registerPindieExtension(
 
   return {
     runtime,
-    reasoning,
-    runActivity,
-    runCost,
-    runTimer,
+    reasoning: presentation.reasoning,
+    runActivity: presentation.runActivity,
+    runCost: presentation.runCost,
+    runTimer: presentation.runTimer,
     get stateUnavailableReason() {
-      return stateUnavailableReason;
+      return run.stateUnavailableReason;
     },
   };
 }
