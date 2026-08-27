@@ -244,18 +244,17 @@ A Human Gate is an explicit authority boundary. A Gate opened during the current
 
 Continuation is the remaining place where Pindie intentionally asks the model a semantic question after deterministic facts have been closed.
 
-Pi owns the low-level run lifecycle. In Pi 0.84.3, `agent_end` marks the end of a low-level run, while Pi may still retry, compact/retry, or process queued follow-up messages before `agent_settled`. Pindie must remain subordinate to that lifecycle.
+Pi owns the low-level run lifecycle. In pinned Pi 0.84.3, the public extension `agent_end` event contains only `type` and `messages`; Pi's internal session-event stream computes a `willRetry` value separately, but that value is not part of the public extension API. Pindie must not reach into private Pi internals or recreate retry classification to obtain it.
 
 ### 10.1 Deterministic eligibility
 
-M6 derives continuation-probe eligibility from one semantic world plus minimal Pi runtime facts:
+M6 derives continuation-probe eligibility from one semantic world plus only public Pi runtime facts:
 
 ```text
 SemanticSnapshot
 +
 probe already attempted?
 pending Pi messages?
-Pi will retry?
 final assistant stopped normally?
         ↓
 Continuation probe eligible?
@@ -268,11 +267,12 @@ snapshot.authority == coherent
 snapshot.taskStatus == active
 probe not already attempted
 no pending Pi messages
-Pi will not retry
 final stopReason == stop
 ```
 
 `taskStatus == active` already closes completed, Human Gate, and blocker branches. Continuation code must not independently re-read those Task fields as a second policy source. Unresolved questions may coexist with active work and therefore do not automatically suppress the probe.
+
+The normal-stop condition is also the correct public retry boundary for M6. Pi's turn-level automatic retry path operates on retryable error outcomes, while an assistant response with `stopReason == stop` is a successful completion and is not that retry case. Pindie therefore does not need a private/internal `willRetry` signal for an otherwise normal-stop probe.
 
 ### 10.2 Semantic probe
 
@@ -295,9 +295,12 @@ agent_end
 → deterministic eligibility
 → at most one hidden Pindie custom message
 → sendMessage(..., { deliverAs: "followUp" })
-→ Pi continues its own low-level Agent lifecycle
+→ Pi performs its own post-run handling
+→ queued probe is delivered if Pi continues for queued work
 → agent_settled only after no automatic continuation remains
 ```
+
+For a successful normal stop, Pi may perform non-retrying auto-compaction before draining the queued follow-up. That remains Pi-owned and does not require Pindie to predict compaction/retry internals.
 
 The fuse is runtime-only and resets for a fresh user-driven Agent Run. M6 must not add recursion, direct model calls, background loops, repeated probes, a phase machine, or a second Agent Loop.
 
@@ -330,7 +333,7 @@ Activity, timer, cost, status, and adaptive reasoning remain runtime-only system
 13. Runtime evidence refs/generations and continuation fuses are temporary and never persisted.
 14. Durable Verification State remains compact; Pindie is not a tool-result log database.
 15. Historical runtime probes must not become persistent model policy through context accumulation.
-16. Pi owns the low-level Agent Loop, Skill runtime, concrete tool registry, native system-prompt construction, retries, compaction, and follow-up delivery.
+16. Pi owns the low-level Agent Loop, Skill runtime, concrete tool registry, native system-prompt construction, retries, compaction, and follow-up delivery. Pindie uses only Pi's public extension contract.
 
 ## 13. Migration plan
 
