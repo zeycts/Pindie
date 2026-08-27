@@ -47,6 +47,20 @@ test("EH02 successful child removes only its owned workspace", { skip: skipWindo
   assert.match(result.stdoutTail, /ok/);
 });
 
+test("short-lived child captures both output streams before returning", { skip: skipWindows }, async (t) => {
+  const root = await fixture(t);
+  const result = await runOwnedSmoke({
+    label: "both-streams",
+    command: process.execPath,
+    args: ["-e", "console.log('out'); console.error('err')"],
+    baseTempDir: root,
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdoutTail, /out/);
+  assert.match(result.stderrTail, /err/);
+});
+
 test("EH03 non-zero child preserves its meaningful result and cleans workspace", { skip: skipWindows }, async (t) => {
   const root = await fixture(t);
   const result = await runOwnedSmoke({ label: "failure", command: process.execPath, args: ["-e", "process.exit(17)"], baseTempDir: root });
