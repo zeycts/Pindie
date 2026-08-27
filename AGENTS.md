@@ -69,18 +69,30 @@ M6 simplifies Active Task Continuation without creating another loop or converti
 
 ### Deterministic eligibility belongs to the Harness
 
-Continuation probing is eligible only when all deterministic facts agree that a semantic continuation decision is meaningful:
+Continuation probing is eligible only when all publicly available deterministic facts agree that a semantic continuation decision is meaningful:
 
 - current `SemanticSnapshot.authority` is `coherent`;
 - current `SemanticSnapshot.taskStatus` is `active`;
 - the final assistant message ended normally (`stopReason === "stop"`);
-- Pi is not already going to retry the low-level run;
 - Pi has no pending steering/follow-up messages;
 - Pindie's one-probe fuse has not already been consumed for the current high-level Agent Run.
 
 `taskStatus === "active"` is the semantic source for unfinished/no-Gate/no-blocker eligibility. Do not duplicate those checks by directly re-reading `task.completed`, `humanGate`, or blockers in continuation code.
 
 Questions do not by themselves suppress continuation because they may coexist with useful active work.
+
+### Pi 0.84.3 public lifecycle boundary
+
+The public extension `AgentEndEvent` in pinned Pi 0.84.3 exposes only `type` and `messages`. It does **not** expose Pi's internal retry decision.
+
+Do not:
+
+- cast an extension `agent_end` event to invent `willRetry`;
+- access private Pi internals;
+- duplicate Pi retry classification heuristically;
+- patch or upgrade Pi solely for M6.
+
+For M6, `stopReason === "stop"` is the public normal-completion fact used by Pindie. Pi's turn-level auto-retry path is for retryable error outcomes, so those abnormal responses are already excluded by the normal-stop requirement. Existing `ctx.hasPendingMessages()` remains the public queue-precedence signal.
 
 ### Latest user intent remains model-owned
 
@@ -110,6 +122,8 @@ This is context projection only; do not add a continuation database, persisted f
 
 ### Preserve Pi ownership
 
-Use Pi's existing `agent_end` + `sendMessage(..., { deliverAs: "followUp" })` lifecycle and existing `agent_settled` boundary. Do not add recursive calls, background loops, repeated probes, direct model calls, or a second Agent Loop.
+Use Pi's existing `agent_end` + `sendMessage(..., { deliverAs: "followUp" })` lifecycle and existing `agent_settled` boundary. A normal-stop follow-up may pass through Pi's own non-retrying compaction handling before delivery; Pindie does not need to predict or reimplement that lifecycle.
+
+Do not add recursive calls, background loops, repeated probes, direct model calls, or a second Agent Loop.
 
 M6 must not redesign M0–M5 semantics, Tool Surface, Gateway, verification evidence, reasoning, Human Gate, Skills, or persisted State.
