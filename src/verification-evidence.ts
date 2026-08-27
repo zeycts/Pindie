@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 export const MAX_EVIDENCE_REFS_PER_CHECK = 4;
 export const MAX_INPUT_EXCERPT_CHARS = 1024;
@@ -6,6 +6,7 @@ export const MAX_RESULT_EXCERPT_CHARS = 4096;
 
 export interface VerificationEvidenceCandidate {
   readonly ref: string;
+  readonly toolCallId: string;
   readonly toolName: string;
   readonly input: unknown;
   readonly content: unknown;
@@ -14,7 +15,10 @@ export interface VerificationEvidenceCandidate {
 
 export interface VerificationEvidenceScope {
   generation: number;
+  nextSequence: number;
+  readonly namespace: string;
   readonly candidates: Map<string, VerificationEvidenceCandidate>;
+  readonly issuedRefs: Set<string>;
 }
 
 export interface CaptureVerificationEvidenceInput {
@@ -27,12 +31,14 @@ export interface CaptureVerificationEvidenceInput {
 
 export type VerificationEvidenceResolver = (refs: readonly string[]) => string;
 
-export function evidenceRefForToolCall(toolCallId: string): string {
-  return `ev:${toolCallId}`;
-}
-
 export function createVerificationEvidenceScope(): VerificationEvidenceScope {
-  return { generation: 0, candidates: new Map() };
+  return {
+    generation: 0,
+    nextSequence: 1,
+    namespace: randomBytes(12).toString("base64url"),
+    candidates: new Map(),
+    issuedRefs: new Set(),
+  };
 }
 
 export function advanceEvidenceGeneration(
@@ -46,14 +52,18 @@ export function captureEvidenceCandidate(
   scope: VerificationEvidenceScope,
   input: CaptureVerificationEvidenceInput,
 ): VerificationEvidenceCandidate {
+  const ref = `ev:${scope.namespace}:${scope.nextSequence}`;
+  scope.nextSequence += 1;
   const candidate: VerificationEvidenceCandidate = {
-    ref: evidenceRefForToolCall(input.toolCallId),
+    ref,
+    toolCallId: input.toolCallId,
     toolName: input.toolName,
     input: input.input,
     content: input.content,
     isError: input.isError,
   };
   scope.candidates.set(candidate.ref, candidate);
+  scope.issuedRefs.add(candidate.ref);
   return candidate;
 }
 
@@ -83,7 +93,14 @@ export function resolveEvidenceRefs(
   for (const ref of refs) {
     const candidate = scope.candidates.get(ref);
     if (!candidate) {
-      throw new Error(`Unknown or stale Pindie evidence reference: ${ref}`);
+      if (scope.issuedRefs.has(ref)) {
+        throw new Error(
+          `Stale Pindie evidence reference: ${ref}.\n` +
+            "The referenced evidence is no longer valid for the current project state.\n" +
+            "Run the relevant verification again.",
+        );
+      }
+      throw new Error(`Unknown Pindie evidence reference: ${ref}`);
     }
     candidates.push(candidate);
   }

@@ -249,7 +249,7 @@ Existing VerificationCheck
 Reducer / State
 ```
 
-Runtime evidence refs use actual tool-call identity (`ev:<toolCallId>`), exist only within the current evidence scope, and are never persisted. Selected evidence is deterministically bounded and hashed before being materialized into the existing durable `evidence` string.
+Runtime evidence refs are short Pindie-owned opaque handles (`ev:<scope>:<sequence>`), exist only within the current evidence scope, and are never persisted. Pi tool-call identity remains runtime-internal candidate provenance. Selected evidence is deterministically bounded and hashed before being materialized into the existing durable `evidence` string.
 
 A runtime-only evidence generation prevents late/parallel results from crossing a changed verification basis. Project Mutation Freshness runs before evidence capture for ambiguous tools; mutating or unknown ambiguous results therefore cannot become current evidence.
 
