@@ -56,15 +56,17 @@ M1 Execution Semantics Foundation   — implemented
 M2 Semantic Gateway Cutover         — implemented
 M3 Model Tool Surface               — implemented
 M4 Policy Reduction                 — implemented
-M5 Verification v0.2                — next
-M6 Continuation Simplification
+M5 Verification v0.2                — implemented
+M6 Continuation Simplification      — next
 M7 Skill / Docs Prune
 M8 Extension Composition
 ```
 
-M0–M4 established one semantic truth for legality, aligned model-visible tools with that truth, cut the live Gateway over to it, and removed the duplicated global Core Policy/system-prompt override. Runtime Context is now factual Knowledge Surface derived from the same Semantic Snapshot that drives capabilities.
+M0–M4 established one semantic truth for legality, aligned model-visible tools with that truth, cut the live Gateway over to it, and removed the duplicated global Core Policy/system-prompt override. Runtime Context is factual Knowledge Surface derived from the same Semantic Snapshot that drives capabilities.
 
-M5 fixes verification evidence ownership without changing the durable State schema. Actual tool results become temporary Harness-owned evidence candidates; the model judges pass/fail meaning and criterion coverage using runtime evidence refs; Pindie then materializes selected bounded factual evidence into the existing durable `VerificationCheck.evidence` string. Runtime evidence refs and freshness generations are never persisted.
+M5 moved durable verification evidence provenance/freshness into the Harness without changing the persisted `VerificationCheck` schema. Actual tool results become temporary current-Run evidence candidates; the model selects factual refs and still owns semantic pass/fail and criterion coverage; Pindie materializes selected bounded factual evidence into the existing durable `evidence` string.
+
+M6 simplifies continuation. Deterministic eligibility comes from the current Semantic Snapshot plus Pi runtime facts; only the genuinely semantic question — whether the latest actual user intent still calls for consequential execution — remains a one-shot hidden model probe. Historical continuation probes must not accumulate in future model context.
 
 ## Current implemented baseline
 
@@ -90,6 +92,7 @@ The repository includes:
   - `pindie_git_observe`;
 - capability-driven active Tool Surface narrowing over a fresh per-Run Pi/user baseline;
 - factual Snapshot-aligned Runtime Context with no global Pindie lifecycle-policy prompt;
+- Harness-owned runtime verification evidence refs/freshness with bounded durable materialization;
 - Human Gate lifecycle and verification freshness;
 - runtime-only Activity, Run Timer, Run Cost, status presentation, adaptive reasoning, and `/efficiency`;
 - bundled `git-workflow` Skill through Pi's Skill runtime.
