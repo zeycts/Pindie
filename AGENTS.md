@@ -8,8 +8,9 @@ For architecture or implementation work, use this order:
 
 1. The explicit approved task specification in the current request.
 2. `docs/architecture.md` — current architecture and ownership boundaries.
-3. `docs/behavior.md` — current semantic and behavioral contract.
-4. Existing source and tests — implemented runtime baseline.
+3. `docs/remote-companion.md` — authoritative Remote Companion architecture/behavior when the task touches Remote Companion or Discord integration.
+4. `docs/behavior.md` — current semantic and behavioral contract.
+5. Existing source and tests — implemented runtime baseline.
 
 If those sources conflict, report the contradiction before widening scope. Do not preserve obsolete behavior merely because an older implementation or test encoded it.
 
@@ -48,12 +49,13 @@ Pindie must not implement a second Agent Loop, workflow engine, persisted phase 
 - Verification facts come from actual tool results through runtime-only evidence refs; the model still owns pass/fail meaning and criterion coverage.
 - Active Task Continuation is a one-shot Pi-native follow-up whose deterministic eligibility comes from `SemanticSnapshot`; the probe asks only whether latest actual user intent still calls for consequential execution.
 - Historical runtime probes are filtered from future model context.
+- Remote Companion, when enabled, is an external projection/control surface over the current native Pi Session. Discord routing metadata may persist external IDs/delivery cursor only; it must not become semantic State, conversation truth, a second Session, or a second message queue.
 
 ## Development workflow
 
 For an approved task:
 
-1. Read only the relevant architecture/behavior sections, source, and tests.
+1. Read only the relevant architecture/behavior sections, source, and tests. For Remote Companion work, read `docs/remote-companion.md` before implementation.
 2. Preserve the requested scope; do not implement adjacent cleanup speculatively.
 3. Add focused tests for changed contracts.
 4. Implement the smallest change that satisfies them.

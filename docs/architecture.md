@@ -298,11 +298,15 @@ Pindie uses only Pi's public extension contract. It does not infer private retry
 
 Historical continuation probes remain in session history if Pi stores them, but context projection filters them so they do not accumulate as future model policy. During the active continuation follow-up, only the current/latest probe remains model-visible and its chronological position is preserved.
 
-## 11. Runtime-only presentation and reasoning
+## 11. Runtime-only presentation, reasoning, and external projection
 
 Activity, Run Timer, Run Cost, status presentation, subscription usage observation, and adaptive reasoning are runtime-only systems. They may present or tune execution but are not semantic State.
 
 Run Activity follows actual Pi tool lifecycle rather than model-authored status. Status presentation consumes authoritative/derived runtime facts rather than becoming an independent source of truth.
+
+Remote Companion is an optional external projection/control surface over the same live Pi Session and existing Pindie facts. It must not create another Agent, Session, message queue, or semantic truth. The canonical Project maps to a Discord channel for navigation, and the native Pi Session ID maps to a Discord thread for readable Session history and remote input. Discord is a replica/control surface; Pi Session history remains conversation truth and `PindieState` remains semantic truth.
+
+The only durable Remote data is external routing/delivery metadata (for example Project→channel, Pi Session→thread, and a delivery cursor) stored outside `PindieState`. Remote input uses Pi-native user-message, steer, follow-up, and current-context abort boundaries. Historical Discord threads never implicitly switch the active local Pi Session. See `docs/remote-companion.md` for the authoritative Remote Companion contract.
 
 ## 12. Skills
 
@@ -329,3 +333,7 @@ A Skill may describe a reusable procedure such as Git delivery. It must not dupl
 15. Historical runtime probes must not become persistent model policy through context accumulation.
 16. Skills are procedural and do not own semantic correctness.
 17. Pi owns the low-level Agent Loop, Skill runtime, concrete tool registry, native system-prompt construction, retries, compaction, and follow-up delivery.
+18. Optional Remote projection derives from native Pi Session history and existing Pindie runtime/semantic facts; Discord never becomes semantic or conversation authority.
+19. Durable Remote metadata stores external routing/delivery identity only and never enters `PindieState`.
+20. Remote control targets only the current live Pi Session through Pi public boundaries; it never creates a parallel Session or queue.
+21. Remote/Discord failure must not alter local Pindie correctness or stop the local Agent.
