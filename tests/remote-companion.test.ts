@@ -3,16 +3,18 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { RemoteCompanion, type RemoteSurface } from "../src/remote-companion.ts";
+import { RemoteCompanion, type RemoteSessionPresentation, type RemoteStatusFacts, type RemoteSurface } from "../src/remote-companion.ts";
 import { RemoteRoutingStore } from "../src/remote-routing.ts";
 import { ExecutionAggregator, mirrorEntry, splitTimelineEvent } from "../src/session-mirror.ts";
 
 class Surface implements RemoteSurface {
-  projects = 0; sessions = 0; sent: string[] = []; titles: string[] = []; fail = false; replace = false; replaceChannel = false; unique = false; uniqueChannel = false;
-  async ensureProject(id: string, _name: string, existing: string | null) { this.projects++; return { channelId: this.replaceChannel ? "channel-replacement" : (existing ?? (this.uniqueChannel ? `channel-${id}` : "channel")), replaced: this.replaceChannel }; }
-  async ensureSession(_channel: string, id: string, title: string) { this.sessions++; this.titles.push(title); return { threadId: this.replace ? "replacement" : (this.unique ? `thread-${id}` : "thread"), anchorMessageId: "anchor", headerMessageId: "header", replaced: this.replace }; }
+  projects = 0; sessions = 0; sent: string[] = []; titles: string[] = []; presentations: RemoteSessionPresentation[] = []; fail = false; replace = false; replaceChannel = false; unique = false; uniqueChannel = false;
+  async ensureProject(id: string, _name: string, existing: string | null) { if (this.fail) throw new Error("offline"); this.projects++; return { channelId: this.replaceChannel ? "channel-replacement" : (existing ?? (this.uniqueChannel ? `channel-${id}` : "channel")), replaced: this.replaceChannel }; }
+  async ensureSession(_channel: string, id: string, title: string) { if (this.fail) throw new Error("offline"); this.sessions++; this.titles.push(title); return { threadId: this.replace ? "replacement" : (this.unique ? `thread-${id}` : "thread"), anchorMessageId: "anchor", headerMessageId: "header", replaced: this.replace }; }
   async send(_thread: string, event: { text: string }) { if (this.fail) throw new Error("offline"); this.sent.push(event.text); }
+  async updateSessionPresentation(_session: unknown, presentation: RemoteSessionPresentation) { if (this.fail) throw new Error("offline"); this.presentations.push(structuredClone(presentation)); }
 }
+const activeStatus = (overrides: Partial<RemoteStatusFacts> = {}): RemoteStatusFacts => ({ taskGoal: "Task", taskStatus: "active", activity: null, verificationStatus: "pending", elapsedMs: null, semanticAuthority: "coherent", localUiPrompt: false, ...overrides });
 function ctx(idle = true) { const stops: string[] = []; return { ctx: { isIdle: () => idle, abort: () => stops.push("stop") } as any, stops }; }
 async function fixture(t: test.TestContext) { const dir = await mkdtemp(join(tmpdir(), "pindie-remote-")); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
 
@@ -21,18 +23,18 @@ test("routing is lazy, cursor based, and retries a failed delivery", async (t) =
   await remote.bind("/project", "guild", "session", ctx().ctx, { taskGoal: "Task title" }); await remote.catchUp([]);
   assert.equal(surface.sessions, 0);
   surface.fail = true;
-  await assert.rejects(remote.catchUp([{ id: "u", message: { role: "user", content: "hello" } }]));
+  await assert.doesNotReject(remote.catchUp([{ id: "u", message: { role: "user", content: "hello" } }]));
   surface.fail = false; await remote.catchUp([{ id: "u", message: { role: "user", content: "hello" } }, { id: "a", message: { role: "assistant", content: "answer" } }]);
   assert.deepEqual(surface.sent, ["YOU\nhello", "answer"]); assert.equal(surface.titles[0], "Task title");
   await remote.catchUp([{ id: "u", message: { role: "user", content: "hello" } }, { id: "a", message: { role: "assistant", content: "answer" } }, { id: "b", message: { role: "assistant", content: "later" } }]);
   assert.deepEqual(surface.sent, ["YOU\nhello", "answer", "later"]);
 });
 
-test("renaming updates presentation without changing Session routing identity", async (t) => {
-  const renamed: string[] = []; const surface = new Surface(); surface.renameSession = async (_thread: string, title: string) => renamed.push(title);
+test("renaming keeps anchor/header presentation coherent without changing Session identity", async (t) => {
+  const surface = new Surface();
   const store = new RemoteRoutingStore({ baseDir: await fixture(t) }); const remote = new RemoteCompanion(surface, { routing: store });
-  await remote.bind("/rename", "guild", "session", ctx().ctx); await remote.catchUp([{ id: "u", message: { role: "user", content: "one" } }]); const before = await store.load("/rename"); await remote.rename("Renamed");
-  assert.deepEqual(renamed, ["Renamed"]); assert.equal((await store.load("/rename"))?.sessions.session.threadId, before?.sessions.session.threadId);
+  await remote.bind("/rename", "guild", "session", ctx().ctx, { status: activeStatus() }); await remote.catchUp([{ id: "u", message: { role: "user", content: "one" } }]); const before = await store.load("/rename"); await remote.rename("Renamed");
+  assert.equal(surface.presentations.at(-1)?.title, "Renamed"); assert.equal(surface.presentations.at(-1)?.status.taskGoal, "Task"); assert.equal((await store.load("/rename"))?.sessions.session.threadId, before?.sessions.session.threadId);
 });
 
 test("Session title priority is name, then task, then first prompt, then short id", async (t) => {
@@ -64,11 +66,42 @@ test("active controls use Pi native modes and historical threads cannot control"
   const surface = new Surface(); const remote = new RemoteCompanion(surface); const active = ctx(false); const calls: unknown[] = [];
   await remote.bind("/project", "guild", "session", active.ctx); await remote.catchUp([{ id: "u", message: { role: "user", content: "start" } }]);
   assert.equal(await remote.input("old", "no", { sendUserMessage: () => undefined }), "historical");
+  await remote.status(activeStatus({ activity: "editing", elapsedMs: 1_250 }));
+  const presentationsBeforeStatus = surface.presentations.length;
   assert.equal(await remote.input("thread", "!status", { sendUserMessage: () => assert.fail("status must be read-only") }), "status");
+  assert.equal(surface.presentations.length, presentationsBeforeStatus + 1);
+  assert.deepEqual(surface.presentations.at(-1)?.status, activeStatus({ activity: "editing", elapsedMs: 1_250 }));
   await remote.input("thread", "go", { sendUserMessage: (_text, options) => calls.push(options) });
   await remote.input("thread", "!after later", { sendUserMessage: (_text, options) => calls.push(options) });
   assert.deepEqual(calls, [{ deliverAs: "steer" }, { deliverAs: "followUp" }]);
   assert.equal(await remote.input("thread", "!stop", { sendUserMessage: () => undefined }), "stopped"); assert.deepEqual(active.stops, ["stop"]);
+});
+
+test("every transport and routing failure is contained and later work can retry", async (t) => {
+  const surface = new Surface();
+  const failingRouting = {
+    load: async () => { throw new Error("routing offline"); },
+    save: async () => { throw new Error("routing offline"); },
+    projectName: () => "project",
+  } as unknown as RemoteRoutingStore;
+  const failedBind = new RemoteCompanion(surface, { routing: failingRouting });
+  await assert.doesNotReject(failedBind.bind("/project", "guild", "session", ctx().ctx));
+  assert.equal(failedBind.activeSessionId, null);
+
+  const remote = new RemoteCompanion(surface, { routing: new RemoteRoutingStore({ baseDir: await fixture(t) }) });
+  await remote.bind("/project", "guild", "session", ctx().ctx, { status: activeStatus() });
+  surface.fail = true;
+  await assert.doesNotReject(remote.catchUp([{ id: "u", message: { role: "user", content: "hello" } }]));
+  await assert.doesNotReject(remote.milestone("blocked", "TASK BLOCKED"));
+  await assert.doesNotReject(remote.status(activeStatus({ taskStatus: "done" })));
+  await assert.doesNotReject(remote.rename("Still coherent"));
+  await assert.doesNotReject(remote.settleCompletion());
+  await assert.doesNotReject(remote.input("thread", "hello", { sendUserMessage: async () => { throw new Error("Pi unavailable"); } }));
+  surface.fail = false;
+  await remote.catchUp([{ id: "u", message: { role: "user", content: "hello" } }]);
+  await remote.settleCompletion();
+  assert.ok(surface.sent.includes("YOU\nhello"));
+  assert.ok(surface.sent.includes("TASK COMPLETED"));
 });
 
 test("constructing a disabled Remote core performs no external work", () => {
@@ -162,17 +195,22 @@ test("Human Gate fingerprints deduplicate materially identical prompts", () => {
   assert.ok(remote.humanGate("Choose", ["A", "B"])); assert.equal(remote.humanGate("Choose", ["A", "B"]), null); assert.ok(remote.humanGate("Choose", ["B", "A"]));
 });
 
-test("completion milestone remains pending until the caller emits settled completion", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface); await remote.bind("/complete", "guild", "session", ctx().ctx);
-  await remote.milestone("completion:pending", "TASK COMPLETION PENDING");
-  assert.deepEqual(surface.sent, ["TASK COMPLETION PENDING"]);
-  await remote.milestone("completion:settled", "TASK COMPLETED");
-  assert.deepEqual(surface.sent, ["TASK COMPLETION PENDING", "TASK COMPLETED"]);
+test("completion is transition-driven, settled once, and resumed completion is not replayed", async () => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface); await remote.bind("/complete", "guild", "session", ctx().ctx, { status: activeStatus() });
+  await remote.status(activeStatus({ taskStatus: "done", verificationStatus: "passed" }));
+  assert.deepEqual(surface.sent, []);
+  await remote.settleCompletion(); await remote.settleCompletion();
+  assert.deepEqual(surface.sent, ["TASK COMPLETED"]);
+
+  const resumedSurface = new Surface(); const resumed = new RemoteCompanion(resumedSurface);
+  await resumed.bind("/resumed", "guild", "session", ctx().ctx, { status: activeStatus({ taskStatus: "done", verificationStatus: "passed" }) });
+  await resumed.settleCompletion();
+  assert.deepEqual(resumedSurface.sent, []);
 });
 
 test("milestones deduplicate and stale threads reset cursor", async (t) => {
   const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: new RemoteRoutingStore({ baseDir: await fixture(t) }) }); await remote.bind("/project", "guild", "session", ctx().ctx);
-  surface.fail = true; await assert.rejects(remote.milestone("gate", "HUMAN GATE")); surface.fail = false;
+  surface.fail = true; await assert.doesNotReject(remote.milestone("gate", "HUMAN GATE")); surface.fail = false;
   await remote.milestone("gate", "HUMAN GATE"); await remote.milestone("gate", "HUMAN GATE"); assert.equal(surface.sent.filter((text) => text === "HUMAN GATE").length, 1);
   await remote.catchUp([{ id: "u", message: { role: "user", content: "one" } }]); surface.replace = true;
   await remote.catchUp([{ id: "u", message: { role: "user", content: "one" } }, { id: "v", message: { role: "assistant", content: "two" } }]);
