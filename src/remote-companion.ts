@@ -18,11 +18,11 @@ export interface RemoteSessionPresentation {
   status: RemoteStatusFacts;
 }
 export interface RemoteSurface {
-  ensureProject(projectId: string, name: string, existingChannelId: string | null): Promise<{ channelId: string; replaced?: boolean }>;
-  ensureSession(channelId: string, sessionId: string, title: string, existing: RemoteSessionRouting | null): Promise<Omit<RemoteSessionRouting, "lastMirroredEntryId"> & { replaced?: boolean }>;
-  send(threadId: string, event: TimelineEvent): Promise<void>;
+  ensureProject(projectId: string, name: string, existingChannelId: string | null, signal: AbortSignal): Promise<{ channelId: string; replaced?: boolean }>;
+  ensureSession(channelId: string, sessionId: string, title: string, existing: RemoteSessionRouting | null, signal: AbortSignal): Promise<Omit<RemoteSessionRouting, "lastMirroredEntryId"> & { replaced?: boolean }>;
+  send(threadId: string, event: TimelineEvent, signal: AbortSignal): Promise<void>;
   /** One transport-independent seam for editing the existing anchor/header in place. */
-  updateSessionPresentation(session: Pick<RemoteSessionRouting, "threadId" | "anchorMessageId" | "headerMessageId">, presentation: RemoteSessionPresentation): Promise<void>;
+  updateSessionPresentation(session: Pick<RemoteSessionRouting, "threadId" | "anchorMessageId" | "headerMessageId">, presentation: RemoteSessionPresentation, signal: AbortSignal): Promise<void>;
 }
 export interface RemotePi { sendUserMessage(text: string, options?: { deliverAs?: "steer" | "followUp" }): void | Promise<void>; }
 export interface RemoteCompanionOptions { routing?: RemoteRoutingStore; }
@@ -41,6 +41,7 @@ type Binding = {
   taskCompleted: boolean;
   completionPending: boolean;
   getStatus?: () => RemoteStatusFacts;
+  abortController: AbortController;
 };
 
 const EMPTY_STATUS: RemoteStatusFacts = {
@@ -68,6 +69,7 @@ export class RemoteCompanion {
   private readonly routing: RemoteRoutingStore;
   private readonly surface: RemoteSurface;
   private binding: Binding | null = null;
+  private generation = 0;
   /** Origins observed from Pi's public input event, in native input order. */
   private readonly origins: PromptOrigin[] = [];
   private dispatchingOrigin: PromptOrigin | null = null;
@@ -75,14 +77,13 @@ export class RemoteCompanion {
   private readonly execution = new ExecutionAggregator();
   private readonly toolInputs = new Map<string, { name: string; input?: Record<string, unknown> }>();
   private readonly milestones = new Set<string>();
-  private gates = new Set<string>();
   constructor(surface: RemoteSurface, options: RemoteCompanionOptions = {}) { this.surface = surface; this.routing = options.routing ?? new RemoteRoutingStore(); }
 
   async bind(projectRoot: string, guildId: string, sessionId: string, ctx: ExtensionContext, presentation: { sessionName?: string; taskGoal?: string; status?: RemoteStatusFacts; getStatus?: () => RemoteStatusFacts } = {}): Promise<void> {
-    const generation = (this.binding?.generation ?? 0) + 1;
+    const generation = ++this.generation;
+    this.binding?.abortController.abort();
     this.binding = null;
     this.origins.length = 0;
-    this.gates.clear();
     this.milestones.clear();
     this.toolInputs.clear();
     try {
@@ -103,12 +104,13 @@ export class RemoteCompanion {
         status,
         taskCompleted: status.taskStatus === "done",
         completionPending: false,
+        abortController: new AbortController(),
       };
     } catch {
       // Remote routing is optional I/O. A failed bind leaves no stale live context.
     }
   }
-  shutdown(ctx: ExtensionContext): void { if (this.binding?.ctx === ctx) { this.binding = null; this.origins.length = 0; this.gates.clear(); this.milestones.clear(); this.toolInputs.clear(); } }
+  shutdown(ctx: ExtensionContext): void { if (this.binding?.ctx === ctx) { this.binding.abortController.abort(); this.binding = null; this.origins.length = 0; this.milestones.clear(); this.toolInputs.clear(); } }
   setLocalUiPrompt(active: boolean): void {
     const binding = this.binding;
     if (!binding) return;
@@ -155,7 +157,7 @@ export class RemoteCompanion {
   recordTool(name: string, input?: Record<string, unknown>, isError = false): void { this.execution.record(name, input, isError); }
   async flushExecution(entryId: string): Promise<void> {
     const event = this.execution.flush(entryId); const binding = this.binding;
-    if (event && binding) await this.serial(async () => { if (this.binding === binding) await this.surface.send((await this.ensure(binding)).threadId, event); });
+    if (event && binding) await this.serial(async () => { if (this.binding === binding) await this.surface.send((await this.ensure(binding)).threadId, event, binding.abortController.signal); });
   }
   async status(status: RemoteStatusFacts): Promise<void> {
     const binding = this.binding;
@@ -174,8 +176,26 @@ export class RemoteCompanion {
   async input(threadId: string, text: string, pi: RemotePi): Promise<"sent" | "historical" | "local-ui" | "stopped" | "idle" | "status"> {
     const b = this.binding; if (!b) return "historical"; const session = b.routing.sessions[b.sessionId];
     if (!session || session.threadId !== threadId) {
-      const historical = Object.values(b.routing.sessions).find((candidate) => candidate.threadId === threadId);
-      if (historical) await this.serial(() => this.surface.send(historical.threadId, { entryId: "remote:historical", kind: "milestone", text: "This Session is read-only. Resume it from the local TUI first." }));
+      const historical = Object.entries(b.routing.sessions).find(([, candidate]) => candidate.threadId === threadId);
+      if (!historical) return "historical";
+      const [historicalSessionId, historicalRouting] = historical;
+      if (text === "!status") {
+        await this.serial(async () => {
+          this.requireCurrent(b);
+          await this.surface.send(historicalRouting.threadId, {
+            entryId: `remote:historical-status:${historicalSessionId}`,
+            kind: "milestone",
+            text: `HISTORICAL SESSION\nSession ID · ${historicalSessionId}\nThread ID · ${historicalRouting.threadId}\nRead-only · Resume from the local TUI for live status.`,
+          }, b.abortController.signal);
+          this.requireCurrent(b);
+        });
+        return "status";
+      }
+      await this.serial(async () => {
+        this.requireCurrent(b);
+        await this.surface.send(historicalRouting.threadId, { entryId: "remote:historical", kind: "milestone", text: "This Session is read-only. Resume it from the local TUI first." }, b.abortController.signal);
+        this.requireCurrent(b);
+      });
       return "historical";
     }
     if (text === "!stop") { if (b.ctx.isIdle()) return "idle"; b.ctx.abort(); return "stopped"; }
@@ -204,7 +224,8 @@ export class RemoteCompanion {
     await this.serial(async () => {
       if (this.binding !== binding || this.milestones.has(key)) return;
       const session = await this.ensure(binding);
-      await this.surface.send(session.threadId, { entryId: `remote:${key}`, kind: "milestone", text });
+      await this.surface.send(session.threadId, { entryId: `remote:${key}`, kind: "milestone", text }, binding.abortController.signal);
+      this.requireCurrent(binding);
       this.milestones.add(key);
     });
   }
@@ -214,25 +235,34 @@ export class RemoteCompanion {
     await this.serial(async () => {
       if (this.binding !== binding || !binding.completionPending) return;
       const session = await this.ensure(binding);
-      await this.surface.send(session.threadId, { entryId: "remote:completion:settled", kind: "milestone", text: "TASK COMPLETED" });
+      await this.surface.send(session.threadId, { entryId: "remote:completion:settled", kind: "milestone", text: "TASK COMPLETED" }, binding.abortController.signal);
+      this.requireCurrent(binding);
       binding.completionPending = false;
     });
   }
-  humanGate(question: string, options: readonly string[] = []): TimelineEvent | null { const key = `${question}\0${options.join("\0")}`; if (this.gates.has(key)) return null; this.gates.add(key); return { entryId: `gate:${key}`, kind: "milestone", text: `HUMAN GATE\n${question}${options.length ? `\n${options.join(" · ")}` : ""}` }; }
+  humanGate(question: string, options: readonly string[] = []): TimelineEvent {
+    const key = `${question}\0${options.join("\0")}`;
+    return { entryId: `gate:${key}`, kind: "milestone", text: `HUMAN GATE\n${question}${options.length ? `\n${options.join(" · ")}` : ""}` };
+  }
 
   private async ensure(b: Binding, prompt?: string): Promise<RemoteSessionRouting> {
+    this.requireCurrent(b);
     this.refreshStatus(b);
-    const channel = await this.surface.ensureProject(b.projectId, b.projectName, b.routing.channelId || null);
+    const channel = await this.surface.ensureProject(b.projectId, b.projectName, b.routing.channelId || null, b.abortController.signal);
+    this.requireCurrent(b);
     if (channel.replaced || channel.channelId !== b.routing.channelId) { b.routing.channelId = channel.channelId; if (channel.replaced) b.routing.sessions = {}; }
     const existing = b.routing.sessions[b.sessionId] ?? null;
-    const created = await this.surface.ensureSession(b.routing.channelId, b.sessionId, titleFor(b, prompt), existing);
+    const created = await this.surface.ensureSession(b.routing.channelId, b.sessionId, titleFor(b, prompt), existing, b.abortController.signal);
+    this.requireCurrent(b);
     let session: RemoteSessionRouting;
     if (!existing || created.replaced || created.threadId !== existing.threadId) {
       session = { threadId: created.threadId, anchorMessageId: created.anchorMessageId, headerMessageId: created.headerMessageId, lastMirroredEntryId: null };
       b.routing.sessions[b.sessionId] = session;
     } else session = existing;
     await this.routing.save(b.projectRoot, b.routing);
+    this.requireCurrent(b);
     await this.updatePresentation(b, session, prompt);
+    this.requireCurrent(b);
     return session;
   }
   private applyStatus(binding: Binding, status: RemoteStatusFacts): void {
@@ -251,18 +281,32 @@ export class RemoteCompanion {
     }
   }
   private async updatePresentation(b: Binding, session: RemoteSessionRouting, prompt?: string): Promise<void> {
+    this.requireCurrent(b);
     await this.surface.updateSessionPresentation(session, {
       project: b.projectName,
       sessionId: b.sessionId,
       title: titleFor(b, prompt),
       status: b.status,
-    });
+    }, b.abortController.signal);
+    this.requireCurrent(b);
   }
   private async deliver(b: Binding, session: RemoteSessionRouting, entry: MirrorEntry): Promise<void> {
+    this.requireCurrent(b);
     const origin = entry.message?.role === "user" ? this.origins.shift() : undefined;
     const event = mirrorEntry(entry, origin); if (!event || entry.id === session.lastMirroredEntryId) return;
-    for (const part of splitTimelineEvent(event)) await this.surface.send(session.threadId, part);
-    session.lastMirroredEntryId = entry.id; await this.routing.save(b.projectRoot, b.routing);
+    for (const part of splitTimelineEvent(event)) {
+      this.requireCurrent(b);
+      await this.surface.send(session.threadId, part, b.abortController.signal);
+      this.requireCurrent(b);
+    }
+    session.lastMirroredEntryId = entry.id;
+    await this.routing.save(b.projectRoot, b.routing);
+    this.requireCurrent(b);
+  }
+  private requireCurrent(binding: Binding): void {
+    if (this.binding !== binding || this.binding.generation !== binding.generation) {
+      throw new Error("Remote Session binding was replaced.");
+    }
   }
   /** Every Remote/routing/transport failure is contained here; the chain still retries later work. */
   private serial(operation: () => Promise<void>): Promise<void> {

@@ -17,6 +17,7 @@ class Surface implements RemoteSurface {
 const activeStatus = (overrides: Partial<RemoteStatusFacts> = {}): RemoteStatusFacts => ({ taskGoal: "Task", taskStatus: "active", activity: null, verificationStatus: "pending", elapsedMs: null, semanticAuthority: "coherent", localUiPrompt: false, ...overrides });
 function ctx(idle = true) { const stops: string[] = []; return { ctx: { isIdle: () => idle, abort: () => stops.push("stop") } as any, stops }; }
 async function fixture(t: test.TestContext) { const dir = await mkdtemp(join(tmpdir(), "pindie-remote-")); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
+function deferred() { let resolve!: () => void; const promise = new Promise<void>((done) => { resolve = done; }); return { promise, resolve }; }
 
 test("routing is lazy, cursor based, and retries a failed delivery", async (t) => {
   const dir = await fixture(t); const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: new RemoteRoutingStore({ baseDir: dir }) });
@@ -160,9 +161,14 @@ test("SessionMirror filters hidden reasoning, tool results, continuation metadat
   assert.deepEqual(mirrorEntry({ id: "visible", message: { role: "assistant", content: "answer" } }), { entryId: "visible", kind: "assistant", text: "answer" });
 });
 
-test("historical mapped threads receive only a read-only explanation", async (t) => {
+test("historical status exposes only routing metadata while ordinary input stays read-only", async (t) => {
   const surface = new Surface(); surface.unique = true; const remote = new RemoteCompanion(surface, { routing: new RemoteRoutingStore({ baseDir: await fixture(t) }) }); await remote.bind("/history", "guild", "old", ctx().ctx); await remote.catchUp([{ id: "u", message: { role: "user", content: "old" } }]);
-  await remote.bind("/history", "guild", "active", ctx().ctx); await remote.catchUp([{ id: "v", message: { role: "user", content: "active" } }]);
+  await remote.bind("/history", "guild", "active", ctx().ctx, { status: activeStatus({ taskGoal: "ACTIVE SECRET", activity: "editing" }) }); await remote.catchUp([{ id: "v", message: { role: "user", content: "active" } }]);
+  const presentationCount = surface.presentations.length;
+  assert.equal(await remote.input("thread-old", "!status", { sendUserMessage: () => assert.fail("status must be read-only") }), "status");
+  assert.equal(surface.presentations.length, presentationCount);
+  assert.match(surface.sent.at(-1) ?? "", /HISTORICAL SESSION.*Session ID · old.*Thread ID · thread-old.*Read-only/s);
+  assert.doesNotMatch(surface.sent.at(-1) ?? "", /ACTIVE SECRET|editing|Task status|activity/i);
   assert.equal(await remote.input("thread-old", "switch",  { sendUserMessage: () => assert.fail("must not switch") }), "historical");
   assert.equal(surface.sent.at(-1), "This Session is read-only. Resume it from the local TUI first.");
 });
@@ -190,9 +196,52 @@ test("blocked and unavailable milestones deduplicate by their runtime fingerprin
   assert.deepEqual(surface.sent, ["TASK BLOCKED\none", "PINDIE AUTHORITY UNAVAILABLE"]);
 });
 
-test("Human Gate fingerprints deduplicate materially identical prompts", () => {
-  const remote = new RemoteCompanion(new Surface());
-  assert.ok(remote.humanGate("Choose", ["A", "B"])); assert.equal(remote.humanGate("Choose", ["A", "B"]), null); assert.ok(remote.humanGate("Choose", ["B", "A"]));
+test("Human Gate deduplication commits only after successful delivery", async () => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface);
+  await remote.bind("/gate", "guild", "session", ctx().ctx);
+  const key = "gate:Choose\0A\0B";
+  const event = remote.humanGate("Choose", ["A", "B"]);
+  surface.fail = true;
+  await remote.milestone(key, event.text);
+  surface.fail = false;
+  const retry = remote.humanGate("Choose", ["A", "B"]);
+  await remote.milestone(key, retry.text);
+  await remote.milestone(key, retry.text);
+  assert.equal(surface.sent.filter((text) => text === "HUMAN GATE\nChoose\nA · B").length, 1);
+});
+
+test("session replacement stops an in-flight old binding before stale Session projection", async (t) => {
+  const paused = deferred(); const entered = deferred();
+  const ensuredProjects: string[] = []; const ensuredSessions: string[] = []; const sentThreads: string[] = []; const presentedSessions: string[] = [];
+  let pauseFirstProject = true;
+  const surface: RemoteSurface = {
+    ensureProject: async (_projectId, _name, _existing, signal) => {
+      if (pauseFirstProject) { pauseFirstProject = false; entered.resolve(); await paused.promise; }
+      if (signal.aborted) throw new Error("stale binding");
+      ensuredProjects.push("project");
+      return { channelId: "channel" };
+    },
+    ensureSession: async (_channel, sessionId) => { ensuredSessions.push(sessionId); return { threadId: `thread-${sessionId}`, anchorMessageId: `anchor-${sessionId}`, headerMessageId: `header-${sessionId}` }; },
+    send: async (threadId) => { sentThreads.push(threadId); },
+    updateSessionPresentation: async (_routing, presentation) => { presentedSessions.push(presentation.sessionId); },
+  };
+  const remote = new RemoteCompanion(surface, { routing: new RemoteRoutingStore({ baseDir: await fixture(t) }) });
+  await remote.bind("/race", "guild", "A", ctx().ctx);
+  const stale = remote.catchUp([{ id: "a", message: { role: "user", content: "from A" } }]);
+  await entered.promise;
+  await remote.bind("/race", "guild", "B", ctx().ctx);
+  paused.resolve();
+  await stale;
+  assert.deepEqual(ensuredProjects, []);
+  assert.deepEqual(ensuredSessions, []);
+  assert.deepEqual(sentThreads, []);
+  assert.deepEqual(presentedSessions, []);
+
+  await remote.catchUp([{ id: "b", message: { role: "user", content: "from B" } }]);
+  assert.deepEqual(ensuredProjects, ["project"]);
+  assert.deepEqual(ensuredSessions, ["B"]);
+  assert.deepEqual(sentThreads, ["thread-B"]);
+  assert.deepEqual(presentedSessions, ["B"]);
 });
 
 test("completion is transition-driven, settled once, and resumed completion is not replayed", async () => {
