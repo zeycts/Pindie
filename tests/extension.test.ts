@@ -560,6 +560,23 @@ test("Remote-enabled wiring observes public input without altering Pindie tools"
   assert.ok(Array.isArray(sent));
 });
 
+test("Discord startup is deferred from session_start and current-session shutdown cleans it up", async () => {
+  const surface: RemoteSurface = { ensureProject: async () => ({ channelId: "channel" }), ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }), send: async () => undefined, updateSessionPresentation: async () => undefined };
+  let started = 0; let stopped = 0; let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const discord = {
+    start: () => { started++; return pending; },
+    stop: () => { stopped++; },
+  } as unknown as import("../src/discord-remote.ts").DiscordRemote;
+  const harness = createHarness([], {}, { remoteCompanion: { companion: new RemoteCompanion(surface), guildId: "guild", discord } });
+  const ui = context("/repo", []);
+  await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, ui);
+  assert.equal(started, 1);
+  await harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "done" }, ui);
+  assert.equal(stopped, 1);
+  release();
+});
+
 test("Remote transport failure cannot disrupt startup, semantic milestones, verification, or Agent settlement", async () => {
   const surface: RemoteSurface = {
     ensureProject: async () => { throw new Error("offline"); },

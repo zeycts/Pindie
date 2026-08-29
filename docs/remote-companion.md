@@ -340,6 +340,10 @@ Historical catch-up and live projection must be serialized so Discord cannot sho
 
 Long Discord messages may be split at paragraph/newline/space boundaries while preserving content and order.
 
+### Discord user-message presentation
+
+An authorized Discord input message already visibly exists in its mapped Session Thread. When Pi records that same input, its runtime PromptOrigin is carried into the timeline event. Discord-origin normal, steer, and follow-up entries therefore complete RemoteSurface delivery as a successful no-op: the persisted cursor advances without deleting, matching, reposting, or duplicating the inbound message. TUI and neutral user entries continue to be mirrored normally. Historical entries whose origin is no longer safely known use the neutral projection.
+
 ## 16. Failure and recovery
 
 Discord is optional I/O. Transport failure must never alter semantic correctness or stop the local Agent.

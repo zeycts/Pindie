@@ -3,7 +3,8 @@ import { isPindieRuntimeContextMessage } from "./context.ts";
 
 export type PromptOrigin = "tui" | "discord" | "discord-steer" | "discord-follow-up" | "neutral";
 export interface MirrorEntry { id: string; type?: string; message?: { role?: string; content?: unknown; display?: boolean; customType?: string; stopReason?: string }; }
-export interface TimelineEvent { entryId: string; kind: "user" | "assistant" | "execution" | "milestone"; text: string; }
+/** `origin` is runtime-only transport presentation context, never transcript state. */
+export interface TimelineEvent { entryId: string; kind: "user" | "assistant" | "execution" | "milestone"; text: string; origin?: PromptOrigin; }
 
 function text(content: unknown): string {
   if (typeof content === "string") return content;
@@ -20,7 +21,7 @@ export function mirrorEntry(entry: MirrorEntry, origin: PromptOrigin = "neutral"
   if (!body) return null;
   if (message.role === "user") {
     const label = origin === "tui" ? "YOU · TUI" : origin === "discord" ? "YOU · DISCORD" : origin === "discord-steer" ? "YOU · DISCORD · STEER" : origin === "discord-follow-up" ? "YOU · DISCORD · FOLLOW-UP" : "YOU";
-    return { entryId: entry.id, kind: "user", text: `${label}\n${body}` };
+    return { entryId: entry.id, kind: "user", text: `${label}\n${body}`, origin };
   }
   if (message.role === "assistant") return { entryId: entry.id, kind: "assistant", text: body };
   return null;
