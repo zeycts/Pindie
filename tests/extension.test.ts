@@ -15,6 +15,7 @@ import {
   registerPindieExtension,
   type PindieExtensionOptions,
 } from "../src/extension.ts";
+import { RemoteCompanion, type RemoteSurface } from "../src/remote-companion.ts";
 import {
   EMPTY_STATE,
   getVerificationStatus,
@@ -234,7 +235,7 @@ function context(
     cwd,
     hasUI: false,
     hasPendingMessages: () => hasPendingMessages,
-    sessionManager: { getEntries: () => sessionEntries },
+    sessionManager: { getEntries: () => sessionEntries, getSessionId: () => "remote-session", getSessionName: () => undefined },
     ui: { notify: () => undefined },
   };
 }
@@ -517,7 +518,7 @@ test("EI20-EI30 /efficiency is registered and reads runtime facts without mutati
   assert.deepEqual(harness.store.saves, []);
 });
 
-test("F03 the Extension registers narrow Pindie tools and no input hook", () => {
+test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
   const { api } = createHarness();
 
   assert.deepEqual([...api.tools.keys()].sort(), [
@@ -548,6 +549,34 @@ test("F03 the Extension registers narrow Pindie tools and no input hook", () => 
     "turn_end",
   ]);
   assert.equal(api.handlers.has("input"), false);
+});
+
+test("Remote-enabled wiring observes public input without altering Pindie tools", async () => {
+  const sent: string[] = [];
+  const surface: RemoteSurface = { ensureProject: async () => ({ channelId: "channel" }), ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }), send: async (_thread, event) => { sent.push(event.text); }, updateSessionPresentation: async () => undefined };
+  const { api } = createHarness([], {}, { remoteCompanion: { companion: new RemoteCompanion(surface), guildId: "guild" } });
+  assert.ok(api.handlers.has("input")); assert.ok(api.handlers.has("message_end")); assert.equal(api.tools.size, 9);
+  await api.handler("session_start")({ type: "session_start", reason: "startup" }, context("/repo", [{ id: "u", message: { role: "user", content: "hello" } }]));
+  assert.ok(Array.isArray(sent));
+});
+
+test("Remote transport failure cannot disrupt startup, semantic milestones, verification, or Agent settlement", async () => {
+  const surface: RemoteSurface = {
+    ensureProject: async () => { throw new Error("offline"); },
+    ensureSession: async () => { throw new Error("offline"); },
+    send: async () => { throw new Error("offline"); },
+    updateSessionPresentation: async () => { throw new Error("offline"); },
+  };
+  const companion = new RemoteCompanion(surface);
+  const harness = createHarness([["/repo", activeState()]], {}, { remoteCompanion: { companion, guildId: "guild" } });
+  const entries = [{ id: "u", message: { role: "user", content: "hello" } }];
+  await assert.doesNotReject(startSession(harness, "/repo", "startup", entries));
+  await assert.doesNotReject(beginAgentRun(harness, "/repo", entries));
+  const { ref } = await captureObservationEvidence(harness, "remote-failure-evidence");
+  await assert.doesNotReject(harness.api.tool("pindie_verification_record").execute("verify", { check: { name: "tests", status: "passed", covers: ["c1"], evidenceRefs: [ref] } }));
+  assert.equal(harness.integration.runtime.state.task?.verification.checks[0]?.status, "passed");
+  assert.doesNotThrow(() => harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries)));
+  assert.equal(harness.integration.stateUnavailableReason, null);
 });
 
 test("E01-E02/E08-E10 active Tasks queue one read-only hidden follow-up per Run", async () => {

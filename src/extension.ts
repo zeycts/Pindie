@@ -20,6 +20,7 @@ import {
   type ToolEffect,
 } from "./execution-semantics.ts";
 import { PresentationIntegration } from "./presentation-integration.ts";
+import { RemoteCompanion, type RemoteStatusFacts } from "./remote-companion.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
 import type { ProjectFingerprint } from "./project-mutation.ts";
 import type { ReasoningController } from "./reasoning.ts";
@@ -32,7 +33,7 @@ import {
   deriveCapabilities,
   type SemanticSnapshot,
 } from "./semantics.ts";
-import { validateState } from "./state.ts";
+import { getTaskStatus, getVerificationStatus, validateState } from "./state.ts";
 import {
   FileStateStore,
   StateLockBusyError,
@@ -67,6 +68,8 @@ export interface PindieExtensionOptions {
   clearActivityRefresh?: (timer: ReturnType<typeof setTimeout>) => void;
   /** Internal test seam for runtime-only project mutation observation. */
   captureProjectFingerprint?: (projectRoot: string) => Promise<ProjectFingerprint>;
+  /** Optional transport-independent Remote core; omitted keeps the existing extension unchanged. */
+  remoteCompanion?: { companion: RemoteCompanion; guildId: string };
 }
 
 export interface PindieExtensionIntegration {
@@ -131,6 +134,7 @@ export function registerPindieExtension(
     execution.semanticAuthorityUnavailable();
     run.markUnavailable(reason);
     presentation.refreshStatus();
+    void options.remoteCompanion?.companion.milestone("authority:unavailable", "PINDIE AUTHORITY UNAVAILABLE");
   };
 
   const refreshRunToolSurface = (): boolean => {
@@ -140,10 +144,42 @@ export function registerPindieExtension(
     return false;
   };
 
+  const remoteStatusFacts = (): RemoteStatusFacts => {
+    const task = runtime.state.task;
+    return {
+      taskGoal: task?.goal ?? null,
+      taskStatus: getTaskStatus(runtime.state),
+      activity: presentation.runActivity.activity,
+      verificationStatus: task ? getVerificationStatus(task) : null,
+      elapsedMs: presentation.runTimer.durationMs,
+      semanticAuthority: run.stateUnavailableReason !== null
+        ? "unavailable"
+        : run.agentRunIsStale ? "stale" : "coherent",
+      localUiPrompt: false,
+    };
+  };
+
+  const projectRemoteSemantics = (): void => {
+    const remote = options.remoteCompanion?.companion;
+    const task = runtime.state.task;
+    if (!remote) return;
+    void remote.status(remoteStatusFacts());
+    if (run.stateUnavailableReason !== null) void remote.milestone("authority:unavailable", "PINDIE AUTHORITY UNAVAILABLE");
+    if (!task) return;
+    const taskStatus = getTaskStatus(runtime.state);
+    if (task.humanGate) {
+      const event = remote.humanGate(task.humanGate.question, task.humanGate.options);
+      void remote.milestone(`gate:${task.humanGate.question}\0${(task.humanGate.options ?? []).join("\0")}`, event.text);
+    }
+    if (taskStatus === "blocked") void remote.milestone(`blocked:${task.openLoops.blockers.join("\\0")}`, `TASK BLOCKED\n${task.openLoops.blockers.join("\n")}`);
+    void remote.milestone(`verification:${getVerificationStatus(task)}`, `VERIFICATION · ${getVerificationStatus(task).toUpperCase()}`);
+  };
+
   const semanticStateChanged = (): void => {
     execution.semanticStateChanged(runtime.externalStateEpoch);
     if (!refreshRunToolSurface()) return;
     presentation.refreshStatus();
+    projectRemoteSemantics();
   };
 
   const invalidateVerificationAfterProjectMutation = async (): Promise<void> => {
@@ -229,9 +265,36 @@ export function registerPindieExtension(
     }
     presentation.refreshStatus(ctx);
     void presentation.refreshSubscriptionUsage(ctx);
+    if (options.remoteCompanion && runtime.projectRoot !== null) {
+      await options.remoteCompanion.companion.bind(
+        runtime.projectRoot,
+        options.remoteCompanion.guildId,
+        ctx.sessionManager.getSessionId(),
+        ctx,
+        { sessionName: ctx.sessionManager.getSessionName(), taskGoal: runtime.state.task?.goal, status: remoteStatusFacts(), getStatus: remoteStatusFacts },
+      );
+      await options.remoteCompanion.companion.catchUp(ctx.sessionManager.getEntries());
+    }
   });
 
+  if (options.remoteCompanion) {
+    pi.on("input", (event) => {
+      options.remoteCompanion!.companion.observeInput(event.source, event.streamingBehavior);
+    });
+    // Pi remains transcript truth: session history is projected after each
+    // finalized message, serialized by RemoteCompanion behind any catch-up.
+    pi.on("message_end", (_event, ctx) => {
+      void options.remoteCompanion!.companion.catchUp(ctx.sessionManager.getEntries()).catch(() => undefined);
+    });
+    pi.on("session_info_changed", (event, _ctx) => {
+      void options.remoteCompanion!.companion.rename(event.name ?? "");
+    });
+    pi.on("ui_prompt_start", () => options.remoteCompanion!.companion.setLocalUiPrompt(true));
+    pi.on("ui_prompt_end", () => options.remoteCompanion!.companion.setLocalUiPrompt(false));
+  }
+
   pi.on("session_shutdown", (_event, ctx) => {
+    options.remoteCompanion?.companion.shutdown(ctx);
     run.restoreRunToolBaseline(true);
     presentation.resetTrackers();
     presentation.clearStatus(ctx);
@@ -267,6 +330,7 @@ export function registerPindieExtension(
     presentation.startCost(ctx.sessionManager.getEntries());
     presentation.startTimer(ctx);
     presentation.refreshStatus(ctx);
+    void options.remoteCompanion?.companion.status(remoteStatusFacts());
   });
 
   pi.on("agent_end", (event, ctx) => {
@@ -338,18 +402,22 @@ export function registerPindieExtension(
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
+    options.remoteCompanion?.companion.recordToolStart(event.toolCallId, event.toolName, event.args);
     presentation.clearActivityLingerRefresh();
     presentation.runActivity.toolExecutionStart(
       event.toolCallId,
       event.toolName,
     );
     presentation.refreshStatus(ctx);
+    void options.remoteCompanion?.companion.status(remoteStatusFacts());
   });
 
   pi.on("tool_execution_end", (event, ctx) => {
+    options.remoteCompanion?.companion.recordToolEnd(event.toolCallId, event.toolName, event.isError);
     presentation.runActivity.toolExecutionEnd(event.toolCallId);
     presentation.scheduleActivityLingerRefresh();
     presentation.refreshStatus(ctx);
+    void options.remoteCompanion?.companion.status(remoteStatusFacts());
   });
 
   pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
@@ -485,6 +553,15 @@ export function registerPindieExtension(
     presentation.runTimer.finish();
     presentation.refreshStatus(ctx);
     void presentation.refreshSubscriptionUsage(ctx);
+    if (options.remoteCompanion) {
+      const lastEntry = entries.at(-1);
+      void options.remoteCompanion.companion.status(remoteStatusFacts())
+        .then(() => options.remoteCompanion!.companion.catchUp(entries))
+        .then(async () => {
+          if (lastEntry) await options.remoteCompanion!.companion.flushExecution(lastEntry.id);
+          await options.remoteCompanion!.companion.settleCompletion();
+        });
+    }
     if (runtime.projectRoot === null) return;
 
     const validation = validateState(runtime.state);
