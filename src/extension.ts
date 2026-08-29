@@ -21,6 +21,7 @@ import {
 } from "./execution-semantics.ts";
 import { PresentationIntegration } from "./presentation-integration.ts";
 import { RemoteCompanion, type RemoteStatusFacts } from "./remote-companion.ts";
+import { DiscordRemote, discordRemoteConfig } from "./discord-remote.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
 import type { ProjectFingerprint } from "./project-mutation.ts";
 import type { ReasoningController } from "./reasoning.ts";
@@ -69,7 +70,7 @@ export interface PindieExtensionOptions {
   /** Internal test seam for runtime-only project mutation observation. */
   captureProjectFingerprint?: (projectRoot: string) => Promise<ProjectFingerprint>;
   /** Optional transport-independent Remote core; omitted keeps the existing extension unchanged. */
-  remoteCompanion?: { companion: RemoteCompanion; guildId: string };
+  remoteCompanion?: { companion: RemoteCompanion; guildId: string; discord?: DiscordRemote };
 }
 
 export interface PindieExtensionIntegration {
@@ -266,14 +267,30 @@ export function registerPindieExtension(
     presentation.refreshStatus(ctx);
     void presentation.refreshSubscriptionUsage(ctx);
     if (options.remoteCompanion && runtime.projectRoot !== null) {
+      const sessionId = ctx.sessionManager.getSessionId();
       await options.remoteCompanion.companion.bind(
         runtime.projectRoot,
         options.remoteCompanion.guildId,
-        ctx.sessionManager.getSessionId(),
+        sessionId,
         ctx,
         { sessionName: ctx.sessionManager.getSessionName(), taskGoal: runtime.state.task?.goal, status: remoteStatusFacts(), getStatus: remoteStatusFacts },
       );
-      await options.remoteCompanion.companion.catchUp(ctx.sessionManager.getEntries());
+      // Discord login is optional external I/O. Do not make local startup wait for it.
+      if (options.remoteCompanion.discord) {
+        if (options.remoteCompanion.companion.activeSessionId !== sessionId) return;
+        void options.remoteCompanion.discord.start(
+          (threadId, text) => options.remoteCompanion!.companion.input(threadId, text, {
+            sendUserMessage: (content, inputOptions) => pi.sendUserMessage(content, inputOptions),
+          }),
+          () => {
+            if (options.remoteCompanion!.companion.activeSessionId !== sessionId) return;
+            void options.remoteCompanion!.companion.catchUp(ctx.sessionManager.getEntries()).catch(() => undefined);
+          },
+          (threadId) => options.remoteCompanion!.companion.isMappedThread(threadId),
+        ).catch(() => undefined);
+      } else {
+        await options.remoteCompanion.companion.catchUp(ctx.sessionManager.getEntries());
+      }
     }
   });
 
@@ -294,7 +311,8 @@ export function registerPindieExtension(
   }
 
   pi.on("session_shutdown", (_event, ctx) => {
-    options.remoteCompanion?.companion.shutdown(ctx);
+    const stoppedRemote = options.remoteCompanion?.companion.shutdown(ctx) ?? false;
+    if (stoppedRemote) options.remoteCompanion?.discord?.stop();
     run.restoreRunToolBaseline(true);
     presentation.resetTrackers();
     presentation.clearStatus(ctx);
@@ -585,5 +603,18 @@ export function registerPindieExtension(
 }
 
 export default function pindieExtension(pi: ExtensionAPI): void {
-  registerPindieExtension(pi);
+  const configured = discordRemoteConfig();
+  if (!configured.enabled) {
+    if (configured.warning) console.warn(configured.warning);
+    registerPindieExtension(pi);
+    return;
+  }
+  const discord = new DiscordRemote(configured.config);
+  registerPindieExtension(pi, {
+    remoteCompanion: {
+      companion: new RemoteCompanion(discord),
+      guildId: configured.config.guildId,
+      discord,
+    },
+  });
 }

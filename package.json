@@ -35,6 +35,7 @@
     "typebox": "*"
   },
   "dependencies": {
-    "@earendil-works/pi-tui": "0.84.4"
+    "@earendil-works/pi-tui": "0.84.4",
+    "discord.js": "14.27.0"
   }
 }

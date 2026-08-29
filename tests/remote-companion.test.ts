@@ -63,6 +63,23 @@ test("Pi input provenance handles identical TUI and remote text without text mat
   assert.deepEqual(surface.sent.slice(-3), ["YOU · TUI\nsame", "YOU · DISCORD · STEER\nsame", "YOU · DISCORD · FOLLOW-UP\nsame"]);
 });
 
+test("Discord-origin projection may be a successful no-op while its M1 cursor still advances", async (t) => {
+  const delivered: string[] = [];
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: "header" }),
+    send: async (_thread, event) => { if (event.origin !== "discord") delivered.push(event.text); },
+    updateSessionPresentation: async () => undefined,
+  };
+  const store = new RemoteRoutingStore({ baseDir: await fixture(t) }); const remote = new RemoteCompanion(surface, { routing: store });
+  await remote.bind("/discord-no-duplicate", "guild", "session", ctx().ctx);
+  await remote.catchUp([{ id: "seed", message: { role: "user", content: "tui" } }]);
+  await remote.input("thread", "remote", { sendUserMessage: () => remote.observeInput("extension") });
+  await remote.catchUp([{ id: "seed", message: { role: "user", content: "tui" } }, { id: "discord", message: { role: "user", content: "remote" } }]);
+  assert.deepEqual(delivered, ["YOU\ntui"]);
+  assert.equal((await store.load("/discord-no-duplicate"))?.sessions.session.lastMirroredEntryId, "discord");
+});
+
 test("active controls use Pi native modes and historical threads cannot control", async () => {
   const surface = new Surface(); const remote = new RemoteCompanion(surface); const active = ctx(false); const calls: unknown[] = [];
   await remote.bind("/project", "guild", "session", active.ctx); await remote.catchUp([{ id: "u", message: { role: "user", content: "start" } }]);

@@ -110,13 +110,22 @@ export class RemoteCompanion {
       // Remote routing is optional I/O. A failed bind leaves no stale live context.
     }
   }
-  shutdown(ctx: ExtensionContext): void { if (this.binding?.ctx === ctx) { this.binding.abortController.abort(); this.binding = null; this.origins.length = 0; this.milestones.clear(); this.toolInputs.clear(); } }
+  shutdown(ctx: ExtensionContext): boolean {
+    if (this.binding?.ctx !== ctx) return false;
+    this.binding.abortController.abort(); this.binding = null; this.origins.length = 0; this.milestones.clear(); this.toolInputs.clear();
+    return true;
+  }
   setLocalUiPrompt(active: boolean): void {
     const binding = this.binding;
     if (!binding) return;
     binding.status = { ...binding.status, localUiPrompt: active };
   }
   get activeSessionId(): string | null { return this.binding?.sessionId ?? null; }
+  /** External transports may accept input only from an already mapped Session thread. */
+  isMappedThread(threadId: string): boolean {
+    const binding = this.binding;
+    return !!binding && Object.values(binding.routing.sessions).some((session) => session.threadId === threadId);
+  }
 
   async catchUp(entries: MirrorEntry[]): Promise<void> {
     const binding = this.binding;
@@ -173,7 +182,7 @@ export class RemoteCompanion {
     const session = binding.routing.sessions[binding.sessionId];
     if (session) await this.serial(async () => { if (this.binding === binding) await this.updatePresentation(binding, session); });
   }
-  async input(threadId: string, text: string, pi: RemotePi): Promise<"sent" | "historical" | "local-ui" | "stopped" | "idle" | "status"> {
+  async input(threadId: string, text: string, pi: RemotePi): Promise<"sent" | "steer" | "follow-up" | "failed" | "historical" | "local-ui" | "stopped" | "idle" | "status"> {
     const b = this.binding; if (!b) return "historical"; const session = b.routing.sessions[b.sessionId];
     if (!session || session.threadId !== threadId) {
       const historical = Object.entries(b.routing.sessions).find(([, candidate]) => candidate.threadId === threadId);
@@ -212,11 +221,11 @@ export class RemoteCompanion {
     try {
       await pi.sendUserMessage(content, b.ctx.isIdle() ? undefined : { deliverAs: after ? "followUp" : "steer" });
     } catch {
-      // Pi delivery invoked from Remote input must not escape into local execution.
+      return "failed";
     } finally {
       this.dispatchingOrigin = null;
     }
-    return "sent";
+    return origin === "discord-steer" ? "steer" : origin === "discord-follow-up" ? "follow-up" : "sent";
   }
   async milestone(key: string, text: string): Promise<void> {
     const binding = this.binding;
@@ -255,7 +264,7 @@ export class RemoteCompanion {
     const created = await this.surface.ensureSession(b.routing.channelId, b.sessionId, titleFor(b, prompt), existing, b.abortController.signal);
     this.requireCurrent(b);
     let session: RemoteSessionRouting;
-    if (!existing || created.replaced || created.threadId !== existing.threadId) {
+    if (!existing || created.replaced || created.threadId !== existing.threadId || created.anchorMessageId !== existing.anchorMessageId || created.headerMessageId !== existing.headerMessageId) {
       session = { threadId: created.threadId, anchorMessageId: created.anchorMessageId, headerMessageId: created.headerMessageId, lastMirroredEntryId: null };
       b.routing.sessions[b.sessionId] = session;
     } else session = existing;
