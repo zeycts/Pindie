@@ -5,7 +5,9 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { ChannelType } from "discord.js";
+import { HttpsProxyAgent } from "https-proxy-agent";
 
+import { DiscordGatewayClient, type GatewaySocketFactory } from "../src/discord-gateway.ts";
 import { DiscordRemote, discordRemoteConfig, type DiscordClientSeam, type DiscordRestSeam } from "../src/discord-remote.ts";
 import { RemoteCompanion, type RemoteSessionPresentation } from "../src/remote-companion.ts";
 import { RemoteRoutingStore } from "../src/remote-routing.ts";
@@ -53,10 +55,57 @@ const setup = async (rest = new FakeRest(), options: Record<string, unknown> = {
 
 test("Discord configuration is disabled unless complete and never exposes its token", () => {
   assert.deepEqual(discordRemoteConfig({}), { enabled: false });
+  assert.deepEqual(discordRemoteConfig({ PINDIE_DISCORD_PROXY: "http://proxy.local:8080" }), { enabled: false });
   const partial = discordRemoteConfig({ PINDIE_DISCORD_TOKEN: "secret" });
   assert.equal(partial.enabled, false); assert.doesNotMatch(JSON.stringify(partial), /secret/);
   const enabled = discordRemoteConfig({ PINDIE_DISCORD_TOKEN: config.token, PINDIE_DISCORD_USER_ID: config.userId, PINDIE_DISCORD_GUILD_ID: config.guildId });
   assert.equal(enabled.enabled, true); assert.doesNotMatch(JSON.stringify({ warning: enabled.enabled ? undefined : enabled.warning }), /super-secret-token/);
+});
+
+test("Gateway proxy resolution prefers explicit configuration, falls back to HTTPS_PROXY, and stays direct without one", () => {
+  const discord = { PINDIE_DISCORD_TOKEN: config.token, PINDIE_DISCORD_USER_ID: config.userId, PINDIE_DISCORD_GUILD_ID: config.guildId };
+  const explicit = discordRemoteConfig({ ...discord, PINDIE_DISCORD_PROXY: "http://explicit:1", HTTPS_PROXY: "http://upper:2", https_proxy: "http://lower:3" });
+  assert.equal(explicit.enabled && explicit.config.proxyUrl, "http://explicit:1");
+  const fallback = discordRemoteConfig({ ...discord, HTTPS_PROXY: "http://upper:2", https_proxy: "http://lower:3" });
+  assert.equal(fallback.enabled && fallback.config.proxyUrl, "http://upper:2");
+  const lower = discordRemoteConfig({ ...discord, https_proxy: "http://lower:3" });
+  assert.equal(lower.enabled && lower.config.proxyUrl, "http://lower:3");
+  const direct = discordRemoteConfig(discord);
+  assert.equal(direct.enabled && direct.config.proxyUrl, undefined);
+});
+
+test("Gateway construction passes the proxy agent to ws and direct mode passes no agent", async () => {
+  const constructed: Array<Record<string, unknown>> = [];
+  const handlers = new Map<string, (...args: any[]) => void>();
+  const createSocket: GatewaySocketFactory = (_url, options) => {
+    constructed.push(options as Record<string, unknown>);
+    return { readyState: 1, send: () => undefined, close: () => undefined, terminate: () => undefined, on: (event: string, listener: (...args: any[]) => void) => { handlers.set(event, listener); return undefined as any; } };
+  };
+  const connect = async (proxyUrl?: string) => {
+    const client = new DiscordGatewayClient({ proxyUrl, createSocket });
+    client.on("error", () => undefined);
+    Object.assign(client.rest, { get: async () => ({ url: "wss://gateway.discord.gg" }) });
+    const login = client.login("token");
+    await new Promise((resolve) => setImmediate(resolve));
+    handlers.get("message")?.(Buffer.from(JSON.stringify({ op: 10, d: { heartbeat_interval: 60_000 } })));
+    handlers.get("message")?.(Buffer.from(JSON.stringify({ op: 0, t: "READY", d: { session_id: "session", resume_gateway_url: "wss://gateway.discord.gg" } })));
+    await login; client.destroy(); handlers.clear();
+  };
+  await connect("http://user:password@proxy.local:8080");
+  await connect();
+  assert.ok(constructed[0]?.agent instanceof HttpsProxyAgent);
+  assert.equal(constructed[1]?.agent, undefined);
+});
+
+test("proxy credentials are never included in configuration or transport diagnostics", async () => {
+  const secret = "proxy-password"; const warnings: string[] = [];
+  const invalid = discordRemoteConfig({ PINDIE_DISCORD_TOKEN: config.token, PINDIE_DISCORD_USER_ID: config.userId, PINDIE_DISCORD_GUILD_ID: config.guildId, PINDIE_DISCORD_PROXY: `http://user:${secret}@[` });
+  assert.equal(invalid.enabled, false); assert.doesNotMatch(JSON.stringify(invalid), new RegExp(secret));
+  const client = new FakeClient(); client.login = async () => { throw new Error(`http://user:${secret}@proxy`); };
+  const remote = new DiscordRemote(config, { createClient: () => client, warn: (message) => warnings.push(message) });
+  await assert.rejects(remote.start(async () => "sent"));
+  client.emit("error", new Error(`http://user:${secret}@proxy`));
+  assert.ok(warnings.length >= 2); assert.doesNotMatch(warnings.join("\n"), new RegExp(secret));
 });
 
 test("Discord REST receives AbortSignal, disables mentions, and starts a message thread with real options", async () => {
@@ -115,6 +164,33 @@ test("Anchor and Header edits coalesce, update stable IDs, and no-op refreshes d
   const anchorEdits = rest.calls.filter((call) => call.kind === "edit-message" && call.messageId === session.anchorMessageId); assert.equal(anchorEdits.length, 4); assert.ok(anchorEdits.every((call) => call.channelId === "channel")); assert.match(anchorEdits[1]?.content ?? "", /Renamed/); assert.match(anchorEdits[2]?.content ?? "", /Ship it.*active/s); assert.match(anchorEdits[3]?.content ?? "", /Ship it.*done/s);
   assert.equal(rest.calls.filter((call) => call.kind === "edit-message" && call.messageId === session.headerMessageId).length, 4); assert.equal(rest.calls.filter((call) => call.kind === "start-thread").length, 1);
   const editsBefore = rest.calls.filter((call) => call.kind.startsWith("edit-")).length; await remote.updateSessionPresentation(session, presentation("Renamed", { taskGoal: "Ship it", taskStatus: "done" }), controller.signal); await remote.flushPresentation(session.threadId); assert.equal(rest.calls.filter((call) => call.kind.startsWith("edit-")).length, editsBefore);
+});
+
+test("a fully caught-up mapped Session rename PATCHes the same thread, Anchor, and Header", async (t) => {
+  const rest = new FakeRest(); const { remote } = await setup(rest, { setTimer: () => 1 as any, clearTimer: () => undefined });
+  const store = new RemoteRoutingStore({ baseDir: await fixture(t) }); const companion = new RemoteCompanion(remote, { routing: store });
+  const entries = [{ id: "u", message: { role: "user" as const, content: "Original prompt" } }];
+  await companion.bind("/live-name", config.guildId, "session", { isIdle: () => true, abort: () => undefined } as any, { status: { ...status, taskGoal: "Task", taskStatus: "active" } });
+  await companion.catchUp(entries);
+  const binding = (await store.load("/live-name"))?.sessions.session; assert.ok(binding);
+  await remote.flushPresentation(binding.threadId); rest.calls.length = 0;
+  await companion.rename("Discord Remote Test 2"); await remote.flushPresentation(binding.threadId);
+  const after = (await store.load("/live-name"))?.sessions.session;
+  assert.equal(after?.threadId, binding.threadId); assert.equal(after?.lastMirroredEntryId, "u");
+  assert.ok(rest.calls.some((call) => call.kind === "edit-channel" && call.channelId === binding.threadId && (call.body as any).name === "Discord-Remote-Test-2"));
+  assert.ok(rest.calls.some((call) => call.kind === "edit-message" && call.messageId === binding.anchorMessageId && call.content?.includes("Discord Remote Test 2")));
+  assert.ok(rest.calls.some((call) => call.kind === "edit-message" && call.messageId === binding.headerMessageId && call.content?.includes("Discord Remote Test 2")));
+  assert.equal(rest.calls.some((call) => call.kind === "start-thread"), false);
+});
+
+test("presentation failures emit only a safe local diagnostic category", async () => {
+  const secret = "proxy-password"; const warnings: string[] = []; const rest = new FakeRest(); rest.thread();
+  rest.editChannel = async () => { throw new Error(`http://user:${secret}@proxy`); };
+  const { remote } = await setup(rest, { warn: (message: string) => warnings.push(message), setTimer: () => 1 as any, clearTimer: () => undefined });
+  await remote.updateSessionPresentation({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: "header" }, presentation("Rename"), signal());
+  await remote.flushPresentation("thread");
+  assert.deepEqual(warnings, ["Pindie Discord Remote presentation update failed."]);
+  assert.doesNotMatch(warnings.join("\n"), new RegExp(secret));
 });
 
 test("Discord-origin prompts are not reposted while neutral and assistant events remain visible", async () => {

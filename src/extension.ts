@@ -303,8 +303,8 @@ export function registerPindieExtension(
     pi.on("message_end", (_event, ctx) => {
       void options.remoteCompanion!.companion.catchUp(ctx.sessionManager.getEntries()).catch(() => undefined);
     });
-    pi.on("session_info_changed", (event, _ctx) => {
-      void options.remoteCompanion!.companion.rename(event.name ?? "");
+    pi.on("session_info_changed", async (event, _ctx) => {
+      await options.remoteCompanion!.companion.rename(event.name ?? "");
     });
     pi.on("ui_prompt_start", () => options.remoteCompanion!.companion.setLocalUiPrompt(true));
     pi.on("ui_prompt_end", () => options.remoteCompanion!.companion.setLocalUiPrompt(false));

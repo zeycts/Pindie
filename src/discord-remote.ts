@@ -1,5 +1,6 @@
-import { ChannelType, Client, GatewayIntentBits, Routes } from "discord.js";
+import { ChannelType, Routes } from "discord.js";
 
+import { DiscordGatewayClient } from "./discord-gateway.ts";
 import type { RemoteSessionPresentation, RemoteSurface } from "./remote-companion.ts";
 import type { RemoteSessionRouting } from "./remote-routing.ts";
 import type { TimelineEvent } from "./session-mirror.ts";
@@ -8,6 +9,7 @@ export interface DiscordRemoteConfig {
   token: string;
   userId: string;
   guildId: string;
+  proxyUrl?: string;
 }
 
 export type DiscordRemoteConfigResult =
@@ -23,7 +25,16 @@ export function discordRemoteConfig(env: Record<string, string | undefined> = pr
   if (!token || !userId || !guildId || !/^\d{17,20}$/.test(userId) || !/^\d{17,20}$/.test(guildId)) {
     return { enabled: false, warning: "Pindie Discord Remote is disabled: configuration is incomplete or invalid." };
   }
-  return { enabled: true, config: { token, userId, guildId } };
+  const proxyUrl = env.PINDIE_DISCORD_PROXY?.trim() || env.HTTPS_PROXY?.trim() || env.https_proxy?.trim();
+  if (proxyUrl) {
+    try {
+      const parsed = new URL(proxyUrl);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("unsupported proxy protocol");
+    } catch {
+      return { enabled: false, warning: "Pindie Discord Remote is disabled: proxy configuration is invalid." };
+    }
+  }
+  return { enabled: true, config: { token, userId, guildId, ...(proxyUrl ? { proxyUrl } : {}) } };
 }
 
 type DiscordMessage = {
@@ -93,6 +104,7 @@ export interface DiscordRemoteOptions {
   createRest?: (client: DiscordClientSeam) => DiscordRestSeam;
   setTimer?: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
+  warn?: (message: string) => void;
 }
 
 type Input = (threadId: string, text: string) => Promise<RemoteInputResult>;
@@ -134,13 +146,15 @@ export class DiscordRemote implements RemoteSurface {
   private readonly clearTimer: NonNullable<DiscordRemoteOptions["clearTimer"]>;
   private readonly createClient: NonNullable<DiscordRemoteOptions["createClient"]>;
   private readonly createRest: NonNullable<DiscordRemoteOptions["createRest"]>;
+  private readonly warn: NonNullable<DiscordRemoteOptions["warn"]>;
 
   constructor(config: DiscordRemoteConfig, options: DiscordRemoteOptions = {}) {
     this.config = config;
-    this.createClient = options.createClient ?? (() => new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] }) as unknown as DiscordClientSeam);
+    this.createClient = options.createClient ?? (() => new DiscordGatewayClient({ proxyUrl: config.proxyUrl }));
     this.createRest = options.createRest ?? ((client) => new DiscordJsRest(client.rest));
     this.setTimer = options.setTimer ?? setTimeout;
     this.clearTimer = options.clearTimer ?? clearTimeout;
+    this.warn = options.warn ?? console.warn;
   }
 
   /** Starts only after a native Session binds. It is intentionally never awaited by extension startup. */
@@ -152,8 +166,9 @@ export class DiscordRemote implements RemoteSurface {
     client.once("ready", () => { if (this.current(generation, client)) this.onReady?.(); });
     client.on("shardResume", () => { if (this.current(generation, client)) this.onReady?.(); });
     client.on("messageCreate", (message: DiscordMessage) => { void this.receive(generation, message, acceptsThread); });
-    client.on("error", () => undefined);
-    await client.login(this.config.token);
+    client.on("error", () => this.warn("Pindie Discord Remote gateway error."));
+    try { await client.login(this.config.token); }
+    catch { this.warn("Pindie Discord Remote connection failed."); throw new Error("Pindie Discord Remote connection failed."); }
   }
 
   stop(): void {
@@ -243,6 +258,7 @@ export class DiscordRemote implements RemoteSurface {
       }
     } catch {
       // Presentation edits are best effort; a later status update/reconnect retries them.
+      this.warn("Pindie Discord Remote presentation update failed.");
     }
   }
 
