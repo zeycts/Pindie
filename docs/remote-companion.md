@@ -70,10 +70,10 @@ Remote Companion is optional and uses environment configuration only:
 PINDIE_DISCORD_TOKEN
 PINDIE_DISCORD_USER_ID
 PINDIE_DISCORD_GUILD_ID
-PINDIE_DISCORD_PROXY # optional; Gateway WebSocket proxy
+PINDIE_DISCORD_PROXY # optional; Discord REST and Gateway WebSocket proxy
 ```
 
-Gateway proxy resolution is `PINDIE_DISCORD_PROXY`, then `HTTPS_PROXY`, then `https_proxy`, then a direct connection. Proxy configuration is runtime-only and credentials are never logged.
+Discord transport proxy resolution is `PINDIE_DISCORD_PROXY`, then `HTTPS_PROXY`, then `https_proxy`, then a direct connection. The resolved proxy applies to both Discord REST and the Gateway WebSocket. Proxy configuration is runtime-only and credentials are never logged.
 
 If all are absent, Remote Companion is disabled and Pindie behaves exactly as before.
 

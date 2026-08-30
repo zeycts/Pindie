@@ -2,6 +2,7 @@ import { platform } from "node:os";
 
 import { REST, Routes } from "discord.js";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { ProxyAgent } from "undici";
 import WebSocket, { type ClientOptions, type RawData } from "ws";
 
 import type { DiscordClientSeam } from "./discord-remote.ts";
@@ -24,11 +25,12 @@ const OPEN = 1;
 
 /** Minimal single-process Discord Gateway client. Discord REST remains owned by discord.js. */
 export class DiscordGatewayClient implements DiscordClientSeam {
-  readonly rest = new REST({ version: "10" });
+  readonly rest: REST;
   private readonly listeners = new Map<string, Listener[]>();
   private readonly createSocket: GatewaySocketFactory;
   private readonly setTimer: NonNullable<DiscordGatewayClientOptions["setTimer"]>;
   private readonly clearTimer: NonNullable<DiscordGatewayClientOptions["clearTimer"]>;
+  private readonly restProxyAgent: ProxyAgent | null;
   private socket: GatewaySocket | null = null;
   private heartbeatTimer?: ReturnType<typeof setTimeout>;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
@@ -42,11 +44,13 @@ export class DiscordGatewayClient implements DiscordClientSeam {
   private loginReject: ((error: Error) => void) | null = null;
 
   constructor(options: DiscordGatewayClientOptions = {}) {
-    const agent = options.proxyUrl ? new HttpsProxyAgent(options.proxyUrl) : undefined;
+    this.restProxyAgent = options.proxyUrl ? new ProxyAgent(options.proxyUrl) : null;
+    this.rest = new REST({ version: "10", ...(this.restProxyAgent ? { agent: this.restProxyAgent } : {}) });
+    const gatewayProxyAgent = options.proxyUrl ? new HttpsProxyAgent(options.proxyUrl) : undefined;
     this.createSocket = options.createSocket ?? ((url, socketOptions) => new WebSocket(url, socketOptions));
     this.setTimer = options.setTimer ?? setTimeout;
     this.clearTimer = options.clearTimer ?? clearTimeout;
-    this.socketOptions = agent ? { agent, handshakeTimeout: 30_000 } : { handshakeTimeout: 30_000 };
+    this.socketOptions = gatewayProxyAgent ? { agent: gatewayProxyAgent, handshakeTimeout: 30_000 } : { handshakeTimeout: 30_000 };
   }
 
   private readonly socketOptions: ClientOptions;
@@ -79,6 +83,7 @@ export class DiscordGatewayClient implements DiscordClientSeam {
     try { socket?.close(1_000); } catch { socket?.terminate(); }
     this.loginReject?.(new Error("Discord Gateway client stopped."));
     this.loginResolve = null; this.loginReject = null; this.token = null;
+    void this.restProxyAgent?.close().catch(() => undefined);
   }
 
   private connect(): void {

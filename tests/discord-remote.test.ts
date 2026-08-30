@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { ChannelType } from "discord.js";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { ProxyAgent } from "undici";
 
 import { DiscordGatewayClient, type GatewaySocketFactory } from "../src/discord-gateway.ts";
 import { DiscordRemote, discordRemoteConfig, type DiscordClientSeam, type DiscordRestSeam } from "../src/discord-remote.ts";
@@ -74,8 +75,11 @@ test("Gateway proxy resolution prefers explicit configuration, falls back to HTT
   assert.equal(direct.enabled && direct.config.proxyUrl, undefined);
 });
 
-test("Gateway construction passes the proxy agent to ws and direct mode passes no agent", async () => {
+test("Discord construction configures REST and Gateway proxy agents while direct mode configures neither", async () => {
   const constructed: Array<Record<string, unknown>> = [];
+  const restAgents: unknown[] = [];
+  const discoveryAgents: unknown[] = [];
+  const restCloseCalls: number[] = [];
   const handlers = new Map<string, (...args: any[]) => void>();
   const createSocket: GatewaySocketFactory = (_url, options) => {
     constructed.push(options as Record<string, unknown>);
@@ -84,28 +88,71 @@ test("Gateway construction passes the proxy agent to ws and direct mode passes n
   const connect = async (proxyUrl?: string) => {
     const client = new DiscordGatewayClient({ proxyUrl, createSocket });
     client.on("error", () => undefined);
-    Object.assign(client.rest, { get: async () => ({ url: "wss://gateway.discord.gg" }) });
+    restAgents.push(client.rest.options.agent);
+    let closed = 0;
+    if (client.rest.options.agent instanceof ProxyAgent) client.rest.options.agent.close = async () => { closed++; };
+    Object.assign(client.rest, { get: async () => { discoveryAgents.push(client.rest.options.agent); return { url: "wss://gateway.discord.gg" }; } });
     const login = client.login("token");
     await new Promise((resolve) => setImmediate(resolve));
     handlers.get("message")?.(Buffer.from(JSON.stringify({ op: 10, d: { heartbeat_interval: 60_000 } })));
     handlers.get("message")?.(Buffer.from(JSON.stringify({ op: 0, t: "READY", d: { session_id: "session", resume_gateway_url: "wss://gateway.discord.gg" } })));
-    await login; client.destroy(); handlers.clear();
+    await login; client.destroy(); restCloseCalls.push(closed); handlers.clear();
   };
   await connect("http://user:password@proxy.local:8080");
   await connect();
   assert.ok(constructed[0]?.agent instanceof HttpsProxyAgent);
+  assert.ok(restAgents[0] instanceof ProxyAgent);
+  assert.equal(discoveryAgents[0], restAgents[0]);
   assert.equal(constructed[1]?.agent, undefined);
+  assert.equal(restAgents[1], null);
+  assert.equal(discoveryAgents[1], null);
+  assert.deepEqual(restCloseCalls, [1, 0]);
+});
+
+test("Gateway discovery and subsequent Discord operations share the configured REST dispatcher", async () => {
+  const proxyUrl = "http://user:password@proxy.local:8080";
+  const handlers = new Map<string, (...args: any[]) => void>();
+  const createSocket: GatewaySocketFactory = () => ({
+    readyState: 1, send: () => undefined, close: () => undefined, terminate: () => undefined,
+    on: (event: string, listener: (...args: any[]) => void) => { handlers.set(event, listener); return undefined as any; },
+  });
+  const client = new DiscordGatewayClient({ proxyUrl, createSocket });
+  const dispatcher = client.rest.options.agent;
+  const calls: Array<{ method: string; route: string; dispatcher: unknown; rest: unknown }> = [];
+  let next = 0;
+  Object.assign(client.rest, {
+    get: async function (this: unknown, route: string) { calls.push({ method: "get", route, dispatcher: client.rest.options.agent, rest: this }); return route.includes("gateway") ? { url: "wss://gateway.discord.gg" } : route.endsWith("/thread") ? { id: "thread", guild_id: config.guildId, parent_id: "channel", type: ChannelType.PublicThread } : { id: "channel", guild_id: config.guildId, type: ChannelType.GuildText }; },
+    post: async function (this: unknown, route: string) { calls.push({ method: "post", route, dispatcher: client.rest.options.agent, rest: this }); return route.includes("threads") ? { id: "thread", guild_id: config.guildId, parent_id: "channel", type: ChannelType.PublicThread } : { id: `message-${++next}` }; },
+    patch: async function (this: unknown, route: string) { calls.push({ method: "patch", route, dispatcher: client.rest.options.agent, rest: this }); return {}; },
+  });
+  const remote = new DiscordRemote({ ...config, proxyUrl }, { createClient: () => client, setTimer: () => 1 as any, clearTimer: () => undefined });
+  const started = remote.start(async () => "sent");
+  await new Promise((resolve) => setImmediate(resolve));
+  handlers.get("message")?.(Buffer.from(JSON.stringify({ op: 0, t: "READY", d: { session_id: "session", resume_gateway_url: "wss://gateway.discord.gg" } })));
+  await started;
+  const controller = new AbortController();
+  const session = await remote.ensureSession("channel", "session", "Title", null, controller.signal);
+  await remote.send(session.threadId, { entryId: "a", kind: "assistant", text: "answer" }, controller.signal);
+  await remote.updateSessionPresentation(session, presentation("Renamed"), controller.signal); await remote.flushPresentation(session.threadId);
+  assert.ok(dispatcher instanceof ProxyAgent);
+  assert.ok(calls.some((call) => call.route.includes("gateway")));
+  assert.ok(calls.some((call) => call.method === "post"));
+  assert.ok(calls.some((call) => call.method === "patch"));
+  assert.ok(calls.every((call) => call.dispatcher === dispatcher && call.rest === client.rest));
+  remote.stop();
 });
 
 test("proxy credentials are never included in configuration or transport diagnostics", async () => {
   const secret = "proxy-password"; const warnings: string[] = [];
   const invalid = discordRemoteConfig({ PINDIE_DISCORD_TOKEN: config.token, PINDIE_DISCORD_USER_ID: config.userId, PINDIE_DISCORD_GUILD_ID: config.guildId, PINDIE_DISCORD_PROXY: `http://user:${secret}@[` });
   assert.equal(invalid.enabled, false); assert.doesNotMatch(JSON.stringify(invalid), new RegExp(secret));
-  const client = new FakeClient(); client.login = async () => { throw new Error(`http://user:${secret}@proxy`); };
-  const remote = new DiscordRemote(config, { createClient: () => client, warn: (message) => warnings.push(message) });
+  const proxyUrl = `http://user:${secret}@proxy.local:8080`;
+  const client = new DiscordGatewayClient({ proxyUrl }); Object.assign(client.rest, { get: async () => { throw new Error(proxyUrl); } });
+  const remote = new DiscordRemote({ ...config, proxyUrl }, { createClient: () => client, warn: (message) => warnings.push(message) });
   await assert.rejects(remote.start(async () => "sent"));
-  client.emit("error", new Error(`http://user:${secret}@proxy`));
-  assert.ok(warnings.length >= 2); assert.doesNotMatch(warnings.join("\n"), new RegExp(secret));
+  assert.deepEqual(warnings, ["Pindie Discord Remote connection failed."]);
+  assert.doesNotMatch(warnings.join("\n"), new RegExp(secret));
+  remote.stop();
 });
 
 test("Discord REST receives AbortSignal, disables mentions, and starts a message thread with real options", async () => {
@@ -144,8 +191,17 @@ test("a replaced M1 Session aborts its in-flight Anchor request and cannot conti
   const companion = new RemoteCompanion(remote, { routing: store }); const contextA = { isIdle: () => true, abort: () => undefined } as any; const contextB = { isIdle: () => true, abort: () => undefined } as any;
   await companion.bind("/race", config.guildId, "A", contextA); const stale = companion.catchUp([{ id: "a", message: { role: "user", content: "A prompt" } }]); await entered.promise;
   await companion.bind("/race", config.guildId, "B", contextB); assert.equal(oldSignal?.aborted, true); release.resolve(); await stale;
-  assert.equal(rest.calls.some((call) => call.kind === "start-thread" && call.content === "A-prompt"), false);
-  await companion.catchUp([{ id: "b", message: { role: "user", content: "B prompt" } }]); assert.ok(rest.calls.some((call) => call.kind === "start-thread" && call.content === "B-prompt"));
+  assert.equal(rest.calls.some((call) => call.kind === "start-thread" && call.content === "A prompt"), false);
+  await companion.catchUp([{ id: "b", message: { role: "user", content: "B prompt" } }]); assert.ok(rest.calls.some((call) => call.kind === "start-thread" && call.content === "B prompt"));
+});
+
+test("a Chinese Session-local prompt remains the Unicode Discord thread name", async (t) => {
+  const rest = new FakeRest(); const { remote } = await setup(rest);
+  const store = new RemoteRoutingStore({ baseDir: await fixture(t) });
+  const companion = new RemoteCompanion(remote, { routing: store });
+  await companion.bind("/unicode", config.guildId, "session", { isIdle: () => true, abort: () => undefined } as any);
+  await companion.catchUp([{ id: "u", message: { role: "user", content: "修复代理连接问题\n保留后续内容" } }]);
+  assert.ok(rest.calls.some((call) => call.kind === "start-thread" && call.content === "修复代理连接问题"));
 });
 
 test("queued presentation retains its binding signal and performs no edits after abort", async () => {
@@ -177,7 +233,7 @@ test("a fully caught-up mapped Session rename PATCHes the same thread, Anchor, a
   await companion.rename("Discord Remote Test 2"); await remote.flushPresentation(binding.threadId);
   const after = (await store.load("/live-name"))?.sessions.session;
   assert.equal(after?.threadId, binding.threadId); assert.equal(after?.lastMirroredEntryId, "u");
-  assert.ok(rest.calls.some((call) => call.kind === "edit-channel" && call.channelId === binding.threadId && (call.body as any).name === "Discord-Remote-Test-2"));
+  assert.ok(rest.calls.some((call) => call.kind === "edit-channel" && call.channelId === binding.threadId && (call.body as any).name === "Discord Remote Test 2"));
   assert.ok(rest.calls.some((call) => call.kind === "edit-message" && call.messageId === binding.anchorMessageId && call.content?.includes("Discord Remote Test 2")));
   assert.ok(rest.calls.some((call) => call.kind === "edit-message" && call.messageId === binding.headerMessageId && call.content?.includes("Discord Remote Test 2")));
   assert.equal(rest.calls.some((call) => call.kind === "start-thread"), false);

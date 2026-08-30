@@ -121,11 +121,12 @@ type PendingPresentation = {
 const isDiscordOrigin = (origin: TimelineEvent["origin"]): boolean => origin === "discord" || origin === "discord-steer" || origin === "discord-follow-up";
 const isMissing = (error: unknown): boolean => !!error && typeof error === "object" && (((error as { code?: unknown }).code === 10003) || ((error as { status?: unknown }).status === 404));
 const abortIfNeeded = (signal: AbortSignal): void => { if (signal.aborted) throw new DOMException("Remote binding aborted", "AbortError"); };
-const safeName = (value: string): string => value.replace(/[^a-zA-Z0-9-_]/g, "-").replace(/-+/g, "-").slice(0, 90) || "project";
+const safeChannelName = (value: string): string => value.replace(/[^a-zA-Z0-9-_]/g, "-").replace(/-+/g, "-").slice(0, 90) || "project";
+const safeThreadName = (value: string): string => Array.from(value.normalize("NFC").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim()).slice(0, 100).join("") || "Session";
 const presentationContent = (value: RemoteSessionPresentation): PresentationContent => {
   const state = value.status; const task = state.taskGoal ?? "No active Task";
   return {
-    name: safeName(value.title),
+    name: safeThreadName(value.title),
     anchor: `PINDIE SESSION · ${value.title}\nTask · ${task}\nStatus · ${state.taskStatus}`.slice(0, 1_900),
     header: `PINDIE SESSION\n${value.title}\nProject · ${value.project}\nSession · ${value.sessionId}\nTask · ${state.taskStatus} · ${task}${state.activity ? `\nActivity · ${state.activity}` : ""}${state.verificationStatus ? `\nVerification · ${state.verificationStatus}` : ""}${state.elapsedMs !== null ? `\nElapsed · ${Math.floor(state.elapsedMs / 1_000)}s` : ""}${state.localUiPrompt ? "\nWAITING FOR LOCAL UI" : ""}`.slice(0, 1_900),
   };
@@ -271,14 +272,14 @@ export class DiscordRemote implements RemoteSurface {
   }
   private requireRest(signal: AbortSignal): DiscordRestSeam { abortIfNeeded(signal); if (!this.rest) throw new Error("Discord Remote is not connected."); return this.rest; }
   private async createProject(rest: DiscordRestSeam, name: string, replaced: boolean, signal: AbortSignal): Promise<{ channelId: string; replaced?: boolean }> {
-    const channel = await rest.createProjectChannel(this.config.guildId, safeName(name), signal); abortIfNeeded(signal);
+    const channel = await rest.createProjectChannel(this.config.guildId, safeChannelName(name), signal); abortIfNeeded(signal);
     return { channelId: channel.id, replaced: replaced || undefined };
   }
   private async createSession(rest: DiscordRestSeam, channelId: string, title: string, replaced: boolean, signal: AbortSignal): Promise<Omit<RemoteSessionRouting, "lastMirroredEntryId"> & { replaced?: boolean }> {
     const channel = await rest.fetchChannel(channelId, signal); abortIfNeeded(signal);
     if (!channel || channel.guild_id !== this.config.guildId || channel.type !== ChannelType.GuildText) throw new Error("Discord Project channel is unavailable.");
     const anchor = await rest.createMessage(channelId, `PINDIE SESSION · ${title}`.slice(0, 1_900), signal); abortIfNeeded(signal);
-    const thread = await rest.startThread(channelId, anchor.id, safeName(title), signal); abortIfNeeded(signal);
+    const thread = await rest.startThread(channelId, anchor.id, safeThreadName(title), signal); abortIfNeeded(signal);
     const head = await rest.createMessage(thread.id, `PINDIE SESSION\n${title}`.slice(0, 1_900), signal); abortIfNeeded(signal);
     return { threadId: thread.id, anchorMessageId: anchor.id, headerMessageId: head.id, replaced: replaced || undefined };
   }

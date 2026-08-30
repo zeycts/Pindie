@@ -39,6 +39,7 @@
     "@earendil-works/pi-tui": "0.84.4",
     "discord.js": "14.27.0",
     "https-proxy-agent": "^9.1.0",
+    "undici": "6.28.0",
     "ws": "^8.21.3"
   }
 }
