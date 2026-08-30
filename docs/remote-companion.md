@@ -365,6 +365,8 @@ If the parent project channel was deleted, recreate the channel and rebuild chil
 
 v0.1 deliberately supports one Remote-enabled local Pi process at a time. Multiple simultaneous local Pi processes sharing one Discord Bot introduce process ownership/routing concerns and require a later local daemon or equivalent architecture.
 
+Multiple Remote-enabled Pindie processes for the same Project/routing may each receive the same Discord Gateway message; normal use should keep one active Remote-enabled Pindie process per Project.
+
 Also out of scope:
 
 - remote Session switching;

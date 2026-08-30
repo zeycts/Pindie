@@ -26,8 +26,7 @@ class FakeClient implements DiscordClientSeam {
   loginCalls = 0; destroyed = 0;
   async login(_token: string) { this.loginCalls++; }
   destroy() { this.destroyed++; }
-  once(event: "ready", listener: () => void) { this.add(event, listener); }
-  on(event: "messageCreate" | "shardResume" | "error", listener: (...args: any[]) => void) { this.add(event, listener); }
+  on(event: "ready" | "messageCreate" | "shardResume" | "error", listener: (...args: any[]) => void) { this.add(event, listener); }
   emit(event: string, ...args: any[]) { for (const listener of this.handlers.get(event) ?? []) listener(...args); }
   private add(event: string, listener: (...args: any[]) => void) { this.handlers.set(event, [...(this.handlers.get(event) ?? []), listener]); }
 }
@@ -261,7 +260,59 @@ test("authorized mapped input ignores bots, wrong routing, and whitespace-only c
   await new Promise((resolve) => setImmediate(resolve)); assert.deepEqual(seen, ["thread:go"]);
 });
 
-test("startup is dormant until start, reconnect catches up, and shutdown cleans resources", async () => {
-  const client = new FakeClient(); const rest = new FakeRest(); let ready = 0; const remote = new DiscordRemote(config, { createClient: () => client, createRest: () => rest }); assert.equal(client.loginCalls, 0);
-  await remote.start(async () => "sent", () => { ready++; }); assert.equal(client.loginCalls, 1); client.emit("ready"); client.emit("shardResume"); assert.equal(ready, 2); remote.stop(); assert.equal(client.destroyed, 1);
+test("READY reconciliation persists across invalid-session re-identification and reuses routing and cursor", async (t) => {
+  type Socket = ReturnType<GatewaySocketFactory> & { handlers: Map<string, (...args: any[]) => void>; sent: any[] };
+  const sockets: Socket[] = []; const timers: Array<{ callback: () => void; delay: number }> = [];
+  const createSocket: GatewaySocketFactory = () => {
+    const handlers = new Map<string, (...args: any[]) => void>(); const sent: any[] = [];
+    const socket: Socket = {
+      handlers, sent, readyState: 1, send: (data) => { sent.push(JSON.parse(String(data))); }, terminate: () => undefined,
+      close: () => { handlers.get("close")?.(); },
+      on: (event: string, listener: (...args: any[]) => void) => { handlers.set(event, listener); return socket as any; },
+    };
+    sockets.push(socket); return socket;
+  };
+  const client = new DiscordGatewayClient({ createSocket, setTimer: (callback, delay) => { timers.push({ callback, delay }); return timers.length as any; }, clearTimer: () => undefined });
+  Object.assign(client.rest, { get: async () => ({ url: "wss://gateway.discord.gg" }) });
+  const rest = new FakeRest(); const remote = new DiscordRemote(config, { createClient: () => client, createRest: () => rest });
+  const store = new RemoteRoutingStore({ baseDir: await fixture(t) }); const companion = new RemoteCompanion(remote, { routing: store });
+  await companion.bind("/reconnect", config.guildId, "persisted-session", { isIdle: () => true, abort: () => undefined } as any);
+  let entries = [{ id: "u", message: { role: "user" as const, content: "initial" } }];
+  let reconciliations = 0; const catchUps: Array<Promise<void>> = [];
+  const started = remote.start(async () => "sent", () => { reconciliations++; catchUps.push(companion.catchUp(entries)); });
+  await new Promise((resolve) => setImmediate(resolve));
+  const dispatch = (socket: Socket, payload: unknown) => socket.handlers.get("message")?.(Buffer.from(JSON.stringify(payload)));
+  dispatch(sockets[0]!, { op: 10, d: { heartbeat_interval: 60_000 } });
+  assert.equal(sockets[0]!.sent.at(-1)?.op, 2);
+  dispatch(sockets[0]!, { op: 0, t: "READY", d: { session_id: "gateway-one", resume_gateway_url: "wss://resume.discord.gg" } });
+  await started; await catchUps.at(-1);
+  const initial = (await store.load("/reconnect"))?.sessions["persisted-session"]; assert.ok(initial); assert.equal(initial.lastMirroredEntryId, "u"); assert.equal(reconciliations, 1);
+
+  entries = [...entries, { id: "a", message: { role: "assistant" as const, content: "resumed" } }];
+  dispatch(sockets[0]!, { op: 0, t: "RESUMED" }); await catchUps.at(-1);
+  const resumed = (await store.load("/reconnect"))?.sessions["persisted-session"];
+  assert.equal(reconciliations, 2); assert.equal(resumed?.threadId, initial.threadId); assert.equal(resumed?.lastMirroredEntryId, "a");
+
+  entries = [...entries, { id: "b", message: { role: "assistant" as const, content: "reidentified" } }];
+  dispatch(sockets[0]!, { op: 9, d: false });
+  const reconnect = timers.find((timer) => timer.delay === 1_000); assert.ok(reconnect); reconnect.callback();
+  dispatch(sockets[1]!, { op: 10, d: { heartbeat_interval: 60_000 } });
+  assert.equal(sockets[1]!.sent.at(-1)?.op, 2);
+  dispatch(sockets[1]!, { op: 0, t: "READY", d: { session_id: "gateway-two", resume_gateway_url: "wss://resume-two.discord.gg" } });
+  await catchUps.at(-1);
+  const reidentified = (await store.load("/reconnect"))?.sessions["persisted-session"];
+  assert.equal(reconciliations, 3); assert.equal(reidentified?.threadId, initial.threadId); assert.equal(reidentified?.anchorMessageId, initial.anchorMessageId); assert.equal(reidentified?.headerMessageId, initial.headerMessageId); assert.equal(reidentified?.lastMirroredEntryId, "b");
+  assert.equal(rest.calls.filter((call) => call.kind === "start-thread").length, 1);
+  remote.stop();
+});
+
+test("READY from a stale DiscordRemote generation is ignored", async () => {
+  const stale = new FakeClient(); const current = new FakeClient(); const clients = [stale, current]; let ready = 0;
+  const remote = new DiscordRemote(config, { createClient: () => clients.shift()!, createRest: () => new FakeRest() });
+  await remote.start(async () => "sent", () => { ready++; });
+  stale.emit("ready");
+  await remote.start(async () => "sent", () => { ready++; });
+  stale.emit("ready"); current.emit("ready"); current.emit("shardResume");
+  assert.equal(ready, 3); assert.equal(stale.destroyed, 1);
+  remote.stop(); assert.equal(current.destroyed, 1);
 });

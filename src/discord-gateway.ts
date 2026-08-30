@@ -55,12 +55,7 @@ export class DiscordGatewayClient implements DiscordClientSeam {
 
   private readonly socketOptions: ClientOptions;
 
-  once(event: "ready", listener: () => void): void {
-    const wrapper = () => { this.remove(event, wrapper); listener(); };
-    this.add(event, wrapper);
-  }
-
-  on(event: "messageCreate" | "shardResume" | "error", listener: Listener): void { this.add(event, listener); }
+  on(event: "ready" | "messageCreate" | "shardResume" | "error", listener: Listener): void { this.add(event, listener); }
 
   async login(token: string): Promise<void> {
     this.destroyed = false;
@@ -156,6 +151,5 @@ export class DiscordGatewayClient implements DiscordClientSeam {
   private send(socket: GatewaySocket, payload: GatewayPayload): void { if (socket.readyState === OPEN) socket.send(JSON.stringify(payload)); }
   private fail(error: unknown): void { const failure = error instanceof Error ? error : new Error("Discord Gateway connection failed."); this.loginReject?.(failure); this.loginResolve = null; this.loginReject = null; this.emit("error", failure); }
   private add(event: string, listener: Listener): void { this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]); }
-  private remove(event: string, listener: Listener): void { this.listeners.set(event, (this.listeners.get(event) ?? []).filter((candidate) => candidate !== listener)); }
   private emit(event: string, ...args: any[]): void { for (const listener of this.listeners.get(event) ?? []) listener(...args); }
 }

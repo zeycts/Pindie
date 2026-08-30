@@ -61,8 +61,7 @@ type DiscordRawRest = {
 export interface DiscordClientSeam {
   login(token: string): Promise<unknown>;
   destroy(): void;
-  once(event: "ready", listener: () => void): unknown;
-  on(event: "messageCreate" | "shardResume" | "error", listener: (...args: any[]) => void): unknown;
+  on(event: "ready" | "messageCreate" | "shardResume" | "error", listener: (...args: any[]) => void): unknown;
   rest: DiscordRawRest;
 }
 
@@ -164,7 +163,7 @@ export class DiscordRemote implements RemoteSurface {
     const generation = ++this.generation; const client = this.createClient();
     this.lifecycleAbort = new AbortController();
     this.client = client; this.rest = this.createRest(client); this.onInput = input; this.onReady = ready;
-    client.once("ready", () => { if (this.current(generation, client)) this.onReady?.(); });
+    client.on("ready", () => { if (this.current(generation, client)) this.onReady?.(); });
     client.on("shardResume", () => { if (this.current(generation, client)) this.onReady?.(); });
     client.on("messageCreate", (message: DiscordMessage) => { void this.receive(generation, message, acceptsThread); });
     client.on("error", () => this.warn("Pindie Discord Remote gateway error."));
