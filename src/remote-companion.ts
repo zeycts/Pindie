@@ -36,6 +36,7 @@ type Binding = {
   generation: number;
   routing: DiscordProjectRoutingV1;
   sessionName?: string;
+  sessionPrompt?: string;
   taskGoal?: string;
   status: RemoteStatusFacts;
   taskCompleted: boolean;
@@ -55,12 +56,21 @@ const EMPTY_STATUS: RemoteStatusFacts = {
 };
 
 function firstPrompt(entries: MirrorEntry[]): string | undefined {
-  return entries.find((entry) => entry.message?.role === "user")?.message?.content instanceof Array
-    ? undefined
-    : entries.find((entry) => entry.message?.role === "user")?.message?.content as string | undefined;
+  for (const entry of entries) {
+    if (entry.message?.role !== "user") continue;
+    const content = entry.message.content;
+    const text = typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content.flatMap((part) => typeof part === "object" && part !== null && "text" in part && typeof part.text === "string" ? [part.text] : []).join("\n")
+        : "";
+    if (text.trim()) return text;
+  }
+  return undefined;
 }
-function titleFor(binding: { sessionId: string; sessionName?: string; taskGoal?: string }, prompt?: string): string {
-  const value = binding.sessionName?.trim() || binding.taskGoal?.trim() || prompt?.split(/\r?\n/, 1)[0]?.trim() || `Session ${binding.sessionId.slice(0, 8)}`;
+function titleFor(binding: Pick<Binding, "sessionId" | "sessionName" | "sessionPrompt" | "taskGoal" | "status">): string {
+  const activeTaskGoal = ["active", "blocked", "waiting_human"].includes(binding.status.taskStatus) ? binding.taskGoal?.trim() : undefined;
+  const value = binding.sessionName?.trim() || binding.sessionPrompt?.split(/\r?\n/, 1)[0]?.trim() || activeTaskGoal || `Session ${binding.sessionId.slice(0, 8)}`;
   return value.slice(0, 100);
 }
 
@@ -132,12 +142,14 @@ export class RemoteCompanion {
     if (!binding) return;
     await this.serial(async () => {
       if (this.binding !== binding) return;
+      binding.sessionPrompt ??= firstPrompt(entries);
       const known = binding.routing.sessions[binding.sessionId];
       const cursor = known?.lastMirroredEntryId ?? null;
       const cursorIndex = cursor === null ? -1 : entries.findIndex((entry) => entry.id === cursor);
       const unseen = entries.slice(cursor === null ? 0 : Math.max(0, cursorIndex + 1));
-      if (!unseen.some((entry) => mirrorEntry(entry) !== null)) return;
-      const session = await this.ensure(binding, firstPrompt(unseen));
+      if (!known && !unseen.some((entry) => mirrorEntry(entry) !== null)) return;
+      const session = await this.ensure(binding);
+      if (!unseen.some((entry) => mirrorEntry(entry) !== null) && session.lastMirroredEntryId !== null) return;
       const delivery = cursor !== null && session.lastMirroredEntryId === null ? entries : unseen;
       for (const entry of delivery) await this.deliver(binding, session, entry);
     });
@@ -254,14 +266,14 @@ export class RemoteCompanion {
     return { entryId: `gate:${key}`, kind: "milestone", text: `HUMAN GATE\n${question}${options.length ? `\n${options.join(" · ")}` : ""}` };
   }
 
-  private async ensure(b: Binding, prompt?: string): Promise<RemoteSessionRouting> {
+  private async ensure(b: Binding): Promise<RemoteSessionRouting> {
     this.requireCurrent(b);
     this.refreshStatus(b);
     const channel = await this.surface.ensureProject(b.projectId, b.projectName, b.routing.channelId || null, b.abortController.signal);
     this.requireCurrent(b);
     if (channel.replaced || channel.channelId !== b.routing.channelId) { b.routing.channelId = channel.channelId; if (channel.replaced) b.routing.sessions = {}; }
     const existing = b.routing.sessions[b.sessionId] ?? null;
-    const created = await this.surface.ensureSession(b.routing.channelId, b.sessionId, titleFor(b, prompt), existing, b.abortController.signal);
+    const created = await this.surface.ensureSession(b.routing.channelId, b.sessionId, titleFor(b), existing, b.abortController.signal);
     this.requireCurrent(b);
     let session: RemoteSessionRouting;
     if (!existing || created.replaced || created.threadId !== existing.threadId || created.anchorMessageId !== existing.anchorMessageId || created.headerMessageId !== existing.headerMessageId) {
@@ -270,7 +282,7 @@ export class RemoteCompanion {
     } else session = existing;
     await this.routing.save(b.projectRoot, b.routing);
     this.requireCurrent(b);
-    await this.updatePresentation(b, session, prompt);
+    await this.updatePresentation(b, session);
     this.requireCurrent(b);
     return session;
   }
@@ -289,12 +301,12 @@ export class RemoteCompanion {
       // Status projection is optional presentation and never semantic authority.
     }
   }
-  private async updatePresentation(b: Binding, session: RemoteSessionRouting, prompt?: string): Promise<void> {
+  private async updatePresentation(b: Binding, session: RemoteSessionRouting): Promise<void> {
     this.requireCurrent(b);
     await this.surface.updateSessionPresentation(session, {
       project: b.projectName,
       sessionId: b.sessionId,
-      title: titleFor(b, prompt),
+      title: titleFor(b),
       status: b.status,
     }, b.abortController.signal);
     this.requireCurrent(b);

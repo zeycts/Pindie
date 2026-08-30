@@ -70,7 +70,10 @@ Remote Companion is optional and uses environment configuration only:
 PINDIE_DISCORD_TOKEN
 PINDIE_DISCORD_USER_ID
 PINDIE_DISCORD_GUILD_ID
+PINDIE_DISCORD_PROXY # optional; Discord REST and Gateway WebSocket proxy
 ```
+
+Discord transport proxy resolution is `PINDIE_DISCORD_PROXY`, then `HTTPS_PROXY`, then `https_proxy`, then a direct connection. The resolved proxy applies to both Discord REST and the Gateway WebSocket. Proxy configuration is runtime-only and credentials are never logged.
 
 If all are absent, Remote Companion is disabled and Pindie behaves exactly as before.
 
@@ -162,9 +165,11 @@ An existing mapping for the same Pi Session ID is always reused. `/new` produces
 Thread title priority is deterministic and does not call an LLM:
 
 1. explicit Pi Session name;
-2. current Pindie Task goal;
-3. first meaningful user-prompt line;
+2. first meaningful user-prompt line from this Pi Session;
+3. current Pindie Task goal only while the Task is active, blocked, or waiting for a human;
 4. `Session <short-id>`.
+
+A completed Task remains visible in the Session Header but never supplies the identity of a newly created Pi Session.
 
 `session_info_changed` may rename the existing Discord thread and update its anchor, but never changes the mapping identity.
 
@@ -359,6 +364,8 @@ If the parent project channel was deleted, recreate the channel and rebuild chil
 ## 17. v0.1 scope limits
 
 v0.1 deliberately supports one Remote-enabled local Pi process at a time. Multiple simultaneous local Pi processes sharing one Discord Bot introduce process ownership/routing concerns and require a later local daemon or equivalent architecture.
+
+Multiple Remote-enabled Pindie processes for the same Project/routing may each receive the same Discord Gateway message; normal use should keep one active Remote-enabled Pindie process per Project.
 
 Also out of scope:
 

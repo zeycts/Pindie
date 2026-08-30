@@ -560,6 +560,25 @@ test("Remote-enabled wiring observes public input without altering Pindie tools"
   assert.ok(Array.isArray(sent));
 });
 
+test("Pi session_info_changed awaits presentation rename for the mapped active Session", async () => {
+  const titles: string[] = [];
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: "header" }),
+    send: async () => undefined,
+    updateSessionPresentation: async (_session, presentation) => { titles.push(presentation.title); },
+  };
+  const companion = new RemoteCompanion(surface);
+  const { api } = createHarness([], {}, { remoteCompanion: { companion, guildId: "guild" } });
+  const ui = context("/repo", [{ id: "u", message: { role: "user", content: "Original prompt" } }]);
+  await api.handler("session_start")({ type: "session_start", reason: "startup" }, ui);
+  const before = titles.length;
+  await api.handler("session_info_changed")({ type: "session_info_changed", name: "Discord Remote Test 2" }, ui);
+  assert.equal(companion.activeSessionId, "remote-session");
+  assert.equal(titles.length, before + 1);
+  assert.equal(titles.at(-1), "Discord Remote Test 2");
+});
+
 test("Discord startup is deferred from session_start and current-session shutdown cleans it up", async () => {
   const surface: RemoteSurface = { ensureProject: async () => ({ channelId: "channel" }), ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }), send: async () => undefined, updateSessionPresentation: async () => undefined };
   let started = 0; let stopped = 0; let release!: () => void;
