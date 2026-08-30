@@ -31,6 +31,8 @@ export function classifyToolEffect(toolName: string): ToolEffect {
     case "grep":
     case "find":
     case "ls":
+    case "web_search":
+    case "url_context":
       return classified("observe.project", "none");
 
     case "pindie_git_observe":
