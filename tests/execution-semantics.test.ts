@@ -30,6 +30,8 @@ const exactCases = [
   ["grep", "observe.project", "none"],
   ["find", "observe.project", "none"],
   ["ls", "observe.project", "none"],
+  ["web_search", "observe.project", "none"],
+  ["url_context", "observe.project", "none"],
   ["pindie_git_observe", "observe.git", "none"],
   ["edit", "project.mutate", "known"],
   ["write", "project.mutate", "known"],
@@ -123,6 +125,8 @@ function composed(
 
 test("M0 and execution semantics compose for idle, active, and blocked mutation", () => {
   assert.equal(composed(EMPTY_STATE, facts({ taskRelation: "none" }), "edit").allowed, false);
+  assert.equal(composed(EMPTY_STATE, facts({ taskRelation: "none" }), "web_search").allowed, true);
+  assert.equal(composed(EMPTY_STATE, facts({ taskRelation: "none" }), "url_context").allowed, true);
   assert.equal(composed(EMPTY_STATE, facts({ taskRelation: "none" }), "pindie_task_start").allowed, true);
   assert.equal(composed({ task: task() }, facts(), "edit").allowed, true);
   assert.equal(composed({
@@ -157,6 +161,7 @@ test("M0 and execution semantics compose for completion and Gates", () => {
 
 test("stale and unavailable authority preserve observation and deny consequences", () => {
   assert.equal(composed({ task: task() }, { stateAvailable: true, runCoherent: false }, "read").allowed, true);
+  assert.equal(composed({ task: task() }, { stateAvailable: true, runCoherent: false }, "web_search").allowed, true);
   assert.equal(composed({ task: task() }, { stateAvailable: true, runCoherent: false }, "edit").allowed, false);
   assert.equal(composed(null, { stateAvailable: false }, "custom_tool").allowed, false);
 });
