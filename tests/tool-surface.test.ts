@@ -80,9 +80,9 @@ test("S05 active project.mutate keeps baseline edit/write/bash", () => {
   assert.deepEqual(surface({ task: task() }, facts(), ["edit", "write", "bash"]), ["edit", "write", "bash"]);
 });
 
-test("S06 blocked removes edit/write/bash/unknown custom", () => {
+test("S06 blocked retains baseline edit/write/bash/unknown custom", () => {
   const blocked = task({ openLoops: { blockers: ["Blocked"], questions: [], nextIntent: null } });
-  assert.deepEqual(surface({ task: blocked }, facts(), ["read", "edit", "write", "bash", "custom_tool"]), ["read"]);
+  assert.deepEqual(surface({ task: blocked }, facts(), ["read", "edit", "write", "bash", "custom_tool"]), ["read", "edit", "write", "bash", "custom_tool"]);
 });
 
 test("S07 active preexisting untouched keeps pindie_task_replace", () => {

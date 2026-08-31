@@ -119,10 +119,10 @@ active
 → + task.complete iff completionReady
 
 blocked
-→ observe.project, observe.git,
+→ observe.project, observe.git, project.mutate,
   task.refine, task.progress, verification.record, gate.open
 → + task.replace iff preexisting_untouched
-→ no project.mutate, no task.complete
+→ no task.complete
 
 waiting_human / opened_during_run
 → observe.project, observe.git
@@ -132,7 +132,7 @@ waiting_human / existed_before_run
 → + task.replace iff preexisting_untouched
 ```
 
-Questions may coexist with useful work but prevent completion. A Task-level blocker means consequential project mutation is not currently safe/effective.
+Questions may coexist with useful work but prevent completion. A Task-level blocker means the Task cannot currently be completed or proceed along its intended path, but a coherent Agent Run may still mutate the project to attempt recovery.
 
 ## 5. Tool Effects and live Gateway
 

@@ -21,6 +21,7 @@ const ACTIVE_BASE: PindieCapability[] = [
 ];
 const BLOCKED_BASE: PindieCapability[] = [
   ...OBSERVATION,
+  "project.mutate",
   "task.refine",
   "task.progress",
   "verification.record",
@@ -319,7 +320,9 @@ test("S14 passed verification plus a blocker applies the blocked capability set"
   assert.equal(snapshot.authority, "coherent");
   assert.equal(snapshot.hasBlockers, true);
   assert.equal(snapshot.completionReady, false);
-  assertCapabilities(deriveCapabilities(snapshot), [...BLOCKED_BASE, "task.replace"]);
+  const capabilities = deriveCapabilities(snapshot);
+  assertCapabilities(capabilities, [...BLOCKED_BASE, "task.replace"]);
+  assert.equal(capabilities.has("task.complete"), false);
 });
 
 test("S15 a blocked preexisting untouched Task has the exact replace-capable blocked set", () => {
