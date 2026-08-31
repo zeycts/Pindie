@@ -1,4 +1,3 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { RemoteRoutingStore, type DiscordProjectRoutingV1, type RemoteSessionRouting } from "./remote-routing.ts";
 import { ExecutionAggregator, mirrorEntry, splitTimelineEvent, type MirrorEntry, type PromptOrigin, type TimelineEvent } from "./session-mirror.ts";
 
@@ -24,7 +23,11 @@ export interface RemoteSurface {
   /** One transport-independent seam for editing the existing anchor/header in place. */
   updateSessionPresentation(session: Pick<RemoteSessionRouting, "threadId" | "anchorMessageId" | "headerMessageId">, presentation: RemoteSessionPresentation, signal: AbortSignal): Promise<void>;
 }
-export interface RemotePi { sendUserMessage(text: string, options?: { deliverAs?: "steer" | "followUp" }): void | Promise<void>; }
+export interface RemotePi {
+  isIdle(): boolean;
+  abort(): void;
+  sendUserMessage(text: string, options?: { deliverAs?: "steer" | "followUp" }): void | Promise<void>;
+}
 export interface RemoteCompanionOptions { routing?: RemoteRoutingStore; }
 
 type Binding = {
@@ -32,7 +35,6 @@ type Binding = {
   projectId: string;
   projectName: string;
   sessionId: string;
-  ctx: ExtensionContext;
   generation: number;
   routing: DiscordProjectRoutingV1;
   sessionName?: string;
@@ -79,6 +81,7 @@ export class RemoteCompanion {
   private readonly routing: RemoteRoutingStore;
   private readonly surface: RemoteSurface;
   private binding: Binding | null = null;
+  private pendingBind: { sessionId: string; generation: number } | null = null;
   private generation = 0;
   /** Origins observed from Pi's public input event, in native input order. */
   private readonly origins: PromptOrigin[] = [];
@@ -89,11 +92,14 @@ export class RemoteCompanion {
   private readonly milestones = new Set<string>();
   constructor(surface: RemoteSurface, options: RemoteCompanionOptions = {}) { this.surface = surface; this.routing = options.routing ?? new RemoteRoutingStore(); }
 
-  async bind(projectRoot: string, guildId: string, sessionId: string, ctx: ExtensionContext, presentation: { sessionName?: string; taskGoal?: string; status?: RemoteStatusFacts; getStatus?: () => RemoteStatusFacts } = {}): Promise<void> {
+  async bind(projectRoot: string, guildId: string, sessionId: string, presentation: { sessionName?: string; taskGoal?: string; status?: RemoteStatusFacts; getStatus?: () => RemoteStatusFacts } = {}): Promise<void> {
     const generation = ++this.generation;
+    const pendingBind = { sessionId, generation };
+    this.pendingBind = pendingBind;
     this.binding?.abortController.abort();
     this.binding = null;
     this.origins.length = 0;
+    this.dispatchingOrigin = null;
     this.milestones.clear();
     this.toolInputs.clear();
     try {
@@ -102,12 +108,12 @@ export class RemoteCompanion {
       const routing = existing && existing.guildId === guildId ? existing : { version: 1 as const, guildId, channelId: "", sessions: {} };
       let status = presentation.status ?? EMPTY_STATUS;
       try { status = presentation.getStatus?.() ?? status; } catch { /* best-effort projection */ }
+      if (this.pendingBind !== pendingBind || generation !== this.generation) return;
       this.binding = {
         projectRoot,
         projectId,
         projectName: this.routing.projectName(projectRoot),
         sessionId,
-        ctx,
         generation,
         routing,
         ...presentation,
@@ -118,11 +124,19 @@ export class RemoteCompanion {
       };
     } catch {
       // Remote routing is optional I/O. A failed bind leaves no stale live context.
+    } finally {
+      if (this.pendingBind === pendingBind) this.pendingBind = null;
     }
   }
-  shutdown(ctx: ExtensionContext): boolean {
-    if (this.binding?.ctx !== ctx) return false;
-    this.binding.abortController.abort(); this.binding = null; this.origins.length = 0; this.milestones.clear(); this.toolInputs.clear();
+  shutdown(sessionId: string): boolean {
+    const binding = this.binding;
+    const pendingBind = this.pendingBind;
+    if (binding?.sessionId !== sessionId && pendingBind?.sessionId !== sessionId) return false;
+    ++this.generation;
+    this.pendingBind = null;
+    binding?.abortController.abort();
+    this.binding = null;
+    this.origins.length = 0; this.dispatchingOrigin = null; this.milestones.clear(); this.toolInputs.clear();
     return true;
   }
   setLocalUiPrompt(active: boolean): void {
@@ -219,7 +233,7 @@ export class RemoteCompanion {
       });
       return "historical";
     }
-    if (text === "!stop") { if (b.ctx.isIdle()) return "idle"; b.ctx.abort(); return "stopped"; }
+    if (text === "!stop") { if (pi.isIdle()) return "idle"; pi.abort(); return "stopped"; }
     if (text === "!status") {
       this.refreshStatus(b);
       await this.serial(async () => { if (this.binding === b) await this.updatePresentation(b, session); });
@@ -228,10 +242,11 @@ export class RemoteCompanion {
     if (b.status.localUiPrompt) return "local-ui";
     const after = text.startsWith("!after "); const content = after ? text.slice(7).trim() : text;
     if (!content) return "sent";
-    const origin: PromptOrigin = !b.ctx.isIdle() ? (after ? "discord-follow-up" : "discord-steer") : "discord";
+    const idle = pi.isIdle();
+    const origin: PromptOrigin = !idle ? (after ? "discord-follow-up" : "discord-steer") : "discord";
     this.dispatchingOrigin = origin;
     try {
-      await pi.sendUserMessage(content, b.ctx.isIdle() ? undefined : { deliverAs: after ? "followUp" : "steer" });
+      await pi.sendUserMessage(content, idle ? undefined : { deliverAs: after ? "followUp" : "steer" });
     } catch {
       return "failed";
     } finally {

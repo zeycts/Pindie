@@ -231,12 +231,14 @@ function context(
   cwd: string,
   sessionEntries: unknown[] = [],
   hasPendingMessages = false,
+  sessionId = "remote-session",
+  getEntries: () => unknown[] = () => sessionEntries,
 ): Record<string, unknown> {
   return {
     cwd,
     hasUI: false,
     hasPendingMessages: () => hasPendingMessages,
-    sessionManager: { getEntries: () => sessionEntries, getSessionId: () => "remote-session", getSessionName: () => undefined },
+    sessionManager: { getEntries, getSessionId: () => sessionId, getSessionName: () => undefined },
     ui: { notify: () => undefined },
   };
 }
@@ -596,6 +598,94 @@ test("Discord startup is deferred from session_start and current-session shutdow
   await harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "done" }, ui);
   assert.equal(stopped, 1);
   release();
+});
+
+test("stale Discord READY after same-session reload never reads the old ExtensionContext", async () => {
+  const mirrored: string[] = [];
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async (_channel, sessionId) => ({ threadId: `thread-${sessionId}`, anchorMessageId: "anchor", headerMessageId: "header" }),
+    send: async (_thread, event) => { mirrored.push(event.text); },
+    updateSessionPresentation: async () => undefined,
+  };
+  const routing = {
+    load: async () => ({ version: 1 as const, guildId: "guild", channelId: "channel", sessions: {} }),
+    save: async () => undefined,
+    projectName: () => "repo",
+  } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+  const starts: Array<{ ready: () => void; input: (threadId: string, text: string) => Promise<unknown> }> = [];
+  let stopped = 0;
+  const discord = {
+    start: (input: (threadId: string, text: string) => Promise<unknown>, ready: () => void) => {
+      starts.push({ input, ready });
+      return Promise.resolve();
+    },
+    stop: () => { stopped++; },
+  } as unknown as import("../src/discord-remote.ts").DiscordRemote;
+  const companion = new RemoteCompanion(surface, { routing });
+  const harness = createHarness([[
+    "/repo",
+    activeState("Remote reload"),
+  ]], {}, { remoteCompanion: { companion, guildId: "guild", discord } });
+  let staleReads = 0;
+  const staleContext = context(
+    "/repo",
+    [],
+    false,
+    "same-session",
+    () => {
+      staleReads++;
+      throw new Error("This extension ctx is stale after session replacement or reload.");
+    },
+  );
+  const currentEntries = [{ id: "current", message: { role: "user", content: "current prompt" } }];
+  const currentContext = context("/repo", currentEntries, false, "same-session");
+  const shutdownContext = context("/repo", [], false, "same-session");
+
+  await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, staleContext);
+  await harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "reload" }, shutdownContext);
+  await harness.api.handler("session_start")({ type: "session_start", reason: "reload" }, currentContext);
+  assert.equal(starts.length, 2);
+
+  assert.doesNotThrow(() => starts[0]!.ready());
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(staleReads, 0);
+  assert.deepEqual(mirrored, []);
+  assert.equal(companion.activeSessionId, "same-session");
+  assert.equal(stopped, 1);
+
+  starts[1]!.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(mirrored, ["YOU\ncurrent prompt"]);
+});
+
+test("late Discord input after session shutdown is inert and never touches the old context", async () => {
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: "header" }),
+    send: async () => undefined,
+    updateSessionPresentation: async () => undefined,
+  };
+  const starts: Array<{ input: (threadId: string, text: string) => Promise<unknown> }> = [];
+  const discord = {
+    start: (input: (threadId: string, text: string) => Promise<unknown>) => {
+      starts.push({ input });
+      return Promise.resolve();
+    },
+    stop: () => undefined,
+  } as unknown as import("../src/discord-remote.ts").DiscordRemote;
+  const companion = new RemoteCompanion(surface);
+  const harness = createHarness([["/repo", activeState()]], {}, { remoteCompanion: { companion, guildId: "guild", discord } });
+  let staleReads = 0;
+  const oldContext = context("/repo", [], false, "old-session", () => {
+    staleReads++;
+    throw new Error("This extension ctx is stale after session replacement or reload.");
+  });
+  await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, oldContext);
+  await harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "new" }, oldContext);
+
+  assert.equal(await starts[0]!.input("thread", "!stop"), "failed");
+  assert.equal(staleReads, 0);
 });
 
 test("Remote transport failure cannot disrupt startup, semantic milestones, verification, or Agent settlement", async () => {

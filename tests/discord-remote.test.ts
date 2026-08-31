@@ -187,9 +187,9 @@ test("a replaced M1 Session aborts its in-flight Anchor request and cannot conti
     return originalCreate(channelId, content, requestSignal);
   };
   const { remote } = await setup(rest); const store = new RemoteRoutingStore({ baseDir: await fixture(t) }); await store.save("/race", { version: 1, guildId: config.guildId, channelId: "channel", sessions: {} });
-  const companion = new RemoteCompanion(remote, { routing: store }); const contextA = { isIdle: () => true, abort: () => undefined } as any; const contextB = { isIdle: () => true, abort: () => undefined } as any;
-  await companion.bind("/race", config.guildId, "A", contextA); const stale = companion.catchUp([{ id: "a", message: { role: "user", content: "A prompt" } }]); await entered.promise;
-  await companion.bind("/race", config.guildId, "B", contextB); assert.equal(oldSignal?.aborted, true); release.resolve(); await stale;
+  const companion = new RemoteCompanion(remote, { routing: store });
+  await companion.bind("/race", config.guildId, "A"); const stale = companion.catchUp([{ id: "a", message: { role: "user", content: "A prompt" } }]); await entered.promise;
+  await companion.bind("/race", config.guildId, "B"); assert.equal(oldSignal?.aborted, true); release.resolve(); await stale;
   assert.equal(rest.calls.some((call) => call.kind === "start-thread" && call.content === "A prompt"), false);
   await companion.catchUp([{ id: "b", message: { role: "user", content: "B prompt" } }]); assert.ok(rest.calls.some((call) => call.kind === "start-thread" && call.content === "B prompt"));
 });
@@ -198,7 +198,7 @@ test("a Chinese Session-local prompt remains the Unicode Discord thread name", a
   const rest = new FakeRest(); const { remote } = await setup(rest);
   const store = new RemoteRoutingStore({ baseDir: await fixture(t) });
   const companion = new RemoteCompanion(remote, { routing: store });
-  await companion.bind("/unicode", config.guildId, "session", { isIdle: () => true, abort: () => undefined } as any);
+  await companion.bind("/unicode", config.guildId, "session");
   await companion.catchUp([{ id: "u", message: { role: "user", content: "修复代理连接问题\n保留后续内容" } }]);
   assert.ok(rest.calls.some((call) => call.kind === "start-thread" && call.content === "修复代理连接问题"));
 });
@@ -225,7 +225,7 @@ test("a fully caught-up mapped Session rename PATCHes the same thread, Anchor, a
   const rest = new FakeRest(); const { remote } = await setup(rest, { setTimer: () => 1 as any, clearTimer: () => undefined });
   const store = new RemoteRoutingStore({ baseDir: await fixture(t) }); const companion = new RemoteCompanion(remote, { routing: store });
   const entries = [{ id: "u", message: { role: "user" as const, content: "Original prompt" } }];
-  await companion.bind("/live-name", config.guildId, "session", { isIdle: () => true, abort: () => undefined } as any, { status: { ...status, taskGoal: "Task", taskStatus: "active" } });
+  await companion.bind("/live-name", config.guildId, "session", { status: { ...status, taskGoal: "Task", taskStatus: "active" } });
   await companion.catchUp(entries);
   const binding = (await store.load("/live-name"))?.sessions.session; assert.ok(binding);
   await remote.flushPresentation(binding.threadId); rest.calls.length = 0;
@@ -276,7 +276,7 @@ test("READY reconciliation persists across invalid-session re-identification and
   Object.assign(client.rest, { get: async () => ({ url: "wss://gateway.discord.gg" }) });
   const rest = new FakeRest(); const remote = new DiscordRemote(config, { createClient: () => client, createRest: () => rest });
   const store = new RemoteRoutingStore({ baseDir: await fixture(t) }); const companion = new RemoteCompanion(remote, { routing: store });
-  await companion.bind("/reconnect", config.guildId, "persisted-session", { isIdle: () => true, abort: () => undefined } as any);
+  await companion.bind("/reconnect", config.guildId, "persisted-session");
   let entries = [{ id: "u", message: { role: "user" as const, content: "initial" } }];
   let reconciliations = 0; const catchUps: Array<Promise<void>> = [];
   const started = remote.start(async () => "sent", () => { reconciliations++; catchUps.push(companion.catchUp(entries)); });
@@ -312,7 +312,7 @@ test("READY from a stale DiscordRemote generation is ignored", async () => {
   await remote.start(async () => "sent", () => { ready++; });
   stale.emit("ready");
   await remote.start(async () => "sent", () => { ready++; });
-  stale.emit("ready"); current.emit("ready"); current.emit("shardResume");
+  stale.emit("ready"); stale.emit("shardResume"); current.emit("ready"); current.emit("shardResume");
   assert.equal(ready, 3); assert.equal(stale.destroyed, 1);
   remote.stop(); assert.equal(current.destroyed, 1);
 });
