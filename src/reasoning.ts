@@ -16,7 +16,7 @@ export class ReasoningController {
 
   /** The initial effective level is a pre-runtime placeholder; session_start synchronizes Pi authority. */
   constructor() {
-    this.current = { mode: "auto", requestedLevel: "medium", effectiveLevel: "medium" };
+    this.current = { mode: "manual", requestedLevel: "medium", effectiveLevel: "medium" };
   }
 
   get snapshot(): ReasoningSnapshot {
@@ -24,7 +24,7 @@ export class ReasoningController {
   }
 
   reset(effectiveLevel: ThinkingLevel): void {
-    this.current = { mode: "auto", requestedLevel: "medium", effectiveLevel };
+    this.current = { mode: "manual", requestedLevel: "medium", effectiveLevel };
   }
 
   synchronizeEffective(effectiveLevel: ThinkingLevel): void {

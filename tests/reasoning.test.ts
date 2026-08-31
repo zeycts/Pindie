@@ -21,16 +21,17 @@ const result = (toolName: string, isError = false) => ({ toolName, isError });
 
 function controller() { return new ReasoningController(); }
 
-test("AR01-AR03 reset and Agent Runs initialize Auto medium", () => {
+test("AR01-AR03 fresh controllers default to Manual and ignore adaptation", () => {
   const reasoning = controller();
-  assert.deepEqual(reasoning.snapshot, { mode: "auto", requestedLevel: "medium", effectiveLevel: "medium" });
-  reasoning.decideNext(active, [result("edit")]);
+  assert.deepEqual(reasoning.snapshot, { mode: "manual", requestedLevel: "medium", effectiveLevel: "medium" });
+  reasoning.decideNext(failed, [result("bash", true)]);
   reasoning.beforeAgentStart();
-  assert.equal(reasoning.snapshot.requestedLevel, "medium");
+  assert.deepEqual(reasoning.snapshot, { mode: "manual", requestedLevel: "medium", effectiveLevel: "medium" });
 });
 
 test("AR04-AR14 Auto policy uses its specified priority and hysteresis", () => {
   const reasoning = controller();
+  reasoning.setAuto();
   reasoning.decideNext(active, [result("bash", true)]);
   assert.equal(reasoning.snapshot.requestedLevel, "high");
   reasoning.decideNext(failed, [result("edit")]);
@@ -60,4 +61,16 @@ test("AR15-AR19 Manual ignores adaptation and Auto restores medium", () => {
   assert.equal(reasoning.snapshot.requestedLevel, "medium");
   reasoning.synchronizeEffective("low");
   assert.deepEqual(reasoning.snapshot, { mode: "auto", requestedLevel: "medium", effectiveLevel: "low" });
+});
+
+test("AR20 reset returns to Manual and preserves Pi's effective level", () => {
+  const reasoning = controller();
+  reasoning.setAuto();
+  reasoning.reset("high");
+  assert.deepEqual(reasoning.snapshot, { mode: "manual", requestedLevel: "medium", effectiveLevel: "high" });
+  reasoning.decideNext(failed, [result("bash", true)]);
+  assert.deepEqual(reasoning.snapshot, { mode: "manual", requestedLevel: "medium", effectiveLevel: "high" });
+  reasoning.setAuto();
+  reasoning.decideNext(failed, [result("bash", true)]);
+  assert.equal(reasoning.snapshot.requestedLevel, "high");
 });

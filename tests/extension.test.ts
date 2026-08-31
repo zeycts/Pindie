@@ -350,11 +350,12 @@ test("Extension registration does not call Pi runtime action methods before runt
   ));
   assert.deepEqual(api.appliedThinkingLevels, []);
   api.bindRuntime();
+  api.thinkingLevel = "high";
   await api.handler("session_start")({ type: "session_start", reason: "startup" }, context("/repo"));
   await api.handler("before_agent_start")({ type: "before_agent_start", systemPrompt: "", prompt: "", systemPromptOptions: {} }, context("/repo"));
-  assert.deepEqual(api.appliedThinkingLevels, ["medium"]);
+  assert.deepEqual(api.appliedThinkingLevels, []);
   await api.commands.get("reasoning").handler("manual", context("/repo"));
-  assert.deepEqual(api.appliedThinkingLevels, ["medium"]);
+  assert.deepEqual(api.appliedThinkingLevels, []);
 });
 
 async function startSession(
@@ -712,18 +713,18 @@ test("E03-E05/E07 semantic, authority, stop, and queue facts suppress ineligible
   }
 });
 
-test("AR20-AR35 reasoning integration preserves auto authority and manual relinquishes it", async () => {
+test("AR20-AR35 reasoning defaults to manual and explicit auto controls Pi", async () => {
   const harness = createHarness([["/repo", activeState()]]);
   assert.ok(harness.api.handlers.has("turn_end"));
   assert.ok(harness.api.handlers.has("thinking_level_select"));
   assert.ok(harness.api.commands.has("reasoning"));
   await startSession(harness, "/repo");
-  assert.equal(harness.integration.reasoning.snapshot.mode, "auto");
+  assert.equal(harness.integration.reasoning.snapshot.mode, "manual");
   await beginAgentRun(harness);
-  assert.equal(harness.api.appliedThinkingLevels.at(-1), "medium");
+  assert.deepEqual(harness.api.appliedThinkingLevels, []);
   const originalState = structuredClone(harness.integration.runtime.state);
   await harness.api.handler("turn_end")({ type: "turn_end", toolResults: [toolResult("bash", true)] }, context("/repo"));
-  assert.equal(harness.api.appliedThinkingLevels.at(-1), "high");
+  assert.deepEqual(harness.api.appliedThinkingLevels, []);
   const command = harness.api.commands.get("reasoning");
   const notices: Array<{ message: string; type: string }> = [];
   const commandContext = { ...context("/repo"), ui: { notify: (message: string, type: string) => notices.push({ message, type }) } };
@@ -764,7 +765,22 @@ test("AR20-AR35 reasoning integration preserves auto authority and manual relinq
   assert.deepEqual(harness.store.saves, []);
   await harness.api.handler("session_shutdown")({ type: "session_shutdown" }, context("/repo"));
   await startSession(harness, "/repo", "new");
-  assert.equal(harness.integration.reasoning.snapshot.mode, "auto");
+  assert.equal(harness.integration.reasoning.snapshot.mode, "manual");
+});
+
+test("AR36 startup, reload, and new session starts reset reasoning to Manual", async () => {
+  for (const reason of ["startup", "reload", "new"]) {
+    const harness = createHarness([["/repo", activeState()]]);
+    harness.api.thinkingLevel = "high";
+    harness.integration.reasoning.setAuto();
+    await startSession(harness, "/repo", reason);
+    assert.deepEqual(harness.integration.reasoning.snapshot, {
+      mode: "manual",
+      requestedLevel: "medium",
+      effectiveLevel: "high",
+    }, reason);
+    assert.deepEqual(harness.api.appliedThinkingLevels, [], reason);
+  }
 });
 
 test("T37 session_start resolves and loads project State", async () => {
@@ -1630,7 +1646,7 @@ test("Run Cost measures public session usage from the Run baseline and resets pe
     { type: "agent_settled" },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /last 0s • \$0.31 • auto • active • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /last 0s • \$0.31 • manual • active • verify 0\/1/);
   assert.deepEqual(harness.integration.runCost.snapshot(entries as any), {
     cost: 0.31,
     active: false,
@@ -1645,7 +1661,7 @@ test("Run Cost measures public session usage from the Run baseline and resets pe
     },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /⏱ 0s • \$0.000 • auto • thinking • active • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /⏱ 0s • \$0.000 • manual • thinking • active • verify 0\/1/);
 
   await harness.api.handler("session_shutdown")(
     { type: "session_shutdown", reason: "new" },
@@ -1725,7 +1741,7 @@ test("Current Activity refreshes status from public tool execution lifecycle and
     uiContext,
   );
   assert.equal(harness.integration.runActivity.activity, "thinking");
-  assert.match(statuses.at(-1)?.text ?? "", /\$0.000 • auto • thinking • active • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /\$0.000 • manual • thinking • active • verify 0\/1/);
 
   await harness.api.handler("tool_execution_start")(
     toolExecution("tool_execution_start", "read-a", "read"),
@@ -1896,7 +1912,7 @@ test("unified Pindie status publishes active and final timing, then clears on sh
   );
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • auto • thinking • active • verify 0/1",
+    text: "⏱ 0s • $0.000 • manual • thinking • active • verify 0/1",
   });
 
   await harness.api.handler("agent_settled")(
@@ -1905,7 +1921,7 @@ test("unified Pindie status publishes active and final timing, then clears on sh
   );
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "last 0s • $0.000 • auto • active • verify 0/1",
+    text: "last 0s • $0.000 • manual • active • verify 0/1",
   });
 
   await harness.api.handler("session_shutdown")(
@@ -1945,7 +1961,7 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   });
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • auto • thinking • active • ✓ 1/1",
+    text: "⏱ 0s • $0.000 • manual • thinking • active • ✓ 1/1",
   });
 
   await harness.api.tool("pindie_gate_open").execute("gate", {
@@ -1954,7 +1970,7 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   });
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • auto • thinking • ✓ 1/1 • ⚠ gate: approval",
+    text: "⏱ 0s • $0.000 • manual • thinking • ✓ 1/1 • ⚠ gate: approval",
   });
 
   await harness.api.handler("agent_settled")(
