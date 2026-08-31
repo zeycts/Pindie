@@ -1,5 +1,6 @@
 import {
   type ExtensionAPI,
+  type ExtensionContext,
   type ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 
@@ -20,7 +21,7 @@ import {
   type ToolEffect,
 } from "./execution-semantics.ts";
 import { PresentationIntegration } from "./presentation-integration.ts";
-import { RemoteCompanion, type RemoteStatusFacts } from "./remote-companion.ts";
+import { RemoteCompanion, type RemotePi, type RemoteStatusFacts } from "./remote-companion.ts";
 import { DiscordRemote, discordRemoteConfig } from "./discord-remote.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
 import type { ProjectFingerprint } from "./project-mutation.ts";
@@ -94,6 +95,17 @@ function isStaleExtensionContextError(error: unknown): boolean {
     error.message.startsWith(STALE_EXTENSION_CONTEXT_ERROR);
 }
 
+function safeSessionEntries(
+  ctx: ExtensionContext,
+): ReturnType<ExtensionContext["sessionManager"]["getEntries"]> | null {
+  try {
+    return ctx.sessionManager.getEntries();
+  } catch (error) {
+    if (isStaleExtensionContextError(error)) return null;
+    throw error;
+  }
+}
+
 function gatewayDenialReason(
   snapshot: SemanticSnapshot,
   requiredCapability: ToolEffect["requiredCapability"],
@@ -130,6 +142,26 @@ export function registerPindieExtension(
   });
   const resolveProjectRoot = options.resolveProjectRoot ??
     defaultResolveProjectRoot;
+  type LiveRemoteSession = { sessionId: string; ctx: ExtensionContext; generation: number };
+  let liveRemoteSession: LiveRemoteSession | null = null;
+  let nextRemoteLeaseGeneration = 0;
+  const remotePiFor = (sessionId: string, generation: number): RemotePi | null => {
+    const lease = liveRemoteSession;
+    if (!lease || lease.sessionId !== sessionId || lease.generation !== generation) return null;
+    const currentContext = (): ExtensionContext => {
+      const current = liveRemoteSession;
+      if (current !== lease) throw new Error("Remote Session lease was replaced.");
+      return current.ctx;
+    };
+    return {
+      isIdle: () => currentContext().isIdle(),
+      abort: () => currentContext().abort(),
+      sendUserMessage: (content, inputOptions) => {
+        currentContext();
+        return pi.sendUserMessage(content, inputOptions);
+      },
+    };
+  };
 
   const markUnavailable = (reason: string): void => {
     execution.semanticAuthorityUnavailable();
@@ -247,6 +279,12 @@ export function registerPindieExtension(
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    const remoteSessionId = options.remoteCompanion
+      ? ctx.sessionManager.getSessionId()
+      : null;
+    const remoteSessionName = options.remoteCompanion
+      ? ctx.sessionManager.getSessionName()
+      : undefined;
     run.restoreRunToolBaseline(true);
     presentation.setStatusContext(ctx);
     presentation.resetTrackers();
@@ -266,30 +304,47 @@ export function registerPindieExtension(
     }
     presentation.refreshStatus(ctx);
     void presentation.refreshSubscriptionUsage(ctx);
-    if (options.remoteCompanion && runtime.projectRoot !== null) {
-      const sessionId = ctx.sessionManager.getSessionId();
+    if (options.remoteCompanion && runtime.projectRoot !== null && remoteSessionId !== null) {
+      const live = { sessionId: remoteSessionId, ctx, generation: ++nextRemoteLeaseGeneration };
+      const remoteLeaseGeneration = live.generation;
+      liveRemoteSession = live;
       await options.remoteCompanion.companion.bind(
         runtime.projectRoot,
         options.remoteCompanion.guildId,
-        sessionId,
-        ctx,
-        { sessionName: ctx.sessionManager.getSessionName(), taskGoal: runtime.state.task?.goal, status: remoteStatusFacts(), getStatus: remoteStatusFacts },
+        remoteSessionId,
+        { sessionName: remoteSessionName, taskGoal: runtime.state.task?.goal, status: remoteStatusFacts(), getStatus: remoteStatusFacts },
       );
+      if (liveRemoteSession !== live) return;
+      if (options.remoteCompanion.companion.activeSessionId !== remoteSessionId) {
+        liveRemoteSession = null;
+        options.remoteCompanion.companion.shutdown(remoteSessionId);
+        return;
+      }
       // Discord login is optional external I/O. Do not make local startup wait for it.
       if (options.remoteCompanion.discord) {
-        if (options.remoteCompanion.companion.activeSessionId !== sessionId) return;
+        if (options.remoteCompanion.companion.activeSessionId !== remoteSessionId) return;
         void options.remoteCompanion.discord.start(
-          (threadId, text) => options.remoteCompanion!.companion.input(threadId, text, {
-            sendUserMessage: (content, inputOptions) => pi.sendUserMessage(content, inputOptions),
-          }),
+          (threadId, text) => {
+            const live = liveRemoteSession;
+            if (!live || live.sessionId !== remoteSessionId || live.generation !== remoteLeaseGeneration) return Promise.resolve("failed" as const);
+            if (options.remoteCompanion!.companion.activeSessionId !== remoteSessionId) return Promise.resolve("failed" as const);
+            const currentPi = remotePiFor(remoteSessionId, remoteLeaseGeneration);
+            if (!currentPi) return Promise.resolve("failed" as const);
+            return options.remoteCompanion!.companion.input(threadId, text, currentPi);
+          },
           () => {
-            if (options.remoteCompanion!.companion.activeSessionId !== sessionId) return;
-            void options.remoteCompanion!.companion.catchUp(ctx.sessionManager.getEntries()).catch(() => undefined);
+            const live = liveRemoteSession;
+            if (!live || live.sessionId !== remoteSessionId || live.generation !== remoteLeaseGeneration) return;
+            if (options.remoteCompanion!.companion.activeSessionId !== remoteSessionId) return;
+            const entries = safeSessionEntries(live.ctx);
+            if (!entries) return;
+            void options.remoteCompanion!.companion.catchUp(entries).catch(() => undefined);
           },
           (threadId) => options.remoteCompanion!.companion.isMappedThread(threadId),
         ).catch(() => undefined);
       } else {
-        await options.remoteCompanion.companion.catchUp(ctx.sessionManager.getEntries());
+        const entries = safeSessionEntries(live.ctx);
+        if (entries) await options.remoteCompanion.companion.catchUp(entries);
       }
     }
   });
@@ -300,8 +355,12 @@ export function registerPindieExtension(
     });
     // Pi remains transcript truth: session history is projected after each
     // finalized message, serialized by RemoteCompanion behind any catch-up.
-    pi.on("message_end", (_event, ctx) => {
-      void options.remoteCompanion!.companion.catchUp(ctx.sessionManager.getEntries()).catch(() => undefined);
+    pi.on("message_end", () => {
+      const live = liveRemoteSession;
+      if (!live) return;
+      const entries = safeSessionEntries(live.ctx);
+      if (!entries) return;
+      void options.remoteCompanion!.companion.catchUp(entries).catch(() => undefined);
     });
     pi.on("session_info_changed", async (event, _ctx) => {
       await options.remoteCompanion!.companion.rename(event.name ?? "");
@@ -311,8 +370,11 @@ export function registerPindieExtension(
   }
 
   pi.on("session_shutdown", (_event, ctx) => {
-    const stoppedRemote = options.remoteCompanion?.companion.shutdown(ctx) ?? false;
-    if (stoppedRemote) options.remoteCompanion?.discord?.stop();
+    const remote = options.remoteCompanion;
+    const sessionId = liveRemoteSession?.sessionId ?? remote?.companion.activeSessionId ?? null;
+    liveRemoteSession = null;
+    if (remote && sessionId !== null) remote.companion.shutdown(sessionId);
+    remote?.discord?.stop();
     run.restoreRunToolBaseline(true);
     presentation.resetTrackers();
     presentation.clearStatus(ctx);
@@ -554,13 +616,8 @@ export function registerPindieExtension(
     // Pi can dispose an old session runner before its in-flight Agent Run reaches
     // the finally-path that emits agent_settled. Its context is then deliberately
     // stale; that obsolete run must not touch or reset this runtime's state.
-    let entries;
-    try {
-      entries = ctx.sessionManager.getEntries();
-    } catch (error) {
-      if (isStaleExtensionContextError(error)) return;
-      throw error;
-    }
+    const entries = safeSessionEntries(ctx);
+    if (!entries) return;
 
     presentation.setStatusContext(ctx);
     execution.discardRuntime();
