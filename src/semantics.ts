@@ -260,6 +260,7 @@ export function deriveCapabilities(
       break;
 
     case "blocked":
+      capabilities.add("project.mutate");
       capabilities.add("task.refine");
       capabilities.add("task.progress");
       capabilities.add("verification.record");

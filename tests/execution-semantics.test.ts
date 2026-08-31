@@ -133,7 +133,7 @@ test("M0 and execution semantics compose for idle, active, and blocked mutation"
     task: task({
       openLoops: { blockers: ["Blocked"], questions: [], nextIntent: null },
     }),
-  }, facts(), "edit").allowed, false);
+  }, facts(), "edit").allowed, true);
 });
 
 test("M0 and execution semantics compose for completion and Gates", () => {

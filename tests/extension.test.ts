@@ -18,6 +18,7 @@ import {
 import { RemoteCompanion, type RemoteSurface } from "../src/remote-companion.ts";
 import {
   EMPTY_STATE,
+  getTaskStatus,
   getVerificationStatus,
   type PindieState,
 } from "../src/state.ts";
@@ -2602,7 +2603,7 @@ test("G01-G08 M2 Task admission and replacement follow Run-derived capabilities"
   );
 });
 
-test("G09-G11 blocked Tasks deny edit, write, bash, and ambiguous calls without mutation observation", async () => {
+test("G09-G11 blocked Tasks retain edit, write, bash, and ambiguous mutation calls", async () => {
   let captures = 0;
   const harness = createHarness([["/repo", blockedState()]], {}, {
     captureProjectFingerprint: async () => {
@@ -2614,13 +2615,53 @@ test("G09-G11 blocked Tasks deny edit, write, bash, and ambiguous calls without 
   await beginAgentRun(harness);
 
   for (const name of ["edit", "write", "bash", "custom_mutator"]) {
-    assertBlocked(
+    assert.equal(
       await callGuard(harness, toolCall(name, {}, `blocked-${name}`)),
-      /missing capability 'project\.mutate'.*Task status: blocked/i,
+      undefined,
     );
   }
-  assert.equal(captures, 0);
+  assert.equal(captures, 1);
   assert.deepEqual(harness.store.saves, []);
+});
+
+test("Blocked Task recovery retains baseline mutation tools but denies completion", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  harness.api.setActiveTools([
+    "read",
+    "edit",
+    "write",
+    "bash",
+    "pindie_task_progress",
+    "pindie_task_complete",
+  ]);
+  await beginAgentRun(harness);
+
+  const baselineMutationSurface = ["read", "edit", "write", "bash", "pindie_task_progress"];
+  assert.deepEqual(harness.api.getActiveTools(), baselineMutationSurface);
+
+  await executeSemanticTool(harness, "pindie_task_progress", "record-blocker", {
+    blockers: ["Tests currently fail"],
+    questions: [],
+    nextIntent: "Fix the failing tests and rerun verification.",
+  });
+
+  assert.equal(getTaskStatus(harness.integration.runtime.state), "blocked");
+  assert.deepEqual(harness.api.getActiveTools(), baselineMutationSurface);
+  assert.equal(await callGuard(harness, toolCall("edit", {}, "recovery-edit")), undefined);
+  await harness.api.handler("tool_result")(
+    toolResult("edit", false, "recovery-edit"),
+    context("/repo"),
+  );
+
+  assertBlocked(
+    await callGuard(
+      harness,
+      toolCall("pindie_task_complete", { summary: "Complete" }, "blocked-complete"),
+    ),
+    /missing capability 'task\.complete'.*Task status: blocked/i,
+  );
+  assert.equal(harness.api.getActiveTools().includes("pindie_task_complete"), false);
 });
 
 test("G12-G15 completion is authorized only when the M0 Snapshot is completion-ready", async () => {
@@ -2777,12 +2818,14 @@ test("M3 T08 observed ambiguous mutation invalidation also removes complete", as
   assert.deepEqual(harness.api.getActiveTools(), ["read", "bash"]);
 });
 
-test("M3 T09/T10 blocked State removes mutations and a same-Run Gate collapses to observation", async () => {
+test("M3 T09/T10 blocked State retains mutations and a same-Run Gate collapses to observation", async () => {
   const blocked = createHarness([["/repo", blockedState()]]);
   await startSession(blocked, "/repo");
   blocked.api.setActiveTools(["read", "edit", "write", "bash", "custom_tool", "pindie_task_refine"]);
   await beginAgentRun(blocked);
-  assert.deepEqual(blocked.api.getActiveTools(), ["read", "pindie_task_refine"]);
+  assert.deepEqual(blocked.api.getActiveTools(), [
+    "read", "edit", "write", "bash", "custom_tool", "pindie_task_refine",
+  ]);
 
   const gated = createHarness([["/repo", activeState()]]);
   await startSession(gated, "/repo");
