@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import {
   type ExtensionAPI,
   type ExtensionContext,
@@ -5,8 +7,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+  createPindieStateCheckpointMessage,
   appendPindieSystemContract,
   createPindieRunBaselineMessage,
+  renderCurrentPindieActionEligibility,
   renderPindieProjectMutationUpdate,
 } from "./context.ts";
 import {
@@ -42,6 +46,7 @@ import type { RunTimer } from "./run-timer.ts";
 import { PindieRuntime } from "./runtime.ts";
 import {
   deriveCapabilities,
+  type PindieCapability,
   type SemanticSnapshot,
 } from "./semantics.ts";
 import { getTaskStatus, getVerificationStatus, validateState } from "./state.ts";
@@ -107,6 +112,17 @@ function isStaleExtensionContextError(error: unknown): boolean {
     error.message.startsWith(STALE_EXTENSION_CONTEXT_ERROR);
 }
 
+function sameCapabilities(
+  left: ReadonlySet<PindieCapability> | null,
+  right: ReadonlySet<PindieCapability>,
+): boolean {
+  if (left === null || left.size !== right.size) return false;
+  for (const capability of right) {
+    if (!left.has(capability)) return false;
+  }
+  return true;
+}
+
 function safeSessionEntries(
   ctx: ExtensionContext,
 ): ReturnType<ExtensionContext["sessionManager"]["getEntries"]> | null {
@@ -163,6 +179,7 @@ export function registerPindieExtension(
   type LiveRemoteSession = { sessionId: string; ctx: ExtensionContext; generation: number };
   let liveRemoteSession: LiveRemoteSession | null = null;
   let nextRemoteLeaseGeneration = 0;
+  let lastCheckpointCompactionId: string | null = null;
   const remotePiFor = (sessionId: string, generation: number): RemotePi | null => {
     const lease = liveRemoteSession;
     if (!lease || lease.sessionId !== sessionId || lease.generation !== generation) return null;
@@ -234,12 +251,16 @@ export function registerPindieExtension(
     ) {
       return null;
     }
+    const beforeVerification = structuredClone(runtime.state.task.verification);
+    const beforeCompleted = runtime.state.task.completed;
+    const hadCurrentChecks = beforeVerification.checks.length > 0;
     try {
       const result = await runtime.dispatch({ type: "invalidate_verification" });
       if (!result.ok) {
         markUnavailable(
           `Pindie could not invalidate verification after project mutation: ${result.error.message}`,
         );
+        return null;
       }
     } catch (error) {
       if (error instanceof StateLockBusyError) {
@@ -251,12 +272,33 @@ export function registerPindieExtension(
       );
       throw error;
     }
+    const afterTask = runtime.state.task;
+    const semanticChanged = afterTask !== null && (
+      beforeCompleted !== afterTask.completed ||
+      !isDeepStrictEqual(beforeVerification, afterTask.verification)
+    );
     semanticStateChanged();
+    if (!semanticChanged) return null;
     const derivation = run.deriveSnapshot();
     return renderPindieProjectMutationUpdate(
       runtime.state,
       derivation.ok ? derivation.snapshot : undefined,
+      hadCurrentChecks,
     );
+  };
+
+  const renderEligibilityAfterSemanticChange = (
+    capabilitiesAtCall: ReadonlySet<PindieCapability> | null,
+  ): string | null => {
+    if (capabilitiesAtCall === null) return null;
+    const derivation = run.deriveSnapshot();
+    if (
+      !derivation.ok ||
+      sameCapabilities(capabilitiesAtCall, deriveCapabilities(derivation.snapshot))
+    ) {
+      return null;
+    }
+    return renderCurrentPindieActionEligibility(derivation.snapshot);
   };
 
   const taskToolOptions = {
@@ -310,6 +352,7 @@ export function registerPindieExtension(
     run.resetStateAuthority();
     run.resetAgentRun();
     execution.discardRuntime();
+    lastCheckpointCompactionId = null;
 
     try {
       const projectRoot = await resolveProjectRoot(ctx.cwd);
@@ -397,6 +440,7 @@ export function registerPindieExtension(
     run.resetStateAuthority();
     run.resetAgentRun();
     execution.discardRuntime();
+    lastCheckpointCompactionId = null;
     presentation.setStatusContext(null);
   });
 
@@ -450,6 +494,42 @@ export function registerPindieExtension(
       ),
     };
   });
+
+  pi.on("session_compact", (event, ctx) => {
+    const compactionId = event.compactionEntry.id;
+    if (lastCheckpointCompactionId === compactionId) return;
+    lastCheckpointCompactionId = compactionId;
+
+    let derivation = run.deriveSnapshot();
+    if (!derivation.ok) {
+      markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
+      derivation = run.deriveSnapshot();
+    }
+    if (!derivation.ok) return;
+    const state = run.authoritativeState;
+    const unavailableReason = run.stateUnavailableReason ??
+      (state === null ? "No project State has been loaded for this session." : null);
+    const checkpoint = createPindieStateCheckpointMessage(
+      state,
+      derivation.snapshot,
+      run.policySnapshot,
+      unavailableReason,
+    );
+
+    // A compaction during an active run is followed by another model request
+    // (including overflow recovery). Queue the checkpoint as steering content
+    // so Pi places it before that next decision. A completed/manual compaction
+    // appends it without manufacturing an extra model turn.
+    if (event.willRetry || ctx.hasPendingMessages()) {
+      pi.sendMessage(checkpoint);
+    } else {
+      pi.sendMessage(checkpoint, { triggerTurn: false });
+    }
+  });
+
+  // Failed or aborted compactions do not establish a new model-history
+  // boundary, so they must not emit a potentially misleading checkpoint.
+  pi.on("session_compact_failed", () => undefined);
 
   pi.on("agent_end", (event, ctx) => {
     const derivation = run.deriveSnapshot();
@@ -549,6 +629,7 @@ export function registerPindieExtension(
       event,
       effect,
       runtime.projectRoot!,
+      capabilities,
     );
     run.recordAuthorizedCall(event.toolCallId, effect);
   });
@@ -591,20 +672,35 @@ export function registerPindieExtension(
     if (mutationSettlement === "invalidate") {
       const update = await invalidateVerificationAfterProjectMutation();
       if (update === null) return;
+      const eligibility = renderEligibilityAfterSemanticChange(
+        authorizedExecution.capabilitiesAtCall,
+      );
       return {
         content: [
           ...event.content,
           { type: "text", text: update },
+          ...(eligibility === null ? [] : [{ type: "text" as const, text: eligibility }]),
         ],
       };
     }
 
-    return execution.captureEvidenceIfEligible(
+    const evidenceResult = execution.captureEvidenceIfEligible(
       authorizedExecution,
       event,
       run.authoritativeState,
       run.semanticRunFacts,
     );
+    if (event.isError) return evidenceResult;
+    const eligibility = renderEligibilityAfterSemanticChange(
+      authorizedExecution.capabilitiesAtCall,
+    );
+    if (eligibility === null) return evidenceResult;
+    return {
+      content: [
+        ...(evidenceResult?.content ?? event.content),
+        { type: "text" as const, text: eligibility },
+      ],
+    };
   });
 
   pi.on("turn_end", (event, ctx) => {

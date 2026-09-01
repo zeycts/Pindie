@@ -198,6 +198,10 @@ The same `SemanticSnapshot` used by capabilities produces a hidden Run Baseline 
 - Human Gate details;
 - factual unavailability reason.
 
+The same projection includes a compact Current Pindie Action Eligibility block. It is derived directly from the current capabilities and is an affordance for the model, not authorization; the Gateway still makes the final call-boundary decision. It appears in the Run Baseline and in causal semantic State results when the capability set changes.
+
+Pi compaction is an intentional request reset boundary. After a successful `session_compact`, Pindie appends one hidden State Checkpoint containing the exact current authoritative State, Run authority, eligibility, and any current Run-scoped Policy Snapshot. Overflow recovery queues that checkpoint before its retry when Pi exposes that continuation; failed or aborted compaction emits no checkpoint. Pindie does not depend on Pi's generic compaction summary to preserve semantic State and does not create an extra model turn solely for the checkpoint.
+
 It must not restate structural legality as procedural lifecycle instructions. Later semantic tool results and runtime updates carry current state at their causal location.
 
 ```text

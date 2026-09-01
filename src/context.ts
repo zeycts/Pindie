@@ -1,4 +1,9 @@
-import type { SemanticSnapshot } from "./semantics.ts";
+import {
+  deriveCapabilities,
+  type PindieCapability,
+  type SemanticSnapshot,
+} from "./semantics.ts";
+import type { PolicySnapshot } from "./policy.ts";
 import type { PindieState } from "./state.ts";
 import { getTaskStatus, getVerificationStatus } from "./state.ts";
 import { SEED_STRATEGIES } from "./strategies.ts";
@@ -8,8 +13,24 @@ export const PINDIE_SYSTEM_CONTRACT_END = "</PINDIE_SYSTEM_CONTRACT>";
 export const PINDIE_RUN_BASELINE_START = "<PINDIE_RUN_BASELINE>";
 export const PINDIE_RUN_BASELINE_END = "</PINDIE_RUN_BASELINE>";
 export const PINDIE_RUN_BASELINE_TYPE = "pindie-run-baseline";
+export const PINDIE_STATE_CHECKPOINT_START = "<PINDIE_STATE_CHECKPOINT>";
+export const PINDIE_STATE_CHECKPOINT_END = "</PINDIE_STATE_CHECKPOINT>";
+export const PINDIE_STATE_CHECKPOINT_TYPE = "pindie-state-checkpoint";
 export const PINDIE_RUNTIME_UPDATE_START = "<PINDIE_RUNTIME_UPDATE>";
 export const PINDIE_RUNTIME_UPDATE_END = "</PINDIE_RUNTIME_UPDATE>";
+
+const ACTION_ELIGIBILITY: readonly (readonly [string, PindieCapability])[] = [
+  ["project mutation", "project.mutate"],
+  ["policy declaration", "policy.declare"],
+  ["task start", "task.start"],
+  ["task replace", "task.replace"],
+  ["task refine", "task.refine"],
+  ["task progress", "task.progress"],
+  ["verification record", "verification.record"],
+  ["task complete", "task.complete"],
+  ["gate open", "gate.open"],
+  ["gate resolve", "gate.resolve"],
+];
 
 function renderSeedStrategies(lines: string[]): void {
   lines.push("", "Seed Strategies:");
@@ -46,6 +67,7 @@ export function renderPindieSystemContract(): string {
     "- Pindie State and deterministic semantic derivation are the source of truth for Task, verification, Human Gate, capability, and Run authority facts.",
     "- The Execution Gateway is authoritative for whether a concrete tool call may execute. It re-derives current authority and capabilities at the call boundary.",
     "- Tool visibility is not authorization. A visible tool may still be denied by the Pindie Gateway.",
+    "- Use current Task, verification, Human Gate, and runtime facts to decide when an action is semantically eligible.",
     "- A Gateway denial is factual runtime feedback; do not retry the same denied action unchanged.",
     "",
     "Task, verification, and Human Gate interpretation:",
@@ -74,6 +96,34 @@ export function appendPindieSystemContract(systemPrompt: string): string {
   const contract = renderPindieSystemContract();
   if (systemPrompt.includes(contract)) return systemPrompt;
   return `${systemPrompt}${systemPrompt.length === 0 ? "" : "\n\n"}${contract}`;
+}
+
+/** Render the current model-facing affordance from the Gateway capability source. */
+export function renderCurrentPindieActionEligibility(
+  snapshot: SemanticSnapshot,
+): string {
+  const capabilities = deriveCapabilities(snapshot);
+  return [
+    "Current Pindie Action Eligibility:",
+    ...ACTION_ELIGIBILITY.map(([label, capability]) =>
+      `- ${label}: ${capabilities.has(capability) ? "allowed" : "not eligible"}`,
+    ),
+  ].join("\n");
+}
+
+function renderCurrentPindiePolicySnapshot(
+  policySnapshot: PolicySnapshot | null,
+): string[] {
+  if (policySnapshot === null) return [];
+  return [
+    "",
+    "Current Policy Snapshot:",
+    `- Approach: ${policySnapshot.approach.id} (${policySnapshot.approach.kind})`,
+    "  Modifiers:",
+    ...(policySnapshot.modifiers.length > 0
+      ? policySnapshot.modifiers.map((strategy) => `  - ${strategy.id} (${strategy.kind})`)
+      : ["  - none"]),
+  ];
 }
 
 function renderUnavailableState(reason: string | null): string {
@@ -154,17 +204,31 @@ export function appendCurrentPindieTaskState(
   return [message, "", "Current Pindie State:", renderCurrentPindieTaskState(state, snapshot)].join("\n");
 }
 
-export function renderPindieRunBaseline(
+function renderPindieRunState(
   state: PindieState | null,
   snapshot: SemanticSnapshot,
+  policySnapshot: PolicySnapshot | null = null,
   unavailableReason: string | null = null,
 ): string {
-  const content = snapshot.authority === "unavailable"
+  const lines = snapshot.authority === "unavailable"
     ? renderUnavailableState(unavailableReason)
     : [
         `Agent Run authority: ${snapshot.authority}`,
         renderCurrentPindieTaskState(state, snapshot),
       ].join("\n");
+  return [
+    lines,
+    renderCurrentPindieActionEligibility(snapshot),
+    ...renderCurrentPindiePolicySnapshot(policySnapshot),
+  ].join("\n");
+}
+
+export function renderPindieRunBaseline(
+  state: PindieState | null,
+  snapshot: SemanticSnapshot,
+  unavailableReason: string | null = null,
+): string {
+  const content = renderPindieRunState(state, snapshot, null, unavailableReason);
 
   return [
     PINDIE_RUN_BASELINE_START,
@@ -177,6 +241,60 @@ export function renderPindieRunBaseline(
     content,
     PINDIE_RUN_BASELINE_END,
   ].join("\n");
+}
+
+export function renderPindieStateCheckpoint(
+  state: PindieState | null,
+  snapshot: SemanticSnapshot,
+  policySnapshot: PolicySnapshot | null = null,
+  unavailableReason: string | null = null,
+): string {
+  const content = renderPindieRunState(
+    state,
+    snapshot,
+    policySnapshot,
+    unavailableReason,
+  );
+  return [
+    PINDIE_STATE_CHECKPOINT_START,
+    "Pindie State Checkpoint",
+    "",
+    "Authoritative Pindie runtime metadata re-established after context compaction.",
+    "Not user intent and not a new request.",
+    "This checkpoint supersedes conflicting older summarized Pindie state.",
+    "",
+    content,
+    PINDIE_STATE_CHECKPOINT_END,
+  ].join("\n");
+}
+
+export function createPindieStateCheckpointMessage(
+  state: PindieState | null,
+  snapshot: SemanticSnapshot,
+  policySnapshot: PolicySnapshot | null = null,
+  unavailableReason: string | null = null,
+) {
+  return {
+    customType: PINDIE_STATE_CHECKPOINT_TYPE,
+    content: renderPindieStateCheckpoint(
+      state,
+      snapshot,
+      policySnapshot,
+      unavailableReason,
+    ),
+    display: false,
+  };
+}
+
+export function isPindieStateCheckpointMessage(message: unknown): boolean {
+  return (
+    typeof message === "object" &&
+    message !== null &&
+    "role" in message &&
+    "customType" in message &&
+    message.role === "custom" &&
+    message.customType === PINDIE_STATE_CHECKPOINT_TYPE
+  );
 }
 
 export function createPindieRunBaselineMessage(
@@ -205,12 +323,20 @@ export function isPindieRunBaselineMessage(message: unknown): boolean {
 export function renderPindieProjectMutationUpdate(
   state: PindieState,
   snapshot?: SemanticSnapshot,
+  hadCurrentChecks = true,
 ): string {
+  const verificationStatus = snapshot && snapshot.authority !== "unavailable"
+    ? snapshot.verificationStatus
+    : state.task
+      ? getVerificationStatus(state.task)
+      : "unavailable";
   return [
     PINDIE_RUNTIME_UPDATE_START,
     "Project mutation changed authoritative verification state.",
-    `Verification status: ${snapshot && snapshot.authority !== "unavailable" ? snapshot.verificationStatus : getVerificationStatus(state.task!)}`,
-    "Previous current verification checks were invalidated.",
+    `Verification status: ${verificationStatus}`,
+    hadCurrentChecks
+      ? "Previous current verification checks were invalidated."
+      : "Verification freshness was invalidated before any current checks were recorded.",
     "Fresh factual verification is required before task completion.",
     PINDIE_RUNTIME_UPDATE_END,
   ].join("\n");

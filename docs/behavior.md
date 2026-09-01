@@ -212,9 +212,11 @@ The Run Baseline is hidden factual Knowledge Surface driven by `SemanticSnapshot
 - Human Gate details;
 - factual unavailability reason.
 
+It also includes the current action-eligibility affordance derived from the same capabilities used by the Gateway. This tells the model which Pindie actions are currently eligible while preserving the Gateway as final authority; the block is refreshed only in the Run Baseline and at causal State transitions that change capabilities.
+
 It must not restate structural legality as lifecycle instructions.
 
-Prior history is never filtered, reordered, or rewritten. State-changing semantic tool results and mutation invalidation updates append current facts at their causal location; continuation probes remain in history until normal Pi compaction.
+Prior history is never filtered, reordered, or rewritten. State-changing semantic tool results and mutation invalidation updates append current facts at their causal location; continuation probes remain in history until normal Pi compaction. Successful Pi compaction appends one hidden Pindie State Checkpoint with exact current State, Run authority, eligibility, and any current Run-scoped Policy Snapshot. Failed or aborted compaction does not emit one.
 
 ## 9. Verification evidence
 

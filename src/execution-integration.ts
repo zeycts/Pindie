@@ -8,7 +8,7 @@ import {
   captureProjectFingerprint as defaultCaptureProjectFingerprint,
   type ProjectFingerprint,
 } from "./project-mutation.ts";
-import type { SemanticRunFacts } from "./semantics.ts";
+import type { PindieCapability, SemanticRunFacts } from "./semantics.ts";
 import type { PindieState } from "./state.ts";
 import {
   advanceEvidenceGeneration,
@@ -27,6 +27,7 @@ interface MutationWindow {
 export interface AuthorizedToolExecution {
   readonly effect: ToolEffect;
   readonly evidenceGenerationAtCall: number;
+  readonly capabilitiesAtCall: ReadonlySet<PindieCapability> | null;
 }
 
 export type ProjectMutationSettlement =
@@ -109,14 +110,16 @@ export class ExecutionIntegration {
   recordAuthorizedObservation(
     event: ToolCallEvent,
     effect: ToolEffect,
+    capabilities?: ReadonlySet<PindieCapability>,
   ): void {
-    this.recordAuthorizedExecution(event.toolCallId, effect);
+    this.recordAuthorizedExecution(event.toolCallId, effect, capabilities);
   }
 
   async recordAuthorizedConsequentialCall(
     event: ToolCallEvent,
     effect: ToolEffect,
     projectRoot: string,
+    capabilities?: ReadonlySet<PindieCapability>,
   ): Promise<void> {
     if (effect.projectMutation === "ambiguous") {
       if (this.mutationWindow === null) {
@@ -140,7 +143,7 @@ export class ExecutionIntegration {
       this.mutationWindow.pendingToolCallIds.add(event.toolCallId);
     }
 
-    this.recordAuthorizedExecution(event.toolCallId, effect);
+    this.recordAuthorizedExecution(event.toolCallId, effect, capabilities);
   }
 
   takeAuthorizedExecution(
@@ -228,10 +231,14 @@ export class ExecutionIntegration {
   private recordAuthorizedExecution(
     toolCallId: string,
     effect: ToolEffect,
+    capabilities?: ReadonlySet<PindieCapability>,
   ): void {
     this.authorizedToolExecutions.set(toolCallId, {
       effect,
       evidenceGenerationAtCall: this.evidenceScope?.generation ?? -1,
+      capabilitiesAtCall: capabilities === undefined
+        ? null
+        : new Set(capabilities),
     });
   }
 }
