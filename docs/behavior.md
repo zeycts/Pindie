@@ -156,7 +156,7 @@ allowed = capabilities.has(effect.requiredCapability)
 
 Known observation tools keep the observation fast path. Consequential calls use authoritative refresh/coherence checks before capability authorization.
 
-The Gateway remains defense in depth for races, stale already-generated calls, external-State changes, and same-Run semantic transitions that happened after a model saw an older Tool Surface.
+The Gateway remains defense in depth for races, stale already-generated calls, external-State changes, and same-Run semantic transitions.
 
 ## 6. Project Mutation Freshness
 
@@ -197,21 +197,13 @@ Internal reducer events remain independent of Pi tool names.
 
 For each actual Agent Run:
 
-```text
-Effective tools
-=
-Run Tool Baseline
-∩
-Tools whose required capability is present
-```
-
-The Run Tool Baseline is captured at `before_agent_start`, restored at `agent_settled`, and never persisted. Pindie never enables a baseline-absent tool. Unknown/custom baseline-active tools are visible only when `project.mutate` exists.
+Pi's active Tool Surface remains unchanged as Pindie semantic State changes. Tool visibility is not authorization. The Execution Gateway derives current capabilities and authorizes each concrete tool call at preflight; unknown/custom tools remain conservative project mutations.
 
 ## 8. Knowledge Surface and prompt behavior
 
-Pindie does not inject a global lifecycle-policy Core prompt or own a system-prompt override. Pi owns native system-prompt construction.
+Pindie appends a deterministic System Contract to Pi's already-chained system prompt from `before_agent_start` and returns a hidden `pindie-run-baseline` custom message containing the authoritative Run-start facts.
 
-Pindie Runtime Context is hidden factual Knowledge Surface driven by `SemanticSnapshot`. It may show:
+The Run Baseline is hidden factual Knowledge Surface driven by `SemanticSnapshot`. It may show:
 
 - coherent/stale/unavailable Run authority;
 - Task and verification status;
@@ -222,7 +214,7 @@ Pindie Runtime Context is hidden factual Knowledge Surface driven by `SemanticSn
 
 It must not restate structural legality as lifecycle instructions.
 
-Old Runtime Context messages are removed from model projection and exactly one fresh projection is appended.
+Prior history is never filtered, reordered, or rewritten. State-changing semantic tool results and mutation invalidation updates append current facts at their causal location; continuation probes remain in history until normal Pi compaction.
 
 ## 9. Verification evidence
 
@@ -312,9 +304,9 @@ Pi owns retry, compaction, follow-up delivery, and final `agent_settled`. Pindie
 
 Continuation context hygiene:
 
-- on a fresh user-driven Run, all historical Pindie continuation probes are filtered from model context;
-- during the active continuation follow-up, only the latest/current probe remains model-visible;
-- the current probe retains its original chronological position;
+- historical Pindie continuation probes remain in model/session history;
+- Pindie does not filter or reorder prior probes;
+- normal Pi compaction handles history growth;
 - session history need not be rewritten or migrated.
 
 ## 12. Skill behavior
@@ -345,7 +337,7 @@ Run Activity reflects actual Pi tool lifecycle. Presentation reads authoritative
 4. The model retains semantic interpretation and choice inside that legal space.
 5. Human judgment is explicit where required.
 6. Verification factual provenance/freshness belongs to Harness; meaning/coverage belongs to Model.
-7. Runtime evidence refs, generations, active-tool baselines, Run relations, and continuation fuses are ephemeral.
-8. Reducer invariants remain valid even if outer Tool Surface/Gateway layers fail.
-9. Historical runtime metadata must not accumulate into persistent model policy.
+7. Runtime evidence refs, generations, Run relations, and continuation fuses are ephemeral.
+8. Reducer invariants remain valid even if the outer Gateway layer fails.
+9. Historical runtime metadata remains append-only until normal Pi compaction; it does not rewrite prior model history.
 10. Pi remains the sole low-level Agent Loop and Skill runtime.

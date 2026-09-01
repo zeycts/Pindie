@@ -2,23 +2,23 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  PINDIE_POLICY_CONTEXT_TYPE,
-  PINDIE_POLICY_END,
-  PINDIE_POLICY_START,
-  PINDIE_RUNTIME_CONTEXT_TYPE,
-  PINDIE_RUNTIME_END,
-  PINDIE_RUNTIME_START,
-  createPindiePolicyContextMessage,
-  createPindieRuntimeContextMessage,
-  isPindiePolicyContextMessage,
-  isPindieRuntimeContextMessage,
-  renderPindiePolicyContext,
-  renderPindieRuntimeContext,
+  appendCurrentPindieTaskState,
+  appendPindieSystemContract,
+  createPindieRunBaselineMessage,
+  isPindieRunBaselineMessage,
+  PINDIE_RUN_BASELINE_END,
+  PINDIE_RUN_BASELINE_START,
+  PINDIE_RUN_BASELINE_TYPE,
+  PINDIE_SYSTEM_CONTRACT_END,
+  PINDIE_SYSTEM_CONTRACT_START,
+  renderCurrentPindieTaskState,
+  renderPindieRunBaseline,
+  renderPindieSystemContract,
 } from "../src/context.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
 import type { PindieState } from "../src/state.ts";
 
-function completeState(): PindieState {
+function state(): PindieState {
   return {
     task: {
       goal: "Wire Pindie into Pi",
@@ -48,33 +48,7 @@ function completeState(): PindieState {
   };
 }
 
-function activeState(): PindieState {
-  return {
-    task: {
-      ...completeState().task!,
-      openLoops: {
-        blockers: [],
-        questions: ["Which release channel?"],
-        nextIntent: "Run tests",
-      },
-      humanGate: null,
-    },
-  };
-}
-
-const coherentActiveSnapshot: SemanticSnapshot = {
-  authority: "coherent",
-  taskStatus: "active",
-  verificationStatus: "passed",
-  hasBlockers: false,
-  hasQuestions: true,
-  completionReady: false,
-  taskRelation: "preexisting_untouched",
-  completionRelation: "not_completed",
-  gateRelation: "none",
-};
-
-const coherentWaitingSnapshot: SemanticSnapshot = {
+const snapshot: SemanticSnapshot = {
   authority: "coherent",
   taskStatus: "waiting_human",
   verificationStatus: "passed",
@@ -86,152 +60,80 @@ const coherentWaitingSnapshot: SemanticSnapshot = {
   gateRelation: "existed_before_run",
 };
 
-const staleTaskSnapshot: SemanticSnapshot = {
-  authority: "stale",
-  taskStatus: "waiting_human",
-  verificationStatus: "passed",
-  hasBlockers: true,
-  hasQuestions: true,
-  completionReady: false,
-};
+test("stable Pindie System Contract is deterministic, complete, and excludes current Policy", () => {
+  const first = renderPindieSystemContract();
+  assert.equal(first, renderPindieSystemContract());
+  assert.match(first, new RegExp(`^${PINDIE_SYSTEM_CONTRACT_START}`));
+  assert.match(first, new RegExp(`${PINDIE_SYSTEM_CONTRACT_END}$`));
+  assert.match(first, /Execution Gateway is authoritative/);
+  assert.match(first, /Tool visibility is not authorization/);
+  assert.match(first, /Gateway denial is factual runtime feedback/);
+  assert.match(first, /latest Pindie Run Baseline/);
+  assert.match(first, /append-only runtime updates/i);
+  assert.match(first, /Seed Strategies are optional, advisory/);
+  assert.match(first, /Seed Strategies:/);
+  assert.doesNotMatch(first, /Current Policy Snapshot/);
+  assert.doesNotMatch(first, /Approach: architecture-first/);
+});
 
-test("SI03 Policy Context is bounded, advisory metadata with stable hidden identity", () => {
-  const first = renderPindiePolicyContext();
-  const second = renderPindiePolicyContext();
+test("Pindie appends the stable contract to Pi's prompt idempotently", () => {
+  const base = "Pi system contract";
+  const appended = appendPindieSystemContract(base);
+  assert.match(appended, /^Pi system contract\n\n<PINDIE_SYSTEM_CONTRACT>/);
+  assert.ok(appended.startsWith(base));
+  assert.equal(appendPindieSystemContract(appended), appended);
+  assert.equal((appended.match(/<PINDIE_SYSTEM_CONTRACT>/g) ?? []).length, 1);
+});
 
-  assert.equal(first, second);
-  assert.match(first, new RegExp(`^${PINDIE_POLICY_START}`));
-  assert.match(first, new RegExp(`${PINDIE_POLICY_END}$`));
-  assert.match(first, /Pindie Policy Context/);
-  assert.match(first, /Runtime policy metadata only; not user intent or a new request\./);
-  assert.match(first, /optional, advisory problem-solving priors/i);
-  assert.match(first, /may use a strategy, combine strategies, or ignore strategies/i);
-  assert.match(first, /never override actual user intent/i);
-  assert.match(first, /project constraints.*Pindie Runtime Context/s);
-  assert.match(first, /State or semantic authority/);
-  assert.match(first, /capabilities or Execution Gateway decisions/);
-  assert.match(first, /verification reality/);
-  assert.match(first, /Human Gates/);
-  assert.match(first, /not required ceremony/i);
+test("Run Baseline preserves all useful Runtime Context facts as hidden metadata", () => {
+  const content = renderPindieRunBaseline(state(), snapshot);
+  for (const expected of [
+    "Agent Run authority: coherent",
+    "Task status: waiting_human",
+    "Verification status: passed",
+    "Goal:\nWire Pindie into Pi",
+    "Constraints:\n- Preserve Pi's Agent Loop",
+    "Success criteria:\n- c1: Extension wiring works",
+    "Blockers:\n- Awaiting API access",
+    "Questions:\n- Which release channel?",
+    "Next intent:\nRun tests",
+    "tests — passed — covers: c1\n  Evidence: Extension tests passed.",
+    "Human Gate:\n- Kind: decision\n- Question: Choose a release strategy.",
+    "- Options:\n  - Canary\n  - Immediate",
+  ]) assert.match(content, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(content, new RegExp(`^${PINDIE_RUN_BASELINE_START}`));
+  assert.match(content, new RegExp(`${PINDIE_RUN_BASELINE_END}$`));
 
-  const message = createPindiePolicyContextMessage();
-  assert.equal(message.customType, PINDIE_POLICY_CONTEXT_TYPE);
+  const message = createPindieRunBaselineMessage(state(), snapshot);
+  assert.equal(message.customType, PINDIE_RUN_BASELINE_TYPE);
   assert.equal(message.display, false);
-  assert.equal(message.timestamp, 0);
-  assert.ok(isPindiePolicyContextMessage(message));
-  assert.equal(isPindiePolicyContextMessage({ ...message, customType: "other" }), false);
-  assert.equal(isPindiePolicyContextMessage({ ...message, role: "user" }), false);
+  assert.ok(isPindieRunBaselineMessage({ ...message, role: "custom" }));
+  assert.equal(isPindieRunBaselineMessage({ ...message, customType: "other", role: "custom" }), false);
 });
 
-test("K01 coherent active Runtime Context projects Snapshot status and current State details", () => {
-  const first = renderPindieRuntimeContext(activeState(), coherentActiveSnapshot);
-  const second = renderPindieRuntimeContext(activeState(), coherentActiveSnapshot);
-
-  assert.equal(first, second);
-  assert.match(first, /Runtime metadata only; not user intent or a new request\./);
-  assert.match(first, /Agent Run authority: coherent/);
-  assert.match(first, /Task status: active/);
-  assert.match(first, /Verification status: passed/);
-  assert.match(first, /Goal:\nWire Pindie into Pi/);
-  assert.match(first, /Constraints:\n- Preserve Pi's Agent Loop/);
-  assert.match(first, /Success criteria:\n- c1: Extension wiring works/);
-  assert.match(first, /Questions:\n- Which release channel\?/);
-  assert.match(first, /Next intent:\nRun tests/);
-  assert.match(first, /tests — passed — covers: c1\n  Evidence: Extension tests passed\./);
-  assert.doesNotMatch(first, /Blockers:|Human gate:/);
-  assert.doesNotMatch(first, /Latest actual user intent.*authoritative/);
-});
-
-test("K02 coherent idle Runtime Context is minimal and omits verification and Task details", () => {
-  const snapshot: SemanticSnapshot = {
-    authority: "coherent",
-    taskStatus: "idle",
-    verificationStatus: "none",
-    hasBlockers: false,
-    hasQuestions: false,
-    completionReady: false,
-    taskRelation: "none",
-    completionRelation: "not_completed",
-    gateRelation: "none",
-  };
-  const runtime = renderPindieRuntimeContext({ task: null }, snapshot);
-
-  assert.equal(runtime, `${PINDIE_RUNTIME_START}\nPindie Runtime Context\n\nRuntime metadata only; not user intent or a new request.\n\nAgent Run authority: coherent\nTask status: idle\n${PINDIE_RUNTIME_END}`);
-  assert.doesNotMatch(runtime, /Verification status:|Goal:|Constraints:|Success criteria:|Blockers:|Questions:|Next intent:|Verification checks:|Human gate:/);
-});
-
-test("K03 stale Runtime Context retains current State facts without procedural guidance", () => {
-  const runtime = renderPindieRuntimeContext(completeState(), staleTaskSnapshot);
-
-  assert.match(runtime, /Agent Run authority: stale/);
-  assert.match(runtime, /Task status: waiting_human/);
-  assert.match(runtime, /Verification status: passed/);
-  assert.match(runtime, /Goal:\nWire Pindie into Pi/);
-  assert.match(runtime, /Human gate:/);
-  assert.doesNotMatch(runtime, /start a new Run|return control|do not mutate|call (?:a|the|pindie_)/i);
-});
-
-test("K04 unavailable Runtime Context renders only factual unavailability", () => {
-  const runtime = renderPindieRuntimeContext(
-    completeState(),
+test("unavailable Run Baseline retains the factual unavailable reason", () => {
+  const content = renderPindieRunBaseline(
+    state(),
     { authority: "unavailable" },
     "Could not parse the project State file.",
   );
-
-  assert.equal(runtime, `${PINDIE_RUNTIME_START}\nPindie Runtime Context\n\nRuntime metadata only; not user intent or a new request.\n\nAgent Run authority: unavailable\nReason: Could not parse the project State file.\n${PINDIE_RUNTIME_END}`);
-  assert.doesNotMatch(runtime, /Task status:|Verification status:|Goal:|Success criteria:|Human gate:/);
-  assert.doesNotMatch(runtime, /Do not make consequential|Restore|Reload|call (?:a|the|pindie_)/i);
+  assert.match(content, /Agent Run authority: unavailable/);
+  assert.match(content, /Reason: Could not parse the project State file\./);
+  assert.doesNotMatch(content, /Goal:|Verification status:|Human Gate:/);
 });
 
-test("K05 empty optional Runtime Context sections are omitted", () => {
-  const complete = renderPindieRuntimeContext(
-    completeState(),
-    coherentWaitingSnapshot,
+test("canonical current Task renderer carries state-changing semantic facts", () => {
+  const rendered = renderCurrentPindieTaskState(state());
+  assert.match(rendered, /Task status: waiting_human/);
+  assert.match(rendered, /Verification status: passed/);
+  assert.match(rendered, /Goal:\nWire Pindie into Pi/);
+  assert.match(rendered, /Blockers:/);
+  assert.match(rendered, /Questions:/);
+  assert.match(rendered, /Next intent:/);
+  assert.match(rendered, /Verification checks:/);
+  assert.match(rendered, /Human Gate:/);
+  assert.match(
+    appendCurrentPindieTaskState("Task contract refined.", state()),
+    /Task contract refined\.[\s\S]*Current Pindie State:/,
   );
-  assert.match(complete, /Constraints:/);
-  assert.match(complete, /Blockers:/);
-  assert.match(complete, /Questions:/);
-  assert.match(complete, /Next intent:/);
-  assert.match(complete, /Verification checks:/);
-  assert.match(complete, /Human gate:/);
-
-  const state: PindieState = {
-    task: {
-      ...completeState().task!,
-      constraints: [],
-      openLoops: { blockers: [], questions: [], nextIntent: null },
-      verification: { stale: false, checks: [] },
-      humanGate: null,
-    },
-  };
-  const snapshot: SemanticSnapshot = {
-    authority: "coherent",
-    taskStatus: "active",
-    verificationStatus: "pending",
-    hasBlockers: false,
-    hasQuestions: false,
-    completionReady: false,
-    taskRelation: "preexisting_untouched",
-    completionRelation: "not_completed",
-    gateRelation: "none",
-  };
-  const runtime = renderPindieRuntimeContext(state, snapshot);
-
-  assert.match(runtime, /Task status: active/);
-  assert.match(runtime, /Verification status: pending/);
-  assert.doesNotMatch(runtime, /Constraints:|Blockers:|Questions:|Next intent:|Verification checks:|Human gate:/);
-});
-
-test("K06 Runtime Context messages use the stable hidden custom-message identity", () => {
-  const message = createPindieRuntimeContextMessage(
-    completeState(),
-    coherentWaitingSnapshot,
-  );
-
-  assert.equal(message.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
-  assert.equal(message.display, false);
-  assert.equal(message.timestamp, 0);
-  assert.ok(isPindieRuntimeContextMessage(message));
-  assert.equal(isPindieRuntimeContextMessage({ ...message, customType: "other" }), false);
-  assert.match(String(message.content), new RegExp(PINDIE_RUNTIME_START));
 });

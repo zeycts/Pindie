@@ -1,5 +1,3 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-
 import {
   beginAgentRunFacts,
   deriveSemanticRunFacts,
@@ -9,7 +7,6 @@ import {
 import { PindieRuntime } from "./runtime.ts";
 import type { PolicySnapshot } from "./policy.ts";
 import {
-  deriveCapabilities,
   deriveSemanticSnapshot,
   type PindieCapability,
   type SemanticDerivationResult,
@@ -22,23 +19,11 @@ import {
   type RunExperiencePolicy,
   RunExperienceTracker,
 } from "./run-experience.ts";
-import { deriveEffectiveToolNames } from "./tool-surface.ts";
-
-function sameToolNames(
-  left: readonly string[],
-  right: readonly string[],
-): boolean {
-  return left.length === right.length &&
-    left.every((name, index) => name === right[index]);
-}
-
-/** Pi-facing ownership for runtime-only Agent Run authority and Tool Surface state. */
+/** Pi-facing ownership for runtime-only Agent Run authority state. */
 export class RunIntegration {
-  private readonly pi: ExtensionAPI;
   readonly runtime: PindieRuntime;
   private unavailableReason: string | null = null;
   private agentRunFactsContext: AgentRunFactsContext | null = null;
-  private runToolBaseline: readonly string[] | null = null;
   private continuationAttempted = false;
   private currentPolicySnapshot: PolicySnapshot | null = null;
   private agentRunActive = false;
@@ -46,8 +31,7 @@ export class RunIntegration {
   private agentRunSettlementInProgress = false;
   readonly experience = new RunExperienceTracker();
 
-  constructor(pi: ExtensionAPI, runtime: PindieRuntime) {
-    this.pi = pi;
+  constructor(runtime: PindieRuntime) {
     this.runtime = runtime;
   }
 
@@ -152,7 +136,6 @@ export class RunIntegration {
     this.runtime.unload();
     this.unavailableReason = reason;
     this.clearAgentRunBookkeeping();
-    this.applyToolSurface(deriveCapabilities({ authority: "unavailable" }));
   }
 
   clearAgentRunBookkeeping(): void {
@@ -206,42 +189,4 @@ export class RunIntegration {
     this.continuationAttempted = true;
   }
 
-  captureRunToolBaseline(): void {
-    if (this.runToolBaseline === null) {
-      this.runToolBaseline = [...this.pi.getActiveTools()];
-    }
-  }
-
-  applyToolSurface(capabilities: ReadonlySet<PindieCapability>): void {
-    if (this.runToolBaseline === null) return;
-    const effective = deriveEffectiveToolNames(
-      this.runToolBaseline,
-      capabilities,
-    );
-    if (!sameToolNames(this.pi.getActiveTools(), effective)) {
-      this.pi.setActiveTools(effective);
-    }
-  }
-
-  refreshToolSurface(): SemanticDerivationResult {
-    const derivation = this.deriveSnapshot();
-    if (derivation.ok) {
-      this.applyToolSurface(deriveCapabilities(derivation.snapshot));
-    }
-    return derivation;
-  }
-
-  restoreRunToolBaseline(bestEffort = false): void {
-    const baseline = this.runToolBaseline;
-    if (baseline === null) return;
-    try {
-      if (!sameToolNames(this.pi.getActiveTools(), baseline)) {
-        this.pi.setActiveTools([...baseline]);
-      }
-      this.runToolBaseline = null;
-    } catch (error) {
-      if (!bestEffort) throw error;
-      this.runToolBaseline = null;
-    }
-  }
 }

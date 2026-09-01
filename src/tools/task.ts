@@ -3,6 +3,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { formatDuration } from "../run-timer.ts";
+import { appendCurrentPindieTaskState } from "../context.ts";
 import { PindieStateConflictError, type PindieRuntime } from "../runtime.ts";
 import { StateLockBusyError } from "../store.ts";
 import type { PindieState, VerificationCheck } from "../state.ts";
@@ -148,9 +149,19 @@ async function dispatchOrThrow(
   return runtime.state;
 }
 
-function result(message: string, state: PindieState, terminate = false) {
+function result(
+  message: string,
+  state: PindieState,
+  terminate = false,
+  includeCurrentState = true,
+) {
   return {
-    content: [{ type: "text" as const, text: message }],
+    content: [{
+      type: "text" as const,
+      text: includeCurrentState
+        ? appendCurrentPindieTaskState(message, state)
+        : message,
+    }],
     details: { state } satisfies PindieTaskToolDetails,
     ...(terminate ? { terminate: true } : {}),
   };
@@ -425,6 +436,7 @@ export function createPindieTaskCompleteTool(
         ),
         state,
         true,
+        false,
       );
     },
   });

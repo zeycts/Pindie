@@ -1,5 +1,4 @@
 import { isPindieContinuationProbeMessage } from "./continuation.ts";
-import { isPindieRuntimeContextMessage } from "./context.ts";
 
 export type PromptOrigin = "tui" | "discord" | "discord-steer" | "discord-follow-up" | "neutral";
 export interface MirrorEntry { id: string; type?: string; message?: { role?: string; content?: unknown; display?: boolean; customType?: string; stopReason?: string }; }
@@ -16,7 +15,7 @@ function text(content: unknown): string {
 /** Stateless filtering of authoritative Pi entries.  Delivery ordering belongs to RemoteCompanion. */
 export function mirrorEntry(entry: MirrorEntry, origin: PromptOrigin = "neutral"): TimelineEvent | null {
   const message = entry.message;
-  if (!message || !entry.id || message.display === false || message.stopReason === "aborted" || isPindieContinuationProbeMessage(message as any) || isPindieRuntimeContextMessage(message as any)) return null;
+  if (!message || !entry.id || message.display === false || message.stopReason === "aborted" || isPindieContinuationProbeMessage(message as any)) return null;
   const body = text(message.content).trim();
   if (!body) return null;
   if (message.role === "user") {

@@ -5,15 +5,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import {
-  createPindiePolicyContextMessage,
-  createPindieRuntimeContextMessage,
-  isPindiePolicyContextMessage,
-  isPindieRuntimeContextMessage,
+  appendPindieSystemContract,
+  createPindieRunBaselineMessage,
+  renderPindieProjectMutationUpdate,
 } from "./context.ts";
 import {
   PINDIE_CONTINUATION_PROBE_MESSAGE,
   PINDIE_CONTINUATION_PROBE_TYPE,
-  isPindieContinuationProbeMessage,
   shouldProbeContinuation,
 } from "./continuation.ts";
 import { ExecutionIntegration } from "./execution-integration.ts";
@@ -144,7 +142,7 @@ export function registerPindieExtension(
       : undefined,
   });
   const runtime = new PindieRuntime(stateStore);
-  const run = new RunIntegration(pi, runtime);
+  const run = new RunIntegration(runtime);
   const execution = new ExecutionIntegration({
     captureProjectFingerprint: options.captureProjectFingerprint,
   });
@@ -190,13 +188,6 @@ export function registerPindieExtension(
     void options.remoteCompanion?.companion.milestone("authority:unavailable", "PINDIE AUTHORITY UNAVAILABLE");
   };
 
-  const refreshRunToolSurface = (): boolean => {
-    const derivation = run.refreshToolSurface();
-    if (derivation.ok) return true;
-    markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
-    return false;
-  };
-
   const remoteStatusFacts = (): RemoteStatusFacts => {
     const task = runtime.state.task;
     return {
@@ -230,19 +221,18 @@ export function registerPindieExtension(
 
   const semanticStateChanged = (): void => {
     execution.semanticStateChanged(runtime.externalStateEpoch);
-    if (!refreshRunToolSurface()) return;
     presentation.refreshStatus();
     projectRemoteSemantics();
   };
 
-  const invalidateVerificationAfterProjectMutation = async (): Promise<void> => {
+  const invalidateVerificationAfterProjectMutation = async (): Promise<string | null> => {
     execution.advanceEvidenceGeneration();
     if (
       runtime.projectRoot === null ||
       run.stateUnavailableReason !== null ||
       !runtime.state.task
     ) {
-      return;
+      return null;
     }
     try {
       const result = await runtime.dispatch({ type: "invalidate_verification" });
@@ -262,6 +252,11 @@ export function registerPindieExtension(
       throw error;
     }
     semanticStateChanged();
+    const derivation = run.deriveSnapshot();
+    return renderPindieProjectMutationUpdate(
+      runtime.state,
+      derivation.ok ? derivation.snapshot : undefined,
+    );
   };
 
   const taskToolOptions = {
@@ -308,7 +303,6 @@ export function registerPindieExtension(
     const remoteSessionName = options.remoteCompanion
       ? ctx.sessionManager.getSessionName()
       : undefined;
-    run.restoreRunToolBaseline(true);
     presentation.setStatusContext(ctx);
     presentation.resetTrackers();
     presentation.clearStatus(ctx);
@@ -398,7 +392,6 @@ export function registerPindieExtension(
     liveRemoteSession = null;
     if (remote && sessionId !== null) remote.companion.shutdown(sessionId);
     remote?.discord?.stop();
-    run.restoreRunToolBaseline(true);
     presentation.resetTrackers();
     presentation.clearStatus(ctx);
     run.resetStateAuthority();
@@ -407,9 +400,8 @@ export function registerPindieExtension(
     presentation.setStatusContext(null);
   });
 
-  pi.on("before_agent_start", async (_event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     presentation.setStatusContext(ctx);
-    run.captureRunToolBaseline();
     run.resetAgentRun();
     execution.discardRuntime();
     if (run.authoritativeState !== null) {
@@ -425,7 +417,11 @@ export function registerPindieExtension(
     // authoritative project State rather than a previous session snapshot.
     execution.beginEvidenceScope(runtime.externalStateEpoch);
     run.beginAgentRunFacts();
-    refreshRunToolSurface();
+    let derivation = run.deriveSnapshot();
+    if (!derivation.ok) {
+      markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
+      derivation = run.deriveSnapshot();
+    }
     presentation.reasoning.beforeAgentStart();
     presentation.applyRequestedThinkingLevel();
     presentation.clearActivityLingerRefresh();
@@ -434,6 +430,25 @@ export function registerPindieExtension(
     presentation.startTimer(ctx);
     presentation.refreshStatus(ctx);
     void options.remoteCompanion?.companion.status(remoteStatusFacts());
+
+    if (!derivation.ok) {
+      throw new Error(
+        `Pindie unavailable semantic derivation failed: ${derivation.error}`,
+      );
+    }
+    const state = run.authoritativeState;
+    const unavailableReason = run.stateUnavailableReason ??
+      (state === null
+        ? "No project State has been loaded for this session."
+        : null);
+    return {
+      systemPrompt: appendPindieSystemContract(event.systemPrompt),
+      message: createPindieRunBaselineMessage(
+        state,
+        derivation.snapshot,
+        unavailableReason,
+      ),
+    };
   });
 
   pi.on("agent_end", (event, ctx) => {
@@ -458,52 +473,6 @@ export function registerPindieExtension(
       },
       { deliverAs: "followUp" },
     );
-  });
-
-  pi.on("context", (event) => {
-    let latestContinuationProbeIndex = -1;
-    if (run.activeTaskContinuationAttempted) {
-      for (let index = event.messages.length - 1; index >= 0; index -= 1) {
-        if (isPindieContinuationProbeMessage(event.messages[index])) {
-          latestContinuationProbeIndex = index;
-          break;
-        }
-      }
-    }
-    const messages = event.messages.filter((message, index) =>
-      !isPindiePolicyContextMessage(message) &&
-      !isPindieRuntimeContextMessage(message) &&
-      (!isPindieContinuationProbeMessage(message) ||
-        index === latestContinuationProbeIndex)
-    );
-    let state = run.authoritativeState;
-    let derivation = run.deriveSnapshot();
-    if (!derivation.ok) {
-      markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
-      state = run.authoritativeState;
-      derivation = run.deriveSnapshot();
-    }
-    if (!derivation.ok) {
-      throw new Error(
-        `Pindie unavailable semantic derivation failed: ${derivation.error}`,
-      );
-    }
-    const unavailableReason = run.stateUnavailableReason ??
-      (state === null
-        ? "No project State has been loaded for this session."
-        : null);
-
-    return {
-      messages: [
-        ...messages,
-        createPindiePolicyContextMessage(run.policySnapshot),
-        createPindieRuntimeContextMessage(
-          state,
-          derivation.snapshot,
-          unavailableReason,
-        ),
-      ],
-    };
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
@@ -564,7 +533,6 @@ export function registerPindieExtension(
 
     const snapshot = derivation.snapshot;
     const capabilities = deriveCapabilities(snapshot);
-    run.applyToolSurface(capabilities);
     const authorization = authorizeToolEffect(capabilities, effect);
     if (!authorization.allowed) {
       run.recordDeniedCall(effect);
@@ -604,7 +572,6 @@ export function registerPindieExtension(
         effect.requiredCapability === "task.replace")
     ) {
       run.recordSuccessfulCapability(effect.requiredCapability);
-      refreshRunToolSurface();
     }
 
     if (
@@ -622,8 +589,14 @@ export function registerPindieExtension(
     );
     if (mutationSettlement === "ignore") return;
     if (mutationSettlement === "invalidate") {
-      await invalidateVerificationAfterProjectMutation();
-      return;
+      const update = await invalidateVerificationAfterProjectMutation();
+      if (update === null) return;
+      return {
+        content: [
+          ...event.content,
+          { type: "text", text: update },
+        ],
+      };
     }
 
     return execution.captureEvidenceIfEligible(
@@ -726,7 +699,6 @@ export function registerPindieExtension(
 
     execution.discardRuntime();
     run.resetAgentRun();
-    run.restoreRunToolBaseline();
     presentation.clearActivityLingerRefresh();
     presentation.runActivity.settle();
     presentation.refreshStatus(ctx);

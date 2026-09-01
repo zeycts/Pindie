@@ -162,7 +162,7 @@ mutation ambiguous → compare project Reality before/after execution
 
 Denied calls create no mutation observation. Failed ambiguous tools are still observed afterward because partial mutation may have occurred.
 
-## 6. Model Tool Surface
+## 6. Model Tool Surface and Gateway
 
 Model-facing Pindie semantic tools are narrow capability-shaped adapters:
 
@@ -181,25 +181,15 @@ pindie_git_observe         → observe.git
 
 Internal reducer events remain tool-agnostic.
 
-For each actual Agent Run:
+Pi owns the active model Tool Surface. Pindie does not narrow, expand, capture, or restore that surface as semantic State changes. A currently unauthorized tool may remain visible to the model; visibility is not authorization.
 
-```text
-Run Tool Baseline
-        ∩
-Tools allowed by current capabilities
-        ↓
-Effective Tool Surface
-```
-
-The Run Tool Baseline is the Pi/user active set captured at `before_agent_start` before Pindie applies semantic restriction. Pindie may narrow it but never enable a tool absent from that baseline. The exact baseline is restored at `agent_settled`; the next Run captures a fresh Pi/user baseline.
-
-The Gateway remains authoritative for races, stale pre-generated calls, and calls generated before a same-Run semantic change narrows the surface.
+The Gateway remains authoritative for every consequential call, including races, stale pre-generated calls, and calls generated before a same-Run semantic change. It derives current capabilities from the current semantic Snapshot and blocks or allows the concrete effect at execution time.
 
 ## 7. Knowledge Surface and prompt ownership
 
-Pindie does not own a global lifecycle-policy system prompt. Pi owns native system-prompt construction and rebuilds it from the active tool set.
+Pindie appends a deterministic static System Contract to Pi's already-chained system prompt in `before_agent_start`. The contract contains runtime authority, Gateway, Task, verification, Human Gate, append-only update, policy, and Seed Strategy semantics; it does not contain the current Policy Snapshot.
 
-Pindie Runtime Context is hidden factual Knowledge Surface driven by the same `SemanticSnapshot` used by capabilities. It may report:
+The same `SemanticSnapshot` used by capabilities produces a hidden Run Baseline message at Agent Run start. It may report:
 
 - coherent/stale/unavailable Run authority;
 - Task and verification status;
@@ -208,14 +198,14 @@ Pindie Runtime Context is hidden factual Knowledge Surface driven by the same `S
 - Human Gate details;
 - factual unavailability reason.
 
-It must not restate structural legality as procedural lifecycle instructions.
+It must not restate structural legality as procedural lifecycle instructions. Later semantic tool results and runtime updates carry current state at their causal location.
 
 ```text
 PindieState + SemanticRunFacts
         ↓
 SemanticSnapshot
-        ├→ Capabilities → Tool Surface / Gateway
-        └→ Knowledge Surface + current State details
+        ├→ Capabilities → Execution Gateway
+        └→ Run Baseline + causal State updates
 ```
 
 Natural-language policy is a last resort, not a source of deterministic correctness.
@@ -298,7 +288,7 @@ agent_end
 
 Pindie uses only Pi's public extension contract. It does not infer private retry state, call the model directly, recurse, or create another loop.
 
-Historical continuation probes remain in session history if Pi stores them, but context projection filters them so they do not accumulate as future model policy. During the active continuation follow-up, only the current/latest probe remains model-visible and its chronological position is preserved.
+Historical continuation probes remain in session/model history. Pindie does not filter or reorder them; normal Pi compaction handles history growth.
 
 ## 11. Runtime-only presentation, reasoning, and external projection
 
@@ -322,17 +312,17 @@ A Skill may describe a reusable procedure such as Git delivery. It must not dupl
 2. State stores only durable semantic current-work facts.
 3. Run Facts are runtime-only and minimal.
 4. Snapshot and capabilities are derived, never persisted.
-5. Knowledge Surface, Tool Surface, Gateway legality, and deterministic continuation eligibility derive from one semantic world.
-6. Effective tools are a subset of the captured Pi/user Run baseline.
+5. Run Baseline, causal State updates, Gateway legality, and deterministic continuation eligibility derive from one semantic world.
+6. Pi owns the active Tool Surface; the Gateway re-authorizes every consequential call against current capabilities.
 7. Reducer knows semantic events, not Pi tools.
 8. Harness closes deterministic branches; model retains genuine semantic choices.
 9. Human authority is explicit for consequential judgment.
-10. Gateway remains defense in depth after Tool Surface alignment.
+10. Gateway remains the final execution authority even when a tool remains visible to the model.
 11. Global natural-language policy must not duplicate deterministic Harness authority.
 12. Verification factual evidence/provenance/freshness belongs to Harness; verification meaning/coverage belongs to the model.
 13. Runtime evidence refs/generations and continuation fuses are temporary and never persisted.
 14. Durable Verification State remains compact; Pindie is not a tool-result log database.
-15. Historical runtime probes must not become persistent model policy through context accumulation.
+15. Historical runtime probes remain append-only until normal Pi compaction and never rewrite prior model history.
 16. Skills are procedural and do not own semantic correctness.
 17. Pi owns the low-level Agent Loop, Skill runtime, concrete tool registry, native system-prompt construction, retries, compaction, and follow-up delivery.
 18. Optional Remote projection derives from native Pi Session history and existing Pindie runtime/semantic facts; Discord never becomes semantic or conversation authority.

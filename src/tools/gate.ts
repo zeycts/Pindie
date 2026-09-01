@@ -4,6 +4,7 @@ import { Type } from "typebox";
 
 import { PindieStateConflictError, type PindieRuntime } from "../runtime.ts";
 import { StateLockBusyError } from "../store.ts";
+import { appendCurrentPindieTaskState } from "../context.ts";
 import type { PindieState } from "../state.ts";
 import type { PindieEvent } from "../transitions.ts";
 
@@ -60,7 +61,10 @@ async function dispatchOrThrow(
 
 function result(message: string, state: PindieState, terminate = false) {
   return {
-    content: [{ type: "text" as const, text: message }],
+    content: [{
+      type: "text" as const,
+      text: appendCurrentPindieTaskState(message, state),
+    }],
     details: { state } satisfies PindieGateToolDetails,
     ...(terminate ? { terminate: true } : {}),
   };
