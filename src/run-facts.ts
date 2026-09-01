@@ -1,8 +1,15 @@
 import type { PindieCapability, SemanticRunFacts } from "./semantics.ts";
-import type { HumanGate, PindieState, PindieTask } from "./state.ts";
+import {
+  getTaskStatus,
+  type HumanGate,
+  type PindieState,
+  type PindieTask,
+  type TaskStatus,
+} from "./state.ts";
 
 export interface AgentRunFactsContext {
   readonly taskAtRunStart: PindieTask | null;
+  readonly taskStatusAtRunStart: TaskStatus;
   readonly gateAtRunStart: HumanGate | null;
   readonly externalStateEpochAtRunStart: number;
   readonly taskIntroducedDuringRun: boolean;
@@ -14,6 +21,7 @@ export function beginAgentRunFacts(
 ): AgentRunFactsContext {
   return {
     taskAtRunStart: state.task,
+    taskStatusAtRunStart: getTaskStatus(state),
     gateAtRunStart: state.task?.humanGate ?? null,
     externalStateEpochAtRunStart: externalStateEpoch,
     taskIntroducedDuringRun: false,

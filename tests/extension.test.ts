@@ -24,6 +24,8 @@ import {
   getVerificationStatus,
   type PindieState,
 } from "../src/state.ts";
+import type { RunExperience } from "../src/run-experience.ts";
+import type { RunExperienceStore } from "../src/experience-store.ts";
 import type { PindieStateStore } from "../src/store.ts";
 
 type CapturedHandler = (
@@ -105,6 +107,16 @@ class CapturedExtensionAPI {
     const tool = this.tools.get(name);
     assert.ok(tool, `Expected '${name}' tool to be registered.`);
     return tool;
+  }
+}
+
+class ExtensionTestExperienceStore implements RunExperienceStore {
+  readonly records: Array<{ projectRoot: string; experience: RunExperience }> = [];
+  saveError: Error | null = null;
+
+  async save(projectRoot: string, experience: RunExperience): Promise<void> {
+    if (this.saveError) throw this.saveError;
+    this.records.push({ projectRoot, experience });
   }
 }
 
@@ -332,18 +344,20 @@ function createHarness(
 ) {
   const api = new CapturedExtensionAPI();
   const store = new ExtensionTestStore(entries);
+  const experienceStore = options.experienceStore ?? new ExtensionTestExperienceStore();
   const integration = registerPindieExtension(
     api as unknown as ExtensionAPI,
     {
       subscriptionUsageProvider: { fetchUsage: async () => null },
       ...options,
       store,
+      experienceStore,
       resolveProjectRoot: async (cwd) => resolvedRoots[cwd] ?? cwd,
     },
   );
   api.bindRuntime();
 
-  return { api, store, integration };
+  return { api, store, experienceStore, integration };
 }
 
 test("Extension registration does not call Pi runtime action methods before runtime binding", async () => {
@@ -3719,4 +3733,206 @@ test("M5 external State unavailability clears refs collected under prior semanti
     }),
     /Unknown Pindie evidence reference/,
   );
+});
+
+test("SI v0.3 eligible Run Experience captures task facts, outcome, and settled metrics", async () => {
+  const harness = createHarness([["/repo", activeState("Experience task")]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  await captureObservationEvidence(harness, "experience-read");
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+
+  assert.equal(harness.experienceStore.records.length, 1);
+  const record = harness.experienceStore.records[0]!.experience;
+  assert.equal(record.schemaVersion, 1);
+  assert.equal(record.task.goal, "Experience task");
+  assert.equal(record.task.taskRelation, "preexisting_untouched");
+  assert.equal(record.task.statusAtStart, "active");
+  assert.deepEqual(record.policy, {
+    finalSnapshot: null,
+    declarationCount: 0,
+    firstDeclarationAfter: null,
+    finalDeclarationAfter: null,
+  });
+  assert.deepEqual(record.execution, {
+    toolCalls: 1,
+    observations: 1,
+    consequentialCalls: 0,
+    projectMutationCalls: 0,
+    verificationCalls: 0,
+    toolErrors: 0,
+    deniedCalls: 0,
+  });
+  assert.deepEqual(record.outcome, {
+    taskStatus: "active",
+    verificationStatus: "pending",
+    completionRelation: "not_completed",
+    hasBlockers: false,
+    hasQuestions: false,
+    humanGateOpen: false,
+  });
+  assert.equal(typeof record.metrics.durationMs, "number");
+  assert.equal(typeof record.metrics.cost, "number");
+  assert.equal(harness.store.saves.length, 0);
+  assert.equal(JSON.stringify(record).includes("evidence"), false);
+});
+
+test("SI v0.3 preserves idle introduction and Policy declaration positions", async () => {
+  const harness = createHarness();
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  await executeSemanticTool(harness, "pindie_task_start", "experience-start", {
+    goal: "Introduced task",
+    successCriteria: ["It is recorded"],
+  });
+  const first = await captureObservationEvidence(harness, "position-before-policy");
+  await executeSemanticTool(harness, "pindie_policy_set", "policy-first", {
+    approach: "architecture-first",
+    modifiers: ["minimal-change"],
+  });
+  await captureObservationEvidence(harness, "position-after-policy", {
+    isError: true,
+    content: [{ type: "text", text: "An observation failed." }],
+  });
+  await executeSemanticTool(harness, "pindie_policy_set", "policy-final", {
+    approach: "direct-action",
+  });
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+
+  assert.equal(first.ref.startsWith("ev:"), true);
+  const record = harness.experienceStore.records[0]!.experience;
+  assert.equal(record.task.taskRelation, "introduced_during_run");
+  assert.equal(record.task.statusAtStart, "idle");
+  assert.equal(record.policy.finalSnapshot?.approach.id, "direct-action");
+  assert.equal(record.policy.declarationCount, 2);
+  assert.deepEqual(record.policy.firstDeclarationAfter, {
+    toolCalls: 2,
+    observations: 1,
+    consequentialCalls: 1,
+    projectMutationCalls: 0,
+    verificationCalls: 0,
+    toolErrors: 0,
+    deniedCalls: 0,
+  });
+  assert.deepEqual(record.policy.finalDeclarationAfter, {
+    toolCalls: 3,
+    observations: 2,
+    consequentialCalls: 1,
+    projectMutationCalls: 0,
+    verificationCalls: 0,
+    toolErrors: 1,
+    deniedCalls: 0,
+  });
+  assert.equal(record.execution.toolCalls, 3);
+  assert.equal(record.execution.observations, 2);
+  assert.equal(record.execution.consequentialCalls, 1);
+  assert.equal(record.execution.toolErrors, 1);
+});
+
+test("SI v0.3 eligibility excludes no-Task, policy-only, stale, unavailable, and denied-only Runs", async () => {
+  const noTask = createHarness();
+  await startSession(noTask, "/repo");
+  await beginAgentRun(noTask);
+  assert.equal(await callGuard(noTask, toolCall("read", {}, "no-task-read")), undefined);
+  assert.equal(
+    await noTask.api.handler("tool_result")(toolResult("read", false, "no-task-read"), context("/repo")),
+    undefined,
+  );
+  await noTask.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(noTask.experienceStore.records.length, 0);
+
+  const policyOnly = createHarness([["/repo", activeState()]]);
+  await startSession(policyOnly, "/repo");
+  await beginAgentRun(policyOnly);
+  await executeSemanticTool(policyOnly, "pindie_policy_set", "policy-only", { approach: "direct-action" });
+  await policyOnly.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(policyOnly.experienceStore.records.length, 0);
+
+  const stale = createHarness([["/repo", activeState()]]);
+  await startSession(stale, "/repo");
+  await beginAgentRun(stale);
+  await captureObservationEvidence(stale, "stale-read");
+  stale.store.states.set("/repo", activeState("External task"));
+  await stale.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(stale.experienceStore.records.length, 0);
+
+  const unavailable = createHarness();
+  unavailable.store.loadErrors.set("/repo", new Error("unavailable"));
+  await startSession(unavailable, "/repo");
+  await beginAgentRun(unavailable);
+  assert.equal(await callGuard(unavailable, toolCall("read", {}, "unavailable-read")), undefined);
+  assert.equal(
+    await unavailable.api.handler("tool_result")(toolResult("read", false, "unavailable-read"), context("/repo")),
+    undefined,
+  );
+  await unavailable.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(unavailable.experienceStore.records.length, 0);
+
+  const denied = createHarness([["/repo", activeState()]]);
+  await startSession(denied, "/repo");
+  await beginAgentRun(denied);
+  assertBlocked(await callGuard(denied, toolCall("pindie_task_complete", {}, "denied-only")), /missing capability/);
+  await denied.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(denied.experienceStore.records.length, 0);
+
+  const deniedAfterObservation = createHarness([["/repo", activeState()]]);
+  await startSession(deniedAfterObservation, "/repo");
+  await beginAgentRun(deniedAfterObservation);
+  await captureObservationEvidence(deniedAfterObservation, "denied-after-read");
+  assertBlocked(
+    await callGuard(deniedAfterObservation, toolCall("pindie_task_complete", {}, "denied-after-read")),
+    /missing capability/,
+  );
+  await deniedAfterObservation.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(deniedAfterObservation.experienceStore.records.length, 1);
+  assert.equal(deniedAfterObservation.experienceStore.records[0]!.experience.execution.deniedCalls, 1);
+  assert.equal(deniedAfterObservation.experienceStore.records[0]!.experience.execution.toolCalls, 1);
+});
+
+test("SI v0.3 counters reset and persistence failure cannot affect semantic authority", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  await captureObservationEvidence(harness, "first-run");
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  await beginAgentRun(harness);
+  await captureObservationEvidence(harness, "second-run");
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(harness.experienceStore.records.length, 2);
+  assert.equal(harness.experienceStore.records[0]!.experience.execution.toolCalls, 1);
+  assert.equal(harness.experienceStore.records[1]!.experience.execution.toolCalls, 1);
+
+  const failed = createHarness([["/repo", activeState()]]);
+  await startSession(failed, "/repo");
+  await beginAgentRun(failed);
+  const stateBefore = structuredClone(failed.integration.runtime.state);
+  await captureObservationEvidence(failed, "persistence-failure");
+  failed.experienceStore.saveError = new Error("experience disk unavailable");
+  await assert.doesNotReject(
+    failed.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo")),
+  );
+  assert.deepEqual(failed.integration.runtime.state, stateBefore);
+  assert.equal(failed.integration.stateUnavailableReason, null);
+  assert.equal(failed.integration.runTimer.active, false);
+  assert.equal(failed.integration.runCost.snapshot([] as any)?.active, false);
+});
+
+test("SI v0.3 obsolete stale settlement writes no Experience", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  await captureObservationEvidence(harness, "stale-settlement");
+  const staleContext = {
+    sessionManager: {
+      getEntries: () => {
+        throw new Error("This extension ctx is stale after session replacement or reload.");
+      },
+    },
+  };
+  await assert.doesNotReject(
+    harness.api.handler("agent_settled")({ type: "agent_settled" }, staleContext),
+  );
+  assert.equal(harness.experienceStore.records.length, 0);
+  assert.equal(harness.integration.runTimer.active, true);
 });

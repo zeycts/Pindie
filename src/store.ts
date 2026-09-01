@@ -138,6 +138,10 @@ export class FileStateStore implements PindieStateStore {
     this.onReclaimClaimed = options.onReclaimClaimed;
   }
 
+  get storageBaseDir(): string {
+    return this.baseDir;
+  }
+
   async load(projectRoot: string): Promise<PindieState> {
     const statePath = this.statePath(projectRoot);
     let contents: string;
