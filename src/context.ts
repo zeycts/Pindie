@@ -1,9 +1,74 @@
 import type { SemanticSnapshot } from "./semantics.ts";
 import type { PindieState } from "./state.ts";
+import { SEED_STRATEGIES } from "./strategies.ts";
 
+export const PINDIE_POLICY_START = "<PINDIE_POLICY>";
+export const PINDIE_POLICY_END = "</PINDIE_POLICY>";
+export const PINDIE_POLICY_CONTEXT_TYPE = "pindie-policy-context";
 export const PINDIE_RUNTIME_START = "<PINDIE_RUNTIME>";
 export const PINDIE_RUNTIME_END = "</PINDIE_RUNTIME>";
 export const PINDIE_RUNTIME_CONTEXT_TYPE = "pindie-runtime-context";
+
+const PINDIE_POLICY_METADATA = [
+  "Pindie Policy Context",
+  "",
+  "Runtime policy metadata only; not user intent or a new request.",
+  "",
+  "Seed Strategies are optional, advisory problem-solving priors. The model may use a strategy, combine strategies, or ignore strategies when inappropriate.",
+  "",
+  "Strategies never override actual user intent, project constraints, Pindie Runtime Context, State or semantic authority, capabilities or Execution Gateway decisions, verification reality, or Human Gates.",
+  "Strategy use is not required ceremony.",
+];
+
+export function renderPindiePolicyContext(): string {
+  const lines = [
+    PINDIE_POLICY_START,
+    ...PINDIE_POLICY_METADATA,
+    "",
+    "Seed Strategies:",
+  ];
+  for (const strategy of SEED_STRATEGIES) {
+    lines.push(
+      `- ${strategy.id} (${strategy.kind})`,
+      `  Summary: ${strategy.summary}`,
+      "  Use when:",
+      ...strategy.useWhen.map((guidance) => `  - ${guidance}`),
+    );
+    if (strategy.avoidWhen && strategy.avoidWhen.length > 0) {
+      lines.push(
+        "  Avoid when:",
+        ...strategy.avoidWhen.map((guidance) => `  - ${guidance}`),
+      );
+    }
+    lines.push(
+      "  Principles:",
+      ...strategy.principles.map((principle) => `  - ${principle}`),
+    );
+  }
+  lines.push(PINDIE_POLICY_END);
+  return lines.join("\n");
+}
+
+export function createPindiePolicyContextMessage() {
+  return {
+    role: "custom" as const,
+    customType: PINDIE_POLICY_CONTEXT_TYPE,
+    content: renderPindiePolicyContext(),
+    display: false,
+    timestamp: 0,
+  };
+}
+
+export function isPindiePolicyContextMessage(message: unknown): boolean {
+  return (
+    typeof message === "object" &&
+    message !== null &&
+    "role" in message &&
+    "customType" in message &&
+    message.role === "custom" &&
+    message.customType === PINDIE_POLICY_CONTEXT_TYPE
+  );
+}
 
 const PINDIE_RUNTIME_METADATA = [
   "Pindie Runtime Context",

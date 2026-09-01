@@ -2,11 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  PINDIE_POLICY_CONTEXT_TYPE,
+  PINDIE_POLICY_END,
+  PINDIE_POLICY_START,
   PINDIE_RUNTIME_CONTEXT_TYPE,
   PINDIE_RUNTIME_END,
   PINDIE_RUNTIME_START,
+  createPindiePolicyContextMessage,
   createPindieRuntimeContextMessage,
+  isPindiePolicyContextMessage,
   isPindieRuntimeContextMessage,
+  renderPindiePolicyContext,
   renderPindieRuntimeContext,
 } from "../src/context.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
@@ -88,6 +94,34 @@ const staleTaskSnapshot: SemanticSnapshot = {
   hasQuestions: true,
   completionReady: false,
 };
+
+test("SI03 Policy Context is bounded, advisory metadata with stable hidden identity", () => {
+  const first = renderPindiePolicyContext();
+  const second = renderPindiePolicyContext();
+
+  assert.equal(first, second);
+  assert.match(first, new RegExp(`^${PINDIE_POLICY_START}`));
+  assert.match(first, new RegExp(`${PINDIE_POLICY_END}$`));
+  assert.match(first, /Pindie Policy Context/);
+  assert.match(first, /Runtime policy metadata only; not user intent or a new request\./);
+  assert.match(first, /optional, advisory problem-solving priors/i);
+  assert.match(first, /may use a strategy, combine strategies, or ignore strategies/i);
+  assert.match(first, /never override actual user intent/i);
+  assert.match(first, /project constraints.*Pindie Runtime Context/s);
+  assert.match(first, /State or semantic authority/);
+  assert.match(first, /capabilities or Execution Gateway decisions/);
+  assert.match(first, /verification reality/);
+  assert.match(first, /Human Gates/);
+  assert.match(first, /not required ceremony/i);
+
+  const message = createPindiePolicyContextMessage();
+  assert.equal(message.customType, PINDIE_POLICY_CONTEXT_TYPE);
+  assert.equal(message.display, false);
+  assert.equal(message.timestamp, 0);
+  assert.ok(isPindiePolicyContextMessage(message));
+  assert.equal(isPindiePolicyContextMessage({ ...message, customType: "other" }), false);
+  assert.equal(isPindiePolicyContextMessage({ ...message, role: "user" }), false);
+});
 
 test("K01 coherent active Runtime Context projects Snapshot status and current State details", () => {
   const first = renderPindieRuntimeContext(activeState(), coherentActiveSnapshot);

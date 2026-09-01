@@ -5,7 +5,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+  createPindiePolicyContextMessage,
   createPindieRuntimeContextMessage,
+  isPindiePolicyContextMessage,
   isPindieRuntimeContextMessage,
 } from "./context.ts";
 import {
@@ -448,6 +450,7 @@ export function registerPindieExtension(
       }
     }
     const messages = event.messages.filter((message, index) =>
+      !isPindiePolicyContextMessage(message) &&
       !isPindieRuntimeContextMessage(message) &&
       (!isPindieContinuationProbeMessage(message) ||
         index === latestContinuationProbeIndex)
@@ -472,6 +475,7 @@ export function registerPindieExtension(
     return {
       messages: [
         ...messages,
+        createPindiePolicyContextMessage(),
         createPindieRuntimeContextMessage(
           state,
           derivation.snapshot,
