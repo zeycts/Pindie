@@ -78,6 +78,16 @@ function gatedState(): PindieState {
   };
 }
 
+function verifiedGatedState(): PindieState {
+  const state = verifiedState();
+  return {
+    task: {
+      ...state.task!,
+      humanGate: { kind: "approval", question: "Approve?" },
+    },
+  };
+}
+
 async function harness(
   initialState: PindieState = EMPTY_STATE,
   resolveEvidence: (refs: readonly string[]) => string = (refs) =>
@@ -174,7 +184,7 @@ test("replace dispatches replace_task and preserves optional fields", async () =
   assert.match(textOf(result), /unfinished task replaced/i);
 });
 
-test("state-changing semantic results include the canonical current State projection", async () => {
+test("state-changing semantic results include focused causal projections", async () => {
   const started = await harness();
   const start = await started.tools.start.execute("start", {
     goal: "Visible Task",
@@ -182,40 +192,61 @@ test("state-changing semantic results include the canonical current State projec
     successCriteria: ["Current state is visible"],
     nextIntent: "Refine the contract",
   });
-  assert.match(textOf(start), /Current Pindie State:/);
+  assert.match(textOf(start), /Current Task Contract:/);
   assert.match(textOf(start), /Task status: active/);
   assert.match(textOf(start), /Goal:\nVisible Task/);
 
   const refined = await started.tools.refine.execute("refine", { goal: "Refined Task" });
-  assert.match(textOf(refined), /Task contract refined\.[\s\S]*Verification status: stale/);
+  assert.match(textOf(refined), /Current Task Contract:[\s\S]*Goal:\nRefined Task/);
+  assert.match(textOf(refined), /Verification status: stale/);
 
   const progressed = await started.tools.progress.execute("progress", {
     blockers: ["Waiting on input"],
     questions: ["Which input?"],
     nextIntent: "Ask the human",
   });
-  assert.match(textOf(progressed), /Task status: blocked/);
+  assert.match(textOf(progressed), /Current Pindie Progress:[\s\S]*Task status: blocked/);
   assert.match(textOf(progressed), /Blockers:\n- Waiting on input/);
   assert.match(textOf(progressed), /Questions:\n- Which input\?/);
   assert.match(textOf(progressed), /Next intent:\nAsk the human/);
+  assert.doesNotMatch(textOf(progressed), /Verification checks:|Extension tests passed/);
 
   const verified = await harness(activeState(), () => "Tool: read\nOutcome: success");
   const verification = await verified.tools.verify.execute("verify", {
     check: { name: "tests", status: "passed", covers: ["c1"], evidenceRefs: ["ev:read"] },
   });
+  assert.match(textOf(verification), /Recorded verification check:[\s\S]*Name: tests/);
+  assert.match(textOf(verification), /Status: passed[\s\S]*Covers: c1/);
   assert.match(textOf(verification), /Verification status: passed/);
-  assert.match(textOf(verification), /Verification checks:[\s\S]*tests — passed — covers: c1/);
+  assert.match(textOf(verification), /Criterion coverage: 1\/1/);
+  assert.doesNotMatch(textOf(verification), /Tool: read|Harness factual evidence/);
 
-  const gated = await harness(activeState());
+  const gated = await harness({
+    task: {
+      ...verifiedState().task!,
+      humanGate: null,
+      verification: {
+        stale: false,
+        checks: [{
+          name: "tests",
+          status: "passed",
+          covers: ["c1"],
+          evidence: "unrelated materialized verification evidence",
+        }],
+      },
+    },
+  });
   const opened = await gated.tools.gateOpen.execute("open", {
     kind: "approval",
     question: "Approve this step?",
     options: ["Yes", "No"],
   });
-  assert.match(textOf(opened), /Human Gate:[\s\S]*Question: Approve this step\?/);
-  const resolved = await (await harness(gatedState())).tools.gateResolve.execute("resolve", {});
+  assert.match(textOf(opened), /Task status: waiting_human[\s\S]*Human Gate:[\s\S]*Question: Approve this step\?/);
+  assert.doesNotMatch(textOf(opened), /unrelated materialized verification evidence/);
+  const resolved = await (await harness(verifiedGatedState())).tools.gateResolve.execute("resolve", {});
   assert.match(textOf(resolved), /Task status: active/);
-  assert.doesNotMatch(textOf(resolved), /Human Gate:/);
+  assert.match(textOf(resolved), /Human Gate: none/);
+  assert.doesNotMatch(textOf(resolved), /Verification checks:|unrelated materialized verification evidence/);
 });
 
 test("refine requires at least one field and dispatches refine_task", async () => {
@@ -361,7 +392,7 @@ test("T09-T11 direct execution rejects empty, excessive, and duplicate refs", as
   );
 });
 
-test("T12-T13 factual error evidence may support passed judgment and result includes current state", async () => {
+test("T12-T13 factual error evidence may support passed judgment without copying raw evidence", async () => {
   const rawLog = "raw-log-line".repeat(1000);
   const h = await harness(activeState(), () => `Tool: bash\nOutcome: error\nResult:\n${rawLog}`);
   const verification = await h.tools.verify.execute("verify", {
@@ -374,8 +405,9 @@ test("T12-T13 factual error evidence may support passed judgment and result incl
   });
   assert.equal(h.runtime.state.task?.verification.checks[0]?.status, "passed");
   assert.match(textOf(verification), /Verification check 'invalid input rejected' recorded\./);
-  assert.match(textOf(verification), /Current Pindie State:/);
-  assert.match(textOf(verification), /raw-log-line/);
+  assert.match(textOf(verification), /Covers: c1/);
+  assert.match(textOf(verification), /Criterion coverage: 1\/1/);
+  assert.doesNotMatch(textOf(verification), /raw-log-line/);
 });
 
 test("complete dispatches complete_task, preserves result semantics, and requires a summary", async () => {

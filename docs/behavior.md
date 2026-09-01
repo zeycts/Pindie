@@ -218,6 +218,8 @@ It must not restate structural legality as lifecycle instructions.
 
 Prior history is never filtered, reordered, or rewritten. State-changing semantic tool results and mutation invalidation updates append current facts at their causal location; continuation probes remain in history until normal Pi compaction. Successful Pi compaction appends one hidden Pindie State Checkpoint with exact current State, Run authority, eligibility, and any current Run-scoped Policy Snapshot. Failed or aborted compaction does not emit one.
 
+Run Baseline and State Checkpoint contain the full Task and verification projection, including materialized evidence. Normal semantic results append only the causal delta needed for that transition, so verification evidence is not duplicated in every later Task, progress, verification, or Gate result.
+
 ## 9. Verification evidence
 
 Durable `VerificationCheck` remains:

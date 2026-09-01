@@ -4,8 +4,13 @@ import {
   type SemanticSnapshot,
 } from "./semantics.ts";
 import type { PolicySnapshot } from "./policy.ts";
-import type { PindieState } from "./state.ts";
-import { getTaskStatus, getVerificationStatus } from "./state.ts";
+import {
+  getTaskStatus,
+  getVerificationStatus,
+  type PindieState,
+  type PindieTask,
+  type VerificationCheck,
+} from "./state.ts";
 import { SEED_STRATEGIES } from "./strategies.ts";
 
 export const PINDIE_SYSTEM_CONTRACT_START = "<PINDIE_SYSTEM_CONTRACT>";
@@ -133,23 +138,35 @@ function renderUnavailableState(reason: string | null): string {
   ].join("\n");
 }
 
-/** Canonical model-facing projection of current Pindie Task and verification State. */
-export function renderCurrentPindieTaskState(
+function taskStatusFor(
+  state: PindieState | null,
+  snapshot?: SemanticSnapshot,
+): string {
+  return snapshot && snapshot.authority !== "unavailable"
+    ? snapshot.taskStatus
+    : getTaskStatus(state ?? { task: null });
+}
+
+function verificationStatusFor(
+  task: PindieTask,
+  snapshot?: SemanticSnapshot,
+): string {
+  return snapshot && snapshot.authority !== "unavailable"
+    ? snapshot.verificationStatus
+    : getVerificationStatus(task);
+}
+
+/** Render the current Task Contract without historical verification evidence. */
+export function renderCurrentPindieTaskContract(
   state: PindieState | null,
   snapshot?: SemanticSnapshot,
 ): string {
   const task = state?.task;
-  const taskStatus = snapshot && snapshot.authority !== "unavailable"
-    ? snapshot.taskStatus
-    : getTaskStatus(state ?? { task: null });
-  const lines = [`Task status: ${taskStatus}`];
+  const lines = [`Task status: ${taskStatusFor(state, snapshot)}`];
   if (!task) return lines.join("\n");
 
-  const verificationStatus = snapshot && snapshot.authority !== "unavailable"
-    ? snapshot.verificationStatus
-    : getVerificationStatus(task);
   lines.push(
-    `Verification status: ${verificationStatus}`,
+    `Verification status: ${verificationStatusFor(task, snapshot)}`,
     "",
     "Goal:",
     task.goal,
@@ -163,6 +180,18 @@ export function renderCurrentPindieTaskState(
     "Success criteria:",
     ...task.successCriteria.map((criterion) => `- ${criterion.id}: ${criterion.description}`),
   );
+  return lines.join("\n");
+}
+
+/** Canonical model-facing projection of current Pindie Task and verification State. */
+export function renderCurrentPindieTaskState(
+  state: PindieState | null,
+  snapshot?: SemanticSnapshot,
+): string {
+  const task = state?.task;
+  const lines = [renderCurrentPindieTaskContract(state, snapshot)];
+  if (!task) return lines.join("\n");
+
   if (task.openLoops.blockers.length > 0) {
     lines.push("", "Blockers:", ...task.openLoops.blockers.map((blocker) => `- ${blocker}`));
   }
@@ -196,12 +225,83 @@ export function renderCurrentPindieTaskState(
   return lines.join("\n");
 }
 
-export function appendCurrentPindieTaskState(
-  message: string,
+/** Render only the open-loop facts changed by pindie_task_progress. */
+export function renderCurrentPindieTaskProgress(
   state: PindieState,
   snapshot?: SemanticSnapshot,
 ): string {
-  return [message, "", "Current Pindie State:", renderCurrentPindieTaskState(state, snapshot)].join("\n");
+  const task = state.task;
+  const lines = [`Task status: ${taskStatusFor(state, snapshot)}`];
+  if (!task) return lines.join("\n");
+  lines.push(
+    "",
+    "Blockers:",
+    ...(task.openLoops.blockers.length > 0
+      ? task.openLoops.blockers.map((blocker) => `- ${blocker}`)
+      : ["- none"]),
+    "",
+    "Questions:",
+    ...(task.openLoops.questions.length > 0
+      ? task.openLoops.questions.map((question) => `- ${question}`)
+      : ["- none"]),
+    "",
+    "Next intent:",
+    task.openLoops.nextIntent ?? "none",
+  );
+  return lines.join("\n");
+}
+
+/** Render the semantic verification result without copying materialized evidence. */
+export function renderCurrentPindieVerificationRecord(
+  state: PindieState,
+  check: Pick<VerificationCheck, "name" | "status" | "covers">,
+): string {
+  const task = state.task;
+  if (!task) return "Verification status: unavailable";
+  const covered = new Set(
+    task.verification.checks
+      .filter((current) => current.status === "passed")
+      .flatMap((current) => current.covers),
+  );
+  const coveredCriteria = task.successCriteria
+    .map((criterion) => criterion.id)
+    .filter((criterionId) => covered.has(criterionId));
+  return [
+    "Recorded verification check:",
+    `- Name: ${check.name}`,
+    `- Status: ${check.status}`,
+    `- Covers: ${check.covers.length > 0 ? check.covers.join(", ") : "none"}`,
+    "",
+    `Verification status: ${getVerificationStatus(task)}`,
+    `Criterion coverage: ${coveredCriteria.length}/${task.successCriteria.length}`,
+    `Covered criteria: ${coveredCriteria.length > 0 ? coveredCriteria.join(", ") : "none"}`,
+  ].join("\n");
+}
+
+/** Render the resulting Human Gate without unrelated Task verification State. */
+export function renderCurrentPindieGate(
+  state: PindieState,
+  snapshot?: SemanticSnapshot,
+): string {
+  const task = state.task;
+  if (!task) return `Task status: ${taskStatusFor(state, snapshot)}`;
+  if (!task.humanGate) {
+    return [
+      `Task status: ${taskStatusFor(state, snapshot)}`,
+      "Human Gate: none",
+    ].join("\n");
+  }
+  const lines = [
+    `Task status: ${taskStatusFor(state, snapshot)}`,
+    "",
+    "Human Gate:",
+    `- Kind: ${task.humanGate.kind}`,
+    `- Question: ${task.humanGate.question}`,
+  ];
+  if (task.humanGate.options && task.humanGate.options.length > 0) {
+    lines.push("- Options:", ...task.humanGate.options.map((option) => `  - ${option}`));
+  }
+  return lines.join("\n");
 }
 
 function renderPindieRunState(

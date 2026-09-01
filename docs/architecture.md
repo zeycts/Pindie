@@ -204,6 +204,8 @@ Pi compaction is an intentional request reset boundary. After a successful `sess
 
 It must not restate structural legality as procedural lifecycle instructions. Later semantic tool results and runtime updates carry current state at their causal location.
 
+The full Task projection is reserved for Run Baseline and post-compaction State Checkpoint synchronization boundaries. Ordinary semantic results use focused causal projections: Task Contract changes, open-loop changes, verification check metadata plus aggregate coverage, or Human Gate changes. They do not copy unrelated materialized verification evidence already present in the transcript.
+
 ```text
 PindieState + SemanticRunFacts
         ↓

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  appendCurrentPindieTaskState,
   appendPindieSystemContract,
   createPindieStateCheckpointMessage,
   createPindieRunBaselineMessage,
@@ -238,6 +237,8 @@ test("State Checkpoint preserves current State, eligibility, policy, and hidden 
     "Questions:\n- Which release channel?",
     "Next intent:\nRun tests",
     "Verification checks:\n- tests — passed — covers: c1",
+    "Verification checks:\n- tests — passed — covers: c1",
+    "Evidence: Extension tests passed.",
     "Human Gate:\n- Kind: decision",
     "Current Pindie Action Eligibility:",
     "- task refine: allowed",
@@ -286,8 +287,4 @@ test("canonical current Task renderer carries state-changing semantic facts", ()
   assert.match(rendered, /Next intent:/);
   assert.match(rendered, /Verification checks:/);
   assert.match(rendered, /Human Gate:/);
-  assert.match(
-    appendCurrentPindieTaskState("Task contract refined.", state()),
-    /Task contract refined\.[\s\S]*Current Pindie State:/,
-  );
 });
