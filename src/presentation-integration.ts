@@ -11,7 +11,7 @@ import {
 } from "./efficiency.ts";
 import { ReasoningController } from "./reasoning.ts";
 import { RunActivityTracker } from "./run-activity.ts";
-import { RunCostTracker } from "./run-cost.ts";
+import { RunCostTracker, type RunCost } from "./run-cost.ts";
 import { RunTimer } from "./run-timer.ts";
 import type { PindieState } from "./state.ts";
 import {
@@ -265,8 +265,8 @@ export class PresentationIntegration {
     this.runCost.start(entries);
   }
 
-  finishCost(entries: readonly SessionEntry[]): void {
-    this.runCost.finish(entries);
+  finishCost(entries: readonly SessionEntry[]): RunCost | null {
+    return this.runCost.finish(entries);
   }
 
   private presentStatusBestEffort(

@@ -18,6 +18,14 @@ import {
 } from "./continuation.ts";
 import { ExecutionIntegration } from "./execution-integration.ts";
 import {
+  FileRunExperienceStore,
+  type RunExperienceStore,
+} from "./experience-store.ts";
+import {
+  assembleRunExperience,
+  isEligibleRunExperience,
+} from "./run-experience.ts";
+import {
   authorizeToolEffect,
   classifyToolEffect,
   type ToolEffect,
@@ -64,6 +72,7 @@ type ProjectRootResolver = (cwd: string) => Promise<string>;
 
 export interface PindieExtensionOptions {
   store?: PindieStateStore;
+  experienceStore?: RunExperienceStore;
   resolveProjectRoot?: ProjectRootResolver;
   subscriptionUsageProvider?: SubscriptionUsageProvider;
   getStatusWidth?: () => number | undefined;
@@ -128,7 +137,13 @@ export function registerPindieExtension(
   pi: ExtensionAPI,
   options: PindieExtensionOptions = {},
 ): PindieExtensionIntegration {
-  const runtime = new PindieRuntime(options.store ?? new FileStateStore());
+  const stateStore = options.store ?? new FileStateStore();
+  const experienceStore = options.experienceStore ?? new FileRunExperienceStore({
+    baseDir: stateStore instanceof FileStateStore
+      ? stateStore.storageBaseDir
+      : undefined,
+  });
+  const runtime = new PindieRuntime(stateStore);
   const run = new RunIntegration(pi, runtime);
   const execution = new ExecutionIntegration({
     captureProjectFingerprint: options.captureProjectFingerprint,
@@ -517,6 +532,7 @@ export function registerPindieExtension(
       effect.requiredCapability === "observe.git"
     ) {
       execution.recordAuthorizedObservation(event, effect);
+      run.recordAuthorizedCall(event.toolCallId, effect);
       return;
     }
 
@@ -551,6 +567,7 @@ export function registerPindieExtension(
     run.applyToolSurface(capabilities);
     const authorization = authorizeToolEffect(capabilities, effect);
     if (!authorization.allowed) {
+      run.recordDeniedCall(effect);
       return {
         block: true,
         reason: gatewayDenialReason(
@@ -565,12 +582,19 @@ export function registerPindieExtension(
       effect,
       runtime.projectRoot!,
     );
+    run.recordAuthorizedCall(event.toolCallId, effect);
   });
 
   pi.on("tool_result", async (event) => {
+    const telemetryKind = run.recordToolResult(event.toolCallId, event.isError);
     const authorizedExecution = execution.takeAuthorizedExecution(
       event.toolCallId,
     );
+    if (telemetryKind === "policy") {
+      if (event.isError) run.recordFailedPolicyDeclaration();
+      else run.recordSuccessfulPolicyDeclaration();
+      return;
+    }
     if (!authorizedExecution) return;
     const { effect } = authorizedExecution;
 
@@ -622,21 +646,89 @@ export function registerPindieExtension(
     presentation.synchronizeThinkingLevel(event.level, ctx);
   });
 
-  pi.on("agent_settled", (_event, ctx) => {
+  pi.on("agent_settled", async (_event, ctx) => {
     // Pi can dispose an old session runner before its in-flight Agent Run reaches
     // the finally-path that emits agent_settled. Its context is then deliberately
     // stale; that obsolete run must not touch or reset this runtime's state.
     const entries = safeSessionEntries(ctx);
     if (!entries) return;
+    if (run.hasActiveAgentRun && !run.claimAgentRunSettlement()) return;
 
     presentation.setStatusContext(ctx);
+
+    // Freeze all Experience inputs before clearing Run-scoped Policy, evidence,
+    // and execution bookkeeping. This entire path is best-effort and cannot
+    // become semantic authority.
+    const settlementGeneration = run.activeAgentRunGeneration;
+    const projectRoot = runtime.projectRoot;
+    let finalDerivation = run.deriveSnapshot();
+    // A Run that only observed may not have crossed the consequential Gateway
+    // preflight. Refresh once at settlement so external State changes still
+    // make the final authority stale rather than producing a false record.
+    if (projectRoot !== null && run.authoritativeState !== null && run.hasActiveAgentRun) {
+      try {
+        await run.refreshAuthoritativeState();
+        if (
+          settlementGeneration === null ||
+          !run.isAgentRunCurrent(settlementGeneration)
+        ) return;
+        finalDerivation = run.deriveSnapshot();
+      } catch {
+        // Experience eligibility is fail-closed; preserve normal settlement
+        // semantics and simply omit this record when final authority cannot be
+        // refreshed.
+        finalDerivation = { ok: false, error: "Final authority refresh failed." };
+      }
+    }
+    const finalState = run.authoritativeState;
+    const task = finalState?.task ?? null;
+    const statusAtStart = run.taskStatusAtRunStart;
+    const executionFacts = run.executionCounters;
+    const policyFacts = run.policyAttribution;
+    const durationMs = presentation.runTimer.finish();
+    const settledCost = presentation.finishCost(entries);
+
+    if (
+      experienceStore !== null &&
+      settlementGeneration !== null &&
+      run.isAgentRunCurrent(settlementGeneration) &&
+      finalDerivation.ok &&
+      isEligibleRunExperience(
+        projectRoot,
+        finalDerivation.snapshot,
+        task,
+        executionFacts,
+      ) &&
+      statusAtStart !== null
+    ) {
+      try {
+        const experience = assembleRunExperience({
+          task: task!,
+          statusAtStart,
+          snapshot: finalDerivation.snapshot,
+          policy: policyFacts,
+          execution: executionFacts,
+          durationMs,
+          cost: settledCost?.cost ?? null,
+        });
+        await experienceStore.save(projectRoot!, experience);
+      } catch (error) {
+        console.warn(
+          `[Pindie] Dropped Run Experience record: ${errorMessage(error)}`,
+        );
+      }
+    }
+
+    if (
+      settlementGeneration !== null &&
+      !run.isAgentRunCurrent(settlementGeneration)
+    ) return;
+
     execution.discardRuntime();
-    run.clearPolicySnapshot();
+    run.resetAgentRun();
     run.restoreRunToolBaseline();
     presentation.clearActivityLingerRefresh();
     presentation.runActivity.settle();
-    presentation.finishCost(entries);
-    presentation.runTimer.finish();
     presentation.refreshStatus(ctx);
     void presentation.refreshSubscriptionUsage(ctx);
     if (options.remoteCompanion) {
