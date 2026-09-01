@@ -10,7 +10,7 @@ import {
 } from "../src/semantics.ts";
 import { EMPTY_STATE, type PindieState, type PindieTask } from "../src/state.ts";
 
-const OBSERVATION: PindieCapability[] = ["observe.project", "observe.git"];
+const OBSERVATION: PindieCapability[] = ["observe.project", "observe.git", "policy.declare"];
 const ACTIVE_BASE: PindieCapability[] = [
   ...OBSERVATION,
   "project.mutate",

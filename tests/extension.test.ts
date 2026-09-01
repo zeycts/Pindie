@@ -531,6 +531,7 @@ test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
     "pindie_gate_open",
     "pindie_gate_resolve",
     "pindie_git_observe",
+    "pindie_policy_set",
     "pindie_task_complete",
     "pindie_task_progress",
     "pindie_task_refine",
@@ -561,7 +562,7 @@ test("Remote-enabled wiring observes public input without altering Pindie tools"
   const sent: string[] = [];
   const surface: RemoteSurface = { ensureProject: async () => ({ channelId: "channel" }), ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }), send: async (_thread, event) => { sent.push(event.text); }, updateSessionPresentation: async () => undefined };
   const { api } = createHarness([], {}, { remoteCompanion: { companion: new RemoteCompanion(surface), guildId: "guild" } });
-  assert.ok(api.handlers.has("input")); assert.ok(api.handlers.has("message_end")); assert.equal(api.tools.size, 9);
+  assert.ok(api.handlers.has("input")); assert.ok(api.handlers.has("message_end")); assert.equal(api.tools.size, 10);
   await api.handler("session_start")({ type: "session_start", reason: "startup" }, context("/repo", [{ id: "u", message: { role: "user", content: "hello" } }]));
   assert.ok(Array.isArray(sent));
 });
@@ -1099,6 +1100,127 @@ test("SI04 Policy Context remains available across coherent, stale, and unavaila
   assert.equal(unavailableProjection.messages.at(-1)?.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
   assert.match(String(unavailableProjection.messages.at(-1)?.content), /Agent Run authority: unavailable/);
   assert.deepEqual(unavailable.store.saves, []);
+});
+
+test("SI v0.2 Policy Snapshot is optional, projected, replaceable, and Run-scoped", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  assert.equal(harness.integration.policySnapshot, null);
+  const undeclared = await harness.api.handler("context")(
+    { type: "context", messages: [] },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+  assert.doesNotMatch(String(undeclared.messages.at(-2)?.content), /Current Policy Snapshot/);
+  assert.equal(undeclared.messages.at(-1)?.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
+
+  const first = await executeSemanticTool(
+    harness,
+    "pindie_policy_set",
+    "policy-first",
+    {
+      approach: "architecture-first",
+      modifiers: ["minimal-change", "verify-as-you-go"],
+    },
+  );
+  assert.equal(first.resultPatch, undefined);
+  assert.equal(harness.integration.policySnapshot?.approach.id, "architecture-first");
+  assert.deepEqual(
+    harness.integration.policySnapshot?.modifiers.map((strategy) => strategy.id),
+    ["minimal-change", "verify-as-you-go"],
+  );
+
+  const projected = await harness.api.handler("context")(
+    { type: "context", messages: undeclared.messages },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+  assert.equal(projected.messages.filter(isPindiePolicyContextMessage).length, 1);
+  assert.equal(projected.messages.at(-2)?.customType, PINDIE_POLICY_CONTEXT_TYPE);
+  assert.equal(projected.messages.at(-1)?.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
+  assert.match(
+    String(projected.messages.at(-2)?.content),
+    /Current Policy Snapshot \(advisory\):[\s\S]*Approach: architecture-first \(approach\)[\s\S]*minimal-change \(modifier\)[\s\S]*verify-as-you-go \(modifier\)/,
+  );
+
+  const repeated = await harness.api.handler("context")(
+    { type: "context", messages: projected.messages },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+  assert.equal(repeated.messages.filter(isPindiePolicyContextMessage).length, 1);
+  assert.match(String(repeated.messages.at(-2)?.content), /Approach: architecture-first/);
+  assert.equal(repeated.messages.at(-1)?.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
+
+  await executeSemanticTool(
+    harness,
+    "pindie_policy_set",
+    "policy-replacement",
+    { approach: "explore-first" },
+  );
+  assert.equal(harness.integration.policySnapshot?.approach.id, "explore-first");
+  assert.deepEqual(harness.integration.policySnapshot?.modifiers, []);
+  const replaced = await harness.api.handler("context")(
+    { type: "context", messages: repeated.messages },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+  assert.match(String(replaced.messages.at(-2)?.content), /Approach: explore-first/);
+  assert.doesNotMatch(String(replaced.messages.at(-2)?.content), /Approach: architecture-first/);
+
+  await beginAgentRun(harness);
+  assert.equal(harness.integration.policySnapshot, null);
+  const nextRun = await harness.api.handler("context")(
+    { type: "context", messages: replaced.messages },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+  assert.doesNotMatch(String(nextRun.messages.at(-2)?.content), /Current Policy Snapshot/);
+});
+
+test("SI v0.2 policy declaration stays outside Evaluation and PindieState persistence", async () => {
+  let fingerprintCaptures = 0;
+  const harness = createHarness([["/repo", verifiedState()]], {}, {
+    captureProjectFingerprint: async () => {
+      fingerprintCaptures += 1;
+      return { kind: "known", digest: "unchanged" };
+    },
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  const toolsBefore = harness.api.getActiveTools();
+  const epochBefore = harness.integration.runtime.externalStateEpoch;
+  const result = await executeSemanticTool(
+    harness,
+    "pindie_policy_set",
+    "policy-isolated",
+    { approach: "direct-action", modifiers: ["verify-as-you-go"] },
+  );
+
+  assert.equal(result.resultPatch, undefined);
+  assert.doesNotMatch(textOf(result.executionResult), /Pindie evidence ref/);
+  assert.equal(fingerprintCaptures, 0);
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.deepEqual(harness.api.getActiveTools(), toolsBefore);
+  assert.equal(harness.integration.runtime.externalStateEpoch, epochBefore);
+  assert.equal(harness.integration.runtime.state.task?.verification.stale, false);
+  assert.deepEqual(harness.store.saves, []);
+  assert.equal(Object.prototype.hasOwnProperty.call(harness.integration.runtime.state, "policySnapshot"), false);
+
+  await harness.api.tool("pindie_task_refine").execute("refine-after-policy", {
+    goal: "Persist a semantic change after policy declaration",
+  });
+  const saved = harness.store.saves.at(-1)?.state;
+  assert.ok(saved);
+  assert.equal(Object.prototype.hasOwnProperty.call(saved, "policySnapshot"), false);
+  assert.doesNotMatch(JSON.stringify(saved), /direct-action|verify-as-you-go/);
+
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "reload" },
+    context("/repo"),
+  );
+  assert.equal(harness.integration.policySnapshot, null);
+  await startSession(harness, "/repo", "reload");
+  assert.equal(harness.integration.policySnapshot, null);
 });
 
 test("H01 a fresh Run filters every historical continuation probe", async () => {

@@ -45,6 +45,9 @@ export function classifyToolEffect(toolName: string): ToolEffect {
     case "bash":
       return classified("project.mutate", "ambiguous");
 
+    case "pindie_policy_set":
+      return classified("policy.declare", "none");
+
     case "pindie_task_start":
       return classified("task.start", "none");
     case "pindie_task_replace":

@@ -108,6 +108,7 @@ Capability vocabulary:
 observe.project
 observe.git
 project.mutate
+policy.declare
 
 task.start
 task.refine
@@ -166,6 +167,7 @@ Denied calls create no mutation observation. Failed ambiguous tools are still ob
 Model-facing Pindie semantic tools are narrow capability-shaped adapters:
 
 ```text
+pindie_policy_set          → policy.declare
 pindie_task_start          → task.start
 pindie_task_replace        → task.replace
 pindie_task_refine         → task.refine

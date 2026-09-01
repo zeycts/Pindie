@@ -134,3 +134,18 @@ test("S16 custom unknown baseline tool follows project.mutate capability", () =>
   assert.deepEqual(surface({ task: task() }, facts(), ["custom_tool"]), ["custom_tool"]);
   assert.deepEqual(surface(EMPTY_STATE, facts({ taskRelation: "none" }), ["custom_tool"]), []);
 });
+
+test("S17 policy declaration remains baseline-bound and available without Task authority", () => {
+  assert.deepEqual(
+    surface(EMPTY_STATE, facts({ taskRelation: "none" }), ["pindie_policy_set"]),
+    ["pindie_policy_set"],
+  );
+  assert.deepEqual(
+    surface(null, { stateAvailable: false }, ["read", "pindie_policy_set", "edit"]),
+    ["read", "pindie_policy_set"],
+  );
+  assert.deepEqual(
+    surface({ task: task() }, facts(), ["pindie_policy_set"]),
+    ["pindie_policy_set"],
+  );
+});

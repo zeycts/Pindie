@@ -26,6 +26,7 @@ import { PresentationIntegration } from "./presentation-integration.ts";
 import { RemoteCompanion, type RemotePi, type RemoteStatusFacts } from "./remote-companion.ts";
 import { DiscordRemote, discordRemoteConfig } from "./discord-remote.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
+import type { PolicySnapshot } from "./policy.ts";
 import type { ProjectFingerprint } from "./project-mutation.ts";
 import type { ReasoningController } from "./reasoning.ts";
 import type { RunActivityTracker } from "./run-activity.ts";
@@ -48,6 +49,7 @@ import {
   createPindieGateOpenTool,
   createPindieGateResolveTool,
 } from "./tools/gate.ts";
+import { createPindiePolicySetTool } from "./tools/policy.ts";
 import { createPindieGitObserveTool } from "./tools/git-observe.ts";
 import {
   createPindieTaskCompleteTool,
@@ -82,6 +84,7 @@ export interface PindieExtensionIntegration {
   readonly reasoning: ReasoningController;
   readonly runCost: RunCostTracker;
   readonly runTimer: RunTimer;
+  readonly policySnapshot: PolicySnapshot | null;
   readonly stateUnavailableReason: string | null;
 }
 
@@ -250,6 +253,9 @@ export function registerPindieExtension(
     getRunDuration: () => presentation.runTimer.durationMs,
     onStateChange: semanticStateChanged,
   };
+  pi.registerTool(createPindiePolicySetTool({
+    onPolicySet: (snapshot) => run.setPolicySnapshot(snapshot),
+  }));
   pi.registerTool(createPindieTaskStartTool(runtime, taskToolOptions));
   pi.registerTool(createPindieTaskReplaceTool(runtime, taskToolOptions));
   pi.registerTool(createPindieTaskRefineTool(runtime, taskToolOptions));
@@ -293,7 +299,7 @@ export function registerPindieExtension(
     presentation.clearStatus(ctx);
     presentation.resetSubscriptionUsage();
     run.resetStateAuthority();
-    run.clearAgentRunBookkeeping();
+    run.resetAgentRun();
     execution.discardRuntime();
 
     try {
@@ -381,7 +387,7 @@ export function registerPindieExtension(
     presentation.resetTrackers();
     presentation.clearStatus(ctx);
     run.resetStateAuthority();
-    run.clearAgentRunBookkeeping();
+    run.resetAgentRun();
     execution.discardRuntime();
     presentation.setStatusContext(null);
   });
@@ -389,7 +395,7 @@ export function registerPindieExtension(
   pi.on("before_agent_start", async (_event, ctx) => {
     presentation.setStatusContext(ctx);
     run.captureRunToolBaseline();
-    run.clearAgentRunBookkeeping();
+    run.resetAgentRun();
     execution.discardRuntime();
     if (run.authoritativeState !== null) {
       try {
@@ -475,7 +481,7 @@ export function registerPindieExtension(
     return {
       messages: [
         ...messages,
-        createPindiePolicyContextMessage(),
+        createPindiePolicyContextMessage(run.policySnapshot),
         createPindieRuntimeContextMessage(
           state,
           derivation.snapshot,
@@ -625,6 +631,7 @@ export function registerPindieExtension(
 
     presentation.setStatusContext(ctx);
     execution.discardRuntime();
+    run.clearPolicySnapshot();
     run.restoreRunToolBaseline();
     presentation.clearActivityLingerRefresh();
     presentation.runActivity.settle();
@@ -657,6 +664,9 @@ export function registerPindieExtension(
     runActivity: presentation.runActivity,
     runCost: presentation.runCost,
     runTimer: presentation.runTimer,
+    get policySnapshot() {
+      return run.policySnapshot;
+    },
     get stateUnavailableReason() {
       return run.stateUnavailableReason;
     },

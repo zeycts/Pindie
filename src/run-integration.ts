@@ -7,6 +7,7 @@ import {
   type AgentRunFactsContext,
 } from "./run-facts.ts";
 import { PindieRuntime } from "./runtime.ts";
+import type { PolicySnapshot } from "./policy.ts";
 import {
   deriveCapabilities,
   deriveSemanticSnapshot,
@@ -33,6 +34,7 @@ export class RunIntegration {
   private agentRunFactsContext: AgentRunFactsContext | null = null;
   private runToolBaseline: readonly string[] | null = null;
   private continuationAttempted = false;
+  private currentPolicySnapshot: PolicySnapshot | null = null;
 
   constructor(pi: ExtensionAPI, runtime: PindieRuntime) {
     this.pi = pi;
@@ -64,6 +66,23 @@ export class RunIntegration {
 
   get activeTaskContinuationAttempted(): boolean {
     return this.continuationAttempted;
+  }
+
+  get policySnapshot(): PolicySnapshot | null {
+    return this.currentPolicySnapshot;
+  }
+
+  setPolicySnapshot(snapshot: PolicySnapshot): void {
+    this.currentPolicySnapshot = snapshot;
+  }
+
+  clearPolicySnapshot(): void {
+    this.currentPolicySnapshot = null;
+  }
+
+  resetAgentRun(): void {
+    this.clearAgentRunBookkeeping();
+    this.clearPolicySnapshot();
   }
 
   deriveSnapshot(): SemanticDerivationResult {
