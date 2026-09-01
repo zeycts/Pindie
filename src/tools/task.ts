@@ -3,6 +3,11 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { formatDuration } from "../run-timer.ts";
+import {
+  renderCurrentPindieTaskContract,
+  renderCurrentPindieTaskProgress,
+  renderCurrentPindieVerificationRecord,
+} from "../context.ts";
 import { PindieStateConflictError, type PindieRuntime } from "../runtime.ts";
 import { StateLockBusyError } from "../store.ts";
 import type { PindieState, VerificationCheck } from "../state.ts";
@@ -148,20 +153,22 @@ async function dispatchOrThrow(
   return runtime.state;
 }
 
-function result(message: string, state: PindieState, terminate = false) {
+function result(
+  message: string,
+  state: PindieState,
+  projection: string | null = null,
+  terminate = false,
+) {
   return {
-    content: [{ type: "text" as const, text: message }],
+    content: [{
+      type: "text" as const,
+      text: projection === null
+        ? message
+        : [message, "", projection].join("\n"),
+    }],
     details: { state } satisfies PindieTaskToolDetails,
     ...(terminate ? { terminate: true } : {}),
   };
-}
-
-function formatSuccessCriteria(state: PindieState): string {
-  const criteria = state.task?.successCriteria ?? [];
-  return [
-    "Success criteria:",
-    ...criteria.map(({ id, description }) => `- ${id}: ${description}`),
-  ].join("\n");
 }
 
 function formatCompletionResult(
@@ -275,7 +282,11 @@ export function createPindieTaskStartTool(
         successCriteria: params.successCriteria,
         nextIntent: params.nextIntent ?? null,
       }, options.onStateChange);
-      return result(`Current task started.\n\n${formatSuccessCriteria(state)}`, state);
+      return result(
+        "Current task started.",
+        state,
+        `Current Task Contract:\n${renderCurrentPindieTaskContract(state)}`,
+      );
     },
   });
 }
@@ -300,8 +311,9 @@ export function createPindieTaskReplaceTool(
         nextIntent: params.nextIntent ?? null,
       }, options.onStateChange);
       return result(
-        `Current unfinished task replaced.\n\n${formatSuccessCriteria(state)}`,
+        "Current unfinished task replaced.",
         state,
+        `Current Task Contract:\n${renderCurrentPindieTaskContract(state)}`,
       );
     },
   });
@@ -336,7 +348,11 @@ export function createPindieTaskRefineTool(
           : { successCriteria: params.successCriteria }),
       };
       const state = await dispatchOrThrow(runtime, event, options.onStateChange);
-      return result(`Task contract refined.\n\n${formatSuccessCriteria(state)}`, state);
+      return result(
+        "Task contract refined.",
+        state,
+        `Current Task Contract:\n${renderCurrentPindieTaskContract(state)}`,
+      );
     },
   });
 }
@@ -363,7 +379,11 @@ export function createPindieTaskProgressTool(
         questions: params.questions,
         nextIntent: params.nextIntent ?? null,
       }, options.onStateChange);
-      return result("Open loops updated.", state);
+      return result(
+        "Open loops updated.",
+        state,
+        `Current Pindie Progress:\n${renderCurrentPindieTaskProgress(state)}`,
+      );
     },
   });
 }
@@ -391,7 +411,11 @@ export function createPindieVerificationRecordTool(
         type: "record_verification",
         check,
       }, options.onStateChange);
-      return result(`Verification check '${params.check.name}' recorded.`, state);
+      return result(
+        `Verification check '${params.check.name}' recorded.`,
+        state,
+        `Current Verification Result:\n${renderCurrentPindieVerificationRecord(state, params.check)}`,
+      );
     },
   });
 }
@@ -424,6 +448,7 @@ export function createPindieTaskCompleteTool(
           options.getRunDuration?.() ?? null,
         ),
         state,
+        null,
         true,
       );
     },

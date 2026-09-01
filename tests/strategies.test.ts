@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { renderPindiePolicyContext } from "../src/context.ts";
+import { renderPindieSystemContract } from "../src/context.ts";
 import { SEED_STRATEGIES } from "../src/strategies.ts";
 
 const expectedStrategies = [
@@ -42,18 +42,18 @@ test("SI01 Seed Strategy catalog contains exactly the seven immutable priors", (
   }
 });
 
-test("SI02 Seed Strategy policy rendering is deterministic and complete", () => {
-  const first = renderPindiePolicyContext();
-  const second = renderPindiePolicyContext();
+test("SI02 Seed Strategy contract rendering is deterministic and complete", () => {
+  const first = renderPindieSystemContract();
+  const second = renderPindieSystemContract();
 
   assert.equal(first, second);
-  assert.match(first, /^<PINDIE_POLICY>[\s\S]*<\/PINDIE_POLICY>$/);
-  assert.match(first, /Runtime policy metadata only; not user intent or a new request\./);
+  assert.match(first, /^<PINDIE_SYSTEM_CONTRACT>[\s\S]*<\/PINDIE_SYSTEM_CONTRACT>$/);
+  assert.match(first, /Pindie System Contract/);
   assert.match(first, /optional, advisory problem-solving priors/i);
   assert.match(first, /may use a strategy, combine strategies, or ignore strategies/i);
   assert.match(first, /never override actual user intent/i);
   assert.match(first, /project constraints/i);
-  assert.match(first, /Pindie Runtime Context/i);
+  assert.match(first, /Pindie Run Baseline/i);
   assert.match(first, /State or semantic authority/i);
   assert.match(first, /capabilities or Execution Gateway decisions/i);
   assert.match(first, /verification reality/i);

@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import {
   type ExtensionAPI,
   type ExtensionContext,
@@ -5,15 +7,15 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import {
-  createPindiePolicyContextMessage,
-  createPindieRuntimeContextMessage,
-  isPindiePolicyContextMessage,
-  isPindieRuntimeContextMessage,
+  createPindieStateCheckpointMessage,
+  appendPindieSystemContract,
+  createPindieRunBaselineMessage,
+  renderCurrentPindieActionEligibility,
+  renderPindieProjectMutationUpdate,
 } from "./context.ts";
 import {
   PINDIE_CONTINUATION_PROBE_MESSAGE,
   PINDIE_CONTINUATION_PROBE_TYPE,
-  isPindieContinuationProbeMessage,
   shouldProbeContinuation,
 } from "./continuation.ts";
 import { ExecutionIntegration } from "./execution-integration.ts";
@@ -44,6 +46,7 @@ import type { RunTimer } from "./run-timer.ts";
 import { PindieRuntime } from "./runtime.ts";
 import {
   deriveCapabilities,
+  type PindieCapability,
   type SemanticSnapshot,
 } from "./semantics.ts";
 import { getTaskStatus, getVerificationStatus, validateState } from "./state.ts";
@@ -109,6 +112,17 @@ function isStaleExtensionContextError(error: unknown): boolean {
     error.message.startsWith(STALE_EXTENSION_CONTEXT_ERROR);
 }
 
+function sameCapabilities(
+  left: ReadonlySet<PindieCapability> | null,
+  right: ReadonlySet<PindieCapability>,
+): boolean {
+  if (left === null || left.size !== right.size) return false;
+  for (const capability of right) {
+    if (!left.has(capability)) return false;
+  }
+  return true;
+}
+
 function safeSessionEntries(
   ctx: ExtensionContext,
 ): ReturnType<ExtensionContext["sessionManager"]["getEntries"]> | null {
@@ -144,7 +158,7 @@ export function registerPindieExtension(
       : undefined,
   });
   const runtime = new PindieRuntime(stateStore);
-  const run = new RunIntegration(pi, runtime);
+  const run = new RunIntegration(runtime);
   const execution = new ExecutionIntegration({
     captureProjectFingerprint: options.captureProjectFingerprint,
   });
@@ -165,6 +179,7 @@ export function registerPindieExtension(
   type LiveRemoteSession = { sessionId: string; ctx: ExtensionContext; generation: number };
   let liveRemoteSession: LiveRemoteSession | null = null;
   let nextRemoteLeaseGeneration = 0;
+  let lastCheckpointCompactionId: string | null = null;
   const remotePiFor = (sessionId: string, generation: number): RemotePi | null => {
     const lease = liveRemoteSession;
     if (!lease || lease.sessionId !== sessionId || lease.generation !== generation) return null;
@@ -188,13 +203,6 @@ export function registerPindieExtension(
     run.markUnavailable(reason);
     presentation.refreshStatus();
     void options.remoteCompanion?.companion.milestone("authority:unavailable", "PINDIE AUTHORITY UNAVAILABLE");
-  };
-
-  const refreshRunToolSurface = (): boolean => {
-    const derivation = run.refreshToolSurface();
-    if (derivation.ok) return true;
-    markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
-    return false;
   };
 
   const remoteStatusFacts = (): RemoteStatusFacts => {
@@ -230,26 +238,29 @@ export function registerPindieExtension(
 
   const semanticStateChanged = (): void => {
     execution.semanticStateChanged(runtime.externalStateEpoch);
-    if (!refreshRunToolSurface()) return;
     presentation.refreshStatus();
     projectRemoteSemantics();
   };
 
-  const invalidateVerificationAfterProjectMutation = async (): Promise<void> => {
+  const invalidateVerificationAfterProjectMutation = async (): Promise<string | null> => {
     execution.advanceEvidenceGeneration();
     if (
       runtime.projectRoot === null ||
       run.stateUnavailableReason !== null ||
       !runtime.state.task
     ) {
-      return;
+      return null;
     }
+    const beforeVerification = structuredClone(runtime.state.task.verification);
+    const beforeCompleted = runtime.state.task.completed;
+    const hadCurrentChecks = beforeVerification.checks.length > 0;
     try {
       const result = await runtime.dispatch({ type: "invalidate_verification" });
       if (!result.ok) {
         markUnavailable(
           `Pindie could not invalidate verification after project mutation: ${result.error.message}`,
         );
+        return null;
       }
     } catch (error) {
       if (error instanceof StateLockBusyError) {
@@ -261,7 +272,33 @@ export function registerPindieExtension(
       );
       throw error;
     }
+    const afterTask = runtime.state.task;
+    const semanticChanged = afterTask !== null && (
+      beforeCompleted !== afterTask.completed ||
+      !isDeepStrictEqual(beforeVerification, afterTask.verification)
+    );
     semanticStateChanged();
+    if (!semanticChanged) return null;
+    const derivation = run.deriveSnapshot();
+    return renderPindieProjectMutationUpdate(
+      runtime.state,
+      derivation.ok ? derivation.snapshot : undefined,
+      hadCurrentChecks,
+    );
+  };
+
+  const renderEligibilityAfterSemanticChange = (
+    capabilitiesAtCall: ReadonlySet<PindieCapability> | null,
+  ): string | null => {
+    if (capabilitiesAtCall === null) return null;
+    const derivation = run.deriveSnapshot();
+    if (
+      !derivation.ok ||
+      sameCapabilities(capabilitiesAtCall, deriveCapabilities(derivation.snapshot))
+    ) {
+      return null;
+    }
+    return renderCurrentPindieActionEligibility(derivation.snapshot);
   };
 
   const taskToolOptions = {
@@ -308,7 +345,6 @@ export function registerPindieExtension(
     const remoteSessionName = options.remoteCompanion
       ? ctx.sessionManager.getSessionName()
       : undefined;
-    run.restoreRunToolBaseline(true);
     presentation.setStatusContext(ctx);
     presentation.resetTrackers();
     presentation.clearStatus(ctx);
@@ -316,6 +352,7 @@ export function registerPindieExtension(
     run.resetStateAuthority();
     run.resetAgentRun();
     execution.discardRuntime();
+    lastCheckpointCompactionId = null;
 
     try {
       const projectRoot = await resolveProjectRoot(ctx.cwd);
@@ -398,18 +435,17 @@ export function registerPindieExtension(
     liveRemoteSession = null;
     if (remote && sessionId !== null) remote.companion.shutdown(sessionId);
     remote?.discord?.stop();
-    run.restoreRunToolBaseline(true);
     presentation.resetTrackers();
     presentation.clearStatus(ctx);
     run.resetStateAuthority();
     run.resetAgentRun();
     execution.discardRuntime();
+    lastCheckpointCompactionId = null;
     presentation.setStatusContext(null);
   });
 
-  pi.on("before_agent_start", async (_event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     presentation.setStatusContext(ctx);
-    run.captureRunToolBaseline();
     run.resetAgentRun();
     execution.discardRuntime();
     if (run.authoritativeState !== null) {
@@ -425,7 +461,11 @@ export function registerPindieExtension(
     // authoritative project State rather than a previous session snapshot.
     execution.beginEvidenceScope(runtime.externalStateEpoch);
     run.beginAgentRunFacts();
-    refreshRunToolSurface();
+    let derivation = run.deriveSnapshot();
+    if (!derivation.ok) {
+      markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
+      derivation = run.deriveSnapshot();
+    }
     presentation.reasoning.beforeAgentStart();
     presentation.applyRequestedThinkingLevel();
     presentation.clearActivityLingerRefresh();
@@ -434,7 +474,62 @@ export function registerPindieExtension(
     presentation.startTimer(ctx);
     presentation.refreshStatus(ctx);
     void options.remoteCompanion?.companion.status(remoteStatusFacts());
+
+    if (!derivation.ok) {
+      throw new Error(
+        `Pindie unavailable semantic derivation failed: ${derivation.error}`,
+      );
+    }
+    const state = run.authoritativeState;
+    const unavailableReason = run.stateUnavailableReason ??
+      (state === null
+        ? "No project State has been loaded for this session."
+        : null);
+    return {
+      systemPrompt: appendPindieSystemContract(event.systemPrompt),
+      message: createPindieRunBaselineMessage(
+        state,
+        derivation.snapshot,
+        unavailableReason,
+      ),
+    };
   });
+
+  pi.on("session_compact", (event, ctx) => {
+    const compactionId = event.compactionEntry.id;
+    if (lastCheckpointCompactionId === compactionId) return;
+    lastCheckpointCompactionId = compactionId;
+
+    let derivation = run.deriveSnapshot();
+    if (!derivation.ok) {
+      markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
+      derivation = run.deriveSnapshot();
+    }
+    if (!derivation.ok) return;
+    const state = run.authoritativeState;
+    const unavailableReason = run.stateUnavailableReason ??
+      (state === null ? "No project State has been loaded for this session." : null);
+    const checkpoint = createPindieStateCheckpointMessage(
+      state,
+      derivation.snapshot,
+      run.policySnapshot,
+      unavailableReason,
+    );
+
+    // A compaction during an active run is followed by another model request
+    // (including overflow recovery). Queue the checkpoint as steering content
+    // so Pi places it before that next decision. A completed/manual compaction
+    // appends it without manufacturing an extra model turn.
+    if (event.willRetry || ctx.hasPendingMessages()) {
+      pi.sendMessage(checkpoint);
+    } else {
+      pi.sendMessage(checkpoint, { triggerTurn: false });
+    }
+  });
+
+  // Failed or aborted compactions do not establish a new model-history
+  // boundary, so they must not emit a potentially misleading checkpoint.
+  pi.on("session_compact_failed", () => undefined);
 
   pi.on("agent_end", (event, ctx) => {
     const derivation = run.deriveSnapshot();
@@ -458,52 +553,6 @@ export function registerPindieExtension(
       },
       { deliverAs: "followUp" },
     );
-  });
-
-  pi.on("context", (event) => {
-    let latestContinuationProbeIndex = -1;
-    if (run.activeTaskContinuationAttempted) {
-      for (let index = event.messages.length - 1; index >= 0; index -= 1) {
-        if (isPindieContinuationProbeMessage(event.messages[index])) {
-          latestContinuationProbeIndex = index;
-          break;
-        }
-      }
-    }
-    const messages = event.messages.filter((message, index) =>
-      !isPindiePolicyContextMessage(message) &&
-      !isPindieRuntimeContextMessage(message) &&
-      (!isPindieContinuationProbeMessage(message) ||
-        index === latestContinuationProbeIndex)
-    );
-    let state = run.authoritativeState;
-    let derivation = run.deriveSnapshot();
-    if (!derivation.ok) {
-      markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
-      state = run.authoritativeState;
-      derivation = run.deriveSnapshot();
-    }
-    if (!derivation.ok) {
-      throw new Error(
-        `Pindie unavailable semantic derivation failed: ${derivation.error}`,
-      );
-    }
-    const unavailableReason = run.stateUnavailableReason ??
-      (state === null
-        ? "No project State has been loaded for this session."
-        : null);
-
-    return {
-      messages: [
-        ...messages,
-        createPindiePolicyContextMessage(run.policySnapshot),
-        createPindieRuntimeContextMessage(
-          state,
-          derivation.snapshot,
-          unavailableReason,
-        ),
-      ],
-    };
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
@@ -564,7 +613,6 @@ export function registerPindieExtension(
 
     const snapshot = derivation.snapshot;
     const capabilities = deriveCapabilities(snapshot);
-    run.applyToolSurface(capabilities);
     const authorization = authorizeToolEffect(capabilities, effect);
     if (!authorization.allowed) {
       run.recordDeniedCall(effect);
@@ -581,6 +629,7 @@ export function registerPindieExtension(
       event,
       effect,
       runtime.projectRoot!,
+      capabilities,
     );
     run.recordAuthorizedCall(event.toolCallId, effect);
   });
@@ -604,7 +653,6 @@ export function registerPindieExtension(
         effect.requiredCapability === "task.replace")
     ) {
       run.recordSuccessfulCapability(effect.requiredCapability);
-      refreshRunToolSurface();
     }
 
     if (
@@ -622,16 +670,37 @@ export function registerPindieExtension(
     );
     if (mutationSettlement === "ignore") return;
     if (mutationSettlement === "invalidate") {
-      await invalidateVerificationAfterProjectMutation();
-      return;
+      const update = await invalidateVerificationAfterProjectMutation();
+      if (update === null) return;
+      const eligibility = renderEligibilityAfterSemanticChange(
+        authorizedExecution.capabilitiesAtCall,
+      );
+      return {
+        content: [
+          ...event.content,
+          { type: "text", text: update },
+          ...(eligibility === null ? [] : [{ type: "text" as const, text: eligibility }]),
+        ],
+      };
     }
 
-    return execution.captureEvidenceIfEligible(
+    const evidenceResult = execution.captureEvidenceIfEligible(
       authorizedExecution,
       event,
       run.authoritativeState,
       run.semanticRunFacts,
     );
+    if (event.isError) return evidenceResult;
+    const eligibility = renderEligibilityAfterSemanticChange(
+      authorizedExecution.capabilitiesAtCall,
+    );
+    if (eligibility === null) return evidenceResult;
+    return {
+      content: [
+        ...(evidenceResult?.content ?? event.content),
+        { type: "text" as const, text: eligibility },
+      ],
+    };
   });
 
   pi.on("turn_end", (event, ctx) => {
@@ -726,7 +795,6 @@ export function registerPindieExtension(
 
     execution.discardRuntime();
     run.resetAgentRun();
-    run.restoreRunToolBaseline();
     presentation.clearActivityLingerRefresh();
     presentation.runActivity.settle();
     presentation.refreshStatus(ctx);

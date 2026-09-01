@@ -240,20 +240,18 @@ Policy Snapshot is runtime-only:
 
 - each new Agent Run starts with no declared Snapshot;
 - a declaration may set or replace the Snapshot during that Run;
-- repeated context projections preserve the current Snapshot within the Run;
+- the current Snapshot is communicated by the `pindie_policy_set` tool result rather than repeated context projections;
 - a new Agent Run resets it;
 - session restart/reload does not restore it;
 - it is never stored in `PindieState` or another durable policy database.
 
 This prevents stale strategy identity from leaking across new user guidance or changed evidence.
 
-#### Policy Context projection
+#### Policy visibility
 
-The existing Seed Strategy catalog remains model-visible.
+The existing Seed Strategy catalog remains model-visible through Pindie's stable System Contract.
 
-When a current Snapshot exists, Policy Context may additionally project it as advisory runtime policy metadata. Runtime Context remains the final projected Pindie metadata because factual reality and authority remain stronger than cognitive policy.
-
-No current Snapshot should be fabricated when the model has not declared one.
+The current Snapshot is model-visible only through the successful `pindie_policy_set` tool call/result in the current transcript. No current Snapshot is fabricated or re-injected on later model requests.
 
 #### Capability and authorization boundary
 
@@ -589,28 +587,18 @@ Reasoning effort may eventually become one policy-controlled execution parameter
 
 ## 7. SI v0.1 runtime contract
 
-SI v0.1 should be implemented as the smallest extension of the existing context projection.
+SI v0.1 uses Pi's append-only message path rather than rebuilding a context projection.
 
 Current conceptual flow:
 
 ```text
-conversation
-→ fresh Pindie Runtime Context
+stable Pindie System Contract
+→ Run Baseline
+→ conversation and causal Pindie tool/runtime updates
 → model
 ```
 
-SI v0.1:
-
-```text
-conversation
-→ fresh Pindie Policy Context
-→ fresh Pindie Runtime Context
-→ model
-```
-
-Runtime Context remains last because it represents current factual reality/authority. Policy Context is advisory.
-
-Historical Policy Context must be filtered so it never accumulates in future model context.
+The Run Baseline contains the authoritative Task, verification, open-loop, Human Gate, authority, and unavailability facts at Run start. State-changing tool results and project-mutation updates append later facts at their causal location. Pi's normal compaction handles history growth.
 
 The first implementation should require only a small Strategy module plus context integration. It should not create a policy manager hierarchy, Strategy database, retrieval subsystem, additional model call, router, planner, or selector Agent.
 

@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  createPindiePolicyContextMessage,
-  PINDIE_POLICY_CONTEXT_TYPE,
-  renderPindiePolicyContext,
-} from "../src/context.ts";
+import { renderPindieSystemContract } from "../src/context.ts";
 import {
   createPolicySnapshot,
   type PolicySnapshot,
@@ -87,22 +83,21 @@ test("SI02 policy declaration tool is optional, structured, and replaces the cur
   assert.notEqual(snapshots[0], snapshots[1]);
 });
 
-test("SI02 Policy Context projects a declaration without fabricating one and retains Seed Strategies", () => {
-  const undeclared = renderPindiePolicyContext();
-  assert.doesNotMatch(undeclared, /Current Policy Snapshot/);
-  assert.match(undeclared, /Seed Strategies:/);
+test("SI02 policy keeps Seed Strategies in the stable contract and declares current Policy in its tool result", async () => {
+  const contract = renderPindieSystemContract();
+  assert.match(contract, /Seed Strategies:/);
+  for (const seed of SEED_STRATEGIES) assert.match(contract, new RegExp(`- ${seed.id} \\(${seed.kind}\\)`));
+  assert.doesNotMatch(contract, /Current Policy Snapshot/);
 
-  const declared = renderPindiePolicyContext(createPolicySnapshot({
+  const snapshots: PolicySnapshot[] = [];
+  const tool = createPindiePolicySetTool({ onPolicySet: (snapshot) => snapshots.push(snapshot) });
+  const result = await (tool.execute as any)("declare", {
     approach: "architecture-first",
     modifiers: ["minimal-change"],
-  }));
-  assert.match(declared, /Current Policy Snapshot \(advisory\):/);
-  assert.match(declared, /Approach: architecture-first \(approach\)/);
-  assert.match(declared, /Modifiers:\n  - minimal-change \(modifier\)/);
-  assert.match(declared, /Seed Strategies:/);
-  for (const seed of SEED_STRATEGIES) assert.match(declared, new RegExp(`- ${seed.id} \\(${seed.kind}\\)`));
-
-  const message = createPindiePolicyContextMessage(null);
-  assert.equal(message.customType, PINDIE_POLICY_CONTEXT_TYPE);
-  assert.doesNotMatch(String(message.content), /Current Policy Snapshot/);
+  });
+  const text = result.content.map((part: { text?: string }) => part.text ?? "").join("\n");
+  assert.match(text, /Current Policy Snapshot declared\./);
+  assert.match(text, /Approach: architecture-first/);
+  assert.match(text, /Modifiers: minimal-change/);
+  assert.equal(snapshots[0]?.approach.id, "architecture-first");
 });
