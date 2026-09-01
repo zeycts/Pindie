@@ -4,7 +4,9 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import {
+  PINDIE_POLICY_CONTEXT_TYPE,
   PINDIE_RUNTIME_CONTEXT_TYPE,
+  isPindiePolicyContextMessage,
 } from "../src/context.ts";
 import {
   PINDIE_CONTINUATION_PROBE_MESSAGE,
@@ -999,6 +1001,8 @@ test("P04 Context lifecycle projects one fresh coherent Snapshot-driven Runtime 
 
   assert.deepEqual(originalMessages[0], { role: "user", content: "Continue", timestamp: 1 });
   assert.deepEqual(first.messages.slice(0, 2), [originalMessages[0], originalMessages[2]]);
+  assert.equal(first.messages.filter(isPindiePolicyContextMessage).length, 1);
+  assert.equal(first.messages.at(-2)?.customType, PINDIE_POLICY_CONTEXT_TYPE);
   assert.equal(first.messages.filter((message) => message.customType === PINDIE_RUNTIME_CONTEXT_TYPE).length, 1);
   assert.equal(first.messages.at(-1)?.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
   assert.match(String(first.messages.at(-1)?.content), /Agent Run authority: coherent/);
@@ -1011,7 +1015,10 @@ test("P04 Context lifecycle projects one fresh coherent Snapshot-driven Runtime 
     { type: "context", messages: first.messages },
     context("/repo"),
   ) as { messages: Array<Record<string, unknown>> };
+  assert.equal(repeated.messages.filter(isPindiePolicyContextMessage).length, 1);
+  assert.equal(repeated.messages.at(-2)?.customType, PINDIE_POLICY_CONTEXT_TYPE);
   assert.equal(repeated.messages.filter((message) => message.customType === PINDIE_RUNTIME_CONTEXT_TYPE).length, 1);
+  assert.equal(repeated.messages.at(-1)?.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
 
   await harness.api.tool("pindie_task_refine").execute("refine", {
     goal: "Refined runtime goal",
@@ -1042,6 +1049,56 @@ test("P04 Context lifecycle projects one fresh coherent Snapshot-driven Runtime 
     context("/repo"),
   ) as { messages: Array<Record<string, unknown>> };
   assert.match(String(afterEdit.messages.at(-1)?.content), /Verification status: stale/);
+});
+
+test("SI04 Policy Context remains available across coherent, stale, and unavailable authority", async () => {
+  const coherent = createHarness([["/repo", activeState()]]);
+  await startSession(coherent, "/repo");
+  await beginAgentRun(coherent);
+  const coherentState = structuredClone(coherent.integration.runtime.state);
+  const coherentProjection = await coherent.api.handler("context")(
+    {
+      type: "context",
+      messages: [{
+        role: "custom",
+        customType: PINDIE_POLICY_CONTEXT_TYPE,
+        content: "historical policy",
+        display: false,
+        timestamp: 0,
+      }],
+    },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+  assert.equal(coherentProjection.messages.filter(isPindiePolicyContextMessage).length, 1);
+  assert.equal(coherentProjection.messages.at(-2)?.customType, PINDIE_POLICY_CONTEXT_TYPE);
+  assert.equal(coherentProjection.messages.at(-1)?.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
+  assert.match(String(coherentProjection.messages.at(-1)?.content), /Agent Run authority: coherent/);
+  assert.deepEqual(coherent.integration.runtime.state, coherentState);
+  assert.deepEqual(coherent.store.saves, []);
+
+  const stale = createHarness([["/repo", activeState()]]);
+  await startSession(stale, "/repo");
+  const staleProjection = await stale.api.handler("context")(
+    { type: "context", messages: [] },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+  assert.equal(staleProjection.messages.filter(isPindiePolicyContextMessage).length, 1);
+  assert.equal(staleProjection.messages.at(-2)?.customType, PINDIE_POLICY_CONTEXT_TYPE);
+  assert.equal(staleProjection.messages.at(-1)?.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
+  assert.match(String(staleProjection.messages.at(-1)?.content), /Agent Run authority: stale/);
+
+  const unavailable = createHarness();
+  unavailable.store.loadErrors.set("/repo", new Error("State unavailable"));
+  await startSession(unavailable, "/repo");
+  const unavailableProjection = await unavailable.api.handler("context")(
+    { type: "context", messages: [] },
+    context("/repo"),
+  ) as { messages: Array<Record<string, unknown>> };
+  assert.equal(unavailableProjection.messages.filter(isPindiePolicyContextMessage).length, 1);
+  assert.equal(unavailableProjection.messages.at(-2)?.customType, PINDIE_POLICY_CONTEXT_TYPE);
+  assert.equal(unavailableProjection.messages.at(-1)?.customType, PINDIE_RUNTIME_CONTEXT_TYPE);
+  assert.match(String(unavailableProjection.messages.at(-1)?.content), /Agent Run authority: unavailable/);
+  assert.deepEqual(unavailable.store.saves, []);
 });
 
 test("H01 a fresh Run filters every historical continuation probe", async () => {
@@ -1116,6 +1173,13 @@ test("H02-H04 an active follow-up keeps only the latest probe at its original po
       messages: [
         user,
         assistantBefore,
+        {
+          role: "custom",
+          customType: PINDIE_POLICY_CONTEXT_TYPE,
+          content: "old policy",
+          display: false,
+          timestamp: 2.5,
+        },
         oldProbe,
         currentProbe,
         assistantAfter,
@@ -1137,6 +1201,8 @@ test("H02-H04 an active follow-up keeps only the latest probe at its original po
     1,
   );
   assert.equal(projected.messages[2], currentProbe);
+  assert.equal(projected.messages.filter(isPindiePolicyContextMessage).length, 1);
+  assert.equal(projected.messages.at(-2)?.customType, PINDIE_POLICY_CONTEXT_TYPE);
   assert.equal(
     projected.messages.at(-1)?.customType,
     PINDIE_RUNTIME_CONTEXT_TYPE,
