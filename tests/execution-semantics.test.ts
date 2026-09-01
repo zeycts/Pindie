@@ -36,6 +36,7 @@ const exactCases = [
   ["edit", "project.mutate", "known"],
   ["write", "project.mutate", "known"],
   ["bash", "project.mutate", "ambiguous"],
+  ["pindie_policy_set", "policy.declare", "none"],
   ["pindie_task_start", "task.start", "none"],
   ["pindie_task_replace", "task.replace", "none"],
   ["pindie_task_refine", "task.refine", "none"],
@@ -164,4 +165,14 @@ test("stale and unavailable authority preserve observation and deny consequences
   assert.equal(composed({ task: task() }, { stateAvailable: true, runCoherent: false }, "web_search").allowed, true);
   assert.equal(composed({ task: task() }, { stateAvailable: true, runCoherent: false }, "edit").allowed, false);
   assert.equal(composed(null, { stateAvailable: false }, "custom_tool").allowed, false);
+});
+
+test("policy declaration uses only the fixed non-mutating capability", () => {
+  assert.equal(composed(EMPTY_STATE, facts({ taskRelation: "none" }), "pindie_policy_set").allowed, true);
+  assert.equal(composed({ task: task() }, facts(), "pindie_policy_set").allowed, true);
+  assert.equal(composed(null, { stateAvailable: false }, "pindie_policy_set").allowed, true);
+  assert.deepEqual(classifyToolEffect("pindie_policy_set"), {
+    requiredCapability: "policy.declare",
+    projectMutation: "none",
+  });
 });

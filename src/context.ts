@@ -1,3 +1,4 @@
+import type { PolicySnapshot } from "./policy.ts";
 import type { SemanticSnapshot } from "./semantics.ts";
 import type { PindieState } from "./state.ts";
 import { SEED_STRATEGIES } from "./strategies.ts";
@@ -20,13 +21,25 @@ const PINDIE_POLICY_METADATA = [
   "Strategy use is not required ceremony.",
 ];
 
-export function renderPindiePolicyContext(): string {
+export function renderPindiePolicyContext(
+  policySnapshot: PolicySnapshot | null = null,
+): string {
   const lines = [
     PINDIE_POLICY_START,
     ...PINDIE_POLICY_METADATA,
-    "",
-    "Seed Strategies:",
   ];
+  if (policySnapshot !== null) {
+    lines.push(
+      "",
+      "Current Policy Snapshot (advisory):",
+      `- Approach: ${policySnapshot.approach.id} (${policySnapshot.approach.kind})`,
+      "  Modifiers:",
+      ...(policySnapshot.modifiers.length > 0
+        ? policySnapshot.modifiers.map((strategy) => `  - ${strategy.id} (${strategy.kind})`)
+        : ["  - none"]),
+    );
+  }
+  lines.push("", "Seed Strategies:");
   for (const strategy of SEED_STRATEGIES) {
     lines.push(
       `- ${strategy.id} (${strategy.kind})`,
@@ -49,11 +62,13 @@ export function renderPindiePolicyContext(): string {
   return lines.join("\n");
 }
 
-export function createPindiePolicyContextMessage() {
+export function createPindiePolicyContextMessage(
+  policySnapshot: PolicySnapshot | null = null,
+) {
   return {
     role: "custom" as const,
     customType: PINDIE_POLICY_CONTEXT_TYPE,
-    content: renderPindiePolicyContext(),
+    content: renderPindiePolicyContext(policySnapshot),
     display: false,
     timestamp: 0,
   };

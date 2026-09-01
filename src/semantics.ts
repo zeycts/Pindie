@@ -75,6 +75,7 @@ export type PindieCapability =
   | "observe.project"
   | "observe.git"
   | "project.mutate"
+  | "policy.declare"
   | "task.start"
   | "task.refine"
   | "task.replace"
@@ -232,7 +233,10 @@ const OBSERVATION_CAPABILITIES: readonly PindieCapability[] = [
 export function deriveCapabilities(
   snapshot: SemanticSnapshot,
 ): ReadonlySet<PindieCapability> {
-  const capabilities = new Set<PindieCapability>(OBSERVATION_CAPABILITIES);
+  const capabilities = new Set<PindieCapability>([
+    ...OBSERVATION_CAPABILITIES,
+    "policy.declare",
+  ]);
 
   if (snapshot.authority !== "coherent") {
     return capabilities;
