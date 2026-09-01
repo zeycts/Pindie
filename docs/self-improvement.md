@@ -299,32 +299,232 @@ Do not implement:
 
 The output of SI v0.2 is simply an optional, structured, Run-scoped cognitive-policy observation that later milestones can associate with execution outcomes.
 
-### SI v0.3 — Strategy-aware Experience
+### SI v0.3 — Strategy-aware Run Experience
 
-Goal: create the first learning dataset.
+Goal: create the first durable learning dataset from bounded, factual Agent Run records without evaluating or adapting policy yet.
 
-Record a bounded cross-task relation:
+SI v0.2 dogfood showed that a Policy Snapshot may be declared late in a Run. A final Strategy label alone therefore cannot be treated as evidence that the Strategy guided the whole execution. SI v0.3 must preserve enough declaration-position and execution facts to distinguish early guidance from possible post-hoc labeling.
+
+The implementation relation is:
 
 ```text
-Task
-→ Policy Snapshot
-→ relevant trajectory facts
-→ factual outcome/evaluation
+Agent Run
+  ├─ Task facts
+  ├─ optional Policy Snapshot + declaration position
+  ├─ bounded execution counters
+  ├─ factual final outcome
+  └─ run metrics
+        ↓
+immutable Run Experience
+        ↓
+per-project Experience Store
 ```
 
-Experience should prefer reconstructable/factual signals over unconstrained model-authored reflection.
+The Experience unit is one Agent Run, not one Task. A Task may span several Runs with different declared policies and evidence.
 
-Potential signals include:
+#### Run Experience record
 
-- verification result and coverage;
-- CI/test outcome when available;
-- human acceptance/rejection when explicit;
-- run duration;
-- token/cost facts;
-- consequential tool/mutation facts;
-- task completion status.
+A v1 Run Experience contains only bounded factual data equivalent to:
 
-Do not turn Experience into a raw transcript database.
+```text
+schemaVersion
+recordedAt
+
+task
+  goal
+  taskRelation
+  statusAtStart
+
+policy
+  finalSnapshot | null
+  declarationCount
+  firstDeclarationAfter | null
+  finalDeclarationAfter | null
+
+execution
+  toolCalls
+  observations
+  consequentialCalls
+  projectMutationCalls
+  verificationCalls
+  toolErrors
+  deniedCalls
+
+outcome
+  taskStatus
+  verificationStatus
+  completionRelation
+  hasBlockers
+  hasQuestions
+  humanGateOpen
+
+metrics
+  durationMs
+  cost
+```
+
+The exact internal TypeScript layout may differ, but the semantic boundary should remain this small.
+
+Do not store model reasoning, chain-of-thought, assistant reflection, raw transcript, raw tool results, full verification evidence, or arbitrary prose summaries in Experience.
+
+#### Task facts
+
+Do not introduce a task classifier, complexity score, or inferred task type in SI v0.3.
+
+Use existing authoritative Task/Run facts. `taskRelation` should come from current semantic Run facts rather than model interpretation. `statusAtStart` should describe the factual Task status at the beginning of the Run, including `idle` when the Run introduces a new Task.
+
+#### Policy attribution facts
+
+Policy declaration remains model-owned and optional.
+
+Runs with no Policy Snapshot are valid Experience and must not be discarded merely because no Strategy was declared. Otherwise the dataset would be biased toward runs that used explicit policy metadata.
+
+For a Run with declarations, retain only:
+
+- the final Snapshot;
+- how many successful declarations occurred;
+- execution counters immediately before the first successful declaration;
+- execution counters immediately before the final successful declaration.
+
+Do not persist a full policy-transition history in SI v0.3.
+
+Policy declaration calls themselves should not inflate execution exposure counters. The declaration-position counters describe how much non-policy execution had already occurred before the declaration took effect.
+
+A later milestone may derive exposure ratios or attribution confidence. SI v0.3 stores the raw counters only; it must not compute or persist a `policyExposureScore`, success score, causal score, or reward.
+
+#### Execution facts
+
+Execution counters are Harness-owned telemetry derived from actual tool activity and existing Tool Effect/capability semantics, not from model-authored reflection.
+
+Counters should distinguish at least:
+
+- non-policy tool calls;
+- project/git observations;
+- consequential semantic/project calls;
+- calls whose Tool Effect may mutate the project;
+- verification-record calls;
+- tool-result errors;
+- calls denied by the live Execution Gateway.
+
+Do not infer semantic categories from assistant prose.
+
+#### Outcome facts
+
+Outcome is a factual snapshot at Run settlement. It may include current Task status, verification status, completion relation, blockers/questions presence, and Human Gate presence.
+
+Do not persist claims such as:
+
+```text
+success: true
+strategyWorked: true
+quality: 9/10
+```
+
+unless a later Evaluation milestone defines those semantics from external evidence.
+
+SI v0.3 does not introduce an LLM judge or self-reflection evaluator.
+
+#### Run metrics
+
+Reuse existing Run-scoped telemetry where available, especially Run duration and model-equivalent Run cost. Do not create a duplicate usage/cost accounting system for Experience.
+
+#### Experience eligibility
+
+Experience writing is fail-closed for dataset integrity.
+
+A Run is eligible only when:
+
+- it reaches the live `agent_settled` boundary;
+- a project root is available;
+- final semantic authority is coherent;
+- a Task exists at settlement;
+- the Run contains at least one non-policy tool execution.
+
+Do not fabricate Experience for stale/unavailable authority or policy-only/no-action Runs.
+
+A completed-before-run relation may be retained if the Run otherwise satisfies the factual eligibility contract; later Evaluation may decide whether such records are useful.
+
+#### Persistence
+
+Experience is durable learning data but is not `PindieState`.
+
+Store one immutable record per eligible Run under the same per-project Pindie storage namespace, conceptually:
+
+```text
+~/.pindie/projects/<project-id>/
+  state.json
+  experience/
+    <record-id>.json
+    <record-id>.json
+```
+
+Prefer one record per file rather than concurrent append to a shared JSONL file. Use collision-resistant record identity and atomic local file creation/replacement semantics appropriate to the existing store design.
+
+Experience must never be written into `state.json`, and State validation must not depend on Experience availability.
+
+#### Settlement ordering
+
+At `agent_settled`, freeze all Experience inputs before clearing Run-scoped policy/execution bookkeeping.
+
+Conceptually:
+
+```text
+capture final semantic + policy + execution facts
+finish/freeze duration and cost
+assemble Run Experience
+persist eligible Experience best-effort
+clear Run-scoped bookkeeping
+```
+
+The exact code order may differ as long as the persisted record observes one coherent settled Run and no required v0.2 Policy data is cleared before capture.
+
+#### Failure isolation
+
+Experience collection must never become Task authority.
+
+If Experience assembly or persistence fails:
+
+- do not block or fail the Task;
+- do not mark verification failed/stale;
+- do not make semantic authority unavailable;
+- do not open a Human Gate;
+- do not alter Tool Surface or completion legality.
+
+A local diagnostic may be emitted, but normal Pindie semantics remain unchanged. Losing one Experience record is preferable to corrupting Task truth.
+
+#### One-way data flow
+
+SI v0.3 only writes Experience:
+
+```text
+Run → Experience → disk
+```
+
+It does not read Experience back into future model context or Policy.
+
+Therefore SI v0.3 still does not change future Policy from past Experience. It creates the trustworthy substrate required for later evaluation/adaptation.
+
+#### SI v0.3 non-goals
+
+Do not implement:
+
+- Experience retrieval or context injection;
+- raw transcript/session archival;
+- model reasoning or reflection capture;
+- task classification or difficulty scoring;
+- Strategy success rates or rankings;
+- reward functions;
+- policy exposure/causal scores;
+- LLM-as-judge evaluation;
+- automatic Strategy selection;
+- Strategy adaptation, mutation, derivation, or evolution;
+- learned Skills;
+- embeddings/vector databases;
+- policy UI/history UI;
+- reasoning-policy migration;
+- a second Agent Loop.
+
+The output of SI v0.3 is a durable factual dataset of `Run → Policy attribution facts → Execution facts → Outcome`, including runs with no declared Policy.
 
 ### SI v0.4 — Strategy Adaptation
 
