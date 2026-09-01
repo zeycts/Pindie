@@ -194,19 +194,110 @@ It must not contain a mandatory `steps[]`, transition graph, phase machine, or h
 
 ### SI v0.2 — Explicit Policy Snapshot
 
-Goal: make cognitive policy observable without making it mandatory ceremony.
+Goal: make model-owned cognitive policy observable during an Agent Run without making strategy choice mandatory ceremony.
 
-- represent the Agent's current strategy choice as runtime-only data;
-- support composition of an approach plus zero or more modifiers;
-- keep strategy choice model-owned;
-- do not persist policy identity in `PindieState`;
-- avoid forcing every trivial task through an explicit strategy-selection turn.
-
-Output of this milestone is an observable relation:
+The original roadmap relation `Task → Policy Snapshot → Execution` is refined for implementation to a Run-scoped relation:
 
 ```text
-Task → Policy Snapshot → Execution
+Agent Run
+→ optional current Policy Snapshot
+→ Execution
 ```
+
+A single Task may span multiple Agent Runs with different evidence, user guidance, or strategies. Policy identity therefore must not become Task State or silently carry across Runs.
+
+#### Policy Snapshot
+
+The current Policy Snapshot contains only:
+
+```text
+approach: exactly one Seed Strategy whose kind is `approach`
+modifiers: zero or more unique Seed Strategies whose kind is `modifier`
+```
+
+Do not add rationale, confidence, score, workflow steps, or learned metadata in SI v0.2.
+
+The Snapshot represents the model's current declared cognitive policy, not a deterministic inference by the Harness.
+
+#### Model-owned declaration
+
+Pindie may expose one optional structured tool, conceptually `pindie_policy_set`, that lets the model declare or replace the current Run's Policy Snapshot.
+
+The declaration mechanism must obey these rules:
+
+- calling it is optional;
+- the model decides whether a named Strategy materially guides the current work;
+- it must not be called merely to populate metadata or satisfy a required opening ceremony;
+- it must not create a separate strategy-selection turn;
+- it must not invoke another model, router, planner, or selector Agent;
+- a later declaration in the same Run replaces the current Snapshot rather than creating persistent history.
+
+SI v0.2 retains only the current Run Snapshot. Historical policy changes belong to a later experience milestone.
+
+#### Lifecycle
+
+Policy Snapshot is runtime-only:
+
+- each new Agent Run starts with no declared Snapshot;
+- a declaration may set or replace the Snapshot during that Run;
+- repeated context projections preserve the current Snapshot within the Run;
+- a new Agent Run resets it;
+- session restart/reload does not restore it;
+- it is never stored in `PindieState` or another durable policy database.
+
+This prevents stale strategy identity from leaking across new user guidance or changed evidence.
+
+#### Policy Context projection
+
+The existing Seed Strategy catalog remains model-visible.
+
+When a current Snapshot exists, Policy Context may additionally project it as advisory runtime policy metadata. Runtime Context remains the final projected Pindie metadata because factual reality and authority remain stronger than cognitive policy.
+
+No current Snapshot should be fabricated when the model has not declared one.
+
+#### Capability and authorization boundary
+
+A structured policy declaration is a real tool action and therefore must remain aligned with Pindie's Tool Surface/Gateway model.
+
+SI v0.2 should introduce a fixed non-consequential capability such as:
+
+```text
+policy.declare
+```
+
+This capability is part of the stable Harness action space, not learned Policy. It may remain available independent of Task status because declaring runtime cognitive policy does not alter project reality or semantic State.
+
+The policy declaration tool must:
+
+- require `policy.declare`;
+- have project-mutation effect `none`;
+- pass through normal Tool Surface and Execution Gateway authorization;
+- never produce verification evidence merely because it is non-mutating;
+- never affect Task Run relations, project mutation freshness, or verification freshness.
+
+Policy chooses within the legal action space; it still cannot redefine that space.
+
+#### SI v0.2 non-goals
+
+Do not implement:
+
+- automatic strategy classification by Harness heuristics;
+- parsing assistant prose to infer selected strategies;
+- mandatory strategy selection for every Task/Run;
+- more than one primary approach at a time;
+- rationale/confidence/score fields;
+- policy persistence;
+- policy history/trajectory storage;
+- Experience Store;
+- rewards or strategy evaluation;
+- adaptation, mutation, derivation, or evolution;
+- learned Skills;
+- Strategy retrieval/embeddings;
+- policy status-line or Remote Companion UI;
+- reasoning-policy migration;
+- a second Agent Loop.
+
+The output of SI v0.2 is simply an optional, structured, Run-scoped cognitive-policy observation that later milestones can associate with execution outcomes.
 
 ### SI v0.3 — Strategy-aware Experience
 
