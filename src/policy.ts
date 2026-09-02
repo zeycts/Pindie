@@ -13,6 +13,17 @@ function invalid(message: string): never {
   throw new Error(`Invalid pindie_policy_set input: ${message}`);
 }
 
+/** Stable identity for a Policy, independent of modifier declaration order. */
+export function policySnapshotIdentity(snapshot: PolicySnapshot): string {
+  const modifierIds = [...snapshot.modifiers]
+    .map((modifier) => modifier.id)
+    .sort();
+  return JSON.stringify({
+    approachId: snapshot.approach.id,
+    modifierIds: [...new Set(modifierIds)],
+  });
+}
+
 function seedStrategy(
   value: unknown,
   field: "approach" | "modifier",

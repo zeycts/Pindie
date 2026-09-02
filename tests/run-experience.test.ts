@@ -87,16 +87,17 @@ test("Run Experience telemetry derives bounded counters from Tool Effects", () =
   assert.deepEqual(tracker.policy, {
     finalSnapshot: secondPolicy,
     declarationCount: 2,
-    firstDeclarationAfter: {
-      toolCalls: 2,
+    finalPolicyDeclarationCount: 1,
+    finalPolicyFirstDeclaredAfter: {
+      toolCalls: 4,
       observations: 2,
-      consequentialCalls: 0,
-      projectMutationEffectCalls: 0,
-      verificationCalls: 0,
-      toolErrors: 0,
+      consequentialCalls: 2,
+      projectMutationEffectCalls: 1,
+      verificationCalls: 1,
+      toolErrors: 1,
       deniedCalls: 0,
     },
-    finalDeclarationAfter: {
+    finalPolicyLastDeclaredAfter: {
       toolCalls: 4,
       observations: 2,
       consequentialCalls: 2,
@@ -117,6 +118,82 @@ test("Run Experience telemetry derives bounded counters from Tool Effects", () =
   });
 });
 
+test("one successful Policy declaration has identical final-Policy positions", () => {
+  const tracker = new RunExperienceTracker();
+  const policyEffect = classifyToolEffect("pindie_policy_set");
+  const policy = createPolicySnapshot({ approach: "direct-action" });
+
+  tracker.setPolicySnapshot(policy);
+  tracker.recordAuthorizedCall("policy", policyEffect);
+  tracker.recordToolResult("policy", false);
+  tracker.recordSuccessfulPolicyDeclaration();
+
+  assert.equal(tracker.policy.declarationCount, 1);
+  assert.equal(tracker.policy.finalPolicyDeclarationCount, 1);
+  assert.deepEqual(
+    tracker.policy.finalPolicyFirstDeclaredAfter,
+    tracker.policy.finalPolicyLastDeclaredAfter,
+  );
+});
+
+test("A to B to A retains attribution for both declarations of final A", () => {
+  const tracker = new RunExperienceTracker();
+  const policyEffect = classifyToolEffect("pindie_policy_set");
+  const readEffect = classifyToolEffect("read");
+  const a = createPolicySnapshot({ approach: "architecture-first" });
+  const b = createPolicySnapshot({ approach: "direct-action" });
+
+  tracker.setPolicySnapshot(a);
+  tracker.recordAuthorizedCall("policy-a1", policyEffect);
+  tracker.recordToolResult("policy-a1", false);
+  tracker.recordSuccessfulPolicyDeclaration();
+  tracker.recordAuthorizedCall("read-1", readEffect);
+  tracker.recordToolResult("read-1", false);
+  tracker.setPolicySnapshot(b);
+  tracker.recordAuthorizedCall("policy-b", policyEffect);
+  tracker.recordToolResult("policy-b", false);
+  tracker.recordSuccessfulPolicyDeclaration();
+  tracker.recordAuthorizedCall("read-2", readEffect);
+  tracker.recordToolResult("read-2", false);
+  tracker.setPolicySnapshot(a);
+  tracker.recordAuthorizedCall("policy-a2", policyEffect);
+  tracker.recordToolResult("policy-a2", false);
+  tracker.recordSuccessfulPolicyDeclaration();
+
+  assert.equal(tracker.policy.finalSnapshot?.approach.id, "architecture-first");
+  assert.equal(tracker.policy.declarationCount, 3);
+  assert.equal(tracker.policy.finalPolicyDeclarationCount, 2);
+  assert.equal(tracker.policy.finalPolicyFirstDeclaredAfter?.toolCalls, 0);
+  assert.equal(tracker.policy.finalPolicyLastDeclaredAfter?.toolCalls, 2);
+});
+
+test("reordering identical modifiers preserves Policy identity", () => {
+  const tracker = new RunExperienceTracker();
+  const policyEffect = classifyToolEffect("pindie_policy_set");
+  const first = createPolicySnapshot({
+    approach: "architecture-first",
+    modifiers: ["verify-as-you-go", "minimal-change"],
+  });
+  const reordered = createPolicySnapshot({
+    approach: "architecture-first",
+    modifiers: ["minimal-change", "verify-as-you-go"],
+  });
+
+  tracker.setPolicySnapshot(first);
+  tracker.recordAuthorizedCall("policy-one", policyEffect);
+  tracker.recordToolResult("policy-one", false);
+  tracker.recordSuccessfulPolicyDeclaration();
+  tracker.setPolicySnapshot(reordered);
+  tracker.recordAuthorizedCall("policy-two", policyEffect);
+  tracker.recordToolResult("policy-two", false);
+  tracker.recordSuccessfulPolicyDeclaration();
+
+  assert.equal(tracker.policy.declarationCount, 2);
+  assert.equal(tracker.policy.finalPolicyDeclarationCount, 2);
+  assert.equal(tracker.policy.finalPolicyFirstDeclaredAfter?.toolCalls, 0);
+  assert.equal(tracker.policy.finalPolicyLastDeclaredAfter?.toolCalls, 0);
+});
+
 test("failed Policy declarations do not become final attribution", () => {
   const tracker = new RunExperienceTracker();
   const policy = classifyToolEffect("pindie_policy_set");
@@ -133,6 +210,8 @@ test("failed Policy declarations do not become final attribution", () => {
   assert.equal(tracker.recordFailedPolicyDeclaration(), first);
   assert.equal(tracker.policy.finalSnapshot?.approach.id, "direct-action");
   assert.equal(tracker.policy.declarationCount, 1);
+  assert.equal(tracker.policy.finalPolicyDeclarationCount, 1);
+  assert.deepEqual(tracker.policy.finalPolicyFirstDeclaredAfter, tracker.policy.finalPolicyLastDeclaredAfter);
 });
 
 test("policy calls do not count as execution and tracker state resets at the Run boundary", () => {
@@ -151,8 +230,9 @@ test("policy calls do not count as execution and tracker state resets at the Run
   assert.deepEqual(tracker.policy, {
     finalSnapshot: null,
     declarationCount: 0,
-    firstDeclarationAfter: null,
-    finalDeclarationAfter: null,
+    finalPolicyDeclarationCount: 0,
+    finalPolicyFirstDeclaredAfter: null,
+    finalPolicyLastDeclaredAfter: null,
   });
 });
 
@@ -169,8 +249,9 @@ test("Run Experience assembly preserves factual task/outcome/metrics and no tran
     policy: {
       finalSnapshot: null,
       declarationCount: 0,
-      firstDeclarationAfter: null,
-      finalDeclarationAfter: null,
+      finalPolicyDeclarationCount: 0,
+      finalPolicyFirstDeclaredAfter: null,
+      finalPolicyLastDeclaredAfter: null,
     },
     execution: {
       ...zeroExecution(),
@@ -183,7 +264,7 @@ test("Run Experience assembly preserves factual task/outcome/metrics and no tran
   });
 
   assert.deepEqual(record, {
-    schemaVersion: 2,
+    schemaVersion: 3,
     recordedAt: "2026-01-01T00:00:00.000Z",
     runStart: {
       taskStatus: "idle",
@@ -196,8 +277,9 @@ test("Run Experience assembly preserves factual task/outcome/metrics and no tran
     policy: {
       finalSnapshot: null,
       declarationCount: 0,
-      firstDeclarationAfter: null,
-      finalDeclarationAfter: null,
+      finalPolicyDeclarationCount: 0,
+      finalPolicyFirstDeclaredAfter: null,
+      finalPolicyLastDeclaredAfter: null,
     },
     execution: {
       toolCalls: 1,

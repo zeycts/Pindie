@@ -1,6 +1,12 @@
 import type { ToolEffect } from "./execution-semantics.ts";
-import type { PolicySnapshot } from "./policy.ts";
-import type { SeedStrategy } from "./strategies.ts";
+import {
+  policySnapshotIdentity,
+  type PolicySnapshot,
+} from "./policy.ts";
+import {
+  SEED_STRATEGIES,
+  type SeedStrategy,
+} from "./strategies.ts";
 import type {
   CompletionRunRelation,
   SemanticSnapshot,
@@ -12,7 +18,7 @@ import {
   type VerificationStatus,
 } from "./state.ts";
 
-export const RUN_EXPERIENCE_SCHEMA_VERSION = 2 as const;
+export const RUN_EXPERIENCE_SCHEMA_VERSION = 3 as const;
 
 /** Bounded execution facts collected for one Agent Run. */
 export interface RunExperienceExecution {
@@ -27,11 +33,14 @@ export interface RunExperienceExecution {
 
 export interface RunExperiencePolicy {
   readonly finalSnapshot: PolicySnapshot | null;
+  /** All successful Policy declarations in the Run. */
   readonly declarationCount: number;
-  /** Counters immediately before the first successful declaration. */
-  readonly firstDeclarationAfter: RunExperienceExecution | null;
-  /** Counters immediately before the final successful declaration. */
-  readonly finalDeclarationAfter: RunExperienceExecution | null;
+  /** Successful declarations with the final Policy identity. */
+  readonly finalPolicyDeclarationCount: number;
+  /** Counters immediately before the first successful final-Policy declaration. */
+  readonly finalPolicyFirstDeclaredAfter: RunExperienceExecution | null;
+  /** Counters immediately before the last successful final-Policy declaration. */
+  readonly finalPolicyLastDeclaredAfter: RunExperienceExecution | null;
 }
 
 export interface RunExperience {
@@ -102,8 +111,11 @@ export class RunExperienceTracker {
   private lastSuccessfulPolicySnapshot: PolicySnapshot | null = null;
   private pendingPolicyPrevious: PolicySnapshot | null | undefined;
   private declarationCount = 0;
-  private firstDeclarationAfter: RunExperienceExecution | null = null;
-  private finalDeclarationAfter: RunExperienceExecution | null = null;
+  private readonly policyAttributions = new Map<string, {
+    count: number;
+    firstDeclaredAfter: RunExperienceExecution;
+    lastDeclaredAfter: RunExperienceExecution;
+  }>();
 
   reset(): void {
     this.counters = copyExecution(ZERO_EXECUTION);
@@ -112,8 +124,7 @@ export class RunExperienceTracker {
     this.lastSuccessfulPolicySnapshot = null;
     this.pendingPolicyPrevious = undefined;
     this.declarationCount = 0;
-    this.firstDeclarationAfter = null;
-    this.finalDeclarationAfter = null;
+    this.policyAttributions.clear();
   }
 
   setPolicySnapshot(snapshot: PolicySnapshot): void {
@@ -176,11 +187,19 @@ export class RunExperienceTracker {
     this.lastSuccessfulPolicySnapshot = this.currentPolicySnapshot;
     this.pendingPolicyPrevious = undefined;
     const position = copyExecution(this.counters);
-    this.declarationCount += 1;
-    if (this.firstDeclarationAfter === null) {
-      this.firstDeclarationAfter = position;
+    const identity = policySnapshotIdentity(this.currentPolicySnapshot);
+    const attribution = this.policyAttributions.get(identity);
+    if (attribution === undefined) {
+      this.policyAttributions.set(identity, {
+        count: 1,
+        firstDeclaredAfter: position,
+        lastDeclaredAfter: position,
+      });
+    } else {
+      attribution.count += 1;
+      attribution.lastDeclaredAfter = position;
     }
-    this.finalDeclarationAfter = position;
+    this.declarationCount += 1;
   }
 
   /** Restore the prior current policy when a staged declaration returns an error. */
@@ -198,17 +217,24 @@ export class RunExperienceTracker {
   }
 
   get policy(): RunExperiencePolicy {
+    const finalSnapshot = this.lastSuccessfulPolicySnapshot === null
+      ? null
+      : copyPolicySnapshot(this.lastSuccessfulPolicySnapshot);
+    const finalAttribution = this.lastSuccessfulPolicySnapshot === null
+      ? undefined
+      : this.policyAttributions.get(
+        policySnapshotIdentity(this.lastSuccessfulPolicySnapshot),
+      );
     return {
-      finalSnapshot: this.lastSuccessfulPolicySnapshot === null
-        ? null
-        : copyPolicySnapshot(this.lastSuccessfulPolicySnapshot),
+      finalSnapshot,
       declarationCount: this.declarationCount,
-      firstDeclarationAfter: this.firstDeclarationAfter === null
+      finalPolicyDeclarationCount: finalAttribution?.count ?? 0,
+      finalPolicyFirstDeclaredAfter: finalAttribution === undefined
         ? null
-        : copyExecution(this.firstDeclarationAfter),
-      finalDeclarationAfter: this.finalDeclarationAfter === null
+        : copyExecution(finalAttribution.firstDeclaredAfter),
+      finalPolicyLastDeclaredAfter: finalAttribution === undefined
         ? null
-        : copyExecution(this.finalDeclarationAfter),
+        : copyExecution(finalAttribution.lastDeclaredAfter),
     };
   }
 }
@@ -251,12 +277,13 @@ export function assembleRunExperience(
         ? null
         : copyPolicySnapshot(input.policy.finalSnapshot),
       declarationCount: input.policy.declarationCount,
-      firstDeclarationAfter: input.policy.firstDeclarationAfter === null
+      finalPolicyDeclarationCount: input.policy.finalPolicyDeclarationCount,
+      finalPolicyFirstDeclaredAfter: input.policy.finalPolicyFirstDeclaredAfter === null
         ? null
-        : copyExecution(input.policy.firstDeclarationAfter),
-      finalDeclarationAfter: input.policy.finalDeclarationAfter === null
+        : copyExecution(input.policy.finalPolicyFirstDeclaredAfter),
+      finalPolicyLastDeclaredAfter: input.policy.finalPolicyLastDeclaredAfter === null
         ? null
-        : copyExecution(input.policy.finalDeclarationAfter),
+        : copyExecution(input.policy.finalPolicyLastDeclaredAfter),
     }),
     execution: copyExecution(input.execution),
     outcome: Object.freeze({
@@ -335,19 +362,6 @@ function isOneOf<T extends string>(value: unknown, values: readonly T[]): value 
   return typeof value === "string" && values.includes(value as T);
 }
 
-function copySeedStrategy(value: Record<string, unknown>): SeedStrategy {
-  return Object.freeze({
-    id: value.id as string,
-    kind: value.kind as "approach" | "modifier",
-    summary: value.summary as string,
-    useWhen: Object.freeze([...(value.useWhen as string[])]),
-    ...(value.avoidWhen === undefined
-      ? {}
-      : { avoidWhen: Object.freeze([...(value.avoidWhen as string[])]) }),
-    principles: Object.freeze([...(value.principles as string[])]),
-  });
-}
-
 function parseSeedStrategy(
   value: unknown,
   kind: "approach" | "modifier",
@@ -359,7 +373,8 @@ function parseSeedStrategy(
     !isStringArray(value.principles)) {
     return null;
   }
-  return copySeedStrategy(value);
+  const strategy = SEED_STRATEGIES.find((candidate) => candidate.id === value.id);
+  return strategy?.kind === kind ? strategy : null;
 }
 
 function parsePolicySnapshot(value: unknown): PolicySnapshot | null {
@@ -392,7 +407,7 @@ function parseExecution(value: unknown): RunExperienceExecution | null {
     "deniedCalls",
   ];
   if (!fields.every((field) => isNonNegativeSafeInteger(value[field]))) return null;
-  return Object.freeze({
+  const execution = Object.freeze({
     toolCalls: value.toolCalls as number,
     observations: value.observations as number,
     consequentialCalls: value.consequentialCalls as number,
@@ -401,10 +416,33 @@ function parseExecution(value: unknown): RunExperienceExecution | null {
     toolErrors: value.toolErrors as number,
     deniedCalls: value.deniedCalls as number,
   });
+  return execution.observations + execution.consequentialCalls === execution.toolCalls &&
+    execution.projectMutationEffectCalls <= execution.toolCalls &&
+    execution.verificationCalls <= execution.toolCalls &&
+    execution.toolErrors <= execution.toolCalls
+    ? execution
+    : null;
+}
+
+const EXECUTION_COUNTERS: readonly (keyof RunExperienceExecution)[] = [
+  "toolCalls",
+  "observations",
+  "consequentialCalls",
+  "projectMutationEffectCalls",
+  "verificationCalls",
+  "toolErrors",
+  "deniedCalls",
+];
+
+function countersAtOrBefore(
+  earlier: RunExperienceExecution,
+  later: RunExperienceExecution,
+): boolean {
+  return EXECUTION_COUNTERS.every((counter) => earlier[counter] <= later[counter]);
 }
 
 /**
- * Validates and copies the bounded schema-v2 shape used by Evaluation.
+ * Validates and copies the bounded schema-v3 shape used by Evaluation.
  * Unknown fields are deliberately discarded instead of entering the evaluator.
  */
 export function parseRunExperience(value: unknown): RunExperience | null {
@@ -426,22 +464,24 @@ export function parseRunExperience(value: unknown): RunExperience | null {
   }
 
   const policy = value.policy;
-  if (!isRecord(policy) || !isNonNegativeSafeInteger(policy.declarationCount)) {
+  if (!isRecord(policy) ||
+    !isNonNegativeSafeInteger(policy.declarationCount) ||
+    !isNonNegativeSafeInteger(policy.finalPolicyDeclarationCount)) {
     return null;
   }
   const finalSnapshot = policy.finalSnapshot === null
     ? null
     : parsePolicySnapshot(policy.finalSnapshot);
   if (policy.finalSnapshot !== null && finalSnapshot === null) return null;
-  const firstDeclarationAfter = policy.firstDeclarationAfter === null
+  const finalPolicyFirstDeclaredAfter = policy.finalPolicyFirstDeclaredAfter === null
     ? null
-    : parseExecution(policy.firstDeclarationAfter);
-  const finalDeclarationAfter = policy.finalDeclarationAfter === null
+    : parseExecution(policy.finalPolicyFirstDeclaredAfter);
+  const finalPolicyLastDeclaredAfter = policy.finalPolicyLastDeclaredAfter === null
     ? null
-    : parseExecution(policy.finalDeclarationAfter);
+    : parseExecution(policy.finalPolicyLastDeclaredAfter);
   if (
-    (policy.firstDeclarationAfter !== null && firstDeclarationAfter === null) ||
-    (policy.finalDeclarationAfter !== null && finalDeclarationAfter === null)
+    (policy.finalPolicyFirstDeclaredAfter !== null && finalPolicyFirstDeclaredAfter === null) ||
+    (policy.finalPolicyLastDeclaredAfter !== null && finalPolicyLastDeclaredAfter === null)
   ) return null;
 
   const execution = parseExecution(value.execution);
@@ -455,6 +495,52 @@ export function parseRunExperience(value: unknown): RunExperience | null {
     typeof outcome.humanGateOpen !== "boolean") {
     return null;
   }
+
+  if (execution.toolCalls === 0 || task.taskRelation === "none") return null;
+  if (
+    (runStart.taskStatus === "idle" && runStart.taskGoal !== null) ||
+    (runStart.taskStatus !== "idle" && runStart.taskGoal === null)
+  ) return null;
+  if ((outcome.completionRelation !== "not_completed") !== (outcome.taskStatus === "done")) {
+    return null;
+  }
+  if (
+    outcome.taskStatus === "idle" ||
+    (outcome.taskStatus === "waiting_human") !== outcome.humanGateOpen ||
+    (outcome.taskStatus === "blocked" && !outcome.hasBlockers) ||
+    (outcome.hasBlockers && !outcome.humanGateOpen && outcome.taskStatus !== "blocked") ||
+    (outcome.taskStatus === "done" &&
+      (outcome.verificationStatus !== "passed" ||
+        outcome.hasBlockers || outcome.hasQuestions || outcome.humanGateOpen)) ||
+    (outcome.completionRelation === "completed_before_run" &&
+      task.taskRelation !== "preexisting_untouched") ||
+    (outcome.completionRelation === "completed_during_run" &&
+      task.taskRelation === "preexisting_untouched")
+  ) return null;
+  if (finalSnapshot === null) {
+    if (policy.declarationCount !== 0 || policy.finalPolicyDeclarationCount !== 0 ||
+      finalPolicyFirstDeclaredAfter !== null || finalPolicyLastDeclaredAfter !== null) {
+      return null;
+    }
+  } else if (
+    policy.declarationCount < 1 ||
+    policy.finalPolicyDeclarationCount < 1 ||
+    policy.finalPolicyDeclarationCount > policy.declarationCount ||
+    finalPolicyFirstDeclaredAfter === null ||
+    finalPolicyLastDeclaredAfter === null
+  ) {
+    return null;
+  }
+  if (
+    finalPolicyFirstDeclaredAfter !== null &&
+    (!countersAtOrBefore(finalPolicyFirstDeclaredAfter, execution) ||
+      !countersAtOrBefore(finalPolicyLastDeclaredAfter!, execution))
+  ) return null;
+  if (
+    finalPolicyFirstDeclaredAfter !== null &&
+    finalPolicyLastDeclaredAfter !== null &&
+    !countersAtOrBefore(finalPolicyFirstDeclaredAfter, finalPolicyLastDeclaredAfter)
+  ) return null;
 
   const metrics = value.metrics;
   if (!isRecord(metrics) ||
@@ -477,8 +563,9 @@ export function parseRunExperience(value: unknown): RunExperience | null {
     policy: Object.freeze({
       finalSnapshot,
       declarationCount: policy.declarationCount,
-      firstDeclarationAfter,
-      finalDeclarationAfter,
+      finalPolicyDeclarationCount: policy.finalPolicyDeclarationCount,
+      finalPolicyFirstDeclaredAfter,
+      finalPolicyLastDeclaredAfter,
     }),
     execution,
     outcome: Object.freeze({
