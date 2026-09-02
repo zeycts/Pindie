@@ -133,7 +133,7 @@ class ExtensionTestExperienceStore implements RunExperienceStore {
 class ExtensionTestExperienceReader implements RunExperienceReader {
   result: RunExperienceReadResult = {
     records: [],
-    loadedSchemaV2: 0,
+    loadedSchemaV3: 0,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -218,8 +218,9 @@ function commandExperience(goal: string, policy: PolicySnapshot | null = null): 
     policy: {
       finalSnapshot: policy,
       declarationCount: policy === null ? 0 : 1,
-      firstDeclarationAfter: policy === null ? null : zero,
-      finalDeclarationAfter: policy === null ? null : zero,
+      finalPolicyDeclarationCount: policy === null ? 0 : 1,
+      finalPolicyFirstDeclaredAfter: policy === null ? null : zero,
+      finalPolicyLastDeclaredAfter: policy === null ? null : zero,
     },
     execution: { ...zero, toolCalls: 1, observations: 1 },
     durationMs: 10,
@@ -634,7 +635,7 @@ test("SI v0.4 /experience renders empty and mixed evidence read-only", async () 
 
   assert.ok(harness.api.commands.has("experience"));
   await harness.api.commands.get("experience").handler("", commandContext);
-  assert.match(notices.at(-1)?.message ?? "", /Loaded schema-v2 records: 0/);
+  assert.match(notices.at(-1)?.message ?? "", /Loaded schema-v3 records: 0/);
   assert.match(notices.at(-1)?.message ?? "", /Evaluated Runs: 0/);
   assert.match(notices.at(-1)?.message ?? "", /Comparable exact-goal cohorts: 0/);
   assert.equal(notices.at(-1)?.type, "info");
@@ -656,12 +657,12 @@ test("SI v0.4 /experience renders empty and mixed evidence read-only", async () 
         ),
       },
     ],
-    loadedSchemaV2: 2,
+    loadedSchemaV3: 2,
     unsupportedSchema: 1,
     invalid: 1,
   };
   await harness.api.commands.get("experience").handler("", commandContext);
-  assert.match(notices.at(-1)?.message ?? "", /Loaded schema-v2 records: 2/);
+  assert.match(notices.at(-1)?.message ?? "", /Loaded schema-v3 records: 2/);
   assert.match(notices.at(-1)?.message ?? "", /Unsupported-schema records: 1/);
   assert.match(notices.at(-1)?.message ?? "", /Invalid\/unreadable records: 1/);
   assert.match(notices.at(-1)?.message ?? "", /Explicit-Policy Runs: 1/);
@@ -3659,7 +3660,7 @@ test("SI v0.3 eligible Run Experience captures task facts, outcome, and settled 
 
   assert.equal(harness.experienceStore.records.length, 1);
   const record = harness.experienceStore.records[0]!.experience;
-  assert.equal(record.schemaVersion, 2);
+  assert.equal(record.schemaVersion, 3);
   assert.deepEqual(record.runStart, {
     taskStatus: "active",
     taskGoal: "Experience task",
@@ -3670,8 +3671,9 @@ test("SI v0.3 eligible Run Experience captures task facts, outcome, and settled 
   assert.deepEqual(record.policy, {
     finalSnapshot: null,
     declarationCount: 0,
-    firstDeclarationAfter: null,
-    finalDeclarationAfter: null,
+    finalPolicyDeclarationCount: 0,
+    finalPolicyFirstDeclaredAfter: null,
+    finalPolicyLastDeclaredAfter: null,
   });
   assert.deepEqual(record.execution, {
     toolCalls: 1,
@@ -3721,23 +3723,24 @@ test("SI v0.3 preserves idle introduction and Policy declaration positions", asy
 
   assert.equal(first.ref.startsWith("ev:"), true);
   const record = harness.experienceStore.records[0]!.experience;
-  assert.equal(record.schemaVersion, 2);
+  assert.equal(record.schemaVersion, 3);
   assert.deepEqual(record.runStart, { taskStatus: "idle", taskGoal: null });
   assert.equal(record.task.goal, "Introduced task");
   assert.equal(record.task.taskRelation, "introduced_during_run");
   assert.equal("statusAtStart" in record.task, false);
   assert.equal(record.policy.finalSnapshot?.approach.id, "direct-action");
   assert.equal(record.policy.declarationCount, 2);
-  assert.deepEqual(record.policy.firstDeclarationAfter, {
-    toolCalls: 2,
-    observations: 1,
+  assert.equal(record.policy.finalPolicyDeclarationCount, 1);
+  assert.deepEqual(record.policy.finalPolicyFirstDeclaredAfter, {
+    toolCalls: 3,
+    observations: 2,
     consequentialCalls: 1,
     projectMutationEffectCalls: 0,
     verificationCalls: 0,
-    toolErrors: 0,
+    toolErrors: 1,
     deniedCalls: 0,
   });
-  assert.deepEqual(record.policy.finalDeclarationAfter, {
+  assert.deepEqual(record.policy.finalPolicyLastDeclaredAfter, {
     toolCalls: 3,
     observations: 2,
     consequentialCalls: 1,
@@ -3751,8 +3754,8 @@ test("SI v0.3 preserves idle introduction and Policy declaration positions", asy
   assert.equal(record.execution.consequentialCalls, 1);
   assert.equal(record.execution.projectMutationEffectCalls, 0);
   assert.equal("projectMutationCalls" in record.execution, false);
-  assert.equal("projectMutationCalls" in (record.policy.firstDeclarationAfter ?? {}), false);
-  assert.equal("projectMutationCalls" in (record.policy.finalDeclarationAfter ?? {}), false);
+  assert.equal("projectMutationCalls" in (record.policy.finalPolicyFirstDeclaredAfter ?? {}), false);
+  assert.equal("projectMutationCalls" in (record.policy.finalPolicyLastDeclaredAfter ?? {}), false);
   assert.equal(record.execution.toolErrors, 1);
 });
 
@@ -3773,7 +3776,7 @@ test("SI v0.3 keeps completed run-start Task A distinct from introduced settleme
 
   assert.equal(harness.experienceStore.records.length, 1);
   const record = harness.experienceStore.records[0]!.experience;
-  assert.equal(record.schemaVersion, 2);
+  assert.equal(record.schemaVersion, 3);
   assert.deepEqual(record.runStart, { taskStatus: "done", taskGoal: "Task A" });
   assert.deepEqual(record.task, {
     goal: "Task B",

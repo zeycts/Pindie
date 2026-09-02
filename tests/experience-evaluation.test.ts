@@ -20,6 +20,7 @@ import {
 import { createPolicySnapshot, type PolicySnapshot } from "../src/policy.ts";
 import {
   assembleRunExperience,
+  parseRunExperience,
   type RunExperience,
   type RunExperienceExecution,
 } from "../src/run-experience.ts";
@@ -59,7 +60,7 @@ function execution(overrides: Partial<RunExperienceExecution> = {}): RunExperien
   return {
     toolCalls: 10,
     observations: 5,
-    consequentialCalls: 3,
+    consequentialCalls: 5,
     projectMutationEffectCalls: 2,
     verificationCalls: 1,
     toolErrors: 2,
@@ -72,8 +73,8 @@ function experience(
   goal: string,
   options: {
     policy?: PolicySnapshot | null;
-    firstDeclarationAfter?: RunExperienceExecution | null;
-    finalDeclarationAfter?: RunExperienceExecution | null;
+    finalPolicyFirstDeclaredAfter?: RunExperienceExecution | null;
+    finalPolicyLastDeclaredAfter?: RunExperienceExecution | null;
     execution?: RunExperienceExecution;
     verificationStatus?: "pending" | "stale" | "failed" | "passed" | "none";
     completionRelation?: "not_completed" | "completed_before_run" | "completed_during_run";
@@ -101,8 +102,25 @@ function experience(
     policy: {
       finalSnapshot: policy,
       declarationCount: policy === null ? 0 : 1,
-      firstDeclarationAfter: options.firstDeclarationAfter ?? (policy === null ? null : execution({ toolCalls: 0 })),
-      finalDeclarationAfter: options.finalDeclarationAfter ?? (policy === null ? null : execution({ toolCalls: 0 })),
+      finalPolicyDeclarationCount: policy === null ? 0 : 1,
+      finalPolicyFirstDeclaredAfter: options.finalPolicyFirstDeclaredAfter ?? (policy === null ? null : execution({
+        toolCalls: 0,
+        observations: 0,
+        consequentialCalls: 0,
+        projectMutationEffectCalls: 0,
+        verificationCalls: 0,
+        toolErrors: 0,
+        deniedCalls: 0,
+      })),
+      finalPolicyLastDeclaredAfter: options.finalPolicyLastDeclaredAfter ?? (policy === null ? null : execution({
+        toolCalls: 0,
+        observations: 0,
+        consequentialCalls: 0,
+        projectMutationEffectCalls: 0,
+        verificationCalls: 0,
+        toolErrors: 0,
+        deniedCalls: 0,
+      })),
     },
     execution: options.execution ?? execution(),
     durationMs: 100,
@@ -130,7 +148,7 @@ test("Experience Reader returns zero counts for a missing directory", async (t) 
 
   assert.deepEqual(result, {
     records: [],
-    loadedSchemaV2: 0,
+    loadedSchemaV3: 0,
     unsupportedSchema: 0,
     invalid: 0,
   });
@@ -144,54 +162,166 @@ test("Experience Reader preserves filenames, isolates bad records, and does not 
   await mkdir(directory, { recursive: true });
   const valid = JSON.stringify(experience("valid"), null, 2);
   const secondValid = JSON.stringify(experience("also valid"), null, 2);
-  await writeRecord(directory, "a-valid.json", valid);
-  await writeRecord(directory, "b-v1.json", JSON.stringify({ schemaVersion: 1 }));
-  await writeRecord(directory, "c-v9.json", JSON.stringify({ schemaVersion: 9 }));
-  await writeRecord(directory, "d-invalid.json", "{not json");
-  await writeRecord(directory, "e-malformed.json", JSON.stringify({ schemaVersion: 2 }));
-  await writeRecord(directory, "f-invalid-metadata.json", JSON.stringify({ schemaVersion: "2" }));
-  await writeRecord(directory, "g-valid.json", secondValid);
-  const before = await readFile(join(directory, "a-valid.json"), "utf8");
+  await writeRecord(directory, "00000000-0000-4000-8000-000000000001.json", valid);
+  await writeRecord(directory, "00000000-0000-4000-8000-000000000002.json", JSON.stringify({ schemaVersion: 1 }));
+  await writeRecord(directory, "00000000-0000-4000-8000-000000000003.json", JSON.stringify({ schemaVersion: 9 }));
+  await writeRecord(directory, "00000000-0000-4000-8000-000000000004.json", "{\"schemaVersion\":3");
+  const semanticallyInvalid = JSON.parse(valid) as any;
+  semanticallyInvalid.execution.observations = 4;
+  await writeRecord(directory, "00000000-0000-4000-8000-000000000005.json", JSON.stringify({ schemaVersion: 2 }));
+  await writeRecord(directory, "00000000-0000-4000-8000-000000000008.json", JSON.stringify(semanticallyInvalid));
+  await writeRecord(directory, "00000000-0000-4000-8000-000000000006.json", JSON.stringify({ schemaVersion: "2" }));
+  await writeRecord(directory, "00000000-0000-4000-8000-000000000007.json", secondValid);
+  await writeRecord(directory, ".00000000-0000-4000-8000-000000000008.json.tmp", "{not json");
+  await writeRecord(directory, "backup.json", "{not json");
+  await writeRecord(directory, "README", "{not json");
+  await mkdir(join(directory, "random-directory"));
+  const before = await readFile(
+    join(directory, "00000000-0000-4000-8000-000000000001.json"),
+    "utf8",
+  );
 
   const result = await reader.read("/project");
 
-  assert.equal(result.loadedSchemaV2, 2);
-  assert.equal(result.unsupportedSchema, 2);
+  assert.equal(result.loadedSchemaV3, 2);
+  assert.equal(result.unsupportedSchema, 3);
   assert.equal(result.invalid, 3);
-  assert.deepEqual(result.records.map((record) => record.recordId), ["a-valid.json", "g-valid.json"]);
+  assert.deepEqual(result.records.map((record) => record.recordId), [
+    "00000000-0000-4000-8000-000000000001.json",
+    "00000000-0000-4000-8000-000000000007.json",
+  ]);
   assert.equal(result.records[0]!.experience.task.goal, "valid");
-  assert.equal(await readFile(join(directory, "a-valid.json"), "utf8"), before);
+  assert.equal(
+    await readFile(join(directory, "00000000-0000-4000-8000-000000000001.json"), "utf8"),
+    before,
+  );
+});
+
+test("schema-v3 parser canonicalizes Seed identity and rejects impossible bounded facts", () => {
+  const explicit = experience("parse", {
+    policy: createPolicySnapshot({
+      approach: "architecture-first",
+      modifiers: ["minimal-change", "verify-as-you-go"],
+    }),
+  });
+  assert.equal(parseRunExperience(explicit)?.schemaVersion, 3);
+
+  const canonicalized = structuredClone(explicit) as any;
+  canonicalized.policy.finalSnapshot.approach.summary = "forged prose";
+  const parsedCanonicalized = parseRunExperience(canonicalized);
+  assert.equal(
+    parsedCanonicalized?.policy.finalSnapshot?.approach.summary,
+    createPolicySnapshot({ approach: "architecture-first" }).approach.summary,
+  );
+
+  const invalidCases: Array<[string, (record: any) => void]> = [
+    ["forged Strategy ID", (record) => {
+      record.policy.finalSnapshot.approach.id = "forged-approach";
+    }],
+    ["wrong approach kind", (record) => {
+      record.policy.finalSnapshot.approach.kind = "modifier";
+    }],
+    ["wrong modifier kind", (record) => {
+      record.policy.finalSnapshot.modifiers[0].kind = "approach";
+    }],
+    ["duplicate modifier identity", (record) => {
+      record.policy.finalSnapshot.modifiers.push(record.policy.finalSnapshot.modifiers[0]);
+    }],
+    ["null final Snapshot with declarations", (record) => {
+      record.policy.finalSnapshot = null;
+      record.policy.declarationCount = 1;
+    }],
+    ["explicit Snapshot with zero declarations", (record) => {
+      record.policy.declarationCount = 0;
+      record.policy.finalPolicyDeclarationCount = 0;
+      record.policy.finalPolicyFirstDeclaredAfter = null;
+      record.policy.finalPolicyLastDeclaredAfter = null;
+    }],
+    ["final Policy declarations exceed all declarations", (record) => {
+      record.policy.finalPolicyDeclarationCount = record.policy.declarationCount + 1;
+    }],
+    ["declaration position exceeds final execution", (record) => {
+      record.policy.finalPolicyFirstDeclaredAfter = execution({
+        toolCalls: 11,
+        observations: 5,
+        consequentialCalls: 6,
+      });
+      record.policy.finalPolicyLastDeclaredAfter = record.policy.finalPolicyFirstDeclaredAfter;
+    }],
+    ["first final Policy position follows last", (record) => {
+      record.policy.finalPolicyFirstDeclaredAfter = execution({
+        toolCalls: 7,
+        observations: 3,
+        consequentialCalls: 4,
+      });
+      record.policy.finalPolicyLastDeclaredAfter = execution({
+        toolCalls: 5,
+        observations: 2,
+        consequentialCalls: 3,
+      });
+    }],
+    ["execution observations do not partition calls", (record) => {
+      record.execution.observations = 4;
+    }],
+    ["project mutation effects exceed calls", (record) => {
+      record.execution.projectMutationEffectCalls = 11;
+    }],
+    ["verification calls exceed calls", (record) => {
+      record.execution.verificationCalls = 11;
+    }],
+    ["tool errors exceed calls", (record) => {
+      record.execution.toolErrors = 11;
+    }],
+    ["idle Run starts with a goal", (record) => {
+      record.runStart.taskStatus = "idle";
+      record.runStart.taskGoal = "should be null";
+    }],
+    ["completion relation does not match outcome status", (record) => {
+      record.outcome.completionRelation = "completed_during_run";
+    }],
+    ["done outcome is not completed", (record) => {
+      record.outcome.taskStatus = "done";
+      record.outcome.completionRelation = "not_completed";
+    }],
+  ];
+  for (const [name, mutate] of invalidCases) {
+    const record = structuredClone(explicit);
+    mutate(record);
+    assert.equal(parseRunExperience(record), null, name);
+  }
 });
 
 test("Run Evaluation preserves no-Policy null and derives policy exposure/progress", () => {
   const noPolicy = evaluateRunExperience(source("none.json", experience("no policy")));
   assert.equal(noPolicy.source.recordId, "none.json");
   assert.equal(noPolicy.policy.finalSnapshot, null);
-  assert.equal(noPolicy.policy.firstDeclarationProgress, null);
-  assert.equal(noPolicy.policy.finalDeclarationProgress, null);
+  assert.equal(noPolicy.policy.finalPolicyFirstDeclarationProgress, null);
+  assert.equal(noPolicy.policy.finalPolicyLastActivationProgress, null);
   assert.equal(noPolicy.policy.finalPolicyExposureCalls, null);
   assert.equal(noPolicy.policy.finalPolicyExposureRatio, null);
 
   const policy = createPolicySnapshot({ approach: "direct-action" });
   const early = evaluateRunExperience(source("early.json", experience("early", {
     policy,
-    firstDeclarationAfter: execution({ toolCalls: 0 }),
-    finalDeclarationAfter: execution({ toolCalls: 0 }),
+    finalPolicyFirstDeclaredAfter: execution({ toolCalls: 0 }),
+    finalPolicyLastDeclaredAfter: execution({ toolCalls: 0 }),
   })));
-  assert.equal(early.policy.firstDeclarationProgress, 0);
-  assert.equal(early.policy.finalDeclarationProgress, 0);
+  assert.equal(early.policy.finalPolicyFirstDeclarationProgress, 0);
+  assert.equal(early.policy.finalPolicyLastActivationProgress, 0);
   assert.equal(early.policy.finalPolicyExposureCalls, 10);
   assert.equal(early.policy.finalPolicyExposureRatio, 1);
 
   const late = evaluateRunExperience(source("late.json", experience("late", {
     policy,
-    firstDeclarationAfter: execution({ toolCalls: 7 }),
-    finalDeclarationAfter: execution({ toolCalls: 8 }),
+    finalPolicyFirstDeclaredAfter: execution({ toolCalls: 7 }),
+    finalPolicyLastDeclaredAfter: execution({ toolCalls: 8 }),
   })));
-  assert.equal(late.policy.firstDeclarationProgress, 0.7);
-  assert.equal(late.policy.finalDeclarationProgress, 0.8);
+  assert.equal(late.policy.finalPolicyFirstDeclarationProgress, 0.7);
+  assert.equal(late.policy.finalPolicyLastActivationProgress, 0.8);
   assert.equal(late.policy.finalPolicyExposureCalls, 2);
   assert.equal(late.policy.finalPolicyExposureRatio, 0.2);
+  assert.equal(late.policy.finalPolicyFirstDeclarationProgress, 0.7);
+  assert.equal(late.policy.finalPolicyLastActivationProgress, 0.8);
 });
 
 test("Run Evaluation derives execution ratios and factual outcomes without non-finite values", () => {
@@ -255,10 +385,21 @@ test("Policy Evidence Profiles aggregate complete normalized Policies and preser
   assert.equal(combined.completedDuringRunCount, 1);
   assert.equal(combined.totalToolErrors, 4);
   assert.equal(combined.totalDeniedCalls, 8);
+  assert.deepEqual(combined.declarationCount, { count: 2, min: 1, median: 1, max: 1 });
+  assert.deepEqual(combined.finalPolicyDeclarationCount, { count: 2, min: 1, median: 1, max: 1 });
   assert.deepEqual(combined.exposure.calls, { count: 2, min: 10, median: 10, max: 10 });
+  assert.deepEqual(combined.exposure.finalPolicyFirstDeclarationProgress, { count: 2, min: 0, median: 0, max: 0 });
+  assert.deepEqual(combined.exposure.finalPolicyLastActivationProgress, { count: 2, min: 0, median: 0, max: 0 });
   assert.deepEqual(combined.durationMs, { count: 2, min: 100, median: 100, max: 100 });
   assert.deepEqual(combined.sourceRecordIds, ["one.json", "two.json"]);
-  assert.equal(profiles.find((profile) => profile.snapshot === null)?.runCount, 1);
+  const noPolicyProfile = profiles.find((profile) => profile.snapshot === null);
+  assert.equal(noPolicyProfile?.runCount, 1);
+  assert.deepEqual(noPolicyProfile?.exposure.finalPolicyFirstDeclarationProgress, {
+    count: 0,
+    min: null,
+    median: null,
+    max: null,
+  });
   assert.equal(JSON.stringify(profiles).includes("score"), false);
   assert.equal(JSON.stringify(profiles).includes("ranking"), false);
   assert.equal(JSON.stringify(profiles).includes("effectiveness"), false);
@@ -286,18 +427,44 @@ test("Experience report is bounded and explicitly evidence-only", () => {
   const record = source("report.json", experience("report"));
   const read: RunExperienceReadResult = {
     records: [record],
-    loadedSchemaV2: 1,
+    loadedSchemaV3: 1,
     unsupportedSchema: 2,
     invalid: 3,
   };
   const report = formatExperienceReport(read, deriveExperienceEvaluation(read.records));
 
-  assert.match(report, /Loaded schema-v2 records: 1/);
+  assert.match(report, /Loaded schema-v3 records: 1/);
   assert.match(report, /Unsupported-schema records: 2/);
   assert.match(report, /Invalid\/unreadable records: 3/);
   assert.match(report, /Explicit-Policy Runs: 0/);
   assert.match(report, /No-explicit-Policy Runs: 1/);
+  assert.match(report, /first final-Policy declaration progress: n\/a · last activation progress: n\/a/);
+  assert.match(report, /continuous final-Policy exposure calls: n\/a · ratio: n\/a/);
   assert.match(report, /Evidence inventory only; contains no Strategy score, ranking, or causal claim\./);
+});
+
+test("Experience report exposes bounded Policy attribution evidence", () => {
+  const policy = createPolicySnapshot({ approach: "direct-action" });
+  const record = source("attribution.json", experience("attribution", {
+    policy,
+    finalPolicyFirstDeclaredAfter: execution({ toolCalls: 2, observations: 1, consequentialCalls: 1 }),
+    finalPolicyLastDeclaredAfter: execution({ toolCalls: 8, observations: 4, consequentialCalls: 4 }),
+  }));
+  const evaluation = deriveExperienceEvaluation([record]);
+  const read: RunExperienceReadResult = {
+    records: [record],
+    loadedSchemaV3: 1,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const report = formatExperienceReport(read, evaluation);
+
+  assert.match(report, /declarations: n=1, min=1, median=1, max=1/);
+  assert.match(report, /final-Policy declarations: n=1, min=1, median=1, max=1/);
+  assert.match(report, /first final-Policy declaration progress: n=1, min=20\.0%, median=20\.0%, max=20\.0%/);
+  assert.match(report, /last activation progress: n=1, min=80\.0%, median=80\.0%, max=80\.0%/);
+  assert.match(report, /continuous final-Policy exposure calls: n=1, min=2, median=2, max=2 · ratio: n=1, min=20\.0%, median=20\.0%, max=20\.0%/);
+  assert.doesNotMatch(report, /attribution score|confidence score|effectiveness score|causal score|winner/);
 });
 
 test("Experience report bounds profile provenance without changing derived profiles", () => {
@@ -308,7 +475,7 @@ test("Experience report bounds profile provenance without changing derived profi
   const profile = evaluation.profiles[0]!;
   const read: RunExperienceReadResult = {
     records,
-    loadedSchemaV2: records.length,
+    loadedSchemaV3: records.length,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -341,7 +508,7 @@ test("Experience report bounds the number of rendered profiles while retaining a
   const evaluation = deriveExperienceEvaluation(records);
   const read: RunExperienceReadResult = {
     records,
-    loadedSchemaV2: records.length,
+    loadedSchemaV3: records.length,
     unsupportedSchema: 0,
     invalid: 0,
   };

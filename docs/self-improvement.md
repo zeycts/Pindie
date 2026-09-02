@@ -322,10 +322,10 @@ The Experience unit is one Agent Run, not one Task. A Task may span several Runs
 
 #### Run Experience record
 
-A schema v2 Run Experience contains only bounded factual data equivalent to:
+A schema v3 Run Experience contains only bounded factual data equivalent to:
 
 ```text
-schemaVersion: 2
+schemaVersion: 3
 recordedAt
 
 runStart
@@ -339,8 +339,9 @@ task
 policy
   finalSnapshot | null
   declarationCount
-  firstDeclarationAfter | null
-  finalDeclarationAfter | null
+  finalPolicyDeclarationCount
+  finalPolicyFirstDeclaredAfter | null
+  finalPolicyLastDeclaredAfter | null
 
 execution
   toolCalls
@@ -366,6 +367,8 @@ metrics
 
 The exact internal TypeScript layout may differ, but the semantic boundary should remain this small.
 
+Schema-v3 records are accepted only when their bounded facts satisfy the deterministic invariants guaranteed by the normal Harness settlement path. Strategy IDs must resolve to the immutable Seed Strategy catalog with the required approach/modifier kinds and unique modifiers; accepted identities are canonicalized from that catalog. Execution and declaration-position counters must be non-negative safe integers, partition tool calls into observations and consequential calls, respect per-counter bounds, and remain monotonic at declaration positions. Policy declaration fields, Run-start facts, and completion/task-status relations are rejected when inconsistent. Impossible records are not repaired or clamped.
+
 Do not store model reasoning, chain-of-thought, assistant reflection, raw transcript, raw tool results, full verification evidence, or arbitrary prose summaries in Experience.
 
 #### Task facts
@@ -383,15 +386,16 @@ Runs with no Policy Snapshot are valid Experience and must not be discarded mere
 For a Run with declarations, retain only:
 
 - the final Snapshot;
-- how many successful declarations occurred;
-- execution counters immediately before the first successful declaration;
-- execution counters immediately before the final successful declaration.
+- how many successful declarations occurred in total;
+- how many successful declarations had the final Policy identity;
+- counters immediately before the first successful declaration of the final Policy identity;
+- counters immediately before the last successful declaration of the final Policy identity.
 
-Do not persist a full policy-transition history in SI v0.3.
+The final Policy identity is the normalized combination of one approach ID and the sorted unique modifier IDs. Reordering identical modifiers is the same identity. If the model changes Policy and later returns to an earlier identity, the final-Policy count and first/last positions describe that identity only. Do not persist a full Policy transition history or every intermediate Policy.
 
-Policy declaration calls themselves should not inflate execution exposure counters. The declaration-position counters describe how much non-policy execution had already occurred before the declaration took effect.
+Policy declaration calls themselves should not inflate execution exposure counters. The declaration-position counters describe how much non-policy execution had already occurred before each declaration took effect. The runtime tracker may keep minimal Run-scoped aggregates needed to derive the final-Policy facts, but no Policy history is durable.
 
-A later milestone may derive exposure ratios or attribution confidence. SI v0.3 stores the raw counters only; it must not compute or persist a `policyExposureScore`, success score, causal score, or reward.
+SI v0.3 stores the raw counters only; it must not compute or persist a `policyExposureScore`, success score, causal score, or reward.
 
 #### Execution facts
 
@@ -453,9 +457,9 @@ A completed-before-run relation may be retained if the Run otherwise satisfies t
 
 Experience is durable learning data but is not `PindieState`.
 
-New records use schemaVersion 2. Existing schemaVersion 1 records are
-immutable historical data: leave them untouched, without rewriting, migration,
-delete, or backward-compatible reader machinery.
+New records use schemaVersion 3. Schema v1 and schema v2 records are
+immutable historical data: leave them untouched and treat them as unsupported
+history, without rewriting, migration, deletion, or a compatibility adapter.
 
 Store one immutable record per eligible Run under the same per-project Pindie storage namespace, conceptually:
 
@@ -467,7 +471,7 @@ Store one immutable record per eligible Run under the same per-project Pindie st
     <record-id>.json
 ```
 
-Prefer one record per file rather than concurrent append to a shared JSONL file. Use collision-resistant record identity and atomic local file creation/replacement semantics appropriate to the existing store design.
+Prefer one record per file rather than concurrent append to a shared JSONL file. Use collision-resistant record identity and atomic local file creation/replacement semantics appropriate to the existing store design. The Reader consumes only committed canonical UUID `.json` files produced by the writer; temporary files, ordinary files, and directories are ignored rather than treated as Experience records.
 
 Experience must never be written into `state.json`, and State validation must not depend on Experience availability.
 
@@ -533,11 +537,11 @@ Do not implement:
 - reasoning-policy migration;
 - a second Agent Loop.
 
-The output of SI v0.3 is a durable factual dataset of `Run → Policy attribution facts → Execution facts → Outcome`, including runs with no declared Policy.
+The output of SI v0.3 is a durable schema-v3 factual dataset of `Run → final-Policy attribution facts → Execution facts → Outcome`, including runs with no declared Policy.
 
 ### SI v0.4 — Experience Evaluation
 
-Goal: turn immutable schema-v2 Run Experience into reproducible derived evidence without scoring, judging, adapting, or feeding Evaluation back into the Agent.
+Goal: turn immutable schema-v3 Run Experience into reproducible derived evidence without scoring, judging, adapting, or feeding Evaluation back into the Agent.
 
 Dogfood after SI v0.3 showed three important facts:
 
@@ -583,12 +587,14 @@ If Evaluation semantics change later, recompute the derived result rather than r
 
 SI v0.4 may read the per-project Experience Store for evaluation purposes.
 
-The first evaluator consumes only valid `schemaVersion: 2` records. Existing v1 records are unsupported historical data and should be skipped, not migrated or heuristically upgraded.
+The first evaluator consumes only valid `schemaVersion: 3` records. Existing v1 and v2 canonical records are immutable unsupported historical data and should be skipped, not migrated, heuristically upgraded, or adapted through a compatibility layer.
+
+The committed record boundary is a canonical UUID `.json` filename produced by the existing atomic writer. The Reader ignores temporary `.tmp` files, ordinary non-canonical files, and directories. Within that boundary, malformed JSON or semantically invalid schema-v3 facts are invalid records; in-progress temporary files do not count as invalid.
 
 Reading should distinguish at least:
 
 ```text
-loaded schema-v2 records
+loaded schema-v3 records
 unsupported schema records
 invalid/unreadable records
 ```
@@ -604,11 +610,13 @@ Each valid Run Experience may be deterministically transformed into a bounded `R
 Derived evidence may include values directly calculable from factual fields, such as:
 
 ```text
-explicit Policy Snapshot | null
+explicit final Policy Snapshot | null
 declaration count
-first/final declaration progress
-final-policy exposure calls
-final-policy exposure ratio
+final-Policy declaration count
+final-Policy first-declaration progress
+final-Policy last-activation progress
+continuous final-Policy exposure calls
+continuous final-Policy exposure ratio
 observation ratio
 consequential-call ratio
 tool-error ratio
@@ -623,7 +631,16 @@ source record identity
 
 These values are derived measurements, not causal claims.
 
-A final Policy declared after most execution should therefore have low exposure rather than being treated as if it guided the whole Run.
+Continuous final-Policy exposure is derived from the counters immediately before the last successful declaration of the final Policy identity:
+
+```text
+T = execution.toolCalls
+D = finalPolicyLastDeclaredAfter.toolCalls
+finalPolicyExposureCalls = max(0, T - D)
+finalPolicyExposureRatio = T > 0 ? finalPolicyExposureCalls / T : null
+```
+
+The first occurrence and last activation are distinct evidence. `finalPolicyFirstDeclaredAfter` yields first-declaration progress; `finalPolicyLastDeclaredAfter` yields last-activation progress and is the only basis for continuous final-Policy exposure. A final Policy declared after most execution should therefore have low exposure rather than being treated as if it guided the whole Run. Invalid source facts are rejected by the Reader/parser instead of being silently normalized or clamped.
 
 Runs with `finalSnapshot: null` remain valid Evaluation input. `null` means no explicit Strategy declaration; it is not missing data and must not be replaced with a fabricated `default` Strategy.
 
@@ -672,7 +689,11 @@ It may summarize factual/derived quantities such as:
 ```text
 attributed Run count
 no-explicit-policy Run count
-declaration/exposure distribution
+successful declarationCount distribution per Run
+finalPolicyDeclarationCount distribution per Run
+final-Policy first-declaration progress distribution
+final-Policy last-activation progress distribution
+continuous final-Policy exposure calls/ratio distribution
 verification outcome counts
 completion outcome counts
 tool error / denial counts
@@ -680,7 +701,7 @@ duration and cost observations
 source Experience references
 ```
 
-Profiles must preserve enough provenance to trace every aggregate back to source Experience records.
+`/experience` exposes these bounded attribution facts compactly for each rendered profile. They let a human distinguish early declaration, Policy changes, late final activation, and little continuous final-Policy exposure without introducing an attribution, confidence, effectiveness, reward, or causal score. No-explicit-policy profiles retain `n/a` for position and exposure fields that do not apply. Profiles preserve enough provenance to trace every aggregate back to source Experience records; presentation shows at most five source IDs per profile and ten profiles while Evaluation retains full provenance.
 
 Do not emit claims such as:
 
@@ -748,7 +769,7 @@ Do not implement:
 - reasoning-policy migration;
 - a second Agent Loop.
 
-The output of SI v0.4 is reproducible derived evidence that makes future Strategy adaptation more defensible without yet changing how the Agent acts.
+The output of SI v0.4 is reproducible schema-v3 derived evidence that makes future Strategy adaptation more defensible without yet changing how the Agent acts.
 
 ### SI v0.5 — Strategy Adaptation
 

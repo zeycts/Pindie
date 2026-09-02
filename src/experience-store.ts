@@ -26,7 +26,7 @@ export interface RunExperienceSourceRecord {
 
 export interface RunExperienceReadResult {
   readonly records: readonly RunExperienceSourceRecord[];
-  readonly loadedSchemaV2: number;
+  readonly loadedSchemaV3: number;
   readonly unsupportedSchema: number;
   readonly invalid: number;
 }
@@ -46,10 +46,12 @@ function errorMessage(error: unknown): string {
 
 const EMPTY_READ_RESULT: RunExperienceReadResult = Object.freeze({
   records: Object.freeze([]),
-  loadedSchemaV2: 0,
+  loadedSchemaV3: 0,
   unsupportedSchema: 0,
   invalid: 0,
 });
+
+const CANONICAL_RECORD_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/;
 
 /** Read-only current-project access to immutable Run Experience records. */
 export class FileRunExperienceReader implements RunExperienceReader {
@@ -77,10 +79,7 @@ export class FileRunExperienceReader implements RunExperienceReader {
     for (const entry of entries.sort((left, right) =>
       left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
     )) {
-      if (!entry.isFile()) {
-        invalid += 1;
-        continue;
-      }
+      if (!entry.isFile() || !CANONICAL_RECORD_FILE.test(entry.name)) continue;
       let parsed: unknown;
       try {
         parsed = JSON.parse(await readFile(join(directory, entry.name), "utf8"));
@@ -91,7 +90,7 @@ export class FileRunExperienceReader implements RunExperienceReader {
       if (
         typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
         typeof (parsed as Record<string, unknown>).schemaVersion === "number" &&
-        (parsed as Record<string, unknown>).schemaVersion !== 2
+        (parsed as Record<string, unknown>).schemaVersion !== 3
       ) {
         unsupportedSchema += 1;
         continue;
@@ -106,7 +105,7 @@ export class FileRunExperienceReader implements RunExperienceReader {
 
     return Object.freeze({
       records: Object.freeze(records),
-      loadedSchemaV2: records.length,
+      loadedSchemaV3: records.length,
       unsupportedSchema,
       invalid,
     });

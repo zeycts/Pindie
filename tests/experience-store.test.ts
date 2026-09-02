@@ -40,8 +40,9 @@ function experience(goal: string): RunExperience {
     policy: {
       finalSnapshot: null,
       declarationCount: 0,
-      firstDeclarationAfter: null,
-      finalDeclarationAfter: null,
+      finalPolicyDeclarationCount: 0,
+      finalPolicyFirstDeclaredAfter: null,
+      finalPolicyLastDeclaredAfter: null,
     },
     execution: {
       toolCalls: 1,

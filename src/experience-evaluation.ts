@@ -2,7 +2,10 @@ import type {
   RunExperienceReadResult,
   RunExperienceSourceRecord,
 } from "./experience-store.ts";
-import type { PolicySnapshot } from "./policy.ts";
+import {
+  policySnapshotIdentity,
+  type PolicySnapshot,
+} from "./policy.ts";
 import type { RunExperienceExecution } from "./run-experience.ts";
 
 export interface RunEvaluation {
@@ -14,8 +17,9 @@ export interface RunEvaluation {
   readonly policy: {
     readonly finalSnapshot: PolicySnapshot | null;
     readonly declarationCount: number;
-    readonly firstDeclarationProgress: number | null;
-    readonly finalDeclarationProgress: number | null;
+    readonly finalPolicyDeclarationCount: number;
+    readonly finalPolicyFirstDeclarationProgress: number | null;
+    readonly finalPolicyLastActivationProgress: number | null;
     readonly finalPolicyExposureCalls: number | null;
     readonly finalPolicyExposureRatio: number | null;
   };
@@ -60,11 +64,13 @@ export interface PolicyEvidenceProfile {
   readonly completedDuringRunCount: number;
   readonly totalToolErrors: number;
   readonly totalDeniedCalls: number;
+  readonly declarationCount: NumericSummary;
+  readonly finalPolicyDeclarationCount: NumericSummary;
   readonly exposure: {
     readonly calls: NumericSummary;
     readonly ratio: NumericSummary;
-    readonly firstDeclarationProgress: NumericSummary;
-    readonly finalDeclarationProgress: NumericSummary;
+    readonly finalPolicyFirstDeclarationProgress: NumericSummary;
+    readonly finalPolicyLastActivationProgress: NumericSummary;
   };
   readonly durationMs: NumericSummary;
   readonly cost: NumericSummary;
@@ -89,16 +95,13 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function clampRatio(value: number): number | null {
-  if (!Number.isFinite(value)) return null;
-  return Math.min(1, Math.max(0, value));
-}
-
 function ratio(numerator: number, denominator: number): number | null {
-  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) ||
+    denominator <= 0 || numerator < 0 || numerator > denominator) {
     return null;
   }
-  return clampRatio(numerator / denominator);
+  const result = numerator / denominator;
+  return Number.isFinite(result) ? result : null;
 }
 
 function declarationProgress(
@@ -121,25 +124,20 @@ function copyPolicySnapshot(snapshot: PolicySnapshot | null): PolicySnapshot | n
 /** Deterministic identity for a complete explicit Policy Snapshot. */
 export function policyProfileId(snapshot: PolicySnapshot | null): string {
   if (snapshot === null) return NO_EXPLICIT_POLICY_PROFILE_ID;
-  const modifierIds = [...snapshot.modifiers]
-    .map((modifier) => modifier.id)
-    .sort((left, right) => compareText(left, right));
-  return `policy:${JSON.stringify({
-    approachId: snapshot.approach.id,
-    modifierIds,
-  })}`;
+  return `policy:${policySnapshotIdentity(snapshot)}`;
 }
 
-/** Derive bounded measurements from one valid schema-v2 Run Experience. */
+/** Derive bounded measurements from one valid schema-v3 Run Experience. */
 export function evaluateRunExperience(
   source: RunExperienceSourceRecord,
 ): RunEvaluation {
   const { experience } = source;
   const toolCalls = experience.execution.toolCalls;
   const finalSnapshot = experience.policy.finalSnapshot;
-  const finalDeclarationAfter = experience.policy.finalDeclarationAfter;
-  const finalPolicyExposureCalls = finalSnapshot !== null && finalDeclarationAfter !== null
-    ? Math.max(0, toolCalls - finalDeclarationAfter.toolCalls)
+  const finalPolicyLastDeclaredAfter = experience.policy.finalPolicyLastDeclaredAfter;
+  const finalPolicyExposureCalls = finalSnapshot !== null && finalPolicyLastDeclaredAfter !== null &&
+      toolCalls >= finalPolicyLastDeclaredAfter.toolCalls
+    ? toolCalls - finalPolicyLastDeclaredAfter.toolCalls
     : null;
 
   return {
@@ -151,12 +149,13 @@ export function evaluateRunExperience(
     policy: {
       finalSnapshot,
       declarationCount: experience.policy.declarationCount,
-      firstDeclarationProgress: finalSnapshot === null
+      finalPolicyDeclarationCount: experience.policy.finalPolicyDeclarationCount,
+      finalPolicyFirstDeclarationProgress: finalSnapshot === null
         ? null
-        : declarationProgress(experience.policy.firstDeclarationAfter, toolCalls),
-      finalDeclarationProgress: finalSnapshot === null
+        : declarationProgress(experience.policy.finalPolicyFirstDeclaredAfter, toolCalls),
+      finalPolicyLastActivationProgress: finalSnapshot === null
         ? null
-        : declarationProgress(finalDeclarationAfter, toolCalls),
+        : declarationProgress(finalPolicyLastDeclaredAfter, toolCalls),
       finalPolicyExposureCalls,
       finalPolicyExposureRatio: finalSnapshot === null || finalPolicyExposureCalls === null
         ? null
@@ -225,10 +224,12 @@ interface MutableProfile {
   completedDuringRunCount: number;
   totalToolErrors: number;
   totalDeniedCalls: number;
+  readonly declarationCounts: number[];
+  readonly finalPolicyDeclarationCounts: number[];
   readonly exposureCalls: number[];
   readonly exposureRatios: number[];
-  readonly firstDeclarationProgress: number[];
-  readonly finalDeclarationProgress: number[];
+  readonly finalPolicyFirstDeclarationProgress: number[];
+  readonly finalPolicyLastActivationProgress: number[];
   readonly durations: number[];
   readonly costs: number[];
   readonly sourceRecordIds: string[];
@@ -253,10 +254,12 @@ function createMutableProfile(evaluation: RunEvaluation): MutableProfile {
     completedDuringRunCount: 0,
     totalToolErrors: 0,
     totalDeniedCalls: 0,
+    declarationCounts: [],
+    finalPolicyDeclarationCounts: [],
     exposureCalls: [],
     exposureRatios: [],
-    firstDeclarationProgress: [],
-    finalDeclarationProgress: [],
+    finalPolicyFirstDeclarationProgress: [],
+    finalPolicyLastActivationProgress: [],
     durations: [],
     costs: [],
     sourceRecordIds: [],
@@ -280,10 +283,12 @@ export function derivePolicyEvidenceProfiles(
     profile.completedDuringRunCount += evaluation.outcome.completedDuringRun ? 1 : 0;
     profile.totalToolErrors += evaluation.execution.toolErrors;
     profile.totalDeniedCalls += evaluation.execution.deniedCalls;
+    addOptional(profile.declarationCounts, evaluation.policy.declarationCount);
+    addOptional(profile.finalPolicyDeclarationCounts, evaluation.policy.finalPolicyDeclarationCount);
     addOptional(profile.exposureCalls, evaluation.policy.finalPolicyExposureCalls);
     addOptional(profile.exposureRatios, evaluation.policy.finalPolicyExposureRatio);
-    addOptional(profile.firstDeclarationProgress, evaluation.policy.firstDeclarationProgress);
-    addOptional(profile.finalDeclarationProgress, evaluation.policy.finalDeclarationProgress);
+    addOptional(profile.finalPolicyFirstDeclarationProgress, evaluation.policy.finalPolicyFirstDeclarationProgress);
+    addOptional(profile.finalPolicyLastActivationProgress, evaluation.policy.finalPolicyLastActivationProgress);
     addOptional(profile.durations, evaluation.metrics.durationMs);
     addOptional(profile.costs, evaluation.metrics.cost);
     profile.sourceRecordIds.push(evaluation.source.recordId);
@@ -300,11 +305,13 @@ export function derivePolicyEvidenceProfiles(
       completedDuringRunCount: profile.completedDuringRunCount,
       totalToolErrors: profile.totalToolErrors,
       totalDeniedCalls: profile.totalDeniedCalls,
+      declarationCount: summarize(profile.declarationCounts),
+      finalPolicyDeclarationCount: summarize(profile.finalPolicyDeclarationCounts),
       exposure: Object.freeze({
         calls: summarize(profile.exposureCalls),
         ratio: summarize(profile.exposureRatios),
-        firstDeclarationProgress: summarize(profile.firstDeclarationProgress),
-        finalDeclarationProgress: summarize(profile.finalDeclarationProgress),
+        finalPolicyFirstDeclarationProgress: summarize(profile.finalPolicyFirstDeclarationProgress),
+        finalPolicyLastActivationProgress: summarize(profile.finalPolicyLastActivationProgress),
       }),
       durationMs: summarize(profile.durations),
       cost: summarize(profile.costs),
@@ -386,7 +393,9 @@ export function formatExperienceReport(
     ? ["  (none)"]
     : evaluation.profiles.slice(0, MAX_RENDERED_PROFILES).map((profile) => [
       `  - ${profileLabel(profile)} · runs ${profile.runCount} · verification passed ${profile.verificationPassedCount} · completed during Run ${profile.completedDuringRunCount} · tool errors ${profile.totalToolErrors} · denied ${profile.totalDeniedCalls}`,
-      `    exposure calls: ${formatSummary(profile.exposure.calls)} · ratio: ${formatSummary(profile.exposure.ratio, true)}`,
+      `    declarations: ${formatSummary(profile.declarationCount)} · final-Policy declarations: ${formatSummary(profile.finalPolicyDeclarationCount)}`,
+      `    first final-Policy declaration progress: ${formatSummary(profile.exposure.finalPolicyFirstDeclarationProgress, true)} · last activation progress: ${formatSummary(profile.exposure.finalPolicyLastActivationProgress, true)}`,
+      `    continuous final-Policy exposure calls: ${formatSummary(profile.exposure.calls)} · ratio: ${formatSummary(profile.exposure.ratio, true)}`,
       `    durationMs: ${formatSummary(profile.durationMs)} · cost: ${formatSummary(profile.cost)}`,
       `    records: ${formatProfileRecordIds(profile)}`,
     ].join("\n"));
@@ -397,7 +406,7 @@ export function formatExperienceReport(
   return [
     "Experience Evaluation",
     "",
-    `Loaded schema-v2 records: ${read.loadedSchemaV2}`,
+    `Loaded schema-v3 records: ${read.loadedSchemaV3}`,
     `Unsupported-schema records: ${read.unsupportedSchema}`,
     `Invalid/unreadable records: ${read.invalid}`,
     `Evaluated Runs: ${evaluation.evaluations.length}`,
