@@ -299,3 +299,56 @@ test("Experience report is bounded and explicitly evidence-only", () => {
   assert.match(report, /No-explicit-Policy Runs: 1/);
   assert.match(report, /Evidence inventory only; contains no Strategy score, ranking, or causal claim\./);
 });
+
+test("Experience report bounds profile provenance without changing derived profiles", () => {
+  const records = Array.from({ length: 6 }, (_, index) =>
+    source(`record-${index + 1}.json`, experience("many records")),
+  );
+  const evaluation = deriveExperienceEvaluation(records);
+  const profile = evaluation.profiles[0]!;
+  const read: RunExperienceReadResult = {
+    records,
+    loadedSchemaV2: records.length,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const report = formatExperienceReport(read, evaluation);
+
+  assert.deepEqual(profile.sourceRecordIds, records.map((record) => record.recordId));
+  assert.match(report, /record-1\.json, record-2\.json, record-3\.json, record-4\.json, record-5\.json \(\+1 more\)/);
+  assert.doesNotMatch(report, /record-6\.json/);
+  assert.match(report, /Evidence inventory only; contains no Strategy score, ranking, or causal claim\./);
+});
+
+test("Experience report bounds the number of rendered profiles while retaining all evaluation data", () => {
+  const policies = [
+    { approach: "direct-action" },
+    { approach: "reproduce-first" },
+    { approach: "explore-first" },
+    { approach: "hypothesis-driven" },
+    { approach: "architecture-first" },
+    { approach: "direct-action", modifiers: ["minimal-change"] },
+    { approach: "direct-action", modifiers: ["verify-as-you-go"] },
+    { approach: "direct-action", modifiers: ["minimal-change", "verify-as-you-go"] },
+    { approach: "reproduce-first", modifiers: ["minimal-change"] },
+    { approach: "reproduce-first", modifiers: ["verify-as-you-go"] },
+    { approach: "reproduce-first", modifiers: ["minimal-change", "verify-as-you-go"] },
+  ];
+  const records = policies.map((policy, index) => source(
+    `profile-${index + 1}.json`,
+    experience(`profile ${index + 1}`, { policy: createPolicySnapshot(policy) }),
+  ));
+  const evaluation = deriveExperienceEvaluation(records);
+  const read: RunExperienceReadResult = {
+    records,
+    loadedSchemaV2: records.length,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const report = formatExperienceReport(read, evaluation);
+
+  assert.equal(evaluation.profiles.length, 11);
+  assert.equal(report.split("\n").filter((line) => line.startsWith("  - ")).length, 10);
+  assert.match(report, /\.\.\. \+1 more profiles/);
+  assert.match(report, /Evidence inventory only; contains no Strategy score, ranking, or causal claim\./);
+});

@@ -365,6 +365,15 @@ function profileLabel(profile: PolicyEvidenceProfile): string {
   return `${profile.identity.approachId}${modifiers}`;
 }
 
+const MAX_RENDERED_PROFILE_RECORD_IDS = 5;
+const MAX_RENDERED_PROFILES = 10;
+
+function formatProfileRecordIds(profile: PolicyEvidenceProfile): string {
+  const visible = profile.sourceRecordIds.slice(0, MAX_RENDERED_PROFILE_RECORD_IDS);
+  const omitted = profile.sourceRecordIds.length - visible.length;
+  return `${visible.join(", ")}${omitted > 0 ? ` (+${omitted} more)` : ""}`;
+}
+
 /** Format a bounded human-readable report without making policy claims. */
 export function formatExperienceReport(
   read: RunExperienceReadResult,
@@ -375,12 +384,15 @@ export function formatExperienceReport(
   const noPolicyCount = evaluation.evaluations.length - explicitCount;
   const profileLines = evaluation.profiles.length === 0
     ? ["  (none)"]
-    : evaluation.profiles.map((profile) => [
+    : evaluation.profiles.slice(0, MAX_RENDERED_PROFILES).map((profile) => [
       `  - ${profileLabel(profile)} · runs ${profile.runCount} · verification passed ${profile.verificationPassedCount} · completed during Run ${profile.completedDuringRunCount} · tool errors ${profile.totalToolErrors} · denied ${profile.totalDeniedCalls}`,
       `    exposure calls: ${formatSummary(profile.exposure.calls)} · ratio: ${formatSummary(profile.exposure.ratio, true)}`,
       `    durationMs: ${formatSummary(profile.durationMs)} · cost: ${formatSummary(profile.cost)}`,
-      `    records: ${profile.sourceRecordIds.join(", ")}`,
+      `    records: ${formatProfileRecordIds(profile)}`,
     ].join("\n"));
+  if (evaluation.profiles.length > MAX_RENDERED_PROFILES) {
+    profileLines.push(`... +${evaluation.profiles.length - MAX_RENDERED_PROFILES} more profiles`);
+  }
 
   return [
     "Experience Evaluation",
