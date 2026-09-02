@@ -80,6 +80,7 @@ GateRunRelation       none | existed_before_run | opened_during_run
 observe.project
 observe.git
 project.mutate
+policy.declare
 
 task.start
 task.refine
@@ -98,37 +99,38 @@ If Run authority is stale or unavailable, capabilities are exactly:
 ```text
 observe.project
 observe.git
+policy.declare
 ```
 
 Coherent capability states:
 
 ```text
 idle
-→ observe.project, observe.git, task.start
+→ observe.project, observe.git, policy.declare, task.start
 
 done / completed_before_run
-→ observe.project, observe.git, task.start
+→ observe.project, observe.git, policy.declare, task.start
 
 done / completed_during_run
-→ observe.project, observe.git
+→ observe.project, observe.git, policy.declare
 
 active
-→ observe.project, observe.git, project.mutate,
+→ observe.project, observe.git, policy.declare, project.mutate,
   task.refine, task.progress, verification.record, gate.open
 → + task.replace iff preexisting_untouched
 → + task.complete iff completionReady
 
 blocked
-→ observe.project, observe.git, project.mutate,
+→ observe.project, observe.git, policy.declare, project.mutate,
   task.refine, task.progress, verification.record, gate.open
 → + task.replace iff preexisting_untouched
 → no task.complete
 
 waiting_human / opened_during_run
-→ observe.project, observe.git
+→ observe.project, observe.git, policy.declare
 
 waiting_human / existed_before_run
-→ observe.project, observe.git, task.refine, gate.resolve
+→ observe.project, observe.git, policy.declare, task.refine, gate.resolve
 → + task.replace iff preexisting_untouched
 ```
 
@@ -182,6 +184,7 @@ When mutation is detected or cannot be determined safely, verification is invali
 Pindie exposes narrow semantic affordances:
 
 ```text
+pindie_policy_set          → policy.declare
 pindie_task_start          → task.start
 pindie_task_replace        → task.replace
 pindie_task_refine         → task.refine
@@ -268,10 +271,10 @@ A Human Gate is an explicit human-authority boundary.
 
 ```text
 Gate opened during current Run
-→ observation-only capability space
+→ observation + policy declaration capability space
 
 Gate existed before current user-driven Run
-→ observation + gate.resolve + any other legal Task-boundary choices
+→ observation + policy declaration + gate.resolve + any other legal Task-boundary choices
 ```
 
 The model interprets the human reply among currently legal semantic actions. Gate lifecycle legality is structural and must not be reimplemented as a prompt tutorial or Skill rule.
