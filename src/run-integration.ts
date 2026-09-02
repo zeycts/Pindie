@@ -88,6 +88,10 @@ export class RunIntegration {
     return this.agentRunFactsContext?.taskStatusAtRunStart ?? null;
   }
 
+  get taskGoalAtRunStart(): string | null {
+    return this.agentRunFactsContext?.taskAtRunStart?.goal ?? null;
+  }
+
   get executionCounters(): RunExperienceExecution {
     return this.experience.execution;
   }

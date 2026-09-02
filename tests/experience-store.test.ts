@@ -35,7 +35,7 @@ function experience(goal: string): RunExperience {
   };
   return assembleRunExperience({
     task,
-    statusAtStart: "active",
+    runStart: { taskStatus: "active", taskGoal: goal },
     snapshot,
     policy: {
       finalSnapshot: null,
@@ -47,7 +47,7 @@ function experience(goal: string): RunExperience {
       toolCalls: 1,
       observations: 1,
       consequentialCalls: 0,
-      projectMutationCalls: 0,
+      projectMutationEffectCalls: 0,
       verificationCalls: 0,
       toolErrors: 0,
       deniedCalls: 0,

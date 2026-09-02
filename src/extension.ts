@@ -751,7 +751,8 @@ export function registerPindieExtension(
     }
     const finalState = run.authoritativeState;
     const task = finalState?.task ?? null;
-    const statusAtStart = run.taskStatusAtRunStart;
+    const runStartTaskStatus = run.taskStatusAtRunStart;
+    const runStartTaskGoal = run.taskGoalAtRunStart;
     const executionFacts = run.executionCounters;
     const policyFacts = run.policyAttribution;
     const durationMs = presentation.runTimer.finish();
@@ -768,12 +769,15 @@ export function registerPindieExtension(
         task,
         executionFacts,
       ) &&
-      statusAtStart !== null
+      runStartTaskStatus !== null
     ) {
       try {
         const experience = assembleRunExperience({
           task: task!,
-          statusAtStart,
+          runStart: {
+            taskStatus: runStartTaskStatus,
+            taskGoal: runStartTaskGoal,
+          },
           snapshot: finalDerivation.snapshot,
           policy: policyFacts,
           execution: executionFacts,
