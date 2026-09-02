@@ -1,5 +1,6 @@
 import type { ToolEffect } from "./execution-semantics.ts";
 import type { PolicySnapshot } from "./policy.ts";
+import type { SeedStrategy } from "./strategies.ts";
 import type {
   CompletionRunRelation,
   SemanticSnapshot,
@@ -286,4 +287,215 @@ export function isEligibleRunExperience(
     snapshot.authority === "coherent" &&
     task !== null &&
     execution.toolCalls > 0;
+}
+
+const TASK_STATUSES: readonly TaskStatus[] = [
+  "idle",
+  "active",
+  "blocked",
+  "waiting_human",
+  "done",
+];
+const VERIFICATION_STATUSES: readonly (VerificationStatus | "none")[] = [
+  "pending",
+  "stale",
+  "failed",
+  "passed",
+  "none",
+];
+const TASK_RELATIONS: readonly TaskRunRelation[] = [
+  "none",
+  "preexisting_untouched",
+  "preexisting_changed",
+  "introduced_during_run",
+];
+const COMPLETION_RELATIONS: readonly CompletionRunRelation[] = [
+  "not_completed",
+  "completed_before_run",
+  "completed_during_run",
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isOneOf<T extends string>(value: unknown, values: readonly T[]): value is T {
+  return typeof value === "string" && values.includes(value as T);
+}
+
+function copySeedStrategy(value: Record<string, unknown>): SeedStrategy {
+  return Object.freeze({
+    id: value.id as string,
+    kind: value.kind as "approach" | "modifier",
+    summary: value.summary as string,
+    useWhen: Object.freeze([...(value.useWhen as string[])]),
+    ...(value.avoidWhen === undefined
+      ? {}
+      : { avoidWhen: Object.freeze([...(value.avoidWhen as string[])]) }),
+    principles: Object.freeze([...(value.principles as string[])]),
+  });
+}
+
+function parseSeedStrategy(
+  value: unknown,
+  kind: "approach" | "modifier",
+): SeedStrategy | null {
+  if (!isRecord(value) || value.kind !== kind ||
+    typeof value.id !== "string" || value.id.length === 0 ||
+    typeof value.summary !== "string" || !isStringArray(value.useWhen) ||
+    (value.avoidWhen !== undefined && !isStringArray(value.avoidWhen)) ||
+    !isStringArray(value.principles)) {
+    return null;
+  }
+  return copySeedStrategy(value);
+}
+
+function parsePolicySnapshot(value: unknown): PolicySnapshot | null {
+  if (!isRecord(value)) return null;
+  const approach = parseSeedStrategy(value.approach, "approach");
+  if (approach === null || !Array.isArray(value.modifiers)) return null;
+  const modifiers = value.modifiers.map((modifier) =>
+    parseSeedStrategy(modifier, "modifier"),
+  );
+  if (modifiers.some((modifier) => modifier === null)) return null;
+  const parsedModifiers = modifiers as SeedStrategy[];
+  if (new Set(parsedModifiers.map((modifier) => modifier.id)).size !== parsedModifiers.length) {
+    return null;
+  }
+  return Object.freeze({
+    approach,
+    modifiers: Object.freeze(parsedModifiers),
+  });
+}
+
+function parseExecution(value: unknown): RunExperienceExecution | null {
+  if (!isRecord(value)) return null;
+  const fields: (keyof RunExperienceExecution)[] = [
+    "toolCalls",
+    "observations",
+    "consequentialCalls",
+    "projectMutationEffectCalls",
+    "verificationCalls",
+    "toolErrors",
+    "deniedCalls",
+  ];
+  if (!fields.every((field) => isNonNegativeSafeInteger(value[field]))) return null;
+  return Object.freeze({
+    toolCalls: value.toolCalls as number,
+    observations: value.observations as number,
+    consequentialCalls: value.consequentialCalls as number,
+    projectMutationEffectCalls: value.projectMutationEffectCalls as number,
+    verificationCalls: value.verificationCalls as number,
+    toolErrors: value.toolErrors as number,
+    deniedCalls: value.deniedCalls as number,
+  });
+}
+
+/**
+ * Validates and copies the bounded schema-v2 shape used by Evaluation.
+ * Unknown fields are deliberately discarded instead of entering the evaluator.
+ */
+export function parseRunExperience(value: unknown): RunExperience | null {
+  if (!isRecord(value) || value.schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION ||
+    typeof value.recordedAt !== "string" || value.recordedAt.length === 0) {
+    return null;
+  }
+
+  const runStart = value.runStart;
+  if (!isRecord(runStart) || !isOneOf(runStart.taskStatus, TASK_STATUSES) ||
+    (typeof runStart.taskGoal !== "string" && runStart.taskGoal !== null)) {
+    return null;
+  }
+
+  const task = value.task;
+  if (!isRecord(task) || typeof task.goal !== "string" ||
+    !isOneOf(task.taskRelation, TASK_RELATIONS)) {
+    return null;
+  }
+
+  const policy = value.policy;
+  if (!isRecord(policy) || !isNonNegativeSafeInteger(policy.declarationCount)) {
+    return null;
+  }
+  const finalSnapshot = policy.finalSnapshot === null
+    ? null
+    : parsePolicySnapshot(policy.finalSnapshot);
+  if (policy.finalSnapshot !== null && finalSnapshot === null) return null;
+  const firstDeclarationAfter = policy.firstDeclarationAfter === null
+    ? null
+    : parseExecution(policy.firstDeclarationAfter);
+  const finalDeclarationAfter = policy.finalDeclarationAfter === null
+    ? null
+    : parseExecution(policy.finalDeclarationAfter);
+  if (
+    (policy.firstDeclarationAfter !== null && firstDeclarationAfter === null) ||
+    (policy.finalDeclarationAfter !== null && finalDeclarationAfter === null)
+  ) return null;
+
+  const execution = parseExecution(value.execution);
+  const outcome = value.outcome;
+  if (execution === null || !isRecord(outcome) ||
+    !isOneOf(outcome.taskStatus, TASK_STATUSES) ||
+    !isOneOf(outcome.verificationStatus, VERIFICATION_STATUSES) ||
+    !isOneOf(outcome.completionRelation, COMPLETION_RELATIONS) ||
+    typeof outcome.hasBlockers !== "boolean" ||
+    typeof outcome.hasQuestions !== "boolean" ||
+    typeof outcome.humanGateOpen !== "boolean") {
+    return null;
+  }
+
+  const metrics = value.metrics;
+  if (!isRecord(metrics) ||
+    (metrics.durationMs !== null && !isNonNegativeFiniteNumber(metrics.durationMs)) ||
+    (metrics.cost !== null && !isNonNegativeFiniteNumber(metrics.cost))) {
+    return null;
+  }
+
+  return Object.freeze({
+    schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION,
+    recordedAt: value.recordedAt,
+    runStart: Object.freeze({
+      taskStatus: runStart.taskStatus,
+      taskGoal: runStart.taskGoal,
+    }),
+    task: Object.freeze({
+      goal: task.goal,
+      taskRelation: task.taskRelation,
+    }),
+    policy: Object.freeze({
+      finalSnapshot,
+      declarationCount: policy.declarationCount,
+      firstDeclarationAfter,
+      finalDeclarationAfter,
+    }),
+    execution,
+    outcome: Object.freeze({
+      taskStatus: outcome.taskStatus,
+      verificationStatus: outcome.verificationStatus,
+      completionRelation: outcome.completionRelation,
+      hasBlockers: outcome.hasBlockers,
+      hasQuestions: outcome.hasQuestions,
+      humanGateOpen: outcome.humanGateOpen,
+    }),
+    metrics: Object.freeze({
+      durationMs: metrics.durationMs,
+      cost: metrics.cost,
+    }),
+  });
+}
+
+export function isRunExperience(value: unknown): value is RunExperience {
+  return parseRunExperience(value) !== null;
 }

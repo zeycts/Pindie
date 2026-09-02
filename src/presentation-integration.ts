@@ -6,6 +6,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+  deriveExperienceEvaluation,
+  formatExperienceReport,
+} from "./experience-evaluation.ts";
+import type { RunExperienceReader } from "./experience-store.ts";
+import {
   deriveEfficiencySnapshot,
   formatEfficiencyReport,
 } from "./efficiency.ts";
@@ -28,6 +33,8 @@ const PINDIE_STATUS_ID = "pindie-status";
 
 export interface PresentationIntegrationOptions {
   getState: () => PindieState | null;
+  getProjectRoot: () => string | null;
+  experienceReader: RunExperienceReader;
   getAuthoritativeState: () => PindieState | null;
   getStateUnavailableReason: () => string | null;
   getRunStale: () => boolean;
@@ -50,6 +57,8 @@ export class PresentationIntegration {
   readonly runCost = new RunCostTracker();
   readonly runTimer = new RunTimer();
   private readonly getState: () => PindieState | null;
+  private readonly getProjectRoot: () => string | null;
+  private readonly experienceReader: RunExperienceReader;
   private readonly getAuthoritativeState: () => PindieState | null;
   private readonly getStateUnavailableReason: () => string | null;
   private readonly getRunStale: () => boolean;
@@ -72,6 +81,8 @@ export class PresentationIntegration {
   constructor(pi: ExtensionAPI, options: PresentationIntegrationOptions) {
     this.pi = pi;
     this.getState = options.getState;
+    this.getProjectRoot = options.getProjectRoot;
+    this.experienceReader = options.experienceReader;
     this.getAuthoritativeState = options.getAuthoritativeState;
     this.getStateUnavailableReason = options.getStateUnavailableReason;
     this.getRunStale = options.getRunStale;
@@ -219,6 +230,31 @@ export class PresentationIntegration {
       runCost: this.runCost.snapshot(entries),
     }));
     ctx.ui.notify(report, "info");
+  }
+
+  async handleExperienceCommand(
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> {
+    if (args.trim()) {
+      ctx.ui.notify("Usage: /experience", "warning");
+      return;
+    }
+    const projectRoot = this.getProjectRoot();
+    if (projectRoot === null) {
+      ctx.ui.notify("Pindie could not show /experience: no current project root is loaded.", "warning");
+      return;
+    }
+    try {
+      const read = await this.experienceReader.read(projectRoot);
+      ctx.ui.notify(
+        formatExperienceReport(read, deriveExperienceEvaluation(read.records)),
+        "info",
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Could not read Pindie Experience: ${message}`, "warning");
+    }
   }
 
   async handleReasoningCommand(
