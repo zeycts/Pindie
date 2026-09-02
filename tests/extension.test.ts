@@ -18,6 +18,7 @@ import {
   registerPindieExtension,
   type PindieExtensionOptions,
 } from "../src/extension.ts";
+import { createPolicySnapshot, type PolicySnapshot } from "../src/policy.ts";
 import { RemoteCompanion, type RemoteSurface } from "../src/remote-companion.ts";
 import {
   EMPTY_STATE,
@@ -25,9 +26,17 @@ import {
   getVerificationStatus,
   type PindieState,
 } from "../src/state.ts";
-import type { RunExperience } from "../src/run-experience.ts";
-import type { RunExperienceStore } from "../src/experience-store.ts";
+import {
+  assembleRunExperience,
+  type RunExperience,
+} from "../src/run-experience.ts";
+import type {
+  RunExperienceReadResult,
+  RunExperienceReader,
+  RunExperienceStore,
+} from "../src/experience-store.ts";
 import type { PindieStateStore } from "../src/store.ts";
+import type { SemanticSnapshot } from "../src/semantics.ts";
 
 type CapturedHandler = (
   event: Record<string, unknown>,
@@ -121,6 +130,23 @@ class ExtensionTestExperienceStore implements RunExperienceStore {
   }
 }
 
+class ExtensionTestExperienceReader implements RunExperienceReader {
+  result: RunExperienceReadResult = {
+    records: [],
+    loadedSchemaV2: 0,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  readonly roots: string[] = [];
+  error: Error | null = null;
+
+  async read(projectRoot: string): Promise<RunExperienceReadResult> {
+    this.roots.push(projectRoot);
+    if (this.error) throw this.error;
+    return this.result;
+  }
+}
+
 class ExtensionTestStore implements PindieStateStore {
   readonly states = new Map<string, PindieState>();
   readonly loadErrors = new Map<string, Error>();
@@ -162,6 +188,44 @@ function activeState(goal = "Wire Pi extension"): PindieState {
       completed: false,
     },
   };
+}
+
+function commandExperience(goal: string, policy: PolicySnapshot | null = null): RunExperience {
+  const coherentSnapshot: Extract<SemanticSnapshot, { authority: "coherent" }> = {
+    authority: "coherent",
+    taskStatus: "active",
+    verificationStatus: "pending",
+    hasBlockers: false,
+    hasQuestions: false,
+    completionReady: false,
+    taskRelation: "preexisting_untouched",
+    completionRelation: "not_completed",
+    gateRelation: "none",
+  };
+  const zero = {
+    toolCalls: 0,
+    observations: 0,
+    consequentialCalls: 0,
+    projectMutationEffectCalls: 0,
+    verificationCalls: 0,
+    toolErrors: 0,
+    deniedCalls: 0,
+  };
+  return assembleRunExperience({
+    task: activeState(goal).task!,
+    runStart: { taskStatus: "active", taskGoal: goal },
+    snapshot: coherentSnapshot,
+    policy: {
+      finalSnapshot: policy,
+      declarationCount: policy === null ? 0 : 1,
+      firstDeclarationAfter: policy === null ? null : zero,
+      finalDeclarationAfter: policy === null ? null : zero,
+    },
+    execution: { ...zero, toolCalls: 1, observations: 1 },
+    durationMs: 10,
+    cost: 0.1,
+    recordedAt: "2026-01-01T00:00:00.000Z",
+  });
 }
 
 function verifiedState(): PindieState {
@@ -346,6 +410,7 @@ function createHarness(
   const api = new CapturedExtensionAPI();
   const store = new ExtensionTestStore(entries);
   const experienceStore = options.experienceStore ?? new ExtensionTestExperienceStore();
+  const experienceReader = options.experienceReader ?? new ExtensionTestExperienceReader();
   const integration = registerPindieExtension(
     api as unknown as ExtensionAPI,
     {
@@ -353,12 +418,13 @@ function createHarness(
       ...options,
       store,
       experienceStore,
+      experienceReader,
       resolveProjectRoot: async (cwd) => resolvedRoots[cwd] ?? cwd,
     },
   );
   api.bindRuntime();
 
-  return { api, store, experienceStore, integration };
+  return { api, store, experienceStore, experienceReader, integration };
 }
 
 test("Extension registration does not call Pi runtime action methods before runtime binding", async () => {
@@ -551,6 +617,79 @@ test("EI20-EI30 /efficiency is registered and reads runtime facts without mutati
   assert.equal(contextReads, 1);
   assert.deepEqual(harness.integration.reasoning.snapshot, reasoningBefore);
   assert.deepEqual(harness.store.saves, []);
+});
+
+test("SI v0.4 /experience renders empty and mixed evidence read-only", async () => {
+  const reader = new ExtensionTestExperienceReader();
+  const harness = createHarness([["/repo", activeState()]], {}, { experienceReader: reader });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  const commandContext = {
+    ...context("/wrong-cwd"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  const toolsBefore = harness.api.getActiveTools();
+  const epochBefore = harness.integration.runtime.externalStateEpoch;
+
+  assert.ok(harness.api.commands.has("experience"));
+  await harness.api.commands.get("experience").handler("", commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /Loaded schema-v2 records: 0/);
+  assert.match(notices.at(-1)?.message ?? "", /Evaluated Runs: 0/);
+  assert.match(notices.at(-1)?.message ?? "", /Comparable exact-goal cohorts: 0/);
+  assert.equal(notices.at(-1)?.type, "info");
+  assert.deepEqual(reader.roots, ["/repo"]);
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.equal(harness.integration.runtime.externalStateEpoch, epochBefore);
+  assert.equal(harness.integration.policySnapshot, null);
+  assert.deepEqual(harness.api.getActiveTools(), toolsBefore);
+  assert.deepEqual(harness.store.saves, []);
+
+  reader.result = {
+    records: [
+      { recordId: "no-policy.json", experience: commandExperience("same goal") },
+      {
+        recordId: "explicit.json",
+        experience: commandExperience(
+          "same goal",
+          createPolicySnapshot({ approach: "direct-action" }),
+        ),
+      },
+    ],
+    loadedSchemaV2: 2,
+    unsupportedSchema: 1,
+    invalid: 1,
+  };
+  await harness.api.commands.get("experience").handler("", commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /Loaded schema-v2 records: 2/);
+  assert.match(notices.at(-1)?.message ?? "", /Unsupported-schema records: 1/);
+  assert.match(notices.at(-1)?.message ?? "", /Invalid\/unreadable records: 1/);
+  assert.match(notices.at(-1)?.message ?? "", /Explicit-Policy Runs: 1/);
+  assert.match(notices.at(-1)?.message ?? "", /No-explicit-Policy Runs: 1/);
+  assert.match(notices.at(-1)?.message ?? "", /Comparable exact-goal cohorts: 1/);
+  assert.match(notices.at(-1)?.message ?? "", /no Strategy score, ranking, or causal claim/);
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.equal(harness.integration.runtime.externalStateEpoch, epochBefore);
+  assert.equal(harness.integration.policySnapshot, null);
+  assert.deepEqual(harness.api.getActiveTools(), toolsBefore);
+  assert.deepEqual(harness.store.saves, []);
+
+  await harness.api.commands.get("experience").handler("unexpected", commandContext);
+  assert.deepEqual(notices.at(-1), { message: "Usage: /experience", type: "warning" });
+  assert.deepEqual(reader.roots, ["/repo", "/repo"]);
+
+  const noRootReader = new ExtensionTestExperienceReader();
+  const noRoot = createHarness([], {}, { experienceReader: noRootReader });
+  const noRootNotices: Array<{ message: string; type: string }> = [];
+  await noRoot.api.commands.get("experience").handler("", {
+    ...context("/repo"),
+    ui: { notify: (message: string, type: string) => noRootNotices.push({ message, type }) },
+  });
+  assert.deepEqual(noRootNotices.at(-1), {
+    message: "Pindie could not show /experience: no current project root is loaded.",
+    type: "warning",
+  });
+  assert.deepEqual(noRootReader.roots, []);
 });
 
 test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {

@@ -20,7 +20,9 @@ import {
 } from "./continuation.ts";
 import { ExecutionIntegration } from "./execution-integration.ts";
 import {
+  FileRunExperienceReader,
   FileRunExperienceStore,
+  type RunExperienceReader,
   type RunExperienceStore,
 } from "./experience-store.ts";
 import {
@@ -76,6 +78,7 @@ type ProjectRootResolver = (cwd: string) => Promise<string>;
 export interface PindieExtensionOptions {
   store?: PindieStateStore;
   experienceStore?: RunExperienceStore;
+  experienceReader?: RunExperienceReader;
   resolveProjectRoot?: ProjectRootResolver;
   subscriptionUsageProvider?: SubscriptionUsageProvider;
   getStatusWidth?: () => number | undefined;
@@ -152,10 +155,14 @@ export function registerPindieExtension(
   options: PindieExtensionOptions = {},
 ): PindieExtensionIntegration {
   const stateStore = options.store ?? new FileStateStore();
+  const experienceStorageBaseDir = stateStore instanceof FileStateStore
+    ? stateStore.storageBaseDir
+    : undefined;
   const experienceStore = options.experienceStore ?? new FileRunExperienceStore({
-    baseDir: stateStore instanceof FileStateStore
-      ? stateStore.storageBaseDir
-      : undefined,
+    baseDir: experienceStorageBaseDir,
+  });
+  const experienceReader = options.experienceReader ?? new FileRunExperienceReader({
+    baseDir: experienceStorageBaseDir,
   });
   const runtime = new PindieRuntime(stateStore);
   const run = new RunIntegration(runtime);
@@ -164,6 +171,8 @@ export function registerPindieExtension(
   });
   const presentation = new PresentationIntegration(pi, {
     getState: () => runtime.projectRoot === null ? null : runtime.state,
+    getProjectRoot: () => runtime.projectRoot,
+    experienceReader,
     getAuthoritativeState: () => run.authoritativeState,
     getStateUnavailableReason: () => run.stateUnavailableReason,
     getRunStale: () => run.agentRunIsStale,
@@ -328,6 +337,11 @@ export function registerPindieExtension(
   pi.registerCommand("efficiency", {
     description: "Show read-only runtime efficiency facts",
     handler: async (args, ctx) => presentation.handleEfficiencyCommand(args, ctx),
+  });
+
+  pi.registerCommand("experience", {
+    description: "Show read-only Run Experience evidence",
+    handler: async (args, ctx) => presentation.handleExperienceCommand(args, ctx),
   });
 
   pi.registerCommand("reasoning", {
