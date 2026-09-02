@@ -51,7 +51,7 @@ const EMPTY_READ_RESULT: RunExperienceReadResult = Object.freeze({
   invalid: 0,
 });
 
-const CANONICAL_RECORD_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/;
+const CANONICAL_RECORD_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/;
 
 /** Read-only current-project access to immutable Run Experience records. */
 export class FileRunExperienceReader implements RunExperienceReader {

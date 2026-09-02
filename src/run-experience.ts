@@ -418,7 +418,9 @@ function parseExecution(value: unknown): RunExperienceExecution | null {
   });
   return execution.observations + execution.consequentialCalls === execution.toolCalls &&
     execution.projectMutationEffectCalls <= execution.toolCalls &&
+    execution.projectMutationEffectCalls <= execution.consequentialCalls &&
     execution.verificationCalls <= execution.toolCalls &&
+    execution.verificationCalls <= execution.consequentialCalls &&
     execution.toolErrors <= execution.toolCalls
     ? execution
     : null;
@@ -439,6 +441,13 @@ function countersAtOrBefore(
   later: RunExperienceExecution,
 ): boolean {
   return EXECUTION_COUNTERS.every((counter) => earlier[counter] <= later[counter]);
+}
+
+function countersEqual(
+  left: RunExperienceExecution,
+  right: RunExperienceExecution,
+): boolean {
+  return EXECUTION_COUNTERS.every((counter) => left[counter] === right[counter]);
 }
 
 /**
@@ -501,10 +510,19 @@ export function parseRunExperience(value: unknown): RunExperience | null {
     (runStart.taskStatus === "idle" && runStart.taskGoal !== null) ||
     (runStart.taskStatus !== "idle" && runStart.taskGoal === null)
   ) return null;
+  if (
+    (runStart.taskStatus === "idle" && task.taskRelation !== "introduced_during_run") ||
+    (task.taskRelation === "preexisting_untouched" &&
+      (runStart.taskStatus === "idle" ||
+        runStart.taskGoal !== task.goal ||
+        runStart.taskStatus !== outcome.taskStatus)) ||
+    (task.taskRelation === "preexisting_changed" && runStart.taskStatus === "idle")
+  ) return null;
   if ((outcome.completionRelation !== "not_completed") !== (outcome.taskStatus === "done")) {
     return null;
   }
   if (
+    outcome.verificationStatus === "none" ||
     outcome.taskStatus === "idle" ||
     (outcome.taskStatus === "waiting_human") !== outcome.humanGateOpen ||
     (outcome.taskStatus === "blocked" && !outcome.hasBlockers) ||
@@ -513,7 +531,7 @@ export function parseRunExperience(value: unknown): RunExperience | null {
       (outcome.verificationStatus !== "passed" ||
         outcome.hasBlockers || outcome.hasQuestions || outcome.humanGateOpen)) ||
     (outcome.completionRelation === "completed_before_run" &&
-      task.taskRelation !== "preexisting_untouched") ||
+      (task.taskRelation !== "preexisting_untouched" || runStart.taskStatus !== "done")) ||
     (outcome.completionRelation === "completed_during_run" &&
       task.taskRelation === "preexisting_untouched")
   ) return null;
@@ -539,7 +557,10 @@ export function parseRunExperience(value: unknown): RunExperience | null {
   if (
     finalPolicyFirstDeclaredAfter !== null &&
     finalPolicyLastDeclaredAfter !== null &&
-    !countersAtOrBefore(finalPolicyFirstDeclaredAfter, finalPolicyLastDeclaredAfter)
+    ((policy.finalPolicyDeclarationCount === 1 &&
+      !countersEqual(finalPolicyFirstDeclaredAfter, finalPolicyLastDeclaredAfter)) ||
+      (policy.finalPolicyDeclarationCount > 1 &&
+        !countersAtOrBefore(finalPolicyFirstDeclaredAfter, finalPolicyLastDeclaredAfter)))
   ) return null;
 
   const metrics = value.metrics;

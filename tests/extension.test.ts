@@ -229,6 +229,15 @@ function commandExperience(goal: string, policy: PolicySnapshot | null = null): 
   });
 }
 
+function completedBeforeCommandExperience(goal: string, policy: PolicySnapshot): RunExperience {
+  const record = structuredClone(commandExperience(goal, policy)) as any;
+  record.runStart.taskStatus = "done";
+  record.outcome.taskStatus = "done";
+  record.outcome.verificationStatus = "passed";
+  record.outcome.completionRelation = "completed_before_run";
+  return record;
+}
+
 function verifiedState(): PindieState {
   const state = activeState();
   return {
@@ -637,6 +646,8 @@ test("SI v0.4 /experience renders empty and mixed evidence read-only", async () 
   await harness.api.commands.get("experience").handler("", commandContext);
   assert.match(notices.at(-1)?.message ?? "", /Loaded schema-v3 records: 0/);
   assert.match(notices.at(-1)?.message ?? "", /Evaluated Runs: 0/);
+  assert.match(notices.at(-1)?.message ?? "", /Attributable Runs: 0/);
+  assert.match(notices.at(-1)?.message ?? "", /Non-attributable Runs: 0/);
   assert.match(notices.at(-1)?.message ?? "", /Comparable exact-goal cohorts: 0/);
   assert.equal(notices.at(-1)?.type, "info");
   assert.deepEqual(reader.roots, ["/repo"]);
@@ -656,19 +667,30 @@ test("SI v0.4 /experience renders empty and mixed evidence read-only", async () 
           createPolicySnapshot({ approach: "direct-action" }),
         ),
       },
+      {
+        recordId: "completed-before.json",
+        experience: completedBeforeCommandExperience(
+          "same goal",
+          createPolicySnapshot({ approach: "direct-action" }),
+        ),
+      },
     ],
-    loadedSchemaV3: 2,
+    loadedSchemaV3: 3,
     unsupportedSchema: 1,
     invalid: 1,
   };
   await harness.api.commands.get("experience").handler("", commandContext);
-  assert.match(notices.at(-1)?.message ?? "", /Loaded schema-v3 records: 2/);
+  assert.match(notices.at(-1)?.message ?? "", /Loaded schema-v3 records: 3/);
   assert.match(notices.at(-1)?.message ?? "", /Unsupported-schema records: 1/);
   assert.match(notices.at(-1)?.message ?? "", /Invalid\/unreadable records: 1/);
-  assert.match(notices.at(-1)?.message ?? "", /Explicit-Policy Runs: 1/);
+  assert.match(notices.at(-1)?.message ?? "", /Evaluated Runs: 3/);
+  assert.match(notices.at(-1)?.message ?? "", /Attributable Runs: 2/);
+  assert.match(notices.at(-1)?.message ?? "", /Non-attributable Runs: 1/);
+  assert.match(notices.at(-1)?.message ?? "", /Explicit-Policy Runs: 2/);
   assert.match(notices.at(-1)?.message ?? "", /No-explicit-Policy Runs: 1/);
   assert.match(notices.at(-1)?.message ?? "", /Comparable exact-goal cohorts: 1/);
   assert.match(notices.at(-1)?.message ?? "", /no Strategy score, ranking, or causal claim/);
+  assert.doesNotMatch(notices.at(-1)?.message ?? "", /completed-before\.json/);
   assert.deepEqual(harness.integration.runtime.state, stateBefore);
   assert.equal(harness.integration.runtime.externalStateEpoch, epochBefore);
   assert.equal(harness.integration.policySnapshot, null);

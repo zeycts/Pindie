@@ -129,6 +129,15 @@ function experience(
   });
 }
 
+function completedBeforeExperience(goal: string, policy: PolicySnapshot | null = null): RunExperience {
+  const record = structuredClone(experience(goal, { policy })) as any;
+  record.runStart.taskStatus = "done";
+  record.outcome.taskStatus = "done";
+  record.outcome.verificationStatus = "passed";
+  record.outcome.completionRelation = "completed_before_run";
+  return record;
+}
+
 function source(recordId: string, value: RunExperience): RunExperienceSourceRecord {
   return { recordId, experience: value };
 }
@@ -173,8 +182,12 @@ test("Experience Reader preserves filenames, isolates bad records, and does not 
   await writeRecord(directory, "00000000-0000-4000-8000-000000000006.json", JSON.stringify({ schemaVersion: "2" }));
   await writeRecord(directory, "00000000-0000-4000-8000-000000000007.json", secondValid);
   await writeRecord(directory, ".00000000-0000-4000-8000-000000000008.json.tmp", "{not json");
+  await writeRecord(directory, "00000000-0000-5000-8000-000000000009.json", "{not json");
+  await writeRecord(directory, "foo.json", "{not json");
+  await writeRecord(directory, ".hidden.json", "{not json");
   await writeRecord(directory, "backup.json", "{not json");
   await writeRecord(directory, "README", "{not json");
+  await mkdir(join(directory, "00000000-0000-4000-8000-000000000010.json"));
   await mkdir(join(directory, "random-directory"));
   const before = await readFile(
     join(directory, "00000000-0000-4000-8000-000000000001.json"),
@@ -249,6 +262,8 @@ test("schema-v3 parser canonicalizes Seed identity and rejects impossible bounde
       record.policy.finalPolicyLastDeclaredAfter = record.policy.finalPolicyFirstDeclaredAfter;
     }],
     ["first final Policy position follows last", (record) => {
+      record.policy.declarationCount = 2;
+      record.policy.finalPolicyDeclarationCount = 2;
       record.policy.finalPolicyFirstDeclaredAfter = execution({
         toolCalls: 7,
         observations: 3,
@@ -260,14 +275,46 @@ test("schema-v3 parser canonicalizes Seed identity and rejects impossible bounde
         consequentialCalls: 3,
       });
     }],
+    ["one final Policy declaration has unequal positions", (record) => {
+      record.policy.finalPolicyFirstDeclaredAfter = execution({
+        toolCalls: 1,
+        observations: 1,
+        consequentialCalls: 0,
+        projectMutationEffectCalls: 0,
+        verificationCalls: 0,
+        toolErrors: 0,
+        deniedCalls: 0,
+      });
+      record.policy.finalPolicyLastDeclaredAfter = execution({
+        toolCalls: 1,
+        observations: 1,
+        consequentialCalls: 0,
+        projectMutationEffectCalls: 0,
+        verificationCalls: 0,
+        toolErrors: 1,
+        deniedCalls: 0,
+      });
+    }],
     ["execution observations do not partition calls", (record) => {
       record.execution.observations = 4;
     }],
     ["project mutation effects exceed calls", (record) => {
       record.execution.projectMutationEffectCalls = 11;
     }],
+    ["project mutation effects exceed consequential calls", (record) => {
+      record.execution.projectMutationEffectCalls = 6;
+    }],
     ["verification calls exceed calls", (record) => {
       record.execution.verificationCalls = 11;
+    }],
+    ["verification calls exceed consequential calls", (record) => {
+      record.execution.verificationCalls = 6;
+    }],
+    ["declaration position project mutations exceed consequential calls", (record) => {
+      record.policy.finalPolicyFirstDeclaredAfter.projectMutationEffectCalls = 1;
+    }],
+    ["declaration position verification calls exceed consequential calls", (record) => {
+      record.policy.finalPolicyLastDeclaredAfter.verificationCalls = 1;
     }],
     ["tool errors exceed calls", (record) => {
       record.execution.toolErrors = 11;
@@ -275,6 +322,30 @@ test("schema-v3 parser canonicalizes Seed identity and rejects impossible bounde
     ["idle Run starts with a goal", (record) => {
       record.runStart.taskStatus = "idle";
       record.runStart.taskGoal = "should be null";
+    }],
+    ["idle Run starts with a preexisting Task", (record) => {
+      record.runStart.taskStatus = "idle";
+      record.runStart.taskGoal = null;
+    }],
+    ["untouched Task has a different Run-start goal", (record) => {
+      record.runStart.taskGoal = "different goal";
+    }],
+    ["untouched Task changes status", (record) => {
+      record.runStart.taskStatus = "blocked";
+    }],
+    ["changed Task starts from idle", (record) => {
+      record.runStart.taskStatus = "idle";
+      record.runStart.taskGoal = null;
+      record.task.taskRelation = "preexisting_changed";
+    }],
+    ["completed-before-Run does not start done", (record) => {
+      record.runStart.taskStatus = "active";
+      record.outcome.taskStatus = "done";
+      record.outcome.verificationStatus = "passed";
+      record.outcome.completionRelation = "completed_before_run";
+    }],
+    ["settled Task cannot have verification none", (record) => {
+      record.outcome.verificationStatus = "none";
     }],
     ["completion relation does not match outcome status", (record) => {
       record.outcome.completionRelation = "completed_during_run";
@@ -291,9 +362,97 @@ test("schema-v3 parser canonicalizes Seed identity and rejects impossible bounde
   }
 });
 
+test("schema-v3 parser accepts valid consequential subsets and declaration positions", () => {
+  const valid = structuredClone(experience("valid subsets", {
+    policy: createPolicySnapshot({ approach: "direct-action" }),
+  })) as any;
+  valid.execution.projectMutationEffectCalls = 5;
+  valid.execution.verificationCalls = 5;
+  assert.ok(parseRunExperience(valid));
+
+  valid.policy.declarationCount = 2;
+  valid.policy.finalPolicyDeclarationCount = 2;
+  valid.policy.finalPolicyFirstDeclaredAfter = {
+    toolCalls: 0,
+    observations: 0,
+    consequentialCalls: 0,
+    projectMutationEffectCalls: 0,
+    verificationCalls: 0,
+    toolErrors: 0,
+    deniedCalls: 0,
+  };
+  valid.policy.finalPolicyLastDeclaredAfter = {
+    toolCalls: 1,
+    observations: 1,
+    consequentialCalls: 0,
+    projectMutationEffectCalls: 0,
+    verificationCalls: 0,
+    toolErrors: 0,
+    deniedCalls: 0,
+  };
+  assert.ok(parseRunExperience(valid));
+
+  const introduced = structuredClone(experience("introduced")) as any;
+  introduced.runStart.taskStatus = "idle";
+  introduced.runStart.taskGoal = null;
+  introduced.task.taskRelation = "introduced_during_run";
+  assert.ok(parseRunExperience(introduced));
+
+  const changed = structuredClone(experience("changed")) as any;
+  changed.task.taskRelation = "preexisting_changed";
+  assert.ok(parseRunExperience(changed));
+});
+
+test("Run Evaluation marks completed-before-Run facts non-attributable", () => {
+  const policy = createPolicySnapshot({ approach: "direct-action" });
+  const completedBefore = completedBeforeExperience("same goal", policy);
+  assert.ok(parseRunExperience(completedBefore));
+
+  const evaluated = evaluateRunExperience(source("before.json", completedBefore));
+  assert.equal(evaluated.attributionEligible, false);
+  assert.equal(evaluated.source.recordId, "before.json");
+  const ordinary = evaluateRunExperience(source("ordinary.json", experience("same goal", { policy })));
+  assert.equal(ordinary.attributionEligible, true);
+
+  const records = [
+    source("before.json", completedBefore),
+    source("ordinary.json", experience("same goal", { policy })),
+    source("ordinary-no-policy.json", experience("same goal")),
+  ];
+  const evaluations = deriveRunEvaluations(records);
+  const profiles = derivePolicyEvidenceProfiles(evaluations);
+  const directProfile = profiles.find((profile) => profile.profileId === 'policy:{"approachId":"direct-action","modifierIds":[]}');
+  assert.equal(directProfile?.runCount, 1);
+  assert.equal(profiles.find((profile) => profile.profileId === "no-explicit-policy")?.runCount, 1);
+  assert.equal(profiles.some((profile) => profile.sourceRecordIds.includes("before.json")), false);
+
+  const cohorts = deriveComparableCohorts(evaluations);
+  assert.deepEqual(cohorts[0]?.sourceRecordIds, ["ordinary-no-policy.json", "ordinary.json"].sort());
+  assert.equal(cohorts[0]?.sourceRecordIds.includes("before.json"), false);
+
+  const report = formatExperienceReport({
+    records,
+    loadedSchemaV3: records.length,
+    unsupportedSchema: 0,
+    invalid: 0,
+  }, { evaluations, profiles, cohorts });
+  assert.match(report, /Evaluated Runs: 3/);
+  assert.match(report, /Attributable Runs: 2/);
+  assert.match(report, /Non-attributable Runs: 1/);
+});
+
+test("schema-v3 parser accepts every real Task verification status except none", () => {
+  for (const verificationStatus of ["pending", "stale", "failed", "passed"] as const) {
+    const record = structuredClone(experience(`verification ${verificationStatus}`)) as any;
+    record.outcome.verificationStatus = verificationStatus;
+    assert.ok(parseRunExperience(record), verificationStatus);
+  }
+});
+
 test("Run Evaluation preserves no-Policy null and derives policy exposure/progress", () => {
   const noPolicy = evaluateRunExperience(source("none.json", experience("no policy")));
   assert.equal(noPolicy.source.recordId, "none.json");
+  assert.equal(noPolicy.attributionEligible, true);
   assert.equal(noPolicy.policy.finalSnapshot, null);
   assert.equal(noPolicy.policy.finalPolicyFirstDeclarationProgress, null);
   assert.equal(noPolicy.policy.finalPolicyLastActivationProgress, null);
@@ -436,8 +595,12 @@ test("Experience report is bounded and explicitly evidence-only", () => {
   assert.match(report, /Loaded schema-v3 records: 1/);
   assert.match(report, /Unsupported-schema records: 2/);
   assert.match(report, /Invalid\/unreadable records: 3/);
+  assert.match(report, /Evaluated Runs: 1/);
+  assert.match(report, /Attributable Runs: 1/);
+  assert.match(report, /Non-attributable Runs: 0/);
   assert.match(report, /Explicit-Policy Runs: 0/);
   assert.match(report, /No-explicit-Policy Runs: 1/);
+  assert.match(report, /Attributable Runs only; comparable exact-goal cohorts use attributable Runs only\./);
   assert.match(report, /first final-Policy declaration progress: n\/a · last activation progress: n\/a/);
   assert.match(report, /continuous final-Policy exposure calls: n\/a · ratio: n\/a/);
   assert.match(report, /Evidence inventory only; contains no Strategy score, ranking, or causal claim\./);

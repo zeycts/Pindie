@@ -9,6 +9,8 @@ import {
 import type { RunExperienceExecution } from "./run-experience.ts";
 
 export interface RunEvaluation {
+  /** Completed-before-run facts describe a preexisting Task, not this Run's outcome. */
+  readonly attributionEligible: boolean;
   readonly source: {
     readonly recordId: string;
     readonly recordedAt: string;
@@ -141,6 +143,7 @@ export function evaluateRunExperience(
     : null;
 
   return {
+    attributionEligible: experience.outcome.completionRelation !== "completed_before_run",
     source: {
       recordId: source.recordId,
       recordedAt: experience.recordedAt,
@@ -272,6 +275,7 @@ export function derivePolicyEvidenceProfiles(
 ): readonly PolicyEvidenceProfile[] {
   const profiles = new Map<string, MutableProfile>();
   for (const evaluation of evaluations) {
+    if (!evaluation.attributionEligible) continue;
     const id = policyProfileId(evaluation.policy.finalSnapshot);
     let profile = profiles.get(id);
     if (!profile) {
@@ -325,6 +329,7 @@ export function deriveComparableCohorts(
 ): readonly ComparableCohort[] {
   const grouped = new Map<string, RunEvaluation[]>();
   for (const evaluation of evaluations) {
+    if (!evaluation.attributionEligible) continue;
     const cohort = grouped.get(evaluation.source.taskGoal) ?? [];
     cohort.push(evaluation);
     grouped.set(evaluation.source.taskGoal, cohort);
@@ -389,6 +394,8 @@ export function formatExperienceReport(
   const explicitCount = evaluation.evaluations
     .filter((run) => run.policy.finalSnapshot !== null).length;
   const noPolicyCount = evaluation.evaluations.length - explicitCount;
+  const attributableCount = evaluation.evaluations
+    .filter((run) => run.attributionEligible).length;
   const profileLines = evaluation.profiles.length === 0
     ? ["  (none)"]
     : evaluation.profiles.slice(0, MAX_RENDERED_PROFILES).map((profile) => [
@@ -410,10 +417,13 @@ export function formatExperienceReport(
     `Unsupported-schema records: ${read.unsupportedSchema}`,
     `Invalid/unreadable records: ${read.invalid}`,
     `Evaluated Runs: ${evaluation.evaluations.length}`,
+    `Attributable Runs: ${attributableCount}`,
+    `Non-attributable Runs: ${evaluation.evaluations.length - attributableCount}`,
     `Explicit-Policy Runs: ${explicitCount}`,
     `No-explicit-Policy Runs: ${noPolicyCount}`,
     "",
     "Policy Evidence Profiles:",
+    "Attributable Runs only; comparable exact-goal cohorts use attributable Runs only.",
     ...profileLines,
     "",
     `Comparable exact-goal cohorts: ${evaluation.cohorts.length}`,
