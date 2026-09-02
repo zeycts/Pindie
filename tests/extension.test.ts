@@ -2575,7 +2575,7 @@ test("RC03 a completed task present at run start permits one replacement", async
   );
 });
 
-test("TBE-E01-E20 idle State admits only observation and start_task while preserving existing guard ordering", async () => {
+test("TBE-E01-E20 idle State preserves observation and start_task guard ordering", async () => {
   const harness = createHarness();
   await startSession(harness, "/repo");
   await beginAgentRun(harness);

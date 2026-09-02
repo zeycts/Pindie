@@ -67,12 +67,14 @@ pindie_task_complete
 pindie_gate_open
 pindie_gate_resolve
 pindie_git_observe
+pindie_policy_set
 ```
 
 ## Documentation
 
 - `docs/architecture.md` — current architecture and ownership boundaries.
 - `docs/behavior.md` — current semantic and behavioral contract.
+- `docs/self-improvement.md` — Self-Improvement strategy and Run Experience contract.
 - `AGENTS.md` — repository instructions for agents working on Pindie.
 
 Git history and tests are the record of the v0.2 migration; stable docs describe the system as it exists now.

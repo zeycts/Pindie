@@ -127,13 +127,14 @@ Capabilities are pure derived authority and are never persisted.
 Important capability consequences:
 
 ```text
-unavailable/stale authority → observation only
-idle                       → observation + task.start
-done before Run            → observation + task.start
-done during Run            → observation only
-blocked                    → no project.mutate, no task.complete
-same-Run-opened Gate       → observation only
-task.complete              → only when completionReady
+policy.declare            → always available; non-mutating
+unavailable/stale authority → observation + policy declaration
+idle                       → observation + policy declaration + task.start
+done before Run            → observation + policy declaration + task.start
+done during Run            → observation + policy declaration
+blocked                   → no project.mutate, no task.complete
+same-Run-opened Gate      → observation + policy declaration
+task.complete             → only when completionReady
 ```
 
 The live Gateway authorizes every non-observation call through current capabilities after authoritative refresh/coherence checks. Reducer and Runtime remain deeper integrity backstops.
