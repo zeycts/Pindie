@@ -149,6 +149,13 @@ test("all eight narrow semantic tools have exact names, strict schemas, and sequ
   }
 });
 
+test("Task tool descriptions distinguish starting completed work from replacing unfinished work", async () => {
+  const { tools } = await harness();
+  assert.match(tools.start.description, /no current Task.*previous Task is completed/i);
+  assert.match(tools.replace.description, /different unfinished current Task/i);
+  assert.match(tools.replace.description, /completed Task.*pindie_task_start/i);
+});
+
 test("start dispatches start_task with defaults and returns generated criterion IDs", async () => {
   const h = await harness();
   const result = await h.tools.start.execute("start", {

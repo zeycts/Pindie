@@ -141,6 +141,15 @@ function gatewayDenialReason(
   snapshot: SemanticSnapshot,
   requiredCapability: ToolEffect["requiredCapability"],
 ): string {
+  if (snapshot.authority === "coherent" && requiredCapability === "task.replace") {
+    if (snapshot.taskStatus === "done") {
+      return `Pindie blocked this call: the completed Task is terminal and cannot be replaced. Use pindie_task_start to begin new durable work. Task status: ${snapshot.taskStatus}. Verification: ${snapshot.verificationStatus}.`;
+    }
+    if (snapshot.taskStatus === "idle") {
+      return `Pindie blocked this call: There is no unfinished Task to replace. Use pindie_task_start to begin a Task. Task status: ${snapshot.taskStatus}. Verification: ${snapshot.verificationStatus}.`;
+    }
+  }
+
   const authority = snapshot.authority === "coherent"
     ? ""
     : ` Agent Run authority is ${snapshot.authority};`;

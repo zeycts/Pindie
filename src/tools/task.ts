@@ -270,7 +270,7 @@ export function createPindieTaskStartTool(
   return defineTool({
     name: "pindie_task_start",
     label: "Start Pindie Task",
-    description: "Start a semantic Task with its durable contract.",
+    description: "Start a Task when there is no current Task or begin new work after the previous Task is completed.",
     parameters: TaskDefinitionParameters,
     executionMode: "sequential",
     async execute(_toolCallId, params) {
@@ -298,7 +298,7 @@ export function createPindieTaskReplaceTool(
   return defineTool({
     name: "pindie_task_replace",
     label: "Replace Pindie Task",
-    description: "Replace the current unfinished Task with a different Task contract.",
+    description: "Replace a different unfinished current Task. Do not use this for a completed Task; use pindie_task_start instead.",
     parameters: TaskDefinitionParameters,
     executionMode: "sequential",
     async execute(_toolCallId, params) {
