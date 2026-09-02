@@ -120,10 +120,6 @@ export class RunExperienceTracker {
     this.currentPolicySnapshot = snapshot;
   }
 
-  get policySnapshot(): PolicySnapshot | null {
-    return this.currentPolicySnapshot;
-  }
-
   /** Record a call admitted by the live Gateway without classifying prose. */
   recordAuthorizedCall(toolCallId: string, effect: ToolEffect): void {
     const isPolicy = effect.requiredCapability === "policy.declare";
