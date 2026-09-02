@@ -535,64 +535,252 @@ Do not implement:
 
 The output of SI v0.3 is a durable factual dataset of `Run → Policy attribution facts → Execution facts → Outcome`, including runs with no declared Policy.
 
-### SI v0.4 — Strategy Adaptation
+### SI v0.4 — Experience Evaluation
 
-Goal: allow evidence-backed specialization of existing strategies.
+Goal: turn immutable schema-v2 Run Experience into reproducible derived evidence without scoring, judging, adapting, or feeding Evaluation back into the Agent.
+
+Dogfood after SI v0.3 showed three important facts:
+
+- explicit Policy can be declared before execution and remain meaningfully attributable;
+- simple focused Runs may complete correctly with no explicit Policy at all;
+- cost and outcome cannot be compared across unrelated Tasks as if Policy were the only variable.
+
+Therefore SI v0.4 inserts a distinct Evaluation layer between Experience and future Adaptation:
 
 ```text
-seed/current strategy
+immutable Run Experience
         ↓
-repeated relevant experience
+deterministic Evaluation
         ↓
-candidate adaptation
+derived evidence
         ↓
-future evaluation
-        ↓
-promote or reject
+future adaptation
 ```
+
+SI v0.4 still keeps:
+
+```text
+Policyₙ₊₁ = Policyₙ
+```
+
+It evaluates evidence only; it does not change Policy.
+
+#### Raw Experience and derived Evaluation
+
+Raw Experience remains the immutable factual source of truth for Self-Improvement history.
+
+Evaluation is derived data:
+
+- reproducible from source Experience;
+- disposable and safe to recompute;
+- non-authoritative;
+- never written back into Experience;
+- never allowed to change `PindieState`, Verification, capabilities, Human Gates, or Task legality.
+
+If Evaluation semantics change later, recompute the derived result rather than rewriting historical Experience.
+
+#### Experience reading boundary
+
+SI v0.4 may read the per-project Experience Store for evaluation purposes.
+
+The first evaluator consumes only valid `schemaVersion: 2` records. Existing v1 records are unsupported historical data and should be skipped, not migrated or heuristically upgraded.
+
+Reading should distinguish at least:
+
+```text
+loaded schema-v2 records
+unsupported schema records
+invalid/unreadable records
+```
+
+An invalid or unsupported record must not corrupt valid evaluation input.
+
+Experience reading in SI v0.4 is for offline/derived evaluation only. It must not inject Experience into model context or current Policy.
+
+#### Run Evaluation
+
+Each valid Run Experience may be deterministically transformed into a bounded `RunEvaluation`.
+
+Derived evidence may include values directly calculable from factual fields, such as:
+
+```text
+explicit Policy Snapshot | null
+declaration count
+first/final declaration progress
+final-policy exposure calls
+final-policy exposure ratio
+observation ratio
+consequential-call ratio
+tool-error ratio
+denied-call ratio
+verification passed | not passed
+completed during Run | not completed during Run
+finished with blockers/questions/Human Gate
+duration
+cost
+source record identity
+```
+
+These values are derived measurements, not causal claims.
+
+A final Policy declared after most execution should therefore have low exposure rather than being treated as if it guided the whole Run.
+
+Runs with `finalSnapshot: null` remain valid Evaluation input. `null` means no explicit Strategy declaration; it is not missing data and must not be replaced with a fabricated `default` Strategy.
+
+#### Outcome interpretation boundary
+
+SI v0.4 may derive independent outcome indicators from factual Experience, for example whether Verification passed or whether the Task completed during the Run.
+
+It must not collapse those facts into an invented global judgment such as:
+
+```text
+successScore
+qualityScore
+strategyWorked
+```
+
+A passed verification check is evidence about the Run outcome. It is not proof that the declared Strategy caused that outcome or is globally superior.
+
+#### Task comparability
+
+Policy evidence is meaningful only when the underlying Runs are sufficiently comparable.
+
+SI v0.4 must not introduce a heuristic or LLM-based Task classifier merely to create larger cohorts.
+
+The first implementation should make comparative claims only under a strict factual cohort boundary, such as:
+
+```text
+same project
++
+exact same settlement task.goal
+```
+
+Runs outside an explicitly supported comparable cohort may still be evaluated individually and included in evidence inventories, but they must not be used to claim that one Strategy outperforms another.
+
+Sparse comparable evidence is preferable to false comparability.
+
+Semantic similarity, task taxonomy, task difficulty, or learned task representation may be considered later only if real evidence shows they are necessary.
+
+#### Policy Evidence Profile
+
+Run Evaluations may be aggregated into a bounded Policy Evidence Profile.
+
+A Profile is an evidence inventory, not a Strategy score or ranking.
+
+It may summarize factual/derived quantities such as:
+
+```text
+attributed Run count
+no-explicit-policy Run count
+declaration/exposure distribution
+verification outcome counts
+completion outcome counts
+tool error / denial counts
+duration and cost observations
+source Experience references
+```
+
+Profiles must preserve enough provenance to trace every aggregate back to source Experience records.
+
+Do not emit claims such as:
+
+```text
+explore-first score = 87
+architecture-first > explore-first
+Strategy X caused success
+```
+
+without a later milestone defining and validating much stronger evaluation semantics.
+
+#### Persistence and execution model
+
+SI v0.4 Evaluation is recomputable derived state.
+
+The first implementation should evaluate on demand from Experience rather than introduce a second persistent analytics database, evaluation cache, background daemon, or settlement-time evaluation pipeline.
+
+Conceptually:
+
+```text
+Experience Store
+      ↓
+read on demand
+      ↓
+RunEvaluation[]
+      ↓
+Evidence Profile
+```
+
+Evaluation belongs to the Self-Improvement slow/offline path. It must not become part of Pi's fast `model → action → feedback` loop or block normal Agent Run settlement.
+
+#### Failure isolation
+
+Evaluation failure is not Task failure.
+
+Malformed input, unsupported schema, arithmetic edge cases, or Evaluation/reporting failure must not:
+
+- mutate or invalidate Experience;
+- change `PindieState`;
+- affect Verification freshness/status;
+- change capabilities or Tool Surface;
+- open a Human Gate;
+- affect Task completion legality;
+- change current Policy.
+
+#### SI v0.4 non-goals
+
+Do not implement:
+
+- Strategy adaptation or mutation;
+- Strategy generation or derivation;
+- Strategy ranking or a single effectiveness score;
+- reward functions;
+- causal-effect estimation;
+- LLM-as-judge evaluation;
+- automatic Strategy selection;
+- task taxonomy/classification;
+- semantic task similarity or embeddings;
+- vector databases;
+- Experience injection into model context;
+- Evaluation injection into model context;
+- persistent analytics/evaluation databases;
+- settlement-time/background evaluation loops;
+- policy status/evaluation UI unless separately justified;
+- reasoning-policy migration;
+- a second Agent Loop.
+
+The output of SI v0.4 is reproducible derived evidence that makes future Strategy adaptation more defensible without yet changing how the Agent acts.
+
+### SI v0.5 — Strategy Adaptation
+
+Directional goal: allow evidence-backed specialization of existing strategies after Evaluation provides sufficiently trustworthy support.
 
 Adaptation must create a candidate first. A single task must not silently rewrite the active policy.
 
-### SI v0.5 — Strategy Derivation
+Detailed adaptation semantics must be designed just-in-time from SI v0.4 dogfood evidence rather than frozen here.
 
-Goal: allow new strategies to emerge from repeated useful patterns.
+### SI v0.6 — Strategy Derivation
 
-New candidates may arise through specialization or composition of existing strategies plus experience.
-
-```text
-human priors + local experience → Pindie-native strategy candidate
-```
+Directional goal: allow new strategies to emerge from repeated useful patterns once adaptation/evaluation evidence justifies creating new policy rather than merely changing existing priors.
 
 Derived strategies must enter evaluation as candidates before becoming trusted policy.
 
-### SI v0.6 — Strategy Portfolio Evolution
+Detailed derivation semantics remain intentionally unspecified until earlier milestones produce evidence for them.
 
-Goal: prevent strategy accumulation from becoming policy debt.
+### SI v0.7 — Strategy Portfolio Evolution
 
-The portfolio lifecycle may include:
+Directional goal: prevent strategy accumulation from becoming policy debt.
 
-```text
-create
-promote
-demote
-merge
-split
-retire
-```
+Possible portfolio operations may eventually include create, promote, demote, merge, split, or retire, but the actual lifecycle must be designed from real mutable-policy evidence rather than treated as a fixed implementation contract now.
 
-The system must control overlap and stale strategies rather than only adding more policy.
+### Later direction — Contextual Policy
 
-### SI v0.7 — Contextual Policy
-
-Goal: move from choosing named strategies toward a context-sensitive cognitive policy.
-
-Conceptually:
+A later direction may move from choosing named strategies toward a context-sensitive cognitive policy:
 
 ```text
 P(policy | task, environment, history, outcomes)
 ```
 
-Named strategies remain useful interpretable priors, but the policy layer may learn which combinations and execution parameters work best under different contexts.
+Named strategies can remain useful interpretable priors while the policy layer learns which combinations and execution parameters work best under different contexts.
 
 Reasoning effort may eventually become one policy-controlled execution parameter rather than an independent hard-coded heuristic.
 
