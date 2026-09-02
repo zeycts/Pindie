@@ -772,27 +772,281 @@ Do not implement:
 
 The output of SI v0.4 is reproducible schema-v3 derived evidence that makes future Strategy adaptation more defensible without yet changing how the Agent acts.
 
-### SI v0.5 — Strategy Adaptation
+### SI v0.5 — Strategy Adaptation Candidate
 
-Directional goal: allow evidence-backed specialization of existing strategies after Evaluation provides sufficiently trustworthy support.
+Goal: let Pindie use trustworthy, attributable SI v0.4 evidence to propose project-local revisions of existing Seed Strategies without changing the active policy.
 
-Adaptation must create a candidate first. A single task must not silently rewrite the active policy.
+SI v0.5 is the first milestone that may create a Self-Improvement artifact from prior Experience. It still does not treat that artifact as trusted policy.
 
-Detailed adaptation semantics must be designed just-in-time from SI v0.4 dogfood evidence rather than frozen here.
+The relation is:
 
-### SI v0.6 — Strategy Derivation
+```text
+immutable schema-v3 Experience
+        ↓
+deterministic SI v0.4 Evaluation
+        ↓
+attributable evidence
+        ↓
+explicit adaptation request
+        ↓
+bounded Adaptation Packet
+        ↓
+current model reasons within Pi's existing loop
+        ↓
+Strategy Revision Candidate
+        ↓
+immutable project-local Candidate Store
 
-Directional goal: allow new strategies to emerge from repeated useful patterns once adaptation/evaluation evidence justifies creating new policy rather than merely changing existing priors.
+        X
 
-Derived strategies must enter evaluation as candidates before becoming trusted policy.
+not active Policy
+```
 
-Detailed derivation semantics remain intentionally unspecified until earlier milestones produce evidence for them.
+The `X` is a hard SI v0.5 boundary: creating a Candidate must not alter the Seed catalog, current Run Policy, future normal coding context, or Experience semantics.
 
-### SI v0.7 — Strategy Portfolio Evolution
+#### Strategy identity and revision are different
 
-Directional goal: prevent strategy accumulation from becoming policy debt.
+Before strategies become mutable, a Strategy ID can appear to identify both the strategy and its semantics. That stops being safe as soon as revisions exist.
 
-Possible portfolio operations may eventually include create, promote, demote, merge, split, or retire, but the actual lifecycle must be designed from real mutable-policy evidence rather than treated as a fixed implementation contract now.
+From SI v0.5 onward, treat these concepts separately:
+
+```text
+Strategy identity
+  architecture-first
+
+Strategy revision
+  immutable human Seed semantics
+  candidate revision A
+  candidate revision B
+  ...
+```
+
+The immutable Seed Strategy remains the trusted root revision. A Candidate is a proposed revision of that root, not a replacement written over it.
+
+SI v0.5 does not activate Candidate revisions, so schema-v3 Run Experience remains valid and continues to record only Seed Strategy identities. Revision identity enters Run Experience only when a later milestone actually allows a non-Seed revision to guide an Agent Run.
+
+#### Seed as immutable baseline
+
+`SEED_STRATEGIES` remains immutable human-validated policy.
+
+SI v0.5 must not edit, overwrite, regenerate, or persist mutations back into the Seed catalog.
+
+Every Candidate targets exactly one existing Seed Strategy and retains:
+
+```text
+same strategy id
+same strategy kind
+```
+
+The Candidate may propose changed advisory semantics such as:
+
+```text
+summary
+useWhen[]
+avoidWhen[]
+principles[]
+```
+
+It may not change identity or kind. Creating a new Strategy identity belongs to the later Strategy Derivation milestone.
+
+A deterministic fingerprint of the target Seed semantics should bind the Candidate to the exact immutable baseline it was proposed against. A future change to human Seed semantics must therefore be distinguishable from an older Candidate's base.
+
+#### Strategy Revision Candidate
+
+A Candidate is an immutable, bounded, project-local hypothesis artifact conceptually equivalent to:
+
+```text
+schemaVersion
+candidateId
+createdAt
+
+target
+  strategyId
+  kind
+  baseFingerprint
+
+proposal
+  summary
+  useWhen[]
+  avoidWhen[]
+  principles[]
+
+evidence
+  sourceRecordIds[]
+
+hypothesis
+```
+
+The exact internal TypeScript shape may differ, but the artifact should stay compact and auditable.
+
+`hypothesis` explains what repeated evidence suggests may be improved and what the revision is intended to change. It is model-authored proposal text, not factual Experience and not proof that the Candidate is better.
+
+Do not persist chain-of-thought, hidden reasoning, full transcripts, raw tool outputs, or an open-ended reflection log in a Candidate.
+
+#### Evidence-backed proposal boundary
+
+Candidate creation must fail closed on provenance.
+
+At minimum:
+
+- the target Strategy exists in the immutable Seed catalog;
+- the Candidate preserves the target Strategy ID and kind;
+- the Candidate is bound to the current target Seed fingerprint;
+- at least two distinct source Experience records are cited;
+- every cited Experience is a valid current schema-v3 record;
+- every cited Run Evaluation is attribution-eligible;
+- every cited Run's explicit final Policy actually contains the target Strategy in the correct role;
+- source records belong to the current project;
+- the proposed semantics differ meaningfully at the structural/text level from the Seed baseline;
+- all candidate fields remain bounded and structurally valid.
+
+For an approach target, the cited Run's final approach must equal the target. For a modifier target, the cited Run's final modifiers must contain the target.
+
+SI v0.5 does not require exact-goal cohorts. Exact-goal cohorts support stricter comparative claims; adaptation Candidates are explicitly hypotheses and may be proposed from repeated attributable patterns across different Tasks. Sparse or heterogeneous evidence must remain visible rather than being converted into a false claim of superiority.
+
+The Harness validates structure and provenance. It does not decide that a proposed principle is intellectually correct or that the Candidate is an improvement.
+
+#### Explicit slow-path entry
+
+Adaptation must never happen ambiently during ordinary development work.
+
+A Candidate may be proposed only through an explicit Self-Improvement adaptation entry chosen by the user/operator. The exact UI/tool integration should remain minimal, but the semantics are:
+
+```text
+explicit target Strategy
+        ↓
+read current-project attributable evidence on demand
+        ↓
+build bounded Adaptation Packet
+        ↓
+make that packet available only to the explicitly entered adaptation work
+        ↓
+current model proposes a Candidate
+```
+
+Do not run adaptation:
+
+- automatically at `agent_settled`;
+- automatically after `/experience`;
+- on a timer or background daemon;
+- because one Run succeeded or failed;
+- merely because the model notices an interesting pattern during a normal Task.
+
+The model may perform the reasoning, but it must reuse Pi's existing model/Agent loop rather than create a dedicated evaluator, router, policy Agent, or second inference loop.
+
+#### Adaptation Packet
+
+The model should not receive the entire Experience archive.
+
+Explicit adaptation should expose a bounded packet for one target Strategy containing only the information needed to propose a revision, for example:
+
+```text
+target Seed Strategy semantics
+Seed fingerprint
+bounded attributable source records / provenance
+relevant SI v0.4 derived evidence
+clear evidence-only / hypothesis boundary
+```
+
+The packet may summarize deterministic Evaluation facts and preserve source record IDs for auditability. It must not include hidden reasoning or fabricate task similarity, quality, causal effect, or Strategy ranking.
+
+Normal coding Runs must not receive Adaptation Packets, Candidate data, or historical Evaluation simply because SI v0.5 exists.
+
+#### Candidate persistence
+
+Candidates are Self-Improvement artifacts, not `PindieState`.
+
+Persist one immutable Candidate per file under the current project's Pindie storage namespace, conceptually:
+
+```text
+~/.pindie/projects/<project-id>/
+  state.json
+  experience/
+    ...
+  strategy-candidates/
+    <candidate-id>.json
+```
+
+Candidate persistence must not affect State validation, Task authority, Verification, capabilities, Human Gates, Tool Surface, or normal Task completion.
+
+A Candidate file is append-only historical evidence of a proposal. SI v0.5 does not mutate Candidate status, overwrite an older Candidate, or maintain a mutable active-strategy database.
+
+#### Candidate is not active policy
+
+SI v0.5 ends at Candidate creation.
+
+A Candidate must not:
+
+- appear in the normal Seed Strategy catalog;
+- become selectable by `pindie_policy_set`;
+- alter `PolicySnapshot` identity;
+- be injected into ordinary Run context;
+- change current or future default behavior;
+- modify Experience schemaVersion 3;
+- receive automatic promotion, rejection, ranking, or trial assignment.
+
+Therefore normal policy behavior after Candidate creation is still based on the immutable Seed portfolio.
+
+Conceptually:
+
+```text
+Evidence → Candidate
+```
+
+but not yet:
+
+```text
+Candidate → active Policy
+```
+
+#### Authority boundary
+
+Candidate semantics remain weaker than deterministic Environment truth.
+
+Even a future activated revision must never grant/revoke capabilities, bypass the Gateway, redefine success criteria, fabricate Verification, resolve Human Gates, mutate `PindieState` merely by selection, or alter Pi's low-level Agent Loop.
+
+SI v0.5 itself never activates a Candidate, so these invariants remain unchanged in runtime behavior.
+
+#### SI v0.5 non-goals
+
+Do not implement:
+
+- Candidate activation or trial use;
+- Seed Strategy mutation;
+- active Strategy revision selection;
+- Experience schema v4 or revision-aware Run attribution;
+- promotion/rejection/demotion lifecycle;
+- Strategy scoring/ranking or a global reward;
+- causal-effect estimation;
+- automatic adaptation triggers;
+- task taxonomy/classification or semantic similarity;
+- embeddings/vector databases;
+- new Strategy IDs;
+- Strategy derivation;
+- portfolio merge/split/retirement;
+- learned Skills;
+- a dedicated policy/evaluator Agent;
+- a second Agent Loop.
+
+The output of SI v0.5 is an auditable set of evidence-backed Strategy Revision Candidates that can be inspected before any revision is allowed to influence execution.
+
+### SI v0.6 — Candidate Trial & Promotion
+
+Directional goal: allow an explicitly chosen Candidate revision to enter controlled Agent Runs, record revision-aware Experience, compare its evidence against the Seed baseline where defensible, and support an auditable promote/reject decision without silently replacing policy.
+
+This milestone is where Strategy revision identity may first need to enter Policy Snapshot/Experience semantics. The exact trial, rollback, promotion, and revision-aware schema contract must be designed just-in-time from real SI v0.5 Candidate dogfood rather than frozen here.
+
+### SI v0.7 — Strategy Derivation
+
+Directional goal: allow a genuinely new Strategy identity to emerge from repeated useful patterns when evidence shows that revising an existing Seed Strategy is no longer the right abstraction.
+
+A derived Strategy must enter the same candidate/trial/evaluation path before becoming trusted policy. Detailed derivation semantics remain intentionally unspecified until Candidate Trial produces real revision evidence.
+
+### Later direction — Strategy Portfolio Evolution
+
+Prevent accumulated Seed, promoted, and derived revisions from becoming policy debt.
+
+Possible portfolio operations may eventually include promote, demote, merge, split, retire, archive, or rebase, but the actual lifecycle must be designed from real mutable-policy evidence rather than treated as a fixed implementation contract now.
 
 ### Later direction — Contextual Policy
 
