@@ -322,16 +322,19 @@ The Experience unit is one Agent Run, not one Task. A Task may span several Runs
 
 #### Run Experience record
 
-A v1 Run Experience contains only bounded factual data equivalent to:
+A schema v2 Run Experience contains only bounded factual data equivalent to:
 
 ```text
-schemaVersion
+schemaVersion: 2
 recordedAt
+
+runStart
+  taskStatus
+  taskGoal | null
 
 task
   goal
   taskRelation
-  statusAtStart
 
 policy
   finalSnapshot | null
@@ -343,7 +346,7 @@ execution
   toolCalls
   observations
   consequentialCalls
-  projectMutationCalls
+  projectMutationEffectCalls
   verificationCalls
   toolErrors
   deniedCalls
@@ -369,7 +372,7 @@ Do not store model reasoning, chain-of-thought, assistant reflection, raw transc
 
 Do not introduce a task classifier, complexity score, or inferred task type in SI v0.3.
 
-Use existing authoritative Task/Run facts. `taskRelation` should come from current semantic Run facts rather than model interpretation. `statusAtStart` should describe the factual Task status at the beginning of the Run, including `idle` when the Run introduces a new Task.
+Use existing authoritative Task/Run facts. `runStart.taskStatus` and `runStart.taskGoal` describe the factual Task state and goal at the beginning of the Run; `runStart.taskGoal` is null when no Task existed then. `task.goal` is the goal of the Task associated with the coherent settlement snapshot, and `taskRelation` should come from current semantic Run facts rather than model interpretation. Run-start facts and settlement Task facts are different temporal observations and must not be conflated.
 
 #### Policy attribution facts
 
@@ -403,6 +406,10 @@ Counters should distinguish at least:
 - verification-record calls;
 - tool-result errors;
 - calls denied by the live Execution Gateway.
+
+`projectMutationEffectCalls` counts calls whose Tool Effect has a
+`projectMutation` classification other than `none`. It describes Tool Effect
+classification, not a confirmed filesystem or project mutation.
 
 Do not infer semantic categories from assistant prose.
 
@@ -445,6 +452,10 @@ A completed-before-run relation may be retained if the Run otherwise satisfies t
 #### Persistence
 
 Experience is durable learning data but is not `PindieState`.
+
+New records use schemaVersion 2. Existing schemaVersion 1 records are
+immutable historical data: leave them untouched, without rewriting, migration,
+delete, or backward-compatible reader machinery.
 
 Store one immutable record per eligible Run under the same per-project Pindie storage namespace, conceptually:
 

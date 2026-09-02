@@ -43,7 +43,7 @@ function zeroExecution(): RunExperienceExecution {
     toolCalls: 0,
     observations: 0,
     consequentialCalls: 0,
-    projectMutationCalls: 0,
+    projectMutationEffectCalls: 0,
     verificationCalls: 0,
     toolErrors: 0,
     deniedCalls: 0,
@@ -91,7 +91,7 @@ test("Run Experience telemetry derives bounded counters from Tool Effects", () =
       toolCalls: 2,
       observations: 2,
       consequentialCalls: 0,
-      projectMutationCalls: 0,
+      projectMutationEffectCalls: 0,
       verificationCalls: 0,
       toolErrors: 0,
       deniedCalls: 0,
@@ -100,7 +100,7 @@ test("Run Experience telemetry derives bounded counters from Tool Effects", () =
       toolCalls: 4,
       observations: 2,
       consequentialCalls: 2,
-      projectMutationCalls: 1,
+      projectMutationEffectCalls: 1,
       verificationCalls: 1,
       toolErrors: 1,
       deniedCalls: 0,
@@ -110,7 +110,7 @@ test("Run Experience telemetry derives bounded counters from Tool Effects", () =
     toolCalls: 4,
     observations: 2,
     consequentialCalls: 2,
-    projectMutationCalls: 1,
+    projectMutationEffectCalls: 1,
     verificationCalls: 1,
     toolErrors: 1,
     deniedCalls: 1,
@@ -159,7 +159,7 @@ test("policy calls do not count as execution and tracker state resets at the Run
 test("Run Experience assembly preserves factual task/outcome/metrics and no transcript fields", () => {
   const record = assembleRunExperience({
     task: { ...task(), humanGate: { kind: "approval", question: "Approve?" } },
-    statusAtStart: "idle",
+    runStart: { taskStatus: "idle", taskGoal: null },
     snapshot: snapshot({
       taskRelation: "introduced_during_run",
       taskStatus: "waiting_human",
@@ -183,12 +183,15 @@ test("Run Experience assembly preserves factual task/outcome/metrics and no tran
   });
 
   assert.deepEqual(record, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     recordedAt: "2026-01-01T00:00:00.000Z",
+    runStart: {
+      taskStatus: "idle",
+      taskGoal: null,
+    },
     task: {
       goal: "Record the settled Run",
       taskRelation: "introduced_during_run",
-      statusAtStart: "idle",
     },
     policy: {
       finalSnapshot: null,
@@ -200,7 +203,7 @@ test("Run Experience assembly preserves factual task/outcome/metrics and no tran
       toolCalls: 1,
       observations: 1,
       consequentialCalls: 0,
-      projectMutationCalls: 0,
+      projectMutationEffectCalls: 0,
       verificationCalls: 0,
       toolErrors: 0,
       deniedCalls: 0,

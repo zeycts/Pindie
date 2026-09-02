@@ -3520,10 +3520,14 @@ test("SI v0.3 eligible Run Experience captures task facts, outcome, and settled 
 
   assert.equal(harness.experienceStore.records.length, 1);
   const record = harness.experienceStore.records[0]!.experience;
-  assert.equal(record.schemaVersion, 1);
+  assert.equal(record.schemaVersion, 2);
+  assert.deepEqual(record.runStart, {
+    taskStatus: "active",
+    taskGoal: "Experience task",
+  });
   assert.equal(record.task.goal, "Experience task");
   assert.equal(record.task.taskRelation, "preexisting_untouched");
-  assert.equal(record.task.statusAtStart, "active");
+  assert.equal("statusAtStart" in record.task, false);
   assert.deepEqual(record.policy, {
     finalSnapshot: null,
     declarationCount: 0,
@@ -3534,7 +3538,7 @@ test("SI v0.3 eligible Run Experience captures task facts, outcome, and settled 
     toolCalls: 1,
     observations: 1,
     consequentialCalls: 0,
-    projectMutationCalls: 0,
+    projectMutationEffectCalls: 0,
     verificationCalls: 0,
     toolErrors: 0,
     deniedCalls: 0,
@@ -3578,15 +3582,18 @@ test("SI v0.3 preserves idle introduction and Policy declaration positions", asy
 
   assert.equal(first.ref.startsWith("ev:"), true);
   const record = harness.experienceStore.records[0]!.experience;
+  assert.equal(record.schemaVersion, 2);
+  assert.deepEqual(record.runStart, { taskStatus: "idle", taskGoal: null });
+  assert.equal(record.task.goal, "Introduced task");
   assert.equal(record.task.taskRelation, "introduced_during_run");
-  assert.equal(record.task.statusAtStart, "idle");
+  assert.equal("statusAtStart" in record.task, false);
   assert.equal(record.policy.finalSnapshot?.approach.id, "direct-action");
   assert.equal(record.policy.declarationCount, 2);
   assert.deepEqual(record.policy.firstDeclarationAfter, {
     toolCalls: 2,
     observations: 1,
     consequentialCalls: 1,
-    projectMutationCalls: 0,
+    projectMutationEffectCalls: 0,
     verificationCalls: 0,
     toolErrors: 0,
     deniedCalls: 0,
@@ -3595,7 +3602,7 @@ test("SI v0.3 preserves idle introduction and Policy declaration positions", asy
     toolCalls: 3,
     observations: 2,
     consequentialCalls: 1,
-    projectMutationCalls: 0,
+    projectMutationEffectCalls: 0,
     verificationCalls: 0,
     toolErrors: 1,
     deniedCalls: 0,
@@ -3603,7 +3610,37 @@ test("SI v0.3 preserves idle introduction and Policy declaration positions", asy
   assert.equal(record.execution.toolCalls, 3);
   assert.equal(record.execution.observations, 2);
   assert.equal(record.execution.consequentialCalls, 1);
+  assert.equal(record.execution.projectMutationEffectCalls, 0);
+  assert.equal("projectMutationCalls" in record.execution, false);
+  assert.equal("projectMutationCalls" in (record.policy.firstDeclarationAfter ?? {}), false);
+  assert.equal("projectMutationCalls" in (record.policy.finalDeclarationAfter ?? {}), false);
   assert.equal(record.execution.toolErrors, 1);
+});
+
+test("SI v0.3 keeps completed run-start Task A distinct from introduced settlement Task B", async () => {
+  const completedTaskA = completedState();
+  const taskA: PindieState = {
+    task: { ...completedTaskA.task!, goal: "Task A" },
+  };
+  const harness = createHarness([["/repo", taskA]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  await executeSemanticTool(harness, "pindie_task_start", "task-b-start", {
+    goal: "Task B",
+    successCriteria: ["Task B is recorded"],
+  });
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+
+  assert.equal(harness.experienceStore.records.length, 1);
+  const record = harness.experienceStore.records[0]!.experience;
+  assert.equal(record.schemaVersion, 2);
+  assert.deepEqual(record.runStart, { taskStatus: "done", taskGoal: "Task A" });
+  assert.deepEqual(record.task, {
+    goal: "Task B",
+    taskRelation: "introduced_during_run",
+  });
+  assert.equal("statusAtStart" in record.task, false);
 });
 
 test("SI v0.3 eligibility excludes no-Task, policy-only, stale, unavailable, and denied-only Runs", async () => {

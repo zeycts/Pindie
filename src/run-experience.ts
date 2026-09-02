@@ -11,14 +11,14 @@ import {
   type VerificationStatus,
 } from "./state.ts";
 
-export const RUN_EXPERIENCE_SCHEMA_VERSION = 1 as const;
+export const RUN_EXPERIENCE_SCHEMA_VERSION = 2 as const;
 
 /** Bounded execution facts collected for one Agent Run. */
 export interface RunExperienceExecution {
   readonly toolCalls: number;
   readonly observations: number;
   readonly consequentialCalls: number;
-  readonly projectMutationCalls: number;
+  readonly projectMutationEffectCalls: number;
   readonly verificationCalls: number;
   readonly toolErrors: number;
   readonly deniedCalls: number;
@@ -36,10 +36,13 @@ export interface RunExperiencePolicy {
 export interface RunExperience {
   readonly schemaVersion: typeof RUN_EXPERIENCE_SCHEMA_VERSION;
   readonly recordedAt: string;
+  readonly runStart: {
+    readonly taskStatus: TaskStatus;
+    readonly taskGoal: string | null;
+  };
   readonly task: {
     readonly goal: string;
     readonly taskRelation: TaskRunRelation;
-    readonly statusAtStart: TaskStatus;
   };
   readonly policy: RunExperiencePolicy;
   readonly execution: RunExperienceExecution;
@@ -61,7 +64,7 @@ const ZERO_EXECUTION: RunExperienceExecution = Object.freeze({
   toolCalls: 0,
   observations: 0,
   consequentialCalls: 0,
-  projectMutationCalls: 0,
+  projectMutationEffectCalls: 0,
   verificationCalls: 0,
   toolErrors: 0,
   deniedCalls: 0,
@@ -76,7 +79,7 @@ function copyExecution(
     toolCalls: counters.toolCalls,
     observations: counters.observations,
     consequentialCalls: counters.consequentialCalls,
-    projectMutationCalls: counters.projectMutationCalls,
+    projectMutationEffectCalls: counters.projectMutationEffectCalls,
     verificationCalls: counters.verificationCalls,
     toolErrors: counters.toolErrors,
     deniedCalls: counters.deniedCalls,
@@ -138,7 +141,7 @@ export class RunExperienceTracker {
         effect.requiredCapability === "observe.project" ||
         effect.requiredCapability === "observe.git" ? 0 : 1
       ),
-      projectMutationCalls: this.counters.projectMutationCalls + (
+      projectMutationEffectCalls: this.counters.projectMutationEffectCalls + (
         effect.projectMutation === "none" ? 0 : 1
       ),
       verificationCalls: this.counters.verificationCalls + (
@@ -215,7 +218,10 @@ export class RunExperienceTracker {
 
 export interface AssembleRunExperienceInput {
   readonly task: PindieTask;
-  readonly statusAtStart: TaskStatus;
+  readonly runStart: {
+    readonly taskStatus: TaskStatus;
+    readonly taskGoal: string | null;
+  };
   readonly snapshot: Extract<SemanticSnapshot, { authority: "coherent" }>;
   readonly policy: RunExperiencePolicy;
   readonly execution: RunExperienceExecution;
@@ -235,10 +241,13 @@ export function assembleRunExperience(
   const record: RunExperience = {
     schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION,
     recordedAt: input.recordedAt ?? new Date().toISOString(),
+    runStart: Object.freeze({
+      taskStatus: input.runStart.taskStatus,
+      taskGoal: input.runStart.taskGoal,
+    }),
     task: Object.freeze({
       goal: input.task.goal,
       taskRelation: input.snapshot.taskRelation,
-      statusAtStart: input.statusAtStart,
     }),
     policy: Object.freeze({
       finalSnapshot: input.policy.finalSnapshot === null
