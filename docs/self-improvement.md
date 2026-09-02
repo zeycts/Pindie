@@ -581,7 +581,7 @@ Evaluation is derived data:
 - never written back into Experience;
 - never allowed to change `PindieState`, Verification, capabilities, Human Gates, or Task legality.
 
-If Evaluation semantics change later, recompute the derived result rather than rewriting historical Experience.
+If Evaluation semantics change later, recompute the derived result rather than rewriting historical Experience. The persisted Experience shape is unchanged by SI v0.4 and remains `schemaVersion: 3`.
 
 #### Experience reading boundary
 
@@ -589,7 +589,7 @@ SI v0.4 may read the per-project Experience Store for evaluation purposes.
 
 The first evaluator consumes only valid `schemaVersion: 3` records. Existing v1 and v2 canonical records are immutable unsupported historical data and should be skipped, not migrated, heuristically upgraded, or adapted through a compatibility layer.
 
-The committed record boundary is a canonical UUID `.json` filename produced by the existing atomic writer. The Reader ignores temporary `.tmp` files, ordinary non-canonical files, and directories. Within that boundary, malformed JSON or semantically invalid schema-v3 facts are invalid records; in-progress temporary files do not count as invalid.
+The committed record boundary is a canonical lowercase UUID-v4 `.json` filename produced by the existing Node `randomUUID()` writer, matching `xxxxxxxx-xxxx-4xxx-[89ab]xxx-xxxxxxxxxxxx.json`. The Reader ignores temporary `.tmp` files, non-v4 UUID-looking names, ordinary non-canonical files, hidden/backup files, and directories. Within that boundary, malformed JSON or semantically invalid schema-v3 facts are invalid records; in-progress temporary files do not count as invalid.
 
 Reading should distinguish at least:
 
@@ -599,7 +599,7 @@ unsupported schema records
 invalid/unreadable records
 ```
 
-An invalid or unsupported record must not corrupt valid evaluation input.
+An invalid or unsupported record must not corrupt valid evaluation input. The schema-v3 Reader/parser rejects deterministic cross-field inconsistencies rather than repairing them, including impossible execution subsets, declaration positions, final-Policy positions, Run-start/Task relationships, completion relationships, and settlement verification status. It does not infer a replacement Task goal or parse transcript/model prose.
 
 Experience reading in SI v0.4 is for offline/derived evaluation only. It must not inject Experience into model context or current Policy.
 
@@ -627,9 +627,10 @@ finished with blockers/questions/Human Gate
 duration
 cost
 source record identity
+attribution eligibility
 ```
 
-These values are derived measurements, not causal claims.
+A `completed_before_run` Experience remains valid factual history and is included in evaluated Run accounting, but its settlement Task predates the Run. Its `RunEvaluation.attributionEligible` is therefore `false`; it is not Policy outcome evidence. Other valid schema-v3 Experiences are attribution-eligible. These values are derived measurements, not causal claims.
 
 Continuous final-Policy exposure is derived from the counters immediately before the last successful declaration of the final Policy identity:
 
@@ -642,7 +643,7 @@ finalPolicyExposureRatio = T > 0 ? finalPolicyExposureCalls / T : null
 
 The first occurrence and last activation are distinct evidence. `finalPolicyFirstDeclaredAfter` yields first-declaration progress; `finalPolicyLastDeclaredAfter` yields last-activation progress and is the only basis for continuous final-Policy exposure. A final Policy declared after most execution should therefore have low exposure rather than being treated as if it guided the whole Run. Invalid source facts are rejected by the Reader/parser instead of being silently normalized or clamped.
 
-Runs with `finalSnapshot: null` remain valid Evaluation input. `null` means no explicit Strategy declaration; it is not missing data and must not be replaced with a fabricated `default` Strategy.
+Runs with `finalSnapshot: null` remain valid Evaluation input. `null` means no explicit Strategy declaration; it is not missing data and must not be replaced with a fabricated `default` Strategy. A `completed_before_run` Run remains visible as evaluated, but is excluded from Policy Evidence Profiles and comparable cohorts, including all of its verification, completion, error, denial, cost, duration, and exposure evidence.
 
 #### Outcome interpretation boundary
 
@@ -672,7 +673,7 @@ same project
 exact same settlement task.goal
 ```
 
-Runs outside an explicitly supported comparable cohort may still be evaluated individually and included in evidence inventories, but they must not be used to claim that one Strategy outperforms another.
+Runs outside an explicitly supported comparable cohort may still be evaluated individually and included in evidence inventories, but they must not be used to claim that one Strategy outperforms another. Policy Evidence Profiles and exact-goal comparable cohorts consume only attribution-eligible Runs.
 
 Sparse comparable evidence is preferable to false comparability.
 
@@ -680,7 +681,7 @@ Semantic similarity, task taxonomy, task difficulty, or learned task representat
 
 #### Policy Evidence Profile
 
-Run Evaluations may be aggregated into a bounded Policy Evidence Profile.
+Run Evaluations may be aggregated into a bounded Policy Evidence Profile. Only attribution-eligible Run Evaluations enter a Profile; evaluated but non-attributable Runs remain in the evaluation inventory without contributing profile evidence.
 
 A Profile is an evidence inventory, not a Strategy score or ranking.
 
@@ -701,7 +702,7 @@ duration and cost observations
 source Experience references
 ```
 
-`/experience` exposes these bounded attribution facts compactly for each rendered profile. They let a human distinguish early declaration, Policy changes, late final activation, and little continuous final-Policy exposure without introducing an attribution, confidence, effectiveness, reward, or causal score. No-explicit-policy profiles retain `n/a` for position and exposure fields that do not apply. Profiles preserve enough provenance to trace every aggregate back to source Experience records; presentation shows at most five source IDs per profile and ten profiles while Evaluation retains full provenance.
+`/experience` reports Loaded schema-v3 records, Evaluated Runs, Attributable Runs, and Non-attributable Runs, then exposes these bounded attribution facts compactly for each rendered profile. Profiles and exact-goal cohorts consume attributable Runs only. They let a human distinguish early declaration, Policy changes, late final activation, and little continuous final-Policy exposure without introducing an attribution, confidence, effectiveness, reward, or causal score. No-explicit-policy profiles retain `n/a` for position and exposure fields that do not apply. Profiles preserve enough provenance to trace every aggregate back to source Experience records; presentation shows at most five source IDs per profile and ten profiles while Evaluation retains full provenance.
 
 Do not emit claims such as:
 

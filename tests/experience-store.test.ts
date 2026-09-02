@@ -72,8 +72,9 @@ test("FileRunExperienceStore writes separate immutable records per project witho
   const projectBFiles = await readdir(store.experienceDirectory("/workspace/project-b"));
   assert.equal(projectAFiles.length, 2);
   assert.equal(projectBFiles.length, 1);
-  assert.ok(projectAFiles.every((name) => /^[0-9a-f-]+\.json$/.test(name)));
-  assert.ok(projectBFiles.every((name) => /^[0-9a-f-]+\.json$/.test(name)));
+  const canonicalUuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/;
+  assert.ok(projectAFiles.every((name) => canonicalUuidV4.test(name)));
+  assert.ok(projectBFiles.every((name) => canonicalUuidV4.test(name)));
   assert.equal(projectAFiles.some((name) => projectBFiles.includes(name)), false);
   assert.equal((await readdir(baseDir)).length, 2);
   assert.equal(
