@@ -76,6 +76,11 @@ test("stable Pindie System Contract is deterministic, complete, and excludes cur
   assert.match(first, /Tool visibility is not authorization/);
   assert.match(first, /Use current Task, verification, Human Gate, and runtime facts/);
   assert.match(first, /Gateway denial is factual runtime feedback/);
+  assert.match(first, /task\.start establishes a new Task when idle \(no current Task\) or after a completed Task/);
+  assert.match(first, /task\.replace supersedes a different unfinished Task/);
+  assert.match(first, /completed and the user requests new durable work/);
+  assert.match(first, /follow-up question.*does not by itself require starting a new durable Task/);
+  assert.match(first, /model owns interpretation of user intent/);
   assert.match(first, /latest Pindie Run Baseline/);
   assert.match(first, /append-only runtime updates/i);
   assert.match(first, /Seed Strategies are optional, advisory/);

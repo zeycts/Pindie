@@ -198,6 +198,13 @@ pindie_git_observe         → observe.git
 
 Internal reducer events remain independent of Pi tool names.
 
+Task lifecycle:
+
+- `task.start` establishes a new Task when idle (no current Task) or after a completed Task.
+- `task.replace` supersedes a different unfinished current Task; a completed Task is terminal and is never replaced.
+- A follow-up question, inspecting an old result, or discussing a completed Task does not by itself require starting a new durable Task.
+- If the Gateway denies `task.replace` because there is no unfinished Task, its factual denial guides the model toward the legal `pindie_task_start` recovery action; it does not execute that action automatically.
+
 For each actual Agent Run:
 
 Pi's active Tool Surface remains unchanged as Pindie semantic State changes. Tool visibility is not authorization. The Execution Gateway derives current capabilities and authorizes each concrete tool call at preflight; unknown/custom tools remain conservative project mutations.

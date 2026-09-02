@@ -2573,7 +2573,7 @@ test("TB26-TB27 completed Task start boundaries do not make a same-run Task repl
   await beginAgentRun(harness);
   assertBlocked(await callGuard(harness, toolCall("pindie_task_replace", {
     goal: "Task B", successCriteria: ["Task B works"],
-  })), /missing capability 'task\.replace'.*Task status: done/i);
+  })), /completed Task is terminal.*pindie_task_start.*Task status: done/i);
   assert.equal(await callGuard(harness, toolCall("pindie_task_start", {
     goal: "Task B", successCriteria: ["Task B works"],
   })), undefined);
@@ -2729,9 +2729,12 @@ test("TBE-E01-E20 idle State preserves observation and start_task guard ordering
   assert.deepEqual(harness.store.saves, []);
 
   assert.equal(await callGuard(harness, toolCall("pindie_task_start")), undefined);
+  assertBlocked(
+    await callGuard(harness, toolCall("pindie_task_replace")),
+    /no unfinished Task to replace.*pindie_task_start.*Task status: idle/i,
+  );
   for (const [name, input] of [
     ["edit", {}], ["write", {}], ["bash", { command: "git status" }], ["future_mutating_tool", {}],
-    ["pindie_task_replace", {}],
     ["pindie_task_refine", {}],
     ["pindie_task_progress", {}],
     ["pindie_verification_record", {}],
@@ -2754,6 +2757,43 @@ test("TBE-E01-E20 idle State preserves observation and start_task guard ordering
   })), /missing capability 'task\.replace'/i);
   await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
   assert.equal(harness.api.sentMessages.length, 1);
+});
+
+test("Task replace denial gives actionable start recovery only for idle or completed Tasks", async () => {
+  const cases = [
+    ["idle", EMPTY_STATE, /no unfinished Task to replace.*pindie_task_start.*Task status: idle/i],
+    ["completed", completedState(), /completed Task is terminal.*pindie_task_start.*Task status: done/i],
+  ] as const;
+
+  for (const [name, state, expected] of cases) {
+    const harness = createHarness([["/repo", state]]);
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+    const stateBefore = structuredClone(harness.integration.runtime.state);
+    const denied = await callGuard(harness, toolCall("pindie_task_replace"));
+
+    assertBlocked(denied, expected);
+    assert.doesNotMatch(denied.reason, /missing capability 'task\.replace'/i);
+    assert.deepEqual(harness.integration.runtime.state, stateBefore, name);
+    assert.deepEqual(harness.store.saves, [], name);
+  }
+
+  const project = createHarness([["/repo", completedState()]]);
+  await startSession(project, "/repo");
+  await beginAgentRun(project);
+  const projectDenied = await callGuard(project, toolCall("edit"));
+  assertBlocked(projectDenied, /missing capability 'project\.mutate'.*Task status: done/i);
+  assert.doesNotMatch(projectDenied.reason, /pindie_task_start/i);
+
+  const verification = createHarness([["/repo", gatedState()]]);
+  await startSession(verification, "/repo");
+  await beginAgentRun(verification);
+  const verificationDenied = await callGuard(
+    verification,
+    toolCall("pindie_verification_record"),
+  );
+  assertBlocked(verificationDenied, /missing capability 'verification\.record'.*waiting_human/i);
+  assert.doesNotMatch(verificationDenied.reason, /pindie_task_start/i);
 });
 
 test("OC-E01-OC-E08 guards preserve direct observation and report factual capability denials", async () => {
@@ -2857,7 +2897,7 @@ test("G01-G08 M2 Task admission and replacement follow Run-derived capabilities"
   assert.equal(await callGuard(done, toolCall("pindie_task_start")), undefined);
   assertBlocked(
     await callGuard(done, toolCall("pindie_task_replace")),
-    /task\.replace.*Task status: done/i,
+    /completed Task is terminal.*pindie_task_start.*Task status: done/i,
   );
 
   const replace = createHarness([["/repo", activeState("Task A")]]);
