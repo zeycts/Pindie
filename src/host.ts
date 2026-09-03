@@ -11,6 +11,7 @@ import {
   type CreateAgentSessionRuntimeFactory,
   type InteractiveModeOptions,
 } from "@earendil-works/pi-coding-agent";
+import { PiRuntimeAdapter } from "./pi-runtime.ts";
 
 export interface PindieResourcePaths {
   extensionPath: string;
@@ -40,7 +41,7 @@ export interface PindieHostOptions {
 }
 
 export interface PindieHost {
-  readonly runtime: AgentSessionRuntime;
+  readonly runtime: PiRuntimeAdapter;
   readonly interactiveMode: PindieInteractiveMode;
   run(): Promise<void>;
   dispose(): Promise<void>;
@@ -97,20 +98,22 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     ((runtime: AgentSessionRuntime, modeOptions: InteractiveModeOptions) =>
       new InteractiveMode(runtime, modeOptions));
 
-  let runtime: AgentSessionRuntime | undefined;
+  let nativeRuntime: AgentSessionRuntime | undefined;
+  let runtime: PiRuntimeAdapter | undefined;
   try {
-    runtime = await createRuntime(createPindieRuntimeFactory(dependencies), {
+    nativeRuntime = await createRuntime(createPindieRuntimeFactory(dependencies), {
       cwd,
       agentDir,
       sessionManager,
     });
+    runtime = new PiRuntimeAdapter(nativeRuntime);
 
     const modeOptions: InteractiveModeOptions = {
-      startupDiagnostics: [...runtime.diagnostics],
-      modelFallbackMessage: runtime.modelFallbackMessage,
+      startupDiagnostics: [...nativeRuntime.diagnostics],
+      modelFallbackMessage: nativeRuntime.modelFallbackMessage,
       ...options.interactiveModeOptions,
     };
-    const interactiveMode = createMode(runtime, modeOptions);
+    const interactiveMode = createMode(nativeRuntime, modeOptions);
     let disposePromise: Promise<void> | undefined;
     const dispose = (): Promise<void> => {
       disposePromise ??= runtime!.dispose();
@@ -130,9 +133,9 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       dispose,
     };
   } catch (error) {
-    if (runtime) {
+    if (runtime ?? nativeRuntime) {
       try {
-        await runtime.dispose();
+        await (runtime ?? nativeRuntime)!.dispose();
       } catch {
         // Preserve the bootstrap error; cleanup is best effort during failed setup.
       }
