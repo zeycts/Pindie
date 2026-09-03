@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type SeedStrategyKind = "approach" | "modifier";
 
 export interface SeedStrategy {
@@ -27,6 +29,34 @@ function immutableStrategy(
 }
 
 /** The immutable human-validated Seed Strategy portfolio for SI v0.1. */
+export interface SeedStrategySemantics {
+  readonly id: string;
+  readonly kind: SeedStrategyKind;
+  readonly summary: string;
+  readonly useWhen: readonly string[];
+  readonly avoidWhen: readonly string[];
+  readonly principles: readonly string[];
+}
+
+/** Stable canonical semantics used to bind artifacts to an immutable Seed. */
+export function seedStrategySemantics(strategy: SeedStrategy): SeedStrategySemantics {
+  return {
+    id: strategy.id,
+    kind: strategy.kind,
+    summary: strategy.summary,
+    useWhen: [...strategy.useWhen],
+    avoidWhen: [...(strategy.avoidWhen ?? [])],
+    principles: [...strategy.principles],
+  };
+}
+
+/** Deterministic SHA-256 fingerprint of one Seed Strategy's semantics. */
+export function seedStrategyFingerprint(strategy: SeedStrategy): string {
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(seedStrategySemantics(strategy)))
+    .digest("hex")}`;
+}
+
 export const SEED_STRATEGIES: readonly SeedStrategy[] = Object.freeze([
   immutableStrategy({
     id: "direct-action",
@@ -113,3 +143,8 @@ export const SEED_STRATEGIES: readonly SeedStrategy[] = Object.freeze([
     ],
   }),
 ]);
+
+/** Resolve only the immutable canonical Seed Strategy object. */
+export function getSeedStrategy(strategyId: string): SeedStrategy | null {
+  return SEED_STRATEGIES.find((strategy) => strategy.id === strategyId) ?? null;
+}

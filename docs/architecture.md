@@ -109,6 +109,7 @@ observe.project
 observe.git
 project.mutate
 policy.declare
+policy.adapt
 
 task.start
 task.refine
@@ -122,7 +123,7 @@ gate.open
 gate.resolve
 ```
 
-Capabilities are pure derived authority and are never persisted.
+Ordinary Task/verification/Gate capabilities are pure derived authority and are never persisted. `policy.adapt` is a runtime-only control capability granted only to the active Candidate tool while an explicit adaptation lease is bound to the current Agent Run; it is never persisted or included in ordinary capability sets.
 
 Important capability consequences:
 
@@ -149,6 +150,7 @@ pindie_git_observe      → observe.git / mutation none
 edit / write            → project.mutate / mutation known
 bash / unknown/custom   → project.mutate / mutation ambiguous
 semantic Pindie tool    → exact semantic capability / mutation none
+strategy Candidate tool  → policy.adapt / mutation none (active adaptation lease only)
 ```
 
 Unknown/custom tools are conservative. Generic shell commands are not parsed into read-only exceptions.
@@ -169,6 +171,7 @@ Model-facing Pindie semantic tools are narrow capability-shaped adapters:
 
 ```text
 pindie_policy_set          → policy.declare
+pindie_strategy_candidate_create → policy.adapt
 pindie_task_start          → task.start
 pindie_task_replace        → task.replace
 pindie_task_refine         → task.refine
@@ -184,7 +187,7 @@ Internal reducer events remain tool-agnostic.
 
 Pi owns the active model Tool Surface. Pindie does not narrow, expand, capture, or restore that surface as semantic State changes. A currently unauthorized tool may remain visible to the model; visibility is not authorization.
 
-The Gateway remains authoritative for every consequential call, including races, stale pre-generated calls, and calls generated before a same-Run semantic change. It derives current capabilities from the current semantic Snapshot and blocks or allows the concrete effect at execution time.
+The Gateway remains authoritative for every consequential call, including races, stale pre-generated calls, and calls generated before a same-Run semantic change. It derives current capabilities from the current semantic Snapshot and blocks or allows the concrete effect at execution time. Self-Improvement Candidate creation is a separate `policy.adapt` control effect with no project mutation; it additionally requires a live explicit `/adapt <strategy-id>` runtime lease.
 
 ## 7. Knowledge Surface and prompt ownership
 
@@ -336,3 +339,4 @@ A Skill may describe a reusable procedure such as Git delivery. It must not dupl
 19. Durable Remote metadata stores external routing/delivery identity only and never enters `PindieState`.
 20. Remote control targets only the current live Pi Session through Pi public boundaries; it never creates a parallel Session or queue.
 21. Remote/Discord failure must not alter local Pindie correctness or stop the local Agent.
+22. Strategy Revision Candidates are inactive hypotheses only; SI v0.5 Candidate creation is explicit `/adapt <strategy-id>` work and never activates or overrides Policy.

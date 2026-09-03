@@ -1,0 +1,285 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+import { classifyToolEffect } from "../src/execution-semantics.ts";
+import { createPolicySnapshot } from "../src/policy.ts";
+import {
+  buildAdaptationPacket,
+  AdaptationRuntime,
+  formatAdaptationPacket,
+  selectAdaptationEvidence,
+} from "../src/strategy-adaptation.ts";
+import {
+  createStrategyRevisionCandidate,
+  FileStrategyCandidateStore,
+  type StrategyCandidateProposal,
+} from "../src/strategy-candidates.ts";
+import {
+  seedStrategyFingerprint,
+  SEED_STRATEGIES,
+  type SeedStrategy,
+} from "../src/strategies.ts";
+import { createPindieStrategyCandidateTool } from "../src/tools/strategy-candidate.ts";
+import {
+  assembleRunExperience,
+  RunExperienceTracker,
+  type RunExperience,
+} from "../src/run-experience.ts";
+import type { RunExperienceSourceRecord } from "../src/experience-store.ts";
+import type { SemanticSnapshot } from "../src/semantics.ts";
+import type { PindieState } from "../src/state.ts";
+
+function task(goal: string): NonNullable<PindieState["task"]> {
+  return {
+    goal,
+    constraints: [],
+    successCriteria: [{ id: "c1", description: "The evidence is factual" }],
+    openLoops: { blockers: [], questions: [], nextIntent: null },
+    verification: { stale: false, checks: [] },
+    humanGate: null,
+    completed: false,
+  };
+}
+
+function experience(
+  goal: string,
+  policy: ReturnType<typeof createPolicySnapshot> | null,
+  recordedAt: string,
+): RunExperience {
+  const snapshot: Extract<SemanticSnapshot, { authority: "coherent" }> = {
+    authority: "coherent",
+    taskStatus: "active",
+    verificationStatus: "pending",
+    hasBlockers: false,
+    hasQuestions: false,
+    completionReady: false,
+    taskRelation: "preexisting_untouched",
+    completionRelation: "not_completed",
+    gateRelation: "none",
+  };
+  const zero = {
+    toolCalls: 2,
+    observations: 1,
+    consequentialCalls: 1,
+    projectMutationEffectCalls: 0,
+    verificationCalls: 0,
+    toolErrors: 0,
+    deniedCalls: 0,
+  };
+  const before = {
+    toolCalls: 0,
+    observations: 0,
+    consequentialCalls: 0,
+    projectMutationEffectCalls: 0,
+    verificationCalls: 0,
+    toolErrors: 0,
+    deniedCalls: 0,
+  };
+  return assembleRunExperience({
+    task: task(goal),
+    runStart: { taskStatus: "active", taskGoal: goal },
+    snapshot,
+    policy: {
+      finalSnapshot: policy,
+      declarationCount: policy === null ? 0 : 1,
+      finalPolicyDeclarationCount: policy === null ? 0 : 1,
+      finalPolicyFirstDeclaredAfter: policy === null ? null : before,
+      finalPolicyLastDeclaredAfter: policy === null ? null : before,
+    },
+    execution: zero,
+    durationMs: 100,
+    cost: 0.5,
+    recordedAt,
+  });
+}
+
+function source(
+  recordId: string,
+  value: RunExperience,
+): RunExperienceSourceRecord {
+  return { recordId, experience: value };
+}
+
+function proposal(sourceRecordIds: readonly string[]): StrategyCandidateProposal {
+  return {
+    summary: "Prefer a small verified change after a focused check.",
+    useWhen: ["the problem has a narrow observable boundary"],
+    avoidWhen: ["the likely fix remains unclear"],
+    principles: ["make one bounded change", "verify before expanding scope"],
+    sourceRecordIds,
+    hypothesis: "The attributable Runs suggest that a narrower first move may reduce avoidable rework.",
+  };
+}
+
+function candidateContext(sessionId = "session") {
+  return {
+    sessionManager: { getSessionId: () => sessionId },
+  } as any;
+}
+
+test("Seed fingerprints are deterministic and Candidate construction does not mutate Seeds", () => {
+  const target = SEED_STRATEGIES.find((strategy) => strategy.id === "direct-action")!;
+  const snapshot = structuredClone(target);
+  assert.equal(seedStrategyFingerprint(target), seedStrategyFingerprint(target));
+  assert.equal(seedStrategyFingerprint(target), seedStrategyFingerprint(snapshot));
+  assert.notEqual(
+    seedStrategyFingerprint(target),
+    seedStrategyFingerprint({ ...snapshot, summary: "changed" }),
+  );
+  const candidate = createStrategyRevisionCandidate({
+    target,
+    proposal: proposal(["one", "two"]),
+    candidateId: "00000000-0000-4000-8000-000000000001",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  assert.deepEqual(target, snapshot);
+  assert.equal(Object.isFrozen(candidate), true);
+  assert.equal(Object.isFrozen(candidate.proposal), true);
+  assert.equal(Object.isFrozen(candidate.proposal.useWhen), true);
+  assert.equal(candidate.schemaVersion, 1);
+  assert.throws(() => createStrategyRevisionCandidate({
+    target,
+    proposal: {
+      ...proposal(["one", "two"]),
+      summary: target.summary,
+      useWhen: [...target.useWhen],
+      avoidWhen: [...(target.avoidWhen ?? [])],
+      principles: [...target.principles],
+    },
+    candidateId: "00000000-0000-4000-8000-000000000003",
+  }), /must differ/);
+});
+
+test("Adaptation evidence selects only attributable target-policy Runs, newest first, and caps at eight", () => {
+  const approach = SEED_STRATEGIES.find((strategy) => strategy.id === "direct-action")!;
+  const modifier = SEED_STRATEGIES.find((strategy) => strategy.id === "minimal-change")!;
+  const records: RunExperienceSourceRecord[] = Array.from({ length: 10 }, (_, index) =>
+    source(
+      `record-${String(index).padStart(2, "0")}`,
+      experience(
+        `goal-${index}`,
+        createPolicySnapshot({ approach: approach.id }),
+        `2026-01-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+      ),
+    ));
+  records.push(source(
+    "modifier-only",
+    experience("modifier", createPolicySnapshot({ approach: "explore-first", modifiers: [modifier.id] }), "2027-01-01T00:00:00.000Z"),
+  ));
+  records.push(source(
+    "no-policy",
+    experience("none", null, "2027-01-02T00:00:00.000Z"),
+  ));
+  const before = structuredClone(records[0]!.experience) as any;
+  before.runStart.taskStatus = "done";
+  before.runStart.taskGoal = before.task.goal;
+  before.outcome.taskStatus = "done";
+  before.outcome.verificationStatus = "passed";
+  before.outcome.completionRelation = "completed_before_run";
+  records.push(source("completed-before", before));
+
+  const selected = selectAdaptationEvidence(approach, records);
+  assert.equal(selected.length, 10);
+  const modifierSelected = selectAdaptationEvidence(modifier, records);
+  assert.deepEqual(modifierSelected.map((run) => run.source.recordId), ["modifier-only"]);
+  assert.deepEqual(selected[0]!.source.recordId, "record-09");
+  assert.equal(selected.some((run) => run.source.recordId === "modifier-only"), false);
+  assert.equal(selected.some((run) => run.source.recordId === "no-policy"), false);
+  assert.equal(selected.some((run) => run.source.recordId === "completed-before"), false);
+
+  const packet = buildAdaptationPacket(approach, records);
+  assert.equal(packet.evidence.eligibleRunCount, 10);
+  assert.equal(packet.evidence.shownRunCount, 8);
+  assert.equal(packet.evidence.omittedRunCount, 2);
+  assert.deepEqual(packet.sourceRecordIds, [
+    "record-09", "record-08", "record-07", "record-06",
+    "record-05", "record-04", "record-03", "record-02",
+  ]);
+  assert.match(packet.target.baseFingerprint, /^sha256:[0-9a-f]{64}$/);
+  const rendered = formatAdaptationPacket(packet);
+  assert.match(rendered, /confounders|causal proof|does not justify a revision/i);
+  assert.doesNotMatch(rendered, /transcript|chain.of.thought|raw tool|score|ranking/i);
+});
+
+test("Candidate control has a separate non-execution effect and successful creation consumes its lease", async () => {
+  const target = SEED_STRATEGIES.find((strategy) => strategy.id === "direct-action")!;
+  const first = source("one", experience("one", createPolicySnapshot({ approach: target.id }), "2026-01-01T00:00:00.000Z"));
+  const second = source("two", experience("two", createPolicySnapshot({ approach: target.id }), "2026-01-02T00:00:00.000Z"));
+  const records = [first, second];
+  const packet = buildAdaptationPacket(target, records);
+  const adaptation = new AdaptationRuntime();
+  assert.equal(adaptation.establish("session", target, packet), true);
+  assert.ok(adaptation.bind("session", 4));
+  const saved: any[] = [];
+  let failSave = true;
+  const tool = createPindieStrategyCandidateTool({
+    adaptation,
+    experienceReader: { read: async () => ({ records, loadedSchemaV3: 2, unsupportedSchema: 0, invalid: 0 }) },
+    candidateStore: {
+      save: async (_root, candidate) => {
+        if (failSave) {
+          failSave = false;
+          throw new Error("candidate disk unavailable");
+        }
+        saved.push(candidate);
+      },
+    },
+    getProjectRoot: () => "/project",
+    getAgentRunGeneration: () => 4,
+  });
+  assert.deepEqual(classifyToolEffect("pindie_strategy_candidate_create"), {
+    requiredCapability: "policy.adapt",
+    projectMutation: "none",
+  });
+  await assert.rejects(
+    tool.execute("invalid", proposal(["one", "outside"]), undefined, undefined, candidateContext()),
+    /active Adaptation Packet/,
+  );
+  await assert.rejects(
+    tool.execute("failed-save", proposal(["one", "two"]), undefined, undefined, candidateContext()),
+    /adaptation attempt remains retryable/,
+  );
+  assert.equal(saved.length, 0);
+  const result = await tool.execute("candidate", proposal(["one", "two"]), undefined, undefined, candidateContext());
+  assert.match(result.content[0]!.text, /Candidate created/);
+  assert.match(result.content[0]!.text, /inactive.*not active Policy/i);
+  assert.equal(saved.length, 1);
+  await assert.rejects(
+    tool.execute("second", proposal(["one", "two"]), undefined, undefined, candidateContext()),
+    /without a live adaptation attempt/i,
+  );
+});
+
+test("Candidate persistence is project-local, schema-v1, UUID-v4, and atomic", async (t) => {
+  const baseDir = await mkdtemp(join(tmpdir(), "pindie-candidate-"));
+  t.after(() => rm(baseDir, { recursive: true, force: true }));
+  const store = new FileStrategyCandidateStore({ baseDir });
+  const target = SEED_STRATEGIES.find((strategy) => strategy.id === "direct-action")!;
+  const candidate = createStrategyRevisionCandidate({
+    target,
+    proposal: proposal(["one", "two"]),
+    candidateId: "00000000-0000-4000-8000-000000000002",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  await store.save("/project-a", candidate);
+  const directory = store.strategyCandidateDirectory("/project-a");
+  assert.deepEqual(await readdir(directory), [`${candidate.candidateId}.json`]);
+  assert.deepEqual(JSON.parse(await readFile(join(directory, `${candidate.candidateId}.json`))), candidate);
+  assert.equal((await readdir(store.strategyCandidateDirectory("/project-b")).catch(() => [])).length, 0);
+  await assert.rejects(store.save("/project-a", candidate), /already exists/);
+});
+
+test("adaptation-control calls do not create normal execution or policy telemetry", () => {
+  const tracker = new RunExperienceTracker();
+  const effect = classifyToolEffect("pindie_strategy_candidate_create");
+  tracker.recordAuthorizedCall("candidate", effect);
+  assert.equal(tracker.execution.toolCalls, 0);
+  assert.equal(tracker.execution.observations, 0);
+  assert.equal(tracker.execution.consequentialCalls, 0);
+  assert.equal(tracker.execution.deniedCalls, 0);
+  assert.equal(tracker.recordToolResult("candidate", true), "self-improvement");
+  assert.equal(tracker.policy.declarationCount, 0);
+});

@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import {
   type ExtensionAPI,
+  type ExtensionCommandContext,
   type ExtensionContext,
   type ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
@@ -25,6 +26,15 @@ import {
   type RunExperienceReader,
   type RunExperienceStore,
 } from "./experience-store.ts";
+import {
+  AdaptationRuntime,
+  buildAdaptationPacket,
+} from "./strategy-adaptation.ts";
+import {
+  FileStrategyCandidateStore,
+  type StrategyCandidateStore,
+} from "./strategy-candidates.ts";
+import { getSeedStrategy, SEED_STRATEGIES } from "./strategies.ts";
 import {
   assembleRunExperience,
   isEligibleRunExperience,
@@ -63,6 +73,7 @@ import {
   createPindieGateResolveTool,
 } from "./tools/gate.ts";
 import { createPindiePolicySetTool } from "./tools/policy.ts";
+import { createPindieStrategyCandidateTool } from "./tools/strategy-candidate.ts";
 import { createPindieGitObserveTool } from "./tools/git-observe.ts";
 import {
   createPindieTaskCompleteTool,
@@ -79,6 +90,7 @@ export interface PindieExtensionOptions {
   store?: PindieStateStore;
   experienceStore?: RunExperienceStore;
   experienceReader?: RunExperienceReader;
+  strategyCandidateStore?: StrategyCandidateStore;
   resolveProjectRoot?: ProjectRootResolver;
   subscriptionUsageProvider?: SubscriptionUsageProvider;
   getStatusWidth?: () => number | undefined;
@@ -141,6 +153,9 @@ function gatewayDenialReason(
   snapshot: SemanticSnapshot,
   requiredCapability: ToolEffect["requiredCapability"],
 ): string {
+  if (requiredCapability === "policy.adapt") {
+    return "Pindie blocked this call: Strategy Candidate creation requires a live explicit adaptation attempt. Use /adapt <strategy-id> while the Agent is idle.";
+  }
   if (snapshot.authority === "coherent" && requiredCapability === "task.replace") {
     if (snapshot.taskStatus === "done") {
       return `Pindie blocked this call: the completed Task is terminal and cannot be replaced. Use pindie_task_start to begin new durable work. Task status: ${snapshot.taskStatus}. Verification: ${snapshot.verificationStatus}.`;
@@ -173,6 +188,14 @@ export function registerPindieExtension(
   const experienceReader = options.experienceReader ?? new FileRunExperienceReader({
     baseDir: experienceStorageBaseDir,
   });
+  const strategyCandidateStore = options.strategyCandidateStore ?? new FileStrategyCandidateStore({
+    baseDir: experienceStorageBaseDir,
+  });
+  const adaptation = new AdaptationRuntime();
+  // A successful Candidate consumes the lease before settlement, so retain only
+  // this generation marker long enough to exclude the adaptation Run from
+  // ordinary coding Experience accounting.
+  let adaptationRunGeneration: number | null = null;
   const runtime = new PindieRuntime(stateStore);
   const run = new RunIntegration(runtime);
   const execution = new ExecutionIntegration({
@@ -319,12 +342,103 @@ export function registerPindieExtension(
     return renderCurrentPindieActionEligibility(derivation.snapshot);
   };
 
+  const handleAdaptationCommand = async (
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> => {
+    const requestedId = args.trim();
+    if (!requestedId || /\s/.test(requestedId)) {
+      ctx.ui.notify("Usage: /adapt <strategy-id>", "warning");
+      return;
+    }
+    const projectRoot = runtime.projectRoot;
+    if (projectRoot === null) {
+      ctx.ui.notify("Pindie could not start /adapt: no current project root is loaded.", "warning");
+      return;
+    }
+    if (!ctx.isIdle()) {
+      ctx.ui.notify("Pindie could not start /adapt: the Agent is busy.", "warning");
+      return;
+    }
+    if (adaptation.hasAttempt) {
+      ctx.ui.notify("Pindie could not start /adapt: another adaptation attempt is already active.", "warning");
+      return;
+    }
+    const target = getSeedStrategy(requestedId);
+    if (target === null) {
+      ctx.ui.notify(`Pindie could not start /adapt: '${requestedId}' is not a valid Seed Strategy ID.`, "warning");
+      return;
+    }
+
+    let sessionId: string;
+    try {
+      sessionId = ctx.sessionManager.getSessionId();
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not start /adapt: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    let read;
+    try {
+      read = await experienceReader.read(projectRoot);
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not start /adapt: Experience reading failed: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    let packet;
+    try {
+      packet = buildAdaptationPacket(target, read.records);
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not start /adapt: evidence evaluation failed: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    if (packet.evidence.eligibleRunCount < 2) {
+      ctx.ui.notify(
+        `Pindie could not start /adapt '${target.id}': only ${packet.evidence.eligibleRunCount} eligible attributable Run${packet.evidence.eligibleRunCount === 1 ? " is" : "s are"} available; at least 2 are required.`,
+        "warning",
+      );
+      return;
+    }
+    if (runtime.projectRoot !== projectRoot) {
+      ctx.ui.notify("Pindie could not start /adapt: the current project changed while reading Experience.", "warning");
+      return;
+    }
+    if (!ctx.isIdle()) {
+      ctx.ui.notify("Pindie could not start /adapt: the Agent became busy while reading Experience.", "warning");
+      return;
+    }
+    if (!adaptation.establish(sessionId, target, packet)) {
+      ctx.ui.notify("Pindie could not start /adapt: another adaptation attempt is already active.", "warning");
+      return;
+    }
+    try {
+      pi.sendUserMessage(
+        `Begin the explicitly requested Self-Improvement adaptation for Seed Strategy '${target.id}'. Use the bounded Adaptation Packet supplied for this Run. This is optional hypothesis generation, not project implementation work.`,
+      );
+    } catch (error) {
+      adaptation.clear();
+      adaptationRunGeneration = null;
+      ctx.ui.notify(`Pindie could not launch the /adapt Agent Run: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    ctx.ui.notify(
+      `Self-Improvement adaptation Run started for '${target.id}' with ${packet.evidence.eligibleRunCount} eligible attributable Runs. Candidate generation is optional.`,
+      "info",
+    );
+  };
+
   const taskToolOptions = {
     getRunDuration: () => presentation.runTimer.durationMs,
     onStateChange: semanticStateChanged,
   };
   pi.registerTool(createPindiePolicySetTool({
     onPolicySet: (snapshot) => run.setPolicySnapshot(snapshot),
+  }));
+  pi.registerTool(createPindieStrategyCandidateTool({
+    adaptation,
+    experienceReader,
+    candidateStore: strategyCandidateStore,
+    getProjectRoot: () => runtime.projectRoot,
+    getAgentRunGeneration: () => run.activeAgentRunGeneration,
   }));
   pi.registerTool(createPindieTaskStartTool(runtime, taskToolOptions));
   pi.registerTool(createPindieTaskReplaceTool(runtime, taskToolOptions));
@@ -353,6 +467,15 @@ export function registerPindieExtension(
     handler: async (args, ctx) => presentation.handleExperienceCommand(args, ctx),
   });
 
+  pi.registerCommand("adapt", {
+    description: "Start explicit Strategy Revision Candidate adaptation for a Seed Strategy",
+    getArgumentCompletions: (prefix) => SEED_STRATEGIES
+      .map((strategy) => strategy.id)
+      .filter((value) => value.startsWith(prefix))
+      .map((value) => ({ value, label: value })),
+    handler: async (args, ctx) => handleAdaptationCommand(args, ctx),
+  });
+
   pi.registerCommand("reasoning", {
     description: "Choose who controls thinking level (auto|manual)",
     getArgumentCompletions: (prefix) => ["auto", "manual"]
@@ -372,6 +495,8 @@ export function registerPindieExtension(
     presentation.resetTrackers();
     presentation.clearStatus(ctx);
     presentation.resetSubscriptionUsage();
+    adaptation.clear();
+    adaptationRunGeneration = null;
     run.resetStateAuthority();
     run.resetAgentRun();
     execution.discardRuntime();
@@ -460,6 +585,8 @@ export function registerPindieExtension(
     remote?.discord?.stop();
     presentation.resetTrackers();
     presentation.clearStatus(ctx);
+    adaptation.clear();
+    adaptationRunGeneration = null;
     run.resetStateAuthority();
     run.resetAgentRun();
     execution.discardRuntime();
@@ -484,6 +611,22 @@ export function registerPindieExtension(
     // authoritative project State rather than a previous session snapshot.
     execution.beginEvidenceScope(runtime.externalStateEpoch);
     run.beginAgentRunFacts();
+    let adaptationLease = null;
+    if (adaptation.hasAttempt) {
+      try {
+        adaptationLease = adaptation.bind(
+          ctx.sessionManager.getSessionId(),
+          run.activeAgentRunGeneration!,
+        );
+      } catch (error) {
+        adaptation.clear();
+        adaptationRunGeneration = null;
+        throw error;
+      }
+      adaptationRunGeneration = adaptationLease?.agentRunGeneration ?? null;
+    } else {
+      adaptationRunGeneration = null;
+    }
     let derivation = run.deriveSnapshot();
     if (!derivation.ok) {
       markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
@@ -499,17 +642,22 @@ export function registerPindieExtension(
     void options.remoteCompanion?.companion.status(remoteStatusFacts());
 
     if (!derivation.ok) {
+      adaptation.clear();
+      adaptationRunGeneration = null;
       throw new Error(
         `Pindie unavailable semantic derivation failed: ${derivation.error}`,
       );
     }
     const state = run.authoritativeState;
+    const systemPrompt = adaptationLease === null
+      ? appendPindieSystemContract(event.systemPrompt)
+      : `${appendPindieSystemContract(event.systemPrompt)}\n\n${adaptationLease.renderedPacket}`;
     const unavailableReason = run.stateUnavailableReason ??
       (state === null
         ? "No project State has been loaded for this session."
         : null);
     return {
-      systemPrompt: appendPindieSystemContract(event.systemPrompt),
+      systemPrompt,
       message: createPindieRunBaselineMessage(
         state,
         derivation.snapshot,
@@ -555,6 +703,10 @@ export function registerPindieExtension(
   pi.on("session_compact_failed", () => undefined);
 
   pi.on("agent_end", (event, ctx) => {
+    if (
+      adaptationRunGeneration !== null &&
+      adaptationRunGeneration === run.activeAgentRunGeneration
+    ) return;
     const derivation = run.deriveSnapshot();
     if (!derivation.ok) return;
     const finalAssistantMessage = [...event.messages]
@@ -599,6 +751,18 @@ export function registerPindieExtension(
 
   pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
     const effect = classifyToolEffect(event.toolName);
+    const adaptationRunActive = adaptationRunGeneration !== null &&
+      adaptationRunGeneration === run.activeAgentRunGeneration;
+    if (adaptationRunActive &&
+      effect.requiredCapability !== "observe.project" &&
+      effect.requiredCapability !== "observe.git" &&
+      effect.requiredCapability !== "policy.adapt") {
+      run.recordDeniedCall(effect);
+      return {
+        block: true,
+        reason: "Pindie blocked this call: an adaptation Run is read-only and only permits observation or the active Candidate tool.",
+      };
+    }
     if (
       effect.requiredCapability === "observe.project" ||
       effect.requiredCapability === "observe.git"
@@ -635,7 +799,11 @@ export function registerPindieExtension(
     }
 
     const snapshot = derivation.snapshot;
-    const capabilities = deriveCapabilities(snapshot);
+    const adaptationActive = adaptation.isActiveForGeneration(run.activeAgentRunGeneration);
+    const capabilities = new Set<PindieCapability>(deriveCapabilities(snapshot));
+    if (effect.requiredCapability === "policy.adapt" && adaptationActive) {
+      capabilities.add("policy.adapt");
+    }
     const authorization = authorizeToolEffect(capabilities, effect);
     if (!authorization.allowed) {
       run.recordDeniedCall(effect);
@@ -667,6 +835,7 @@ export function registerPindieExtension(
       else run.recordSuccessfulPolicyDeclaration();
       return;
     }
+    if (telemetryKind === "self-improvement") return;
     if (!authorizedExecution) return;
     const { effect } = authorizedExecution;
 
@@ -745,13 +914,17 @@ export function registerPindieExtension(
     const entries = safeSessionEntries(ctx);
     if (!entries) return;
     if (run.hasActiveAgentRun && !run.claimAgentRunSettlement()) return;
+    const settlementGeneration = run.activeAgentRunGeneration;
+    const isAdaptationRun = settlementGeneration !== null &&
+      adaptationRunGeneration === settlementGeneration;
+    adaptation.clear();
+    adaptationRunGeneration = null;
 
     presentation.setStatusContext(ctx);
 
     // Freeze all Experience inputs before clearing Run-scoped Policy, evidence,
     // and execution bookkeeping. This entire path is best-effort and cannot
     // become semantic authority.
-    const settlementGeneration = run.activeAgentRunGeneration;
     const projectRoot = runtime.projectRoot;
     let finalDerivation = run.deriveSnapshot();
     // A Run that only observed may not have crossed the consequential Gateway
@@ -782,6 +955,7 @@ export function registerPindieExtension(
     const settledCost = presentation.finishCost(entries);
 
     if (
+      !isAdaptationRun &&
       experienceStore !== null &&
       settlementGeneration !== null &&
       run.isAgentRunCurrent(settlementGeneration) &&
