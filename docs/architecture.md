@@ -1,4 +1,4 @@
-# Pindie Architecture v0.2
+# Pindie Architecture v0.3
 
 ## 1. Purpose and ownership
 

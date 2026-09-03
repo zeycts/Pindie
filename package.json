@@ -17,6 +17,7 @@
   },
   "packageManager": "pnpm@11.22.0",
   "scripts": {
+    "pindie": "node --experimental-strip-types src/pindie.ts",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "tsc --noEmit && node --experimental-strip-types --test tests/*.test.ts",

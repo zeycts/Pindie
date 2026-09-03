@@ -90,7 +90,13 @@ pnpm test
 pnpm run check
 ```
 
-Load the local extension using the Pi version pinned by this repository:
+Launch the Host-owned interactive Pindie using the Pi version pinned by this repository:
+
+```bash
+pnpm pindie
+```
+
+The legacy direct-extension path remains available as a temporary diagnostic fallback:
 
 ```bash
 pi -e ./src/extension.ts

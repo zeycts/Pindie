@@ -1,0 +1,147 @@
+import { fileURLToPath } from "node:url";
+
+import {
+  createAgentSessionFromServices,
+  createAgentSessionRuntime,
+  createAgentSessionServices,
+  getAgentDir,
+  InteractiveMode,
+  SessionManager,
+  type AgentSessionRuntime,
+  type CreateAgentSessionRuntimeFactory,
+  type InteractiveModeOptions,
+} from "@earendil-works/pi-coding-agent";
+
+export interface PindieResourcePaths {
+  extensionPath: string;
+  skillsPath: string;
+}
+
+export interface PindieInteractiveMode {
+  run(): Promise<void>;
+}
+
+export interface PindieHostDependencies {
+  createAgentSessionRuntime?: typeof createAgentSessionRuntime;
+  createAgentSessionServices?: typeof createAgentSessionServices;
+  createAgentSessionFromServices?: typeof createAgentSessionFromServices;
+  createInteractiveMode?: (
+    runtime: AgentSessionRuntime,
+    options: InteractiveModeOptions,
+  ) => PindieInteractiveMode;
+}
+
+export interface PindieHostOptions {
+  cwd?: string;
+  agentDir?: string;
+  sessionManager?: SessionManager;
+  interactiveModeOptions?: InteractiveModeOptions;
+  dependencies?: PindieHostDependencies;
+}
+
+export interface PindieHost {
+  readonly runtime: AgentSessionRuntime;
+  readonly interactiveMode: PindieInteractiveMode;
+  run(): Promise<void>;
+  dispose(): Promise<void>;
+}
+
+export function getPindieResourcePaths(): PindieResourcePaths {
+  return {
+    extensionPath: fileURLToPath(new URL("./extension.ts", import.meta.url)),
+    skillsPath: fileURLToPath(new URL("../skills/", import.meta.url)),
+  };
+}
+
+export function createPindieRuntimeFactory(
+  dependencies: Pick<
+    PindieHostDependencies,
+    "createAgentSessionServices" | "createAgentSessionFromServices"
+  > = {},
+): CreateAgentSessionRuntimeFactory {
+  const createServices = dependencies.createAgentSessionServices ?? createAgentSessionServices;
+  const createSession = dependencies.createAgentSessionFromServices ?? createAgentSessionFromServices;
+  const resources = getPindieResourcePaths();
+
+  return async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
+    const services = await createServices({
+      cwd,
+      agentDir,
+      resourceLoaderOptions: {
+        additionalExtensionPaths: [resources.extensionPath],
+        additionalSkillPaths: [resources.skillsPath],
+      },
+    });
+    const created = await createSession({
+      services,
+      sessionManager,
+      sessionStartEvent,
+    });
+
+    return {
+      ...created,
+      services,
+      diagnostics: services.diagnostics,
+    };
+  };
+}
+
+export async function createPindieHost(options: PindieHostOptions = {}): Promise<PindieHost> {
+  const cwd = options.cwd ?? process.cwd();
+  const agentDir = options.agentDir ?? getAgentDir();
+  const sessionManager = options.sessionManager ?? SessionManager.create(cwd);
+  const dependencies = options.dependencies ?? {};
+  const createRuntime = dependencies.createAgentSessionRuntime ?? createAgentSessionRuntime;
+  const createMode =
+    dependencies.createInteractiveMode ??
+    ((runtime: AgentSessionRuntime, modeOptions: InteractiveModeOptions) =>
+      new InteractiveMode(runtime, modeOptions));
+
+  let runtime: AgentSessionRuntime | undefined;
+  try {
+    runtime = await createRuntime(createPindieRuntimeFactory(dependencies), {
+      cwd,
+      agentDir,
+      sessionManager,
+    });
+
+    const modeOptions: InteractiveModeOptions = {
+      startupDiagnostics: [...runtime.diagnostics],
+      modelFallbackMessage: runtime.modelFallbackMessage,
+      ...options.interactiveModeOptions,
+    };
+    const interactiveMode = createMode(runtime, modeOptions);
+    let disposePromise: Promise<void> | undefined;
+    const dispose = (): Promise<void> => {
+      disposePromise ??= runtime!.dispose();
+      return disposePromise;
+    };
+
+    return {
+      runtime,
+      interactiveMode,
+      run: async () => {
+        try {
+          await interactiveMode.run();
+        } finally {
+          await dispose();
+        }
+      },
+      dispose,
+    };
+  } catch (error) {
+    if (runtime) {
+      try {
+        await runtime.dispose();
+      } catch {
+        // Preserve the bootstrap error; cleanup is best effort during failed setup.
+      }
+    }
+    throw error;
+  }
+}
+
+export async function runPindieHost(options: PindieHostOptions = {}): Promise<void> {
+  const host = await createPindieHost(options);
+  await host.run();
+}
