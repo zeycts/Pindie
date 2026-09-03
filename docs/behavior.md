@@ -1,4 +1,4 @@
-# Pindie v0.2 — Behavior Specification
+# Pindie v0.3 — Behavior Specification
 
 This document defines the current semantic and behavioral contract. It describes what Pindie means and guarantees now; implementation history belongs in Git history and tests.
 
@@ -20,10 +20,18 @@ Persistent State must not store runtime capabilities, active tools, Run authorit
 
 ```text
 Reality → reconstructable facts
-Harness → deterministic truth, legality, lifecycle, factual evidence, freshness
-Model   → intent interpretation, planning, semantic choice, verification meaning/coverage
-Human   → goals, taste, consequential judgment, approval
-Pi      → concrete tools, sessions, Skills, native system prompt, low-level Agent Loop
+Pindie Host
+  → Pindie process lifecycle
+  → active AgentSessionRuntime ownership/replacement
+Pindie Harness / semantic layer
+  → deterministic truth, legality, State, factual evidence/freshness
+Model
+  → intent interpretation, planning, semantic choice, verification meaning/coverage
+Human
+  → goals, taste, consequential judgment, approval
+Pi
+  → active AgentSession implementation, low-level Agent Loop, concrete tools,
+    Skills, model/provider plumbing, compaction, retries, message delivery, InteractiveMode
 ```
 
 Deterministic facts close deterministic branches. Genuine semantic ambiguity remains model-owned within the legal capability space.
