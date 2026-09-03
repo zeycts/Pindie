@@ -323,7 +323,7 @@ Runtime Independence v0.1 changes who owns Pindie's process and active Agent Ses
 The current transitional relationship is:
 
 ```text
-Pi process / Interactive Mode
+Pi process / InteractiveMode
         ↓
 Pi AgentSessionRuntime
         ↓
@@ -337,21 +337,18 @@ The v0.1 target is:
 ```text
 Pindie Host
     │
-    │ owns process lifecycle and active runtime identity
-    ↓
-Pi Runtime Adapter
+    ├── Pi Runtime Adapter
+    │       ↓
+    │   Pi AgentSessionRuntime
+    │       ├── active AgentSession
+    │       ├── low-level Agent Loop
+    │       └── tools / Skills / compaction
     │
-    │ maps Pindie lifecycle requests onto public Pi SDK primitives
-    ↓
-Pi AgentSessionRuntime
-    │
-    ├── active AgentSession
-    ├── low-level Agent Loop
-    ├── tools / Skills / compaction
-    └── InteractiveMode
+    └── Pi InteractiveMode
+            └── uses and rebinds to the same AgentSessionRuntime
 
 Existing Pindie extension + semantic modules
-remain loaded during migration
+remain loaded by the Pi runtime during migration
 ```
 
 The ownership inversion is deliberately narrow:
@@ -395,7 +392,7 @@ shutdown / dispose
 
 Exact names should follow the implementation that best fits Pi 0.84.4. The abstraction must not invent speculative multi-backend features, generic orchestration APIs, provider abstractions, or a universal Agent interface.
 
-Pi's public `createAgentSessionRuntime()` / `AgentSessionRuntime` is the natural implementation boundary because it already owns active-session replacement and recreates cwd-bound runtime state. `InteractiveMode` remains reusable rather than being rewritten by Pindie.
+Pi's public `createAgentSessionRuntime()` / `AgentSessionRuntime` is the natural implementation boundary because it already owns active-session replacement and recreates cwd-bound runtime state. Pi's public `InteractiveMode` takes that runtime and handles TUI rebinding around session replacement, so Pindie can reuse the existing interactive product rather than rewrite it.
 
 ### Existing extension during migration
 
@@ -406,9 +403,9 @@ The migration shape is:
 ```text
 Pindie Host
     ↓
-Pi Runtime Adapter
+Pi Runtime Adapter + InteractiveMode
     ↓
-Pi runtime loads existing Pindie extension
+Pi AgentSessionRuntime loads existing Pindie extension
     ↓
 existing State / Gateway / Policy / Experience behavior
 ```
@@ -427,13 +424,9 @@ The target user path is conceptually:
 pindie
   ↓
 Pindie Host
-  ↓
-Pi Runtime Adapter
-  ↓
-Pi AgentSessionRuntime
-  ↓
-InteractiveMode
-  ↓
+  ├── creates/owns Pi AgentSessionRuntime through the adapter
+  └── launches Pi InteractiveMode with that same runtime
+          ↓
 existing Pindie extension behavior
 ```
 
@@ -448,7 +441,7 @@ Slice A — Host Bootstrap
 Pindie entrypoint
 → create Pi runtime programmatically
 → load existing Pindie resources/extension
-→ launch Pi InteractiveMode
+→ launch Pi InteractiveMode with that runtime
 → prove Pindie can start the same interactive product
 
 Slice B — Runtime Ownership
