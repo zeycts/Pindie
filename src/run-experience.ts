@@ -80,7 +80,7 @@ const ZERO_EXECUTION: RunExperienceExecution = Object.freeze({
   deniedCalls: 0,
 });
 
-type AuthorizedCallKind = "execution" | "policy";
+type AuthorizedCallKind = "execution" | "policy" | "self-improvement";
 
 function copyExecution(
   counters: RunExperienceExecution,
@@ -135,8 +135,12 @@ export class RunExperienceTracker {
   /** Record a call admitted by the live Gateway without classifying prose. */
   recordAuthorizedCall(toolCallId: string, effect: ToolEffect): void {
     const isPolicy = effect.requiredCapability === "policy.declare";
-    this.authorizedCalls.set(toolCallId, isPolicy ? "policy" : "execution");
-    if (isPolicy) return;
+    const isSelfImprovement = effect.requiredCapability === "policy.adapt";
+    this.authorizedCalls.set(
+      toolCallId,
+      isPolicy ? "policy" : isSelfImprovement ? "self-improvement" : "execution",
+    );
+    if (isPolicy || isSelfImprovement) return;
 
     this.counters = {
       ...this.counters,
@@ -160,7 +164,10 @@ export class RunExperienceTracker {
 
   /** Record a call the live Gateway rejected; policy declarations are excluded. */
   recordDeniedCall(effect: ToolEffect): void {
-    if (effect.requiredCapability === "policy.declare") return;
+    if (
+      effect.requiredCapability === "policy.declare" ||
+      effect.requiredCapability === "policy.adapt"
+    ) return;
     this.counters = {
       ...this.counters,
       deniedCalls: this.counters.deniedCalls + 1,
@@ -168,7 +175,10 @@ export class RunExperienceTracker {
   }
 
   /** Record an actual result for an admitted non-policy call. */
-  recordToolResult(toolCallId: string, isError: boolean): "execution" | "policy" | null {
+  recordToolResult(
+    toolCallId: string,
+    isError: boolean,
+  ): "execution" | "policy" | "self-improvement" | null {
     const kind = this.authorizedCalls.get(toolCallId) ?? null;
     if (kind === null) return null;
     this.authorizedCalls.delete(toolCallId);

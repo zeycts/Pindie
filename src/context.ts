@@ -93,6 +93,8 @@ export function renderPindieSystemContract(): string {
     "- A current Policy Snapshot exists only after a successful pindie_policy_set declaration in this Agent Run; that tool result is the authoritative in-run Policy update.",
     "- Strategies never override actual user intent, project constraints, State or semantic authority, capabilities or Execution Gateway decisions, verification reality, or Human Gates.",
     "- Policy declaration is optional and is not required ceremony.",
+    "- Strategy Revision Candidates are inactive hypotheses; creation is valid only during explicitly entered /adapt <strategy-id> work.",
+    "- Candidates never override State, the Execution Gateway, Verification, or Task authority and never become active Policy in SI v0.5.",
   ];
   renderSeedStrategies(lines);
   lines.push(PINDIE_SYSTEM_CONTRACT_END);

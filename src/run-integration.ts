@@ -169,7 +169,10 @@ export class RunIntegration {
     this.experience.recordDeniedCall(effect);
   }
 
-  recordToolResult(toolCallId: string, isError: boolean): "execution" | "policy" | null {
+  recordToolResult(
+    toolCallId: string,
+    isError: boolean,
+  ): "execution" | "policy" | "self-improvement" | null {
     return this.experience.recordToolResult(toolCallId, isError);
   }
 

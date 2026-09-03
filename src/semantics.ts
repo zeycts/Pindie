@@ -76,6 +76,7 @@ export type PindieCapability =
   | "observe.git"
   | "project.mutate"
   | "policy.declare"
+  | "policy.adapt"
   | "task.start"
   | "task.refine"
   | "task.replace"

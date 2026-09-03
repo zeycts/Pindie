@@ -49,6 +49,7 @@ class CapturedExtensionAPI {
   readonly commands = new Map<string, any>();
   readonly appliedThinkingLevels: string[] = [];
   readonly sentMessages: unknown[] = [];
+  readonly sentUserMessages: unknown[] = [];
   readonly appendedEntries: unknown[] = [];
   readonly setActiveToolsCalls: string[][] = [];
   thinkingLevel = "medium";
@@ -88,6 +89,10 @@ class CapturedExtensionAPI {
 
   sendMessage(message: unknown, options?: unknown): void {
     this.sentMessages.push({ message, options });
+  }
+
+  sendUserMessage(content: unknown, options?: unknown): void {
+    this.sentUserMessages.push({ content, options });
   }
 
   appendEntry(entry: unknown): void { this.appendedEntries.push(entry); }
@@ -550,6 +555,9 @@ async function executeSemanticTool(
   const executionResult = await harness.api.tool(toolName).execute(
     toolCallId,
     input,
+    undefined,
+    undefined,
+    context("/repo"),
   ) as { content: Array<Record<string, unknown>> };
   const resultPatch = await harness.api.handler("tool_result")(
     toolResult(
@@ -723,6 +731,7 @@ test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
     "pindie_gate_resolve",
     "pindie_git_observe",
     "pindie_policy_set",
+    "pindie_strategy_candidate_create",
     "pindie_task_complete",
     "pindie_task_progress",
     "pindie_task_refine",
@@ -754,7 +763,7 @@ test("Remote-enabled wiring observes public input without altering Pindie tools"
   const sent: string[] = [];
   const surface: RemoteSurface = { ensureProject: async () => ({ channelId: "channel" }), ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }), send: async (_thread, event) => { sent.push(event.text); }, updateSessionPresentation: async () => undefined };
   const { api } = createHarness([], {}, { remoteCompanion: { companion: new RemoteCompanion(surface), guildId: "guild" } });
-  assert.ok(api.handlers.has("input")); assert.ok(api.handlers.has("message_end")); assert.equal(api.tools.size, 10);
+  assert.ok(api.handlers.has("input")); assert.ok(api.handlers.has("message_end")); assert.equal(api.tools.size, 11);
   await api.handler("session_start")({ type: "session_start", reason: "startup" }, context("/repo", [{ id: "u", message: { role: "user", content: "hello" } }]));
   assert.ok(Array.isArray(sent));
 });
@@ -3952,4 +3961,133 @@ test("SI v0.3 obsolete stale settlement writes no Experience", async () => {
   );
   assert.equal(harness.experienceStore.records.length, 0);
   assert.equal(harness.integration.runTimer.active, true);
+});
+
+test("SI v0.5 /adapt is explicit, Run-bound, and Candidate creation stays inactive", async () => {
+  const reader = new ExtensionTestExperienceReader();
+  reader.result = {
+    records: [
+      { recordId: "one.json", experience: commandExperience("adapt one", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "two.json", experience: commandExperience("adapt two", createPolicySnapshot({ approach: "direct-action" })) },
+    ],
+    loadedSchemaV3: 2,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const saved: any[] = [];
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    experienceReader: reader,
+    strategyCandidateStore: { save: async (_root, candidate) => { saved.push(candidate); } },
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  const command = harness.api.commands.get("adapt");
+  assert.ok(command);
+  assert.equal(command.getArgumentCompletions("direct")[0].value, "direct-action");
+  assert.equal(command.getArgumentCompletions("").length, 7);
+
+  await command.handler("direct-action", {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  assert.equal(harness.api.sentUserMessages.length, 1);
+  assert.match(notices.at(-1)?.message ?? "", /adaptation Run started/);
+  await command.handler("direct-action", {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  assert.match(notices.at(-1)?.message ?? "", /another adaptation attempt is already active/i);
+  assert.equal(harness.api.sentUserMessages.length, 1);
+
+  const adaptationBaseline = await harnessBeforeAgentStart(harness);
+  assert.match(adaptationBaseline.systemPrompt, /<PINDIE_ADAPTATION_PACKET>/);
+  assert.match(adaptationBaseline.systemPrompt, /this is not a project implementation Task/i);
+  assert.match(adaptationBaseline.systemPrompt, /co-occurring Strategies are confounders/i);
+  assert.doesNotMatch(adaptationBaseline.message.content, /<PINDIE_ADAPTATION_PACKET>/);
+
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  assertBlocked(
+    await callGuard(harness, toolCall("edit", { path: "src/index.ts", oldText: "x", newText: "y" }, "adapt-edit")),
+    /adaptation Run is read-only/,
+  );
+  const candidateInput = {
+    summary: "Prefer a smaller verified change after a focused check.",
+    useWhen: ["the relevant boundary is narrow and observable"],
+    avoidWhen: ["the likely fix remains unclear"],
+    principles: ["make one bounded change", "verify before expanding scope"],
+    sourceRecordIds: ["one.json", "two.json"],
+    hypothesis: "Repeated attributable Runs suggest that a narrower first move may reduce rework.",
+  };
+  await executeSemanticTool(harness, "pindie_strategy_candidate_create", "candidate", candidateInput);
+  assert.equal(saved.length, 1);
+  assertBlocked(
+    await callGuard(harness, toolCall("edit", { path: "src/index.ts", oldText: "x", newText: "y" }, "adapt-edit-after-candidate")),
+    /adaptation Run is read-only/,
+  );
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.equal(harness.integration.policySnapshot, null);
+  assert.equal(harness.experienceStore.records.length, 0);
+  await captureObservationEvidence(harness, "adaptation-observation");
+  const followUpsBeforeAdaptationEnd = harness.api.sentMessages.length;
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(harness.api.sentMessages.length, followUpsBeforeAdaptationEnd);
+
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  await beginAgentRun(harness);
+  assert.doesNotMatch(
+    (await harnessBeforeAgentStart(harness)).systemPrompt,
+    /<PINDIE_ADAPTATION_PACKET>/,
+  );
+  assertBlocked(
+    await callGuard(harness, toolCall("pindie_strategy_candidate_create", candidateInput, "ordinary-candidate")),
+    /explicit adaptation|\/adapt <strategy-id>/i,
+  );
+});
+
+test("SI v0.5 /adapt rejects unknown, busy, missing-root, and insufficient evidence without a model turn", async () => {
+  const reader = new ExtensionTestExperienceReader();
+  const harness = createHarness([], {}, { experienceReader: reader });
+  const notices: Array<{ message: string; type: string }> = [];
+  const commandContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+  await startSession(harness, "/repo");
+  await harness.api.commands.get("adapt").handler("direct-action extra", commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /Usage: \/adapt <strategy-id>/i);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+
+  await harness.api.commands.get("adapt").handler("unknown", commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /not a valid Seed Strategy/i);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+
+  await harness.api.commands.get("adapt").handler("direct-action", {
+    ...commandContext,
+    isIdle: () => false,
+  });
+  assert.match(notices.at(-1)?.message ?? "", /Agent is busy/i);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+
+  const noRoot = createHarness([], {}, { experienceReader: reader });
+  const noRootNotices: Array<{ message: string; type: string }> = [];
+  await noRoot.api.commands.get("adapt").handler("direct-action", {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => noRootNotices.push({ message, type }) },
+  });
+  assert.match(noRootNotices.at(-1)?.message ?? "", /no current project root/i);
+  assert.equal(noRoot.api.sentUserMessages.length, 0);
+
+  reader.result = {
+    records: [{ recordId: "only.json", experience: commandExperience("only", createPolicySnapshot({ approach: "direct-action" })) }],
+    loadedSchemaV3: 1,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  await harness.api.commands.get("adapt").handler("direct-action", commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /only 1 eligible attributable Run/i);
+  assert.equal(harness.api.sentUserMessages.length, 0);
 });

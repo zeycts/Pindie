@@ -81,6 +81,7 @@ observe.project
 observe.git
 project.mutate
 policy.declare
+policy.adapt
 
 task.start
 task.refine
@@ -101,6 +102,8 @@ observe.project
 observe.git
 policy.declare
 ```
+
+`policy.adapt` is a separate non-mutating control effect. It is admitted only for the Candidate tool during a live explicit `/adapt <strategy-id>` Run; it is not part of ordinary semantic Task capability sets.
 
 Coherent capability states:
 
@@ -158,7 +161,7 @@ allowed = capabilities.has(effect.requiredCapability)
 
 Known observation tools keep the observation fast path. Consequential calls use authoritative refresh/coherence checks before capability authorization.
 
-The Gateway remains defense in depth for races, stale already-generated calls, external-State changes, and same-Run semantic transitions.
+The Gateway remains defense in depth for races, stale already-generated calls, external-State changes, and same-Run semantic transitions. Candidate creation uses the separate non-mutating `policy.adapt` effect and still requires a live explicit `/adapt <strategy-id>` adaptation lease.
 
 ## 6. Project Mutation Freshness
 
@@ -185,6 +188,7 @@ Pindie exposes narrow semantic affordances:
 
 ```text
 pindie_policy_set          → policy.declare
+pindie_strategy_candidate_create → policy.adapt
 pindie_task_start          → task.start
 pindie_task_replace        → task.replace
 pindie_task_refine         → task.refine
@@ -355,3 +359,4 @@ Run Activity reflects actual Pi tool lifecycle. Presentation reads authoritative
 8. Reducer invariants remain valid even if the outer Gateway layer fails.
 9. Historical runtime metadata remains append-only until normal Pi compaction; it does not rewrite prior model history.
 10. Pi remains the sole low-level Agent Loop and Skill runtime.
+11. Strategy Revision Candidates are inactive hypotheses; only explicit `/adapt <strategy-id>` may create one, and it never becomes active Policy in SI v0.5.
