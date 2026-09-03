@@ -21,7 +21,14 @@ import {
 
 function fakeRuntime() {
   let disposeCalls = 0;
+  let newSessionCalls = 0;
+  const session = { sessionId: "session-1" } as AgentSession;
   const runtime = {
+    session,
+    newSession: async () => {
+      newSessionCalls += 1;
+      return { cancelled: false };
+    },
     diagnostics: [],
     modelFallbackMessage: undefined,
     dispose: async () => {
@@ -31,6 +38,7 @@ function fakeRuntime() {
   return {
     runtime,
     disposeCalls: () => disposeCalls,
+    newSessionCalls: () => newSessionCalls,
   };
 }
 
@@ -91,7 +99,7 @@ test("runtime factory passes project cwd and package resources to Pi services", 
 
 test("Host creates one runtime and supplies that same runtime to InteractiveMode", async () => {
   const projectCwd = "/tmp/pindie-host-project";
-  const { runtime, disposeCalls } = fakeRuntime();
+  const { runtime, disposeCalls, newSessionCalls } = fakeRuntime();
   const sessionManager = SessionManager.inMemory(projectCwd);
   let runtimeCalls = 0;
   let runtimeOptions: { cwd: string } | undefined;
@@ -122,10 +130,29 @@ test("Host creates one runtime and supplies that same runtime to InteractiveMode
   assert.equal(runtimeCalls, 1);
   assert.equal(runtimeOptions?.cwd, projectCwd);
   assert.equal(modeRuntime, runtime);
+  assert.equal(host.runtime.activeSession, runtime.session);
+
+  await host.runtime.replaceWithFreshSession();
+  assert.equal(newSessionCalls(), 1);
 
   await host.run();
 
   assert.equal(modeRuns, 1);
+  assert.equal(disposeCalls(), 1);
+});
+
+test("Host disposal is idempotent and disposes the native runtime once", async () => {
+  const { runtime, disposeCalls } = fakeRuntime();
+  const host = await createPindieHost({
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+    dependencies: {
+      createAgentSessionRuntime: async () => runtime,
+      createInteractiveMode: () => ({ run: async () => {} }),
+    },
+  });
+
+  await Promise.all([host.dispose(), host.dispose()]);
+
   assert.equal(disposeCalls(), 1);
 });
 
