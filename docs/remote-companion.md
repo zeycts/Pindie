@@ -1,6 +1,6 @@
 # Pindie Remote Companion v0.1
 
-This document is the authoritative architecture, behavior, and test contract for Pindie's optional remote companion. It extends the Pindie v0.2 architecture without changing semantic ownership.
+This document is the authoritative architecture, behavior, and test contract for Pindie's optional remote companion. It extends the Pindie v0.3 architecture without changing semantic ownership.
 
 The target use case is simple: a Task is already running in the local Pi TUI, the human leaves the computer, and the same live Pi Session remains observable and steerable from a phone through Discord. Returning to the computer must reveal the same Session history and the same Pindie Task.
 
@@ -25,9 +25,10 @@ SAME live Pi Session
 Ownership remains:
 
 ```text
-Pi      → conversation Session, Agent Loop, user-message delivery, steer/followUp queues,
-          concrete tools, retries, compaction, Skills
-Pindie  → semantic State, capabilities, execution authority, verification, Human Gate
+Pindie Host → Pindie process lifecycle, active AgentSessionRuntime lifecycle/replacement
+Pi          → active AgentSession implementation, native Session lifecycle, message delivery,
+              steer/followUp queues, concrete tools, retries, compaction, Skills
+Pindie      → semantic State, capabilities, execution authority, verification, Human Gate
 Remote  → external routing, filtered Session projection, remote input/output
 Discord → presentation/control surface only
 ```
@@ -53,6 +54,8 @@ The identity rules are strict:
 canonical ProjectRoot  1:1  Discord text channel
 Pi Session ID          1:1  Discord thread
 ```
+
+Pi Session ID remains conversation identity. A fresh Host-owned Session replacement gets a new native Pi Session ID and therefore a new active Remote Session/thread identity; the old thread remains historical.
 
 A channel is a Project index. Ordinary Session conversation does not live in the channel root.
 
@@ -177,7 +180,7 @@ A Session Anchor lives in the Project channel and acts as a compact Session-inde
 
 ## 7. Active and historical Sessions
 
-At any moment the local process has one current Pi Session. Only its mapped thread is remotely controllable.
+At any moment the local process has one current Pi Session owned by the active Host runtime. Only its mapped thread is remotely controllable.
 
 Historical threads remain readable but are read-only in v0.1. A message sent to a historical thread must not call Pi, switch Sessions, resume a Session, or mutate project state. It returns a concise explanation that the Session must first be resumed from the local TUI.
 

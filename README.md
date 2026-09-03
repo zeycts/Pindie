@@ -2,15 +2,16 @@
 
 > Pindie is a personal AI agent for indie development, built on Pi.
 
-Pindie carries one development task from intent to verified completion while keeping consequential human judgment explicit. Pi remains the low-level Agent Harness; Pindie adds a small semantic operating layer above it.
+Pindie carries one development task from intent to verified completion while keeping consequential human judgment explicit. Pindie Host owns the process and active Pi runtime lifecycle; Pi remains the low-level Agent Harness and Pindie adds a small semantic operating layer above it.
 
 ## Ownership
 
 ```text
-Human  → goals, taste, consequential judgment, approval
-Model  → interpretation, planning, semantic choice, verification meaning/coverage
-Pindie → durable semantic State, legality, capability, factual evidence/freshness, lifecycle
-Pi     → LLM execution, tools, sessions, Skills, low-level Agent Loop
+Human       → goals, taste, consequential judgment, approval
+Model       → interpretation, planning, semantic choice, verification meaning/coverage
+Pindie Host → process lifecycle, active AgentSessionRuntime ownership/replacement
+Pindie      → durable semantic State, legality, capability, factual evidence/freshness
+Pi          → active AgentSession implementation, LLM execution, tools, Skills, low-level Agent Loop
 ```
 
 > Eliminate meaningless choices, preserve meaningful choices.
