@@ -2,13 +2,13 @@
 
 ## 1. Purpose and ownership
 
-Pindie is a personal AI agent for indie development built on Pi. Pi remains the low-level Agent Harness; Pindie adds a small semantic operating layer above it.
+Pindie is a personal Agent Operating System for indie development. Pi is its current low-level execution runtime, not the long-term owner of Pindie's lifecycle. The current implementation is still extension-hosted; Runtime Independence v0.1 migrates process and active-session ownership upward into Pindie without changing existing semantic behavior.
 
 ```text
 Human  → goals, taste, consequential judgment, approval
 Model  → meaning, interpretation, planning, semantic choice
-Pindie → durable semantic truth, legality, capability, factual evidence/freshness, lifecycle
-Pi     → LLM execution, concrete tools, sessions, Skills, low-level Agent Loop
+Pindie → durable semantic truth, legality, capability, factual evidence/freshness, product/runtime lifecycle
+Pi     → LLM execution, concrete tools, Skills, low-level Agent Loop, compaction, interactive primitives
 ```
 
 Pindie should eliminate meaningless choices, not meaningful choices.
@@ -316,7 +316,166 @@ Pi is the only Skill runtime. Pindie may bundle procedural Skills, but a Skill m
 
 A Skill may describe a reusable procedure such as Git delivery. It must not duplicate Task admission, capability legality, verification authority, Human Gate lifecycle, or completion rules already enforced by the Harness.
 
-## 13. Architectural invariants
+## 13. Runtime Independence v0.1 — target ownership inversion
+
+Runtime Independence v0.1 changes who owns Pindie's process and active Agent Session lifecycle without changing Task, State, semantic authority, Gateway, Verification, Policy, Experience, Self-Improvement, Remote, or ordinary user-visible behavior.
+
+The current transitional relationship is:
+
+```text
+Pi process / Interactive Mode
+        ↓
+Pi AgentSessionRuntime
+        ↓
+Pindie extension
+        ↓
+Pindie semantic/runtime modules
+```
+
+The v0.1 target is:
+
+```text
+Pindie Host
+    │
+    │ owns process lifecycle and active runtime identity
+    ↓
+Pi Runtime Adapter
+    │
+    │ maps Pindie lifecycle requests onto public Pi SDK primitives
+    ↓
+Pi AgentSessionRuntime
+    │
+    ├── active AgentSession
+    ├── low-level Agent Loop
+    ├── tools / Skills / compaction
+    └── InteractiveMode
+
+Existing Pindie extension + semantic modules
+remain loaded during migration
+```
+
+The ownership inversion is deliberately narrow:
+
+```text
+Before: Pi starts Pindie.
+After:  Pindie starts and owns a Pi runtime.
+```
+
+It is ownership independence, not implementation independence. Pindie continues to reuse Pi for model/provider plumbing, tool execution, Skills, sessions, compaction, streaming, and TUI primitives rather than rebuilding a coding-agent harness.
+
+### Pindie Host ownership
+
+After v0.1, the Host is the stable top-level process/runtime owner. It owns only lifecycle concerns required above any individual Pi Session:
+
+```text
+Pindie Host
+├── process startup / shutdown
+├── canonical working directory / project runtime bootstrap
+├── one active Pi AgentSessionRuntime
+├── active-session replacement authority
+└── stable access to the Pi Runtime Adapter
+```
+
+The Host does not own semantic problem solving. It does not plan Tasks, select work phases, judge Verification, synthesize Policy, or run a second LLM loop.
+
+`PindieState` remains semantic authority. A Host failure must not reinterpret durable Task truth.
+
+### Pi Runtime Adapter
+
+Pindie-owned code must not spread Pi session/runtime lifecycle calls across domain modules. Runtime Independence v0.1 introduces one thin boundary whose conceptual primitives are no larger than the real needs demonstrated by Pi's public SDK:
+
+```text
+create / bootstrap active runtime
+get active session
+prompt / steer / follow-up through the active session
+observe active-session events and context usage
+replace with a fresh session
+shutdown / dispose
+```
+
+Exact names should follow the implementation that best fits Pi 0.84.4. The abstraction must not invent speculative multi-backend features, generic orchestration APIs, provider abstractions, or a universal Agent interface.
+
+Pi's public `createAgentSessionRuntime()` / `AgentSessionRuntime` is the natural implementation boundary because it already owns active-session replacement and recreates cwd-bound runtime state. `InteractiveMode` remains reusable rather than being rewritten by Pindie.
+
+### Existing extension during migration
+
+Runtime Independence v0.1 does not require moving the existing semantic implementation out of `src/extension.ts` before the ownership inversion is proven.
+
+The migration shape is:
+
+```text
+Pindie Host
+    ↓
+Pi Runtime Adapter
+    ↓
+Pi runtime loads existing Pindie extension
+    ↓
+existing State / Gateway / Policy / Experience behavior
+```
+
+This allows the architecture to invert first while semantic code continues to use the already-tested extension integration. Later code ownership may move only when a concrete capability demonstrates that the extension boundary is the wrong home.
+
+Therefore file/folder reorganization is not a v0.1 success criterion.
+
+### Compatibility target
+
+Runtime Independence v0.1 is successful when starting Pindie directly produces effectively the same current interactive product while Pindie, rather than an external Pi CLI process, owns the active `AgentSessionRuntime`.
+
+The target user path is conceptually:
+
+```text
+pindie
+  ↓
+Pindie Host
+  ↓
+Pi Runtime Adapter
+  ↓
+Pi AgentSessionRuntime
+  ↓
+InteractiveMode
+  ↓
+existing Pindie extension behavior
+```
+
+Existing Pi/Pindie semantics remain intact: project State loading, model/tool execution, system-contract injection, Run Experience, Self-Improvement, `/reload` behavior where applicable, compaction checkpoints, Remote projection, and shutdown correctness must not silently diverge.
+
+### Implementation slices
+
+Runtime Independence v0.1 is one architecture milestone implemented as small reviewable slices.
+
+```text
+Slice A — Host Bootstrap
+Pindie entrypoint
+→ create Pi runtime programmatically
+→ load existing Pindie resources/extension
+→ launch Pi InteractiveMode
+→ prove Pindie can start the same interactive product
+
+Slice B — Runtime Ownership
+Host owns the active AgentSessionRuntime
+→ isolate the thin Pi Runtime Adapter
+→ expose only demonstrated lifecycle primitives
+→ prove Pindie can replace/dispose the active Session programmatically
+
+Slice C — Compatibility Closure
+exercise existing Pindie behavior through the Host-owned runtime
+→ close lifecycle/reload/Remote/shutdown regressions
+→ update current behavior docs only after the new ownership is real
+```
+
+Each slice must be independently reviewable. A slice must not opportunistically implement Long Task Runtime, automatic context rollover, new memory, multi-agent scheduling, model routing, or SI v0.6.
+
+### What v0.1 unlocks
+
+Runtime Independence v0.1 does not itself implement Long Task Runtime. It establishes the missing ownership primitive:
+
+```text
+Pindie can own and replace the active Agent Session
+```
+
+Long Task Runtime can then be designed above that boundary as a Pindie-owned lifecycle scheduler rather than as extension callback choreography. Self-Improvement can likewise create purpose-specific Agent executions later without pretending every execution must be initiated by an externally owned Session.
+
+## 14. Architectural invariants
 
 1. Reality determines reconstructable facts.
 2. State stores only durable semantic current-work facts.
@@ -334,9 +493,10 @@ A Skill may describe a reusable procedure such as Git delivery. It must not dupl
 14. Durable Verification State remains compact; Pindie is not a tool-result log database.
 15. Historical runtime probes remain append-only until normal Pi compaction and never rewrite prior model history.
 16. Skills are procedural and do not own semantic correctness.
-17. Pi owns the low-level Agent Loop, Skill runtime, concrete tool registry, native system-prompt construction, retries, compaction, and follow-up delivery.
+17. Pi owns the low-level Agent Loop, Skill runtime, concrete tool registry, native system-prompt construction, retries, compaction, and follow-up delivery; after Runtime Independence v0.1, Pindie Host owns the process and active `AgentSessionRuntime` lifecycle above those primitives.
 18. Optional Remote projection derives from native Pi Session history and existing Pindie runtime/semantic facts; Discord never becomes semantic or conversation authority.
 19. Durable Remote metadata stores external routing/delivery identity only and never enters `PindieState`.
 20. Remote control targets only the current live Pi Session through Pi public boundaries; it never creates a parallel Session or queue.
 21. Remote/Discord failure must not alter local Pindie correctness or stop the local Agent.
 22. Strategy Revision Candidates are inactive hypotheses only; SI v0.5 Candidate creation is explicit `/adapt <strategy-id>` work and never activates or overrides Policy.
+23. Runtime Independence is an ownership inversion, not a second Agent Loop: Pindie may own Agent/Session lifecycle while Pi remains the low-level execution runtime.
