@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@earendil-works/pi-coding-agent@0.84.4': 547b06fcec6a03019bfeacc9b14a6109da58a5738a83b05c8680391e1dad1b0e
+
 importers:
 
   .:
@@ -29,7 +32,7 @@ importers:
         version: 0.84.4(ws@8.21.3)
       '@earendil-works/pi-coding-agent':
         specifier: 0.84.4
-        version: 0.84.4(ws@8.21.3)
+        version: 0.84.4(patch_hash=547b06fcec6a03019bfeacc9b14a6109da58a5738a83b05c8680391e1dad1b0e)(ws@8.21.3)
       '@types/node':
         specifier: ^26.2.0
         version: 26.2.0
@@ -1003,7 +1006,7 @@ snapshots:
     dependencies:
       '@earendil-works/pi-protocol': 0.84.4
 
-  '@earendil-works/pi-coding-agent@0.84.4(ws@8.21.3)':
+  '@earendil-works/pi-coding-agent@0.84.4(patch_hash=547b06fcec6a03019bfeacc9b14a6109da58a5738a83b05c8680391e1dad1b0e)(ws@8.21.3)':
     dependencies:
       '@earendil-works/pi-agent-core': 0.84.4(ws@8.21.3)
       '@earendil-works/pi-ai': 0.84.4(ws@8.21.3)

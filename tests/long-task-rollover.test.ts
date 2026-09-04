@@ -241,6 +241,57 @@ test("duplicate and in-progress requests never overlap replacements", async () =
   assert.equal(control.nativeCallCount(), 1);
 });
 
+test("releases replacement ownership before the resumed Agent Run settles", async () => {
+  const control = fakeRuntime();
+  const scheduler = new ManualScheduler();
+  let replacementNumber = 0;
+  let resolveResume!: () => void;
+  let resumeStarted!: () => void;
+  const resumeStartedPromise = new Promise<void>((resolve) => { resumeStarted = resolve; });
+  const resumeSettled = new Promise<void>((resolve) => { resolveResume = resolve; });
+
+  control.setReplacement(async (options) => {
+    replacementNumber += 1;
+    control.setSessionId(`session-${replacementNumber + 1}`);
+    if (replacementNumber === 1) {
+      control.setFacts({ isStreaming: true });
+      await options?.withSession?.({
+        sendMessage: async () => {
+          resumeStarted();
+          await resumeSettled;
+        },
+      } as never);
+      return { cancelled: false };
+    }
+
+    await options?.withSession?.({ sendMessage: async () => undefined } as never);
+    return { cancelled: false };
+  });
+
+  const supervisor = new LongTaskRolloverSupervisor(control.adapter, { schedule: scheduler.schedule });
+  supervisor.request(request("session-1"));
+  const firstAttempt = scheduler.runNext();
+  await resumeStartedPromise;
+
+  // The fresh Session is active while its native custom-message Promise is
+  // still pending, matching Pi 0.84.4's sendCustomMessage lifetime.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(control.nativeCallCount(), 1);
+  assert.equal(control.adapter.activeSessionId, "session-2");
+
+  // The resumed run settles and commits its next checkpoint. The supervisor
+  // must already have released replacement ownership by this point.
+  control.setFacts({ isStreaming: false });
+  supervisor.request(request("session-2"));
+  assert.equal(scheduler.callbacks.length, 1);
+
+  resolveResume();
+  await firstAttempt;
+  await scheduler.runNext();
+  assert.equal(control.nativeCallCount(), 2);
+  assert.equal(control.adapter.activeSessionId, "session-3");
+});
+
 test("the automatic rollover fuse stops an excessive uninterrupted chain", async () => {
   const control = fakeRuntime();
   const scheduler = new ManualScheduler();

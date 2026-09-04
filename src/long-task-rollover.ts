@@ -46,6 +46,7 @@ export class LongTaskRolloverSupervisor {
   private pendingRequest: CommittedRolloverRequest | null = null;
   private scheduled = false;
   private inProgress = false;
+  private inProgressPromise: Promise<void> | undefined;
   private disposed = false;
   private chainSessionId: string | null = null;
   private chainCount = 0;
@@ -75,14 +76,17 @@ export class LongTaskRolloverSupervisor {
         this.pendingRequest = null;
         if (pending === null || this.disposed) return;
         this.inProgress = true;
-        void this.attemptRollover(pending)
+        const attempt = this.attemptRollover(pending)
           .catch((error: unknown) => {
             this.breakChain();
             this.report(`Automatic Long Task rollover failed: ${errorMessage(error)}`);
           })
           .finally(() => {
             this.inProgress = false;
+            this.inProgressPromise = undefined;
           });
+        this.inProgressPromise = attempt;
+        void attempt;
       });
     } catch (error) {
       this.scheduled = false;
@@ -92,10 +96,11 @@ export class LongTaskRolloverSupervisor {
     }
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.disposed = true;
     this.pendingRequest = null;
     this.breakChain();
+    await this.inProgressPromise;
   }
 
   private async attemptRollover(request: CommittedRolloverRequest): Promise<void> {
@@ -141,7 +146,10 @@ export class LongTaskRolloverSupervisor {
     const options: SessionReplacementOptions = {
       withSession: async (replacementContext) => {
         replacementStarted = true;
-        await replacementContext.sendMessage(
+        // Pi 0.84.4's sendMessage(triggerTurn: true) Promise covers the full
+        // Agent Run. Do not hold replacement ownership for that lifetime: the
+        // fresh Session must be able to commit and request the next rollover.
+        const resumePromise = replacementContext.sendMessage(
           {
             customType: PINDIE_LONG_TASK_RESUME_TYPE,
             content: formatLongTaskResume(request.checkpoint),
@@ -149,6 +157,10 @@ export class LongTaskRolloverSupervisor {
           },
           { triggerTurn: true },
         );
+        void resumePromise.catch((error: unknown) => {
+          this.breakChain();
+          this.report(`Automatic Long Task resume message failed after Pi installed the fresh Session: ${errorMessage(error)}`);
+        });
       },
     };
 
@@ -164,7 +176,7 @@ export class LongTaskRolloverSupervisor {
       this.breakChain();
       this.report(
         replacementStarted
-          ? `Automatic Long Task resume message failed after Pi installed the fresh Session: ${errorMessage(error)}`
+          ? `Automatic Long Task Session replacement failed after the fresh Session began: ${errorMessage(error)}`
           : `Automatic Long Task Session replacement failed: ${errorMessage(error)}`,
       );
     }

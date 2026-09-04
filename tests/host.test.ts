@@ -18,6 +18,29 @@ import {
   getPindieResourcePaths,
   type PindieInteractiveMode,
 } from "../src/host.ts";
+import { getCommittedRolloverPublisher } from "../src/long-task-control.ts";
+import { createTaskContinuity } from "../src/task-continuity.ts";
+
+class ManualScheduler {
+  readonly callbacks: Array<() => void> = [];
+
+  readonly schedule = (callback: () => void): void => {
+    this.callbacks.push(callback);
+  };
+}
+
+function committedRequest(sourceSessionId: string) {
+  return {
+    sourceSessionId,
+    checkpoint: createTaskContinuity({
+      createdAt: "2026-09-04T00:00:00.000Z",
+      taskFingerprint: `sha256:${"c".repeat(64)}`,
+      sourceSessionId,
+      progressSummary: "Preserve the runtime while the native replacement is active.",
+      decisions: ["Pi owns native Session replacement."],
+    }),
+  };
+}
 
 function fakeRuntime() {
   let disposeCalls = 0;
@@ -250,4 +273,66 @@ test("Host control bridge rejects a second live Host and releases on disposal", 
     },
   });
   await afterRelease.dispose();
+});
+
+test("Host disposal waits for an in-flight native replacement before disposing Pi", async () => {
+  const scheduler = new ManualScheduler();
+  const facts = { isStreaming: false, isCompacting: false, pendingMessageCount: 0 };
+  let nativeReplacementEntered!: () => void;
+  const nativeReplacementEnteredPromise = new Promise<void>((resolve) => {
+    nativeReplacementEntered = resolve;
+  });
+  let releaseNativeReplacement!: () => void;
+  const nativeReplacement = new Promise<void>((resolve) => {
+    releaseNativeReplacement = resolve;
+  });
+  let nativeDisposeCalls = 0;
+  const session = {
+    sessionId: "session-1",
+    get isStreaming() { return facts.isStreaming; },
+    get isCompacting() { return facts.isCompacting; },
+    get pendingMessageCount() { return facts.pendingMessageCount; },
+  } as unknown as AgentSession;
+  const runtime = {
+    get session() { return session; },
+    diagnostics: [],
+    modelFallbackMessage: undefined,
+    newSession: async () => {
+      nativeReplacementEntered();
+      await nativeReplacement;
+      return { cancelled: false };
+    },
+    dispose: async () => {
+      nativeDisposeCalls += 1;
+    },
+  } as unknown as AgentSessionRuntime;
+  const host = await createPindieHost({
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+    longTaskRollover: { schedule: scheduler.schedule },
+    dependencies: {
+      createAgentSessionRuntime: async () => runtime,
+      createInteractiveMode: () => ({ run: async () => {} }),
+    },
+  });
+
+  try {
+    const publisher = getCommittedRolloverPublisher();
+    assert.ok(publisher);
+    publisher(committedRequest("session-1"));
+    const scheduled = scheduler.callbacks.shift();
+    assert.ok(scheduled);
+    scheduled();
+    await nativeReplacementEnteredPromise;
+
+    const disposing = host.dispose();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(nativeDisposeCalls, 0);
+
+    releaseNativeReplacement();
+    await disposing;
+    assert.equal(nativeDisposeCalls, 1);
+  } finally {
+    releaseNativeReplacement();
+    await host.dispose();
+  }
 });

@@ -119,10 +119,10 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     rolloverSupervisor.request(request);
   });
 
-  const releaseHostControl = (): void => {
+  const releaseHostControl = async (): Promise<void> => {
     releaseControlBridge?.();
     releaseControlBridge = undefined;
-    rolloverSupervisor?.dispose();
+    await rolloverSupervisor?.dispose();
   };
 
   try {
@@ -143,7 +143,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     let disposePromise: Promise<void> | undefined;
     const dispose = (): Promise<void> => {
       disposePromise ??= (async () => {
-        releaseHostControl();
+        await releaseHostControl();
         await runtime!.dispose();
       })();
       return disposePromise;
@@ -162,7 +162,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       dispose,
     };
   } catch (error) {
-    releaseHostControl();
+    await releaseHostControl();
     if (runtime ?? nativeRuntime) {
       try {
         await (runtime ?? nativeRuntime)!.dispose();

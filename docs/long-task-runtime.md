@@ -215,6 +215,24 @@ CommittedRolloverRequest
 
 The concrete wiring is a tiny process-local, non-durable, session-bound control bridge. It is not a generic event bus and carries no Task authority, planner state, or LLM logic.
 
+### Pi 0.84.4 compatibility boundary
+
+The pinned Pi 0.84.4 runtime starts an idle `sendCustomMessage(...,
+{ triggerTurn: true })` by entering its agent loop directly. That native path
+does not run the `before_agent_start` preflight that Pindie uses to establish
+Run authority and the Run Baseline. Pindie therefore carries a small pnpm
+patch at the Pi runtime boundary that applies the existing preflight to this
+one custom-trigger path while preserving the custom runtime-message role.
+The patch does not copy Pi's Agent Loop or change Pindie semantic ownership.
+
+Remove the patch once the pinned Pi release includes the shared turn-start
+preflight described by [Pi PR #8262](https://github.com/earendil-works/pi/pull/8262),
+after conformance tests confirm that an idle custom runtime turn dispatches
+the normal Pindie `before_agent_start` path. Pi's native
+`sendCustomMessage()` Promise still represents the full triggered run in
+0.84.4, so the Host starts it without awaiting that Promise and observes a
+later rejection fail-closed.
+
 The Host already owns the active `AgentSessionRuntime`, so settlement, replacement, and the new active Session do not need to be mirrored back through another event platform.
 
 Conceptually:
