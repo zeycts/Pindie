@@ -7,6 +7,14 @@ import type {
 import type { ImageContent } from "@earendil-works/pi-ai/compat";
 
 export type SessionReplacementResult = Awaited<ReturnType<AgentSessionRuntime["newSession"]>>;
+export type SessionReplacementOptions = NonNullable<Parameters<AgentSessionRuntime["newSession"]>[0]>;
+
+export interface ActiveSessionFacts {
+  readonly sessionId: string;
+  readonly isStreaming: boolean;
+  readonly isCompacting: boolean;
+  readonly pendingMessageCount: number;
+}
 
 /**
  * Pindie's small ownership boundary around Pi's active session runtime.
@@ -35,6 +43,16 @@ export class PiRuntimeAdapter {
     return this.activeSession.getContextUsage();
   }
 
+  getActiveSessionFacts(): ActiveSessionFacts {
+    const session = this.activeSession;
+    return {
+      sessionId: session.sessionId,
+      isStreaming: session.isStreaming,
+      isCompacting: session.isCompacting,
+      pendingMessageCount: session.pendingMessageCount,
+    };
+  }
+
   prompt(text: string, options?: PromptOptions): Promise<void> {
     return this.activeSession.prompt(text, options);
   }
@@ -47,8 +65,8 @@ export class PiRuntimeAdapter {
     return this.activeSession.followUp(text, images);
   }
 
-  replaceWithFreshSession(): Promise<SessionReplacementResult> {
-    return this.nativeRuntime.newSession();
+  replaceWithFreshSession(options?: SessionReplacementOptions): Promise<SessionReplacementResult> {
+    return this.nativeRuntime.newSession(options);
   }
 
   dispose(): Promise<void> {
