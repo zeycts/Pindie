@@ -179,11 +179,7 @@ Do not add rationale, confidence, reward, workflow phases, or durable Policy his
 
 ## 8. Experience schema v4
 
-Schema v3 cannot distinguish `architecture-first@seed` from `architecture-first@candidate`. Its Policy identity is Seed-ID-only and its parser canonicalizes against the immutable Seed catalog.
-
-Therefore the first executable non-Seed revision requires schema v4.
-
-Schema v4 keeps the existing bounded Run Experience structure and changes only Policy facts required for revision-aware attribution:
+Schema-v4 is the only live Run Experience contract. It keeps the existing bounded Run Experience structure and carries the Policy facts required for revision-aware attribution:
 
 ```text
 schemaVersion: 4
@@ -202,19 +198,15 @@ metrics       # same
 
 No transcript, reasoning, quality score, task taxonomy, or arbitrary Trial log enters v4.
 
-### Historical compatibility
+### Historical records outside live evidence
 
-```text
-v1/v2 → unsupported immutable history
-v3    → supported legacy Seed-only Experience
-v4    → current revision-aware writer
-```
+Pre-v4 records are not part of the live Experience evidence set. They may be
+archived outside the live `experience/` directory, for example under
+`archive/experience-v3/`, and are not parsed, normalized, or evaluated.
 
-Never rewrite v3 files.
-
-Evaluation normalizes valid v3 and v4 records into one revision-aware derived representation. A v3 Seed selection is interpreted as the immutable Seed revision; v4 uses its recorded revision identity/fingerprint/status.
-
-This preserves historical Seed evidence as the Candidate baseline.
+Evaluation consumes only valid schema-v4 records and uses their recorded
+revision identity, fingerprint, and status directly. Current schema-v4 Seed
+records provide the Candidate baseline.
 
 ## 9. `/adapt` must continue after v4
 
@@ -222,7 +214,6 @@ Switching the current writer to v4 must not break SI v0.5 adaptation.
 
 In SI v0.6, new Candidates still target the immutable Seed revision. Eligible source evidence may come from:
 
-- schema-v3 Runs containing that Seed Strategy;
 - schema-v4 Runs containing that exact Seed revision.
 
 Trial/promoted Candidate revision Runs are not Seed evidence for Seed-targeted `/adapt`.
@@ -264,7 +255,7 @@ duration / cost
 source Experience IDs
 ```
 
-Also derive the corresponding Seed baseline profile from supported v3/v4 Seed evidence.
+Also derive the corresponding Seed baseline profile from current schema-v4 Seed evidence.
 
 Show exact-goal comparable cohorts when they exist. Outside that factual cohort boundary, display Candidate and Seed evidence inventories side-by-side without claiming superiority.
 
@@ -414,8 +405,7 @@ Make revision identity representable without activating Candidates:
 - revision-aware Strategy selection and Policy identity;
 - Seed declaration backward compatibility;
 - schema-v4 Experience writer/parser;
-- v3 + v4 Evaluation normalization;
-- `/adapt` continues using Seed-attributed v3/v4 evidence;
+- schema-v4 Evaluation and Seed-attributed `/adapt` evidence;
 - normal runtime remains Seed-only.
 
 ### Slice B — Explicit Candidate Trial

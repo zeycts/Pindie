@@ -104,18 +104,6 @@ function experience(
   });
 }
 
-function legacyV3(value: RunExperience): any {
-  const record = structuredClone(value) as any;
-  record.schemaVersion = 3;
-  if (record.policy.finalSnapshot !== null) {
-    record.policy.finalSnapshot = createPolicySnapshot({
-      approach: record.policy.finalSnapshot.approach.strategyId,
-      modifiers: record.policy.finalSnapshot.modifiers.map((modifier: any) => modifier.strategyId),
-    });
-  }
-  return record;
-}
-
 function source(
   recordId: string,
   value: RunExperience | any,
@@ -287,14 +275,6 @@ test("Adaptation evidence selects only attributable target-policy Runs, newest f
     approach: strategyRevisionSelectionFromCandidate(candidate, "trial"),
   });
   records.push(source(
-    "legacy-seed",
-    legacyV3(experience(
-      "legacy goal",
-      createPolicySnapshot({ approach: approach.id }),
-      "2025-12-31T00:00:00.000Z",
-    )),
-  ));
-  records.push(source(
     "candidate-revision",
     experience("candidate goal", candidatePolicy, "2027-01-03T00:00:00.000Z"),
   ));
@@ -315,8 +295,7 @@ test("Adaptation evidence selects only attributable target-policy Runs, newest f
   records.push(source("completed-before", before));
 
   const selected = selectAdaptationEvidence(approach, records);
-  assert.equal(selected.length, 11);
-  assert.equal(selected.some((run) => run.source.recordId === "legacy-seed"), true);
+  assert.equal(selected.length, 10);
   assert.equal(selected.some((run) => run.source.recordId === "candidate-revision"), false);
   const modifierSelected = selectAdaptationEvidence(modifier, records);
   assert.deepEqual(modifierSelected.map((run) => run.source.recordId), ["modifier-only"]);
@@ -326,9 +305,9 @@ test("Adaptation evidence selects only attributable target-policy Runs, newest f
   assert.equal(selected.some((run) => run.source.recordId === "completed-before"), false);
 
   const packet = buildAdaptationPacket(approach, records);
-  assert.equal(packet.evidence.eligibleRunCount, 11);
+  assert.equal(packet.evidence.eligibleRunCount, 10);
   assert.equal(packet.evidence.shownRunCount, 8);
-  assert.equal(packet.evidence.omittedRunCount, 3);
+  assert.equal(packet.evidence.omittedRunCount, 2);
   assert.deepEqual(packet.sourceRecordIds, [
     "record-09", "record-08", "record-07", "record-06",
     "record-05", "record-04", "record-03", "record-02",
@@ -352,7 +331,7 @@ test("Candidate control has a separate non-execution effect and successful creat
   let failSave = true;
   const tool = createPindieStrategyCandidateTool({
     adaptation,
-    experienceReader: { read: async () => ({ records, loadedSchemaV3: 0, loadedSchemaV4: 2, unsupportedSchema: 0, invalid: 0 }) },
+    experienceReader: { read: async () => ({ records, loadedRecords: 2, unsupportedSchema: 0, invalid: 0 }) },
     candidateStore: {
       save: async (_root, candidate) => {
         if (failSave) {

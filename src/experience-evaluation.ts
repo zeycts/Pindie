@@ -23,10 +23,9 @@ import {
   type SeedStrategy,
 } from "./strategies.ts";
 import {
-  normalizeRunExperience,
   parseRunExperience,
+  type RunExperience,
   type RunExperienceExecution,
-  type SupportedRunExperience,
 } from "./run-experience.ts";
 
 export interface RunEvaluation {
@@ -180,11 +179,11 @@ export function policyEvidenceProfileId(snapshot: PolicySnapshot | null): string
 /** Compatibility name for callers that refer to the Evaluation profile ID. */
 export const policyProfileId = policyEvidenceProfileId;
 
-/** Derive bounded measurements from one valid supported Run Experience. */
+/** Derive bounded measurements from one valid current schema-v4 Experience. */
 export function evaluateRunExperience(
   source: RunExperienceSourceRecord,
 ): RunEvaluation {
-  const experience: SupportedRunExperience = normalizeRunExperience(source.experience);
+  const experience: RunExperience = source.experience;
   const toolCalls = experience.execution.toolCalls;
   const finalSnapshot = experience.policy.finalSnapshot;
   const finalPolicyLastDeclaredAfter = experience.policy.finalPolicyLastDeclaredAfter;
@@ -244,7 +243,18 @@ export function evaluateRunExperience(
 export function deriveRunEvaluations(
   records: readonly RunExperienceSourceRecord[],
 ): readonly RunEvaluation[] {
-  return Object.freeze(records.map(evaluateRunExperience));
+  const current = records.flatMap((record) => {
+    let parsed: RunExperience | null;
+    try {
+      parsed = parseRunExperience(record.experience);
+    } catch {
+      parsed = null;
+    }
+    return parsed === null
+      ? []
+      : [Object.freeze({ recordId: record.recordId, experience: parsed })];
+  });
+  return Object.freeze(current.map(evaluateRunExperience));
 }
 
 function summarize(values: readonly (number | null)[]): NumericSummary {
@@ -465,8 +475,7 @@ export function formatExperienceReport(
   return [
     "Experience Evaluation",
     "",
-    `Loaded schema-v3 records: ${read.loadedSchemaV3}`,
-    `Loaded schema-v4 records: ${read.loadedSchemaV4 ?? 0}`,
+    `Loaded current Experience records: ${read.loadedRecords}`,
     `Unsupported-schema records: ${read.unsupportedSchema}`,
     `Invalid/unreadable records: ${read.invalid}`,
     `Evaluated Runs: ${evaluation.evaluations.length}`,
@@ -669,7 +678,6 @@ interface RawExperienceSource {
 /** Re-parse the immutable reader boundary before specialized evaluation. */
 function validExperienceSources(
   records: readonly RunExperienceSourceRecord[],
-  allowedSchemas: readonly (3 | 4)[],
 ): readonly RunExperienceSourceRecord[] {
   const raw: RawExperienceSource[] = [];
   for (const record of records) {
@@ -685,13 +693,13 @@ function validExperienceSources(
   for (const record of raw
     .filter((item) => counts.get(item.recordId) === 1)
     .sort((left, right) => compareText(left.recordId, right.recordId))) {
-    let parsed: SupportedRunExperience | null;
+    let parsed: RunExperience | null;
     try {
       parsed = parseRunExperience(record.experience);
     } catch {
       parsed = null;
     }
-    if (parsed === null || !allowedSchemas.includes(parsed.schemaVersion)) continue;
+    if (parsed === null) continue;
     valid.push(Object.freeze({ recordId: record.recordId, experience: parsed }));
   }
   return Object.freeze(valid);
@@ -752,7 +760,7 @@ function seedSelectionInFinalPolicy(
 }
 
 /**
- * Select only valid, current-project schema-v4 Runs whose final Policy
+ * Select only valid current-project schema-v4 Runs whose final Policy
  * contains the exact immutable Candidate revision and real final-Policy
  * execution exposure.
  */
@@ -762,7 +770,7 @@ export function selectCandidateTrialEvidence(
 ): readonly RunEvaluation[] {
   const validated = validateStrategyRevisionCandidateArtifact(candidate, candidate.candidateId);
   const fingerprint = strategyCandidateSemanticFingerprint(validated);
-  const evaluations = deriveRunEvaluations(validExperienceSources(records, [4]));
+  const evaluations = deriveRunEvaluations(validExperienceSources(records));
   return Object.freeze(evaluations.filter((evaluation) =>
     evaluation.attributionEligible &&
     candidateSelectionInFinalPolicy(evaluation, validated, fingerprint) !== null &&
@@ -770,10 +778,7 @@ export function selectCandidateTrialEvidence(
     evaluation.policy.finalPolicyExposureCalls > 0));
 }
 
-/**
- * Select exact immutable Seed evidence from supported schema-v3/v4 history.
- * Candidate/promoted revisions cannot satisfy the exact Seed selection check.
- */
+/** Select exact immutable Seed evidence from current schema-v4 history. */
 export function selectSeedBaselineEvidence(
   candidate: StrategyRevisionCandidate,
   records: readonly RunExperienceSourceRecord[],
@@ -783,7 +788,7 @@ export function selectSeedBaselineEvidence(
   if (target === null || target.kind !== validated.target.kind) {
     throw new Error("Cannot derive Seed baseline: Candidate target is not an immutable Seed Strategy.");
   }
-  const evaluations = deriveRunEvaluations(validExperienceSources(records, [3, 4]));
+  const evaluations = deriveRunEvaluations(validExperienceSources(records));
   return Object.freeze(evaluations.filter((evaluation) =>
     evaluation.attributionEligible && seedSelectionInFinalPolicy(evaluation, target)));
 }
@@ -935,8 +940,7 @@ export function formatCandidateTrialReview(
     `Target Seed Strategy: ${review.candidate.target.strategyId} (${review.candidate.target.kind})`,
     `Seed base fingerprint: ${review.candidate.target.baseFingerprint}`,
     "",
-    `Loaded schema-v3 records: ${read.loadedSchemaV3}`,
-    `Loaded schema-v4 records: ${read.loadedSchemaV4 ?? 0}`,
+    `Loaded current Experience records: ${read.loadedRecords}`,
     `Unsupported-schema records: ${read.unsupportedSchema}`,
     `Invalid/unreadable records: ${read.invalid}`,
     "",

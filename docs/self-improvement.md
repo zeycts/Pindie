@@ -322,10 +322,10 @@ The Experience unit is one Agent Run, not one Task. A Task may span several Runs
 
 #### Run Experience record
 
-A schema v3 Run Experience contains only bounded factual data equivalent to:
+The live schema-v4 Run Experience contains only bounded factual data equivalent to:
 
 ```text
-schemaVersion: 3
+schemaVersion: 4
 recordedAt
 
 runStart
@@ -367,7 +367,7 @@ metrics
 
 The exact internal TypeScript layout may differ, but the semantic boundary should remain this small.
 
-Schema-v3 records are accepted only when their bounded facts satisfy the deterministic invariants guaranteed by the normal Harness settlement path. Strategy IDs must resolve to the immutable Seed Strategy catalog with the required approach/modifier kinds and unique modifiers; accepted identities are canonicalized from that catalog. Execution and declaration-position counters must be non-negative safe integers, partition tool calls into observations and consequential calls, respect per-counter bounds, and remain monotonic at declaration positions. Policy declaration fields, Run-start facts, and completion/task-status relations are rejected when inconsistent. Impossible records are not repaired or clamped.
+Schema-v4 records are accepted only when their bounded facts satisfy the deterministic invariants guaranteed by the normal Harness settlement path. Strategy revision selections must carry exact identity, fingerprint, status, and bounded semantics; accepted identities are validated without repair. Execution and declaration-position counters must be non-negative safe integers, partition tool calls into observations and consequential calls, respect per-counter bounds, and remain monotonic at declaration positions. Policy declaration fields, Run-start facts, and completion/task-status relations are rejected when inconsistent. Impossible records are not repaired or clamped.
 
 Do not store model reasoning, chain-of-thought, assistant reflection, raw transcript, raw tool results, full verification evidence, or arbitrary prose summaries in Experience.
 
@@ -457,9 +457,9 @@ A completed-before-run relation may be retained if the Run otherwise satisfies t
 
 Experience is durable learning data but is not `PindieState`.
 
-New records use schemaVersion 3. Schema v1 and schema v2 records are
-immutable historical data: leave them untouched and treat them as unsupported
-history, without rewriting, migration, deletion, or a compatibility adapter.
+New records use schemaVersion 4. Pre-v4 records are historical data outside
+the live evidence set; they may be archived under a non-runtime location such
+as `archive/experience-v3/` without rewriting or converting them.
 
 Store one immutable record per eligible Run under the same per-project Pindie storage namespace, conceptually:
 
@@ -537,11 +537,11 @@ Do not implement:
 - reasoning-policy migration;
 - a second Agent Loop.
 
-The output of SI v0.3 is a durable schema-v3 factual dataset of `Run → final-Policy attribution facts → Execution facts → Outcome`, including runs with no declared Policy.
+The output of SI v0.3 is a durable factual Run Experience dataset of `Run → final-Policy attribution facts → Execution facts → Outcome`, including runs with no declared Policy.
 
 ### SI v0.4 — Experience Evaluation
 
-Goal: turn immutable schema-v3 Run Experience into reproducible derived evidence without scoring, judging, adapting, or feeding Evaluation back into the Agent.
+Goal: turn immutable schema-v4 Run Experience into reproducible derived evidence without scoring, judging, adapting, or feeding Evaluation back into the Agent.
 
 Dogfood after SI v0.3 showed three important facts:
 
@@ -581,25 +581,25 @@ Evaluation is derived data:
 - never written back into Experience;
 - never allowed to change `PindieState`, Verification, capabilities, Human Gates, or Task legality.
 
-If Evaluation semantics change later, recompute the derived result rather than rewriting historical Experience. The persisted Experience shape is unchanged by SI v0.4 and remains `schemaVersion: 3`.
+If Evaluation semantics change later, recompute the derived result rather than rewriting historical Experience. The persisted Experience shape is unchanged by SI v0.4 and remains `schemaVersion: 4`.
 
 #### Experience reading boundary
 
 SI v0.4 may read the per-project Experience Store for evaluation purposes.
 
-The first evaluator consumes only valid `schemaVersion: 3` records. Existing v1 and v2 canonical records are immutable unsupported historical data and should be skipped, not migrated, heuristically upgraded, or adapted through a compatibility layer.
+The evaluator consumes only valid `schemaVersion: 4` records. Pre-v4 records are unsupported outside the live evidence set and may be archived separately; they are not migrated, heuristically upgraded, or adapted through a compatibility layer.
 
-The committed record boundary is a canonical lowercase UUID-v4 `.json` filename produced by the existing Node `randomUUID()` writer, matching `xxxxxxxx-xxxx-4xxx-[89ab]xxx-xxxxxxxxxxxx.json`. The Reader ignores temporary `.tmp` files, non-v4 UUID-looking names, ordinary non-canonical files, hidden/backup files, and directories. Within that boundary, malformed JSON or semantically invalid schema-v3 facts are invalid records; in-progress temporary files do not count as invalid.
+The committed record boundary is a canonical lowercase UUID-v4 `.json` filename produced by the existing Node `randomUUID()` writer, matching `xxxxxxxx-xxxx-4xxx-[89ab]xxx-xxxxxxxxxxxx.json`. The Reader ignores temporary `.tmp` files, non-v4 UUID-looking names, ordinary non-canonical files, hidden/backup files, and directories. Within that boundary, malformed JSON or semantically invalid schema-v4 facts are invalid records; in-progress temporary files do not count as invalid.
 
 Reading should distinguish at least:
 
 ```text
-loaded schema-v3 records
+loaded current Experience records
 unsupported schema records
 invalid/unreadable records
 ```
 
-An invalid or unsupported record must not corrupt valid evaluation input. The schema-v3 Reader/parser rejects deterministic cross-field inconsistencies rather than repairing them, including impossible execution subsets, declaration positions, final-Policy positions, Run-start/Task relationships, completion relationships, and settlement verification status. It does not infer a replacement Task goal or parse transcript/model prose.
+An invalid or unsupported record must not corrupt valid evaluation input. The schema-v4 Reader/parser rejects deterministic cross-field inconsistencies rather than repairing them, including impossible execution subsets, declaration positions, final-Policy positions, Run-start/Task relationships, completion relationships, and settlement verification status. It does not infer a replacement Task goal or parse transcript/model prose.
 
 Experience reading in SI v0.4 is for offline/derived evaluation only. It must not inject Experience into model context or current Policy.
 
@@ -630,7 +630,7 @@ source record identity
 attribution eligibility
 ```
 
-A `completed_before_run` Experience remains valid factual history and is included in evaluated Run accounting, but its settlement Task predates the Run. Its `RunEvaluation.attributionEligible` is therefore `false`; it is not Policy outcome evidence. Other valid schema-v3 Experiences are attribution-eligible. These values are derived measurements, not causal claims.
+A `completed_before_run` Experience remains valid factual history and is included in evaluated Run accounting, but its settlement Task predates the Run. Its `RunEvaluation.attributionEligible` is therefore `false`; it is not Policy outcome evidence. Other valid schema-v4 Experiences are attribution-eligible. These values are derived measurements, not causal claims.
 
 Continuous final-Policy exposure is derived from the counters immediately before the last successful declaration of the final Policy identity:
 
@@ -702,7 +702,7 @@ duration and cost observations
 source Experience references
 ```
 
-`/experience` reports Loaded schema-v3 records, Evaluated Runs, Attributable Runs, and Non-attributable Runs, then exposes these bounded attribution facts compactly for each rendered profile. Profiles and exact-goal cohorts consume attributable Runs only. They let a human distinguish early declaration, Policy changes, late final activation, and little continuous final-Policy exposure without introducing an attribution, confidence, effectiveness, reward, or causal score. No-explicit-policy profiles retain `n/a` for position and exposure fields that do not apply. Profiles preserve enough provenance to trace every aggregate back to source Experience records; presentation shows at most five source IDs per profile and ten profiles while Evaluation retains full provenance.
+`/experience` reports loaded current Experience records, Evaluated Runs, Attributable Runs, and Non-attributable Runs, then exposes these bounded attribution facts compactly for each rendered profile. Profiles and exact-goal cohorts consume attributable Runs only. They let a human distinguish early declaration, Policy changes, late final activation, and little continuous final-Policy exposure without introducing an attribution, confidence, effectiveness, reward, or causal score. No-explicit-policy profiles retain `n/a` for position and exposure fields that do not apply. Profiles preserve enough provenance to trace every aggregate back to source Experience records; presentation shows at most five source IDs per profile and ten profiles while Evaluation retains full provenance.
 
 Do not emit claims such as:
 
@@ -770,7 +770,7 @@ Do not implement:
 - reasoning-policy migration;
 - a second Agent Loop.
 
-The output of SI v0.4 is reproducible schema-v3 derived evidence that makes future Strategy adaptation more defensible without yet changing how the Agent acts.
+The output of SI v0.4 is reproducible schema-v4 derived evidence that makes future Strategy adaptation more defensible without yet changing how the Agent acts.
 
 ### SI v0.5 — Strategy Adaptation Candidate
 
@@ -781,7 +781,7 @@ SI v0.5 is the first milestone that may create a Self-Improvement artifact from 
 The relation is:
 
 ```text
-immutable schema-v3 Experience
+immutable schema-v4 Experience
         ↓
 deterministic SI v0.4 Evaluation
         ↓
@@ -823,7 +823,7 @@ Strategy revision
 
 The immutable Seed Strategy remains the trusted root revision. A Candidate is a proposed revision of that root, not a replacement written over it.
 
-SI v0.5 does not activate Candidate revisions, so schema-v3 Run Experience remains valid and continues to record only Seed Strategy identities. Revision identity enters Run Experience only when a later milestone actually allows a non-Seed revision to guide an Agent Run.
+SI v0.5 does not activate Candidate revisions, while schema-v4 Run Experience records exact Seed identities. Revision identity enters Run Experience when a Candidate revision is allowed to guide an Agent Run.
 
 #### Seed as immutable baseline
 
@@ -893,7 +893,7 @@ At minimum:
 - the Candidate preserves the target Strategy ID and kind;
 - the Candidate is bound to the current target Seed fingerprint;
 - at least two distinct source Experience records are cited;
-- every cited Experience is a valid current schema-v3 record;
+- every cited Experience is a valid current schema-v4 record;
 - every cited Run Evaluation is attribution-eligible;
 - every cited Run's explicit final Policy actually contains the target Strategy in the correct role;
 - source records belong to the current project;
@@ -982,7 +982,7 @@ A Candidate must not:
 - alter `PolicySnapshot` identity;
 - be injected into ordinary Run context;
 - change current or future default behavior;
-- modify Experience schemaVersion 3;
+- modify the immutable Experience schemaVersion 4 contract;
 - receive automatic promotion, rejection, ranking, or trial assignment.
 
 Therefore normal policy behavior after Candidate creation is still based on the immutable Seed portfolio.
@@ -1039,12 +1039,12 @@ SI v0.6 is implemented in explicit slices. The current Slice A substrate provide
 - deterministic derived semantic fingerprints for immutable schema-v1 Candidate artifacts;
 - revision-aware Policy identity and canonical schema-v4 Policy serialization;
 - backward-compatible Seed-only `pindie_policy_set` declarations;
-- schema-v3 historical Experience reading plus schema-v4 writing and deterministic Evaluation normalization; and
-- Seed-only `/adapt` evidence selection across v3/v4 records, excluding non-Seed revision attribution.
+- schema-v4-only Experience reading and writing with deterministic revision-aware Evaluation; and
+- Seed-only `/adapt` evidence selection from current schema-v4 records, excluding non-Seed revision attribution.
 
 Slice B now additionally provides a strict project-local Candidate read by ID, a runtime-only one-Run Trial lease, a bounded Trial Packet, and exact Candidate revision selection only under the active lease. Trial Runs remain ordinary schema-v4 Experience Runs and require explicit Candidate Policy declaration for attribution.
 
-Slices A-C intentionally do not implement promotion/rejection, automatic Policy selection, or other later slices. Existing schema-v3 Experience/Candidate artifacts remain immutable and are never migrated or rewritten.
+Slices A-C intentionally do not implement promotion/rejection, automatic Policy selection, or other later slices. Pre-v4 Experience records remain outside the live evidence set; Candidate artifacts remain immutable.
 
 ### SI v0.7 — Strategy Derivation
 

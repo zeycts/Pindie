@@ -174,8 +174,7 @@ class ExtensionTestContinuityStore implements TaskContinuityStore {
 class ExtensionTestExperienceReader implements RunExperienceReader {
   result: RunExperienceReadResult = {
     records: [],
-    loadedSchemaV3: 0,
-    loadedSchemaV4: 0,
+    loadedRecords: 0,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -791,7 +790,7 @@ test("SI v0.4 /experience renders empty and mixed evidence read-only", async () 
 
   assert.ok(harness.api.commands.has("experience"));
   await harness.api.commands.get("experience").handler("", commandContext);
-  assert.match(notices.at(-1)?.message ?? "", /Loaded schema-v3 records: 0/);
+  assert.match(notices.at(-1)?.message ?? "", /Loaded current Experience records: 0/);
   assert.match(notices.at(-1)?.message ?? "", /Evaluated Runs: 0/);
   assert.match(notices.at(-1)?.message ?? "", /Attributable Runs: 0/);
   assert.match(notices.at(-1)?.message ?? "", /Non-attributable Runs: 0/);
@@ -822,13 +821,12 @@ test("SI v0.4 /experience renders empty and mixed evidence read-only", async () 
         ),
       },
     ],
-    loadedSchemaV3: 0,
-    loadedSchemaV4: 3,
+    loadedRecords: 3,
     unsupportedSchema: 1,
     invalid: 1,
   };
   await harness.api.commands.get("experience").handler("", commandContext);
-  assert.match(notices.at(-1)?.message ?? "", /Loaded schema-v4 records: 3/);
+  assert.match(notices.at(-1)?.message ?? "", /Loaded current Experience records: 3/);
   assert.match(notices.at(-1)?.message ?? "", /Unsupported-schema records: 1/);
   assert.match(notices.at(-1)?.message ?? "", /Invalid\/unreadable records: 1/);
   assert.match(notices.at(-1)?.message ?? "", /Evaluated Runs: 3/);
@@ -1612,8 +1610,7 @@ test("Context Governor suppresses guidance after a valid pending handoff and dur
       { recordId: "adapt-one.json", experience: commandExperience("adapt one", createPolicySnapshot({ approach: "direct-action" })) },
       { recordId: "adapt-two.json", experience: commandExperience("adapt two", createPolicySnapshot({ approach: "direct-action" })) },
     ],
-    loadedSchemaV3: 0,
-    loadedSchemaV4: 2,
+    loadedRecords: 2,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -4312,7 +4309,6 @@ test("SI v0.5 /adapt is explicit, Run-bound, and Candidate creation stays inacti
       { recordId: "one.json", experience: commandExperience("adapt one", createPolicySnapshot({ approach: "direct-action" })) },
       { recordId: "two.json", experience: commandExperience("adapt two", createPolicySnapshot({ approach: "direct-action" })) },
     ],
-    loadedSchemaV3: 2,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -4425,8 +4421,7 @@ test("SI v0.5 /adapt rejects unknown, busy, missing-root, and insufficient evide
 
   reader.result = {
     records: [{ recordId: "only.json", experience: commandExperience("only", createPolicySnapshot({ approach: "direct-action" })) }],
-    loadedSchemaV3: 0,
-    loadedSchemaV4: 1,
+    loadedRecords: 1,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -4609,8 +4604,7 @@ test("SI v0.6 Candidate lifecycle completions are semantic, filtered, and read-o
       { recordId: "no-seed-one", experience: commandExperience("no seed one", candidatePolicy(noSeed)) },
       { recordId: "no-seed-two", experience: commandExperience("no seed two", candidatePolicy(noSeed)) },
     ],
-    loadedSchemaV3: 0,
-    loadedSchemaV4: 7,
+    loadedRecords: 7,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -4685,8 +4679,7 @@ test("SI v0.6 stale Candidate completions remain subject to fresh command author
       { recordId: "trial-two", experience: commandExperience("stale two", candidatePolicy(candidate)) },
       { recordId: "seed", experience: commandExperience("stale seed", createPolicySnapshot({ approach: "architecture-first" })) },
     ],
-    loadedSchemaV3: 0,
-    loadedSchemaV4: 3,
+    loadedRecords: 3,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -4742,8 +4735,7 @@ test("SI v0.6 Trial and Adaptation slow paths are mutually exclusive", async () 
       { recordId: "adapt-one.json", experience: commandExperience("one", createPolicySnapshot({ approach: "direct-action" })) },
       { recordId: "adapt-two.json", experience: commandExperience("two", createPolicySnapshot({ approach: "direct-action" })) },
     ],
-    loadedSchemaV3: 0,
-    loadedSchemaV4: 2,
+    loadedRecords: 2,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -5144,8 +5136,7 @@ test("SI v0.6 /promote creates one immutable Decision and normal Runs explicitly
       { recordId: "seed", experience: commandExperience("shared goal", createPolicySnapshot({ approach: "architecture-first" })) },
       { recordId: "direct-seed", experience: commandExperience("direct goal", createPolicySnapshot({ approach: "direct-action" })) },
     ],
-    loadedSchemaV3: 0,
-    loadedSchemaV4: 6,
+    loadedRecords: 6,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -5215,8 +5206,7 @@ test("SI v0.6 /promote enforces the exact gate while /reject remains explicit an
   const experienceReader = new ExtensionTestExperienceReader();
   experienceReader.result = {
     records: [{ recordId: "one-trial", experience: commandExperience("one goal", candidatePolicy(candidate)) }],
-    loadedSchemaV3: 0,
-    loadedSchemaV4: 1,
+    loadedRecords: 1,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -5266,8 +5256,7 @@ test("SI v0.6 trust read/write failures fall back to Seeds and never alter Task 
   const experienceReader = new ExtensionTestExperienceReader();
   experienceReader.result = {
     records: [{ recordId: "trial-one", experience: commandExperience("one goal", candidatePolicy(candidate)) }],
-    loadedSchemaV3: 0,
-    loadedSchemaV4: 1,
+    loadedRecords: 1,
     unsupportedSchema: 0,
     invalid: 0,
   };
