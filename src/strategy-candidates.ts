@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -25,6 +25,7 @@ export const MAX_CANDIDATE_GUIDANCE_LENGTH = 256;
 export const MAX_CANDIDATE_HYPOTHESIS_LENGTH = 1024;
 export const MAX_CANDIDATE_SOURCE_RECORD_ID_LENGTH = 128;
 export const MAX_CANDIDATE_GUIDANCE_ITEMS = 8;
+export const MAX_CANDIDATE_COMMAND_LABEL_LENGTH = 160;
 
 export interface StrategyRevisionCandidate {
   readonly schemaVersion: typeof STRATEGY_CANDIDATE_SCHEMA_VERSION;
@@ -67,6 +68,8 @@ export interface CreateStrategyRevisionCandidateInput {
 export interface StrategyCandidateReader {
   /** Read one immutable Candidate by its exact canonical project-local ID. */
   read(projectRoot: string, candidateId: string): Promise<StrategyRevisionCandidate | null>;
+  /** Read every canonical immutable Candidate artifact for the current project. */
+  readAll?(projectRoot: string): Promise<readonly StrategyRevisionCandidate[]>;
 }
 
 export interface StrategyCandidateStore {
@@ -78,6 +81,7 @@ export interface FileStrategyCandidateStoreOptions {
 }
 
 const CANONICAL_CANDIDATE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const CANONICAL_CANDIDATE_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/;
 const CANDIDATE_FIELDS = [
   "schemaVersion",
   "candidateId",
@@ -360,6 +364,42 @@ export function isCanonicalStrategyCandidateId(value: string): boolean {
   return CANONICAL_CANDIDATE_ID.test(value);
 }
 
+function truncateCandidateCommandLabel(value: string, maxLength = MAX_CANDIDATE_COMMAND_LABEL_LENGTH): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+export interface CandidateCommandLabelOptions {
+  /** Add a short machine-ID suffix only when a caller has a display collision. */
+  readonly includeCandidateId?: boolean;
+  /** Internal presentation seam for extending a colliding suffix deterministically. */
+  readonly candidateIdLength?: number;
+  /** Optional smaller bound when a lifecycle hint must share the label. */
+  readonly maxLength?: number;
+}
+
+/** Format one bounded human-facing Candidate label without changing its identity. */
+export function formatCandidateCommandLabel(
+  candidate: Pick<StrategyRevisionCandidate, "candidateId" | "target" | "proposal">,
+  options: CandidateCommandLabelOptions = {},
+): string {
+  const summary = candidate.proposal.summary.replace(/\s+/gu, " ").trim();
+  const maxLength = Math.min(
+    MAX_CANDIDATE_COMMAND_LABEL_LENGTH,
+    Math.max(1, options.maxLength ?? MAX_CANDIDATE_COMMAND_LABEL_LENGTH),
+  );
+  const suffixLength = Math.max(1, options.candidateIdLength ?? 8);
+  const base = truncateCandidateCommandLabel(
+    `${candidate.target.strategyId} · ${summary}`,
+    options.includeCandidateId
+      ? Math.max(1, maxLength - 3 - suffixLength)
+      : maxLength,
+  );
+  if (!options.includeCandidateId) return base;
+  const suffix = ` · ${candidate.candidateId.slice(0, suffixLength)}`;
+  return truncateCandidateCommandLabel(`${base}${suffix}`, maxLength);
+}
+
 /** Construct an immutable Candidate bound to the current immutable Seed baseline. */
 export function createStrategyRevisionCandidate(
   input: CreateStrategyRevisionCandidateInput,
@@ -464,6 +504,34 @@ export class FileStrategyCandidateStore implements StrategyCandidateStore, Strat
         `Could not read Pindie Strategy Revision Candidate file '${candidatePath}': ${errorMessage(error)}`,
       );
     }
+  }
+
+  async readAll(projectRoot: string): Promise<readonly StrategyRevisionCandidate[]> {
+    const directory = this.strategyCandidateDirectory(projectRoot);
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if (isMissing(error)) return Object.freeze([]);
+      throw new Error(
+        `Could not read Pindie Strategy Revision Candidate directory '${directory}': ${errorMessage(error)}`,
+      );
+    }
+
+    const candidates: StrategyRevisionCandidate[] = [];
+    for (const entry of entries
+      .filter((candidate) => candidate.isFile() && CANONICAL_CANDIDATE_FILE.test(candidate.name))
+      .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)) {
+      const candidateId = entry.name.slice(0, -".json".length);
+      const candidate = await this.read(projectRoot, candidateId);
+      if (candidate === null) {
+        throw new Error(
+          `Could not read Pindie Strategy Revision Candidate file '${join(directory, entry.name)}': the artifact disappeared while reading.`,
+        );
+      }
+      candidates.push(candidate);
+    }
+    return Object.freeze(candidates);
   }
 
   async save(projectRoot: string, candidate: StrategyRevisionCandidate): Promise<void> {

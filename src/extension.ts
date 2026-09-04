@@ -28,6 +28,11 @@ import {
 import {
   deriveCandidateTrialReview,
 } from "./experience-evaluation.ts";
+import {
+  buildCandidateCommandProjection,
+  filterCandidateCommandOptions,
+  type CandidateCommandName,
+} from "./strategy-candidate-commands.ts";
 import { ExecutionIntegration } from "./execution-integration.ts";
 import {
   FileRunExperienceReader,
@@ -440,6 +445,66 @@ export function registerPindieExtension(
     return renderCurrentPindieActionEligibility(derivation.snapshot);
   };
 
+  const candidateCommandProjection = async (
+    command: CandidateCommandName,
+    projectRoot: string,
+  ) => buildCandidateCommandProjection({
+    projectRoot,
+    command,
+    candidateReader: strategyCandidateReader,
+    decisionReader: strategyDecisionReader,
+    experienceReader,
+  });
+
+  const candidateCommandCompletions = async (
+    command: CandidateCommandName,
+    prefix: string,
+  ) => {
+    const projectRoot = runtime.projectRoot;
+    if (projectRoot === null) return null;
+    try {
+      const projection = await candidateCommandProjection(command, projectRoot);
+      return filterCandidateCommandOptions(projection, prefix);
+    } catch {
+      // Completion is advisory UI. Malformed or changing trust artifacts must
+      // not become options, and must never be treated as command authority.
+      return null;
+    }
+  };
+
+  const notifyMissingCandidateCommandArgument = async (
+    command: CandidateCommandName,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> => {
+    const projectRoot = runtime.projectRoot;
+    const commandText = `/${command}`;
+    if (projectRoot === null) {
+      ctx.ui.notify(
+        `Pindie could not run ${commandText}: no current project root is loaded.`,
+        "warning",
+      );
+      return;
+    }
+    try {
+      const projection = await candidateCommandProjection(command, projectRoot);
+      if (projection.options.length === 0) {
+        const message = command === "trial"
+          ? "No Candidates are currently available for Trial."
+          : command === "trial-review"
+            ? "No Candidates are currently available for Trial review."
+            : command === "promote"
+              ? "No Candidates are currently eligible for Promotion."
+              : "No Candidates are currently available for Rejection.";
+        ctx.ui.notify(message, "info");
+        return;
+      }
+    } catch {
+      // A failed read cannot establish that the project has no Candidates.
+      // Keep the fallback factual and bounded without exposing raw artifacts.
+    }
+    ctx.ui.notify("No Candidate selected. Use command completion to choose one.", "warning");
+  };
+
   const handleAdaptationCommand = async (
     args: string,
     ctx: ExtensionCommandContext,
@@ -537,7 +602,11 @@ export function registerPindieExtension(
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
     const requestedId = args.trim();
-    if (!requestedId || /\s/.test(requestedId)) {
+    if (!requestedId) {
+      await notifyMissingCandidateCommandArgument("trial", ctx);
+      return;
+    }
+    if (/\s/.test(requestedId)) {
       ctx.ui.notify("Usage: /trial <candidate-id>", "warning");
       return;
     }
@@ -591,6 +660,27 @@ export function registerPindieExtension(
       return;
     }
 
+    let existingDecision;
+    try {
+      existingDecision = await strategyDecisionReader.read(projectRoot, requestedId);
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not arm /trial: Decision read failed: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    if (existingDecision !== null) {
+      try {
+        validateStrategyRevisionDecisionBinding(existingDecision, candidate);
+      } catch (error) {
+        ctx.ui.notify(`Pindie could not arm /trial: existing Decision binding is invalid: ${errorMessage(error)}`, "warning");
+        return;
+      }
+      ctx.ui.notify(
+        "Pindie could not arm /trial: an immutable terminal Decision already exists for this Candidate.",
+        "warning",
+      );
+      return;
+    }
+
     let currentSessionId: string;
     try {
       currentSessionId = ctx.sessionManager.getSessionId();
@@ -635,8 +725,13 @@ export function registerPindieExtension(
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
     const requestedId = args.trim();
+    const commandName: CandidateCommandName = terminalDecision === "promoted" ? "promote" : "reject";
     const command = terminalDecision === "promoted" ? "/promote" : "/reject";
-    if (!requestedId || /\s/.test(requestedId)) {
+    if (!requestedId) {
+      await notifyMissingCandidateCommandArgument(commandName, ctx);
+      return;
+    }
+    if (/\s/.test(requestedId)) {
       ctx.ui.notify(`Usage: ${command} <candidate-id>`, "warning");
       return;
     }
@@ -920,21 +1015,31 @@ export function registerPindieExtension(
 
   pi.registerCommand("trial", {
     description: "Arm one explicit Strategy Revision Candidate Trial for the next Agent Run",
+    getArgumentCompletions: (prefix) => candidateCommandCompletions("trial", prefix),
     handler: async (args, ctx) => handleTrialCommand(args, ctx),
   });
 
   pi.registerCommand("trial-review", {
     description: "Show read-only evidence and Promotion Eligibility for one Candidate Trial",
-    handler: async (args, ctx) => presentation.handleTrialReviewCommand(args, ctx),
+    getArgumentCompletions: (prefix) => candidateCommandCompletions("trial-review", prefix),
+    handler: async (args, ctx) => {
+      if (!args.trim()) {
+        await notifyMissingCandidateCommandArgument("trial-review", ctx);
+        return;
+      }
+      return presentation.handleTrialReviewCommand(args, ctx);
+    },
   });
 
   pi.registerCommand("promote", {
     description: "Explicitly promote one eligible Strategy Revision Candidate",
+    getArgumentCompletions: (prefix) => candidateCommandCompletions("promote", prefix),
     handler: async (args, ctx) => handleStrategyDecisionCommand("promoted", args, ctx),
   });
 
   pi.registerCommand("reject", {
     description: "Explicitly reject one Strategy Revision Candidate",
+    getArgumentCompletions: (prefix) => candidateCommandCompletions("reject", prefix),
     handler: async (args, ctx) => handleStrategyDecisionCommand("rejected", args, ctx),
   });
 
