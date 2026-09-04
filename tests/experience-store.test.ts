@@ -87,3 +87,19 @@ test("FileRunExperienceStore writes separate immutable records per project witho
     { code: "ENOENT" },
   );
 });
+
+test("FileRunExperienceStore only writes current schema-v4 records", async (t) => {
+  const baseDir = await mkdtemp(join(tmpdir(), "pindie-experience-schema-"));
+  t.after(() => rm(baseDir, { recursive: true, force: true }));
+  const store = new FileRunExperienceStore({ baseDir });
+  const legacy = { ...experience("legacy"), schemaVersion: 3 } as unknown as RunExperience;
+
+  await assert.rejects(
+    store.save("/workspace/project", legacy),
+    /new records must use schema-v4/i,
+  );
+  await assert.rejects(
+    readdir(store.experienceDirectory("/workspace/project")),
+    { code: "ENOENT" },
+  );
+});

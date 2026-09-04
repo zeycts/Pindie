@@ -27,6 +27,7 @@ import {
   type StrategyRevisionCandidate,
   validateStrategyCandidateProposal,
 } from "../strategy-candidates.ts";
+import { isSeedStrategySelection } from "../policy.ts";
 import {
   getSeedStrategy,
   seedStrategyFingerprint,
@@ -112,8 +113,9 @@ function targetParticipated(
   const snapshot = evaluation.policy.finalSnapshot;
   if (!evaluation.attributionEligible || snapshot === null) return false;
   return targetKind === "approach"
-    ? snapshot.approach.id === targetId
-    : snapshot.modifiers.some((modifier) => modifier.id === targetId);
+    ? snapshot.approach.id === targetId && isSeedStrategySelection(snapshot.approach)
+    : snapshot.modifiers.some((modifier) =>
+      modifier.id === targetId && isSeedStrategySelection(modifier));
 }
 
 /** Validate Candidate provenance against a fresh current-project Reader result. */
@@ -158,7 +160,7 @@ export function validateCandidateProvenance(
     const record = recordsById.get(recordId);
     const parsed = record ? parseRunExperience(record.experience) : null;
     if (record === undefined || parsed === null) {
-      throw new Error(`Candidate rejected: source record '${recordId}' is missing or is not valid schema-v3 Experience.`);
+      throw new Error(`Candidate rejected: source record '${recordId}' is missing or is not valid supported schema-v3/v4 Experience.`);
     }
     const evaluation = evaluateRunExperience({ recordId, experience: parsed });
     if (!evaluation.attributionEligible) {

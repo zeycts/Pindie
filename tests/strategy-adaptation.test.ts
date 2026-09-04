@@ -5,7 +5,12 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { classifyToolEffect } from "../src/execution-semantics.ts";
-import { createPolicySnapshot } from "../src/policy.ts";
+import {
+  createPolicySnapshot,
+  createPolicySnapshotFromRevisions,
+  isSeedStrategySelection,
+  policySnapshotIdentity,
+} from "../src/policy.ts";
 import {
   buildAdaptationPacket,
   AdaptationRuntime,
@@ -15,6 +20,8 @@ import {
 import {
   createStrategyRevisionCandidate,
   FileStrategyCandidateStore,
+  strategyCandidateSemanticFingerprint,
+  strategyRevisionSelectionFromCandidate,
   type StrategyCandidateProposal,
 } from "../src/strategy-candidates.ts";
 import {
@@ -22,6 +29,7 @@ import {
   SEED_STRATEGIES,
   type SeedStrategy,
 } from "../src/strategies.ts";
+import { createPindiePolicySetTool } from "../src/tools/policy.ts";
 import { createPindieStrategyCandidateTool } from "../src/tools/strategy-candidate.ts";
 import {
   assembleRunExperience,
@@ -96,9 +104,21 @@ function experience(
   });
 }
 
+function legacyV3(value: RunExperience): any {
+  const record = structuredClone(value) as any;
+  record.schemaVersion = 3;
+  if (record.policy.finalSnapshot !== null) {
+    record.policy.finalSnapshot = createPolicySnapshot({
+      approach: record.policy.finalSnapshot.approach.strategyId,
+      modifiers: record.policy.finalSnapshot.modifiers.map((modifier: any) => modifier.strategyId),
+    });
+  }
+  return record;
+}
+
 function source(
   recordId: string,
-  value: RunExperience,
+  value: RunExperience | any,
 ): RunExperienceSourceRecord {
   return { recordId, experience: value };
 }
@@ -140,6 +160,17 @@ test("Seed fingerprints are deterministic and Candidate construction does not mu
   assert.equal(Object.isFrozen(candidate.proposal), true);
   assert.equal(Object.isFrozen(candidate.proposal.useWhen), true);
   assert.equal(candidate.schemaVersion, 1);
+  assert.equal("fingerprint" in candidate, false);
+  assert.equal(JSON.stringify(candidate).includes("fingerprint"), false);
+  const fingerprint = strategyCandidateSemanticFingerprint(candidate);
+  assert.match(fingerprint, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(fingerprint, strategyCandidateSemanticFingerprint(createStrategyRevisionCandidate({
+    target,
+    proposal: proposal(["different-one", "different-two"]),
+    candidateId: candidate.candidateId,
+    createdAt: "2027-01-01T00:00:00.000Z",
+  })));
+
   assert.throws(() => createStrategyRevisionCandidate({
     target,
     proposal: {
@@ -151,6 +182,87 @@ test("Seed fingerprints are deterministic and Candidate construction does not mu
     },
     candidateId: "00000000-0000-4000-8000-000000000003",
   }), /must differ/);
+});
+
+test("Candidate fingerprints bind revision semantics and remain inactive outside a future activation path", async () => {
+  const target = SEED_STRATEGIES.find((strategy) => strategy.id === "architecture-first")!;
+  const candidate = createStrategyRevisionCandidate({
+    target,
+    proposal: proposal(["one", "two"]),
+    candidateId: "00000000-0000-4000-8000-000000000003",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  const sameSemantics = {
+    ...candidate,
+    candidateId: "00000000-0000-4000-8000-000000000004",
+    createdAt: "2027-01-01T00:00:00.000Z",
+    evidence: { sourceRecordIds: ["other-one", "other-two"] },
+    hypothesis: "A different non-factual hypothesis.",
+  };
+  assert.equal(
+    strategyCandidateSemanticFingerprint(candidate),
+    strategyCandidateSemanticFingerprint(sameSemantics),
+  );
+  assert.notEqual(
+    strategyCandidateSemanticFingerprint(candidate),
+    strategyCandidateSemanticFingerprint({
+      ...candidate,
+      proposal: {
+        ...candidate.proposal,
+        summary: "A materially different bounded proposal.",
+      },
+    }),
+  );
+
+  const trialSelection = strategyRevisionSelectionFromCandidate(candidate, "trial");
+  const trialPolicy = createPolicySnapshotFromRevisions({ approach: trialSelection });
+  assert.equal(trialSelection.strategyId, target.id);
+  assert.equal(trialSelection.revisionIdentity, candidate.candidateId);
+  assert.equal(
+    trialSelection.revisionFingerprint,
+    strategyCandidateSemanticFingerprint(candidate),
+  );
+  assert.equal(trialSelection.revisionStatusAtRun, "trial");
+  assert.equal(isSeedStrategySelection(trialSelection), false);
+  assert.notEqual(
+    policySnapshotIdentity(createPolicySnapshot({ approach: target.id })),
+    policySnapshotIdentity(trialPolicy),
+  );
+
+  const policyTool = createPindiePolicySetTool({ onPolicySet: () => undefined });
+  await assert.rejects(
+    (policyTool.execute as any)("inactive", { approach: trialSelection }),
+    /approach must be a Seed Strategy ID/i,
+  );
+});
+
+test("pre-Slice-A schema-v1 Candidate artifacts remain valid without persisted fingerprints", () => {
+  const target = SEED_STRATEGIES.find((strategy) => strategy.id === "direct-action")!;
+  const candidateProposal = proposal(["old-one", "old-two"]);
+  const candidate = {
+    schemaVersion: 1 as const,
+    candidateId: "00000000-0000-4000-8000-000000000006",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    target: {
+      strategyId: target.id,
+      kind: target.kind,
+      baseFingerprint: seedStrategyFingerprint(target),
+    },
+    proposal: {
+      summary: candidateProposal.summary,
+      useWhen: candidateProposal.useWhen,
+      avoidWhen: candidateProposal.avoidWhen,
+      principles: candidateProposal.principles,
+    },
+    evidence: { sourceRecordIds: candidateProposal.sourceRecordIds },
+    hypothesis: candidateProposal.hypothesis,
+  };
+
+  assert.equal("fingerprint" in candidate, false);
+  const fingerprint = strategyCandidateSemanticFingerprint(candidate);
+  assert.equal(fingerprint, strategyCandidateSemanticFingerprint(candidate));
+  const selection = strategyRevisionSelectionFromCandidate(candidate, "trial");
+  assert.equal(selection.revisionFingerprint, fingerprint);
 });
 
 test("Adaptation evidence selects only attributable target-policy Runs, newest first, and caps at eight", () => {
@@ -165,6 +277,27 @@ test("Adaptation evidence selects only attributable target-policy Runs, newest f
         `2026-01-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
       ),
     ));
+  const candidate = createStrategyRevisionCandidate({
+    target: approach,
+    proposal: proposal(["candidate-one", "candidate-two"]),
+    candidateId: "00000000-0000-4000-8000-000000000005",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  const candidatePolicy = createPolicySnapshotFromRevisions({
+    approach: strategyRevisionSelectionFromCandidate(candidate, "trial"),
+  });
+  records.push(source(
+    "legacy-seed",
+    legacyV3(experience(
+      "legacy goal",
+      createPolicySnapshot({ approach: approach.id }),
+      "2025-12-31T00:00:00.000Z",
+    )),
+  ));
+  records.push(source(
+    "candidate-revision",
+    experience("candidate goal", candidatePolicy, "2027-01-03T00:00:00.000Z"),
+  ));
   records.push(source(
     "modifier-only",
     experience("modifier", createPolicySnapshot({ approach: "explore-first", modifiers: [modifier.id] }), "2027-01-01T00:00:00.000Z"),
@@ -182,7 +315,9 @@ test("Adaptation evidence selects only attributable target-policy Runs, newest f
   records.push(source("completed-before", before));
 
   const selected = selectAdaptationEvidence(approach, records);
-  assert.equal(selected.length, 10);
+  assert.equal(selected.length, 11);
+  assert.equal(selected.some((run) => run.source.recordId === "legacy-seed"), true);
+  assert.equal(selected.some((run) => run.source.recordId === "candidate-revision"), false);
   const modifierSelected = selectAdaptationEvidence(modifier, records);
   assert.deepEqual(modifierSelected.map((run) => run.source.recordId), ["modifier-only"]);
   assert.deepEqual(selected[0]!.source.recordId, "record-09");
@@ -191,9 +326,9 @@ test("Adaptation evidence selects only attributable target-policy Runs, newest f
   assert.equal(selected.some((run) => run.source.recordId === "completed-before"), false);
 
   const packet = buildAdaptationPacket(approach, records);
-  assert.equal(packet.evidence.eligibleRunCount, 10);
+  assert.equal(packet.evidence.eligibleRunCount, 11);
   assert.equal(packet.evidence.shownRunCount, 8);
-  assert.equal(packet.evidence.omittedRunCount, 2);
+  assert.equal(packet.evidence.omittedRunCount, 3);
   assert.deepEqual(packet.sourceRecordIds, [
     "record-09", "record-08", "record-07", "record-06",
     "record-05", "record-04", "record-03", "record-02",
@@ -217,7 +352,7 @@ test("Candidate control has a separate non-execution effect and successful creat
   let failSave = true;
   const tool = createPindieStrategyCandidateTool({
     adaptation,
-    experienceReader: { read: async () => ({ records, loadedSchemaV3: 2, unsupportedSchema: 0, invalid: 0 }) },
+    experienceReader: { read: async () => ({ records, loadedSchemaV3: 0, loadedSchemaV4: 2, unsupportedSchema: 0, invalid: 0 }) },
     candidateStore: {
       save: async (_root, candidate) => {
         if (failSave) {
@@ -267,7 +402,9 @@ test("Candidate persistence is project-local, schema-v1, UUID-v4, and atomic", a
   await store.save("/project-a", candidate);
   const directory = store.strategyCandidateDirectory("/project-a");
   assert.deepEqual(await readdir(directory), [`${candidate.candidateId}.json`]);
-  assert.deepEqual(JSON.parse(await readFile(join(directory, `${candidate.candidateId}.json`))), candidate);
+  const persisted = JSON.parse(await readFile(join(directory, `${candidate.candidateId}.json`)));
+  assert.deepEqual(persisted, candidate);
+  assert.equal("fingerprint" in persisted, false);
   assert.equal((await readdir(store.strategyCandidateDirectory("/project-b")).catch(() => [])).length, 0);
   await assert.rejects(store.save("/project-a", candidate), /already exists/);
 });

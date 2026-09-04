@@ -4,10 +4,36 @@ import test from "node:test";
 import { renderPindieSystemContract } from "../src/context.ts";
 import {
   createPolicySnapshot,
+  createPolicySnapshotFromRevisions,
+  createStrategyRevisionSelection,
+  isSeedStrategySelection,
+  policySnapshotIdentity,
+  serializePolicySnapshot,
   type PolicySnapshot,
 } from "../src/policy.ts";
 import { SEED_STRATEGIES } from "../src/strategies.ts";
 import { createPindiePolicySetTool } from "../src/tools/policy.ts";
+
+const REVISION_ID = "00000000-0000-4000-8000-000000000001";
+const REVISION_FINGERPRINT = `sha256:${"1".repeat(64)}`;
+
+function revisionSelection(
+  status: "trial" | "promoted" = "trial",
+) {
+  return createStrategyRevisionSelection({
+    strategyId: "architecture-first",
+    kind: "approach",
+    revisionIdentity: REVISION_ID,
+    revisionFingerprint: REVISION_FINGERPRINT,
+    revisionStatusAtRun: status,
+    semantics: {
+      summary: "Use a bounded architectural check before changing code.",
+      useWhen: ["the change crosses a known interface boundary"],
+      avoidWhen: ["the issue is a local, already-understood correction"],
+      principles: ["name the boundary", "verify the smallest coherent change"],
+    },
+  });
+}
 
 function strategy(id: string) {
   const found = SEED_STRATEGIES.find((candidate) => candidate.id === id);
@@ -53,6 +79,42 @@ test("SI02 Policy Snapshot validation keeps approach and modifier kinds separate
     }),
     /modifiers must be unique/i,
   );
+});
+
+test("SI v0.6 revision identity is explicit while ordinary Policy declaration remains Seed-only", async () => {
+  const seed = createPolicySnapshot({ approach: "architecture-first" });
+  const trial = revisionSelection();
+  const trialPolicy = createPolicySnapshotFromRevisions({ approach: trial });
+  const promotedPolicy = createPolicySnapshotFromRevisions({
+    approach: revisionSelection("promoted"),
+  });
+  const serialized = serializePolicySnapshot(trialPolicy);
+
+  assert.equal(isSeedStrategySelection(seed.approach), true);
+  assert.equal(isSeedStrategySelection(trial), false);
+  assert.notEqual(policySnapshotIdentity(seed), policySnapshotIdentity(trialPolicy));
+  assert.equal(policySnapshotIdentity(trialPolicy), policySnapshotIdentity(promotedPolicy));
+  assert.deepEqual(Object.keys(serialized.approach), [
+    "strategyId",
+    "kind",
+    "revisionIdentity",
+    "revisionFingerprint",
+    "revisionStatusAtRun",
+    "semantics",
+  ]);
+  assert.deepEqual(serialized.approach.semantics, trial.semantics);
+
+  assert.throws(
+    () => createPolicySnapshot({ approach: trial }),
+    /approach must be a Seed Strategy ID/i,
+  );
+  const declared: PolicySnapshot[] = [];
+  const tool = createPindiePolicySetTool({ onPolicySet: (snapshot) => declared.push(snapshot) });
+  await assert.rejects(
+    (tool.execute as any)("inactive-candidate", { approach: trial }),
+    /approach must be a Seed Strategy ID/i,
+  );
+  assert.deepEqual(declared, []);
 });
 
 test("SI02 policy declaration tool is optional, structured, and replaces the current Snapshot", async () => {

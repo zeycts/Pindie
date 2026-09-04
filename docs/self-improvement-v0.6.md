@@ -81,7 +81,7 @@ Policy identity must include revision identity. The same logical Strategy IDs wi
 
 Candidate files remain immutable SI v0.5 artifacts.
 
-SI v0.6 adds a deterministic Candidate semantic fingerprint. It binds at least:
+SI v0.6 adds a deterministic Candidate semantic fingerprint derived from the immutable v1 artifact; it is not a new persisted Candidate field. It binds at least:
 
 ```text
 target.strategyId

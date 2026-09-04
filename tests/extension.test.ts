@@ -159,6 +159,7 @@ class ExtensionTestExperienceReader implements RunExperienceReader {
   result: RunExperienceReadResult = {
     records: [],
     loadedSchemaV3: 0,
+    loadedSchemaV4: 0,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -762,12 +763,13 @@ test("SI v0.4 /experience renders empty and mixed evidence read-only", async () 
         ),
       },
     ],
-    loadedSchemaV3: 3,
+    loadedSchemaV3: 0,
+    loadedSchemaV4: 3,
     unsupportedSchema: 1,
     invalid: 1,
   };
   await harness.api.commands.get("experience").handler("", commandContext);
-  assert.match(notices.at(-1)?.message ?? "", /Loaded schema-v3 records: 3/);
+  assert.match(notices.at(-1)?.message ?? "", /Loaded schema-v4 records: 3/);
   assert.match(notices.at(-1)?.message ?? "", /Unsupported-schema records: 1/);
   assert.match(notices.at(-1)?.message ?? "", /Invalid\/unreadable records: 1/);
   assert.match(notices.at(-1)?.message ?? "", /Evaluated Runs: 3/);
@@ -1509,7 +1511,8 @@ test("Context Governor suppresses guidance after a valid pending handoff and dur
       { recordId: "adapt-one.json", experience: commandExperience("adapt one", createPolicySnapshot({ approach: "direct-action" })) },
       { recordId: "adapt-two.json", experience: commandExperience("adapt two", createPolicySnapshot({ approach: "direct-action" })) },
     ],
-    loadedSchemaV3: 2,
+    loadedSchemaV3: 0,
+    loadedSchemaV4: 2,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -3960,7 +3963,7 @@ test("M5 external State unavailability clears refs collected under prior semanti
   );
 });
 
-test("SI v0.3 eligible Run Experience captures task facts, outcome, and settled metrics", async () => {
+test("SI v0.6 writes revision-aware schema-v4 Run Experience while preserving v0.3 facts", async () => {
   const harness = createHarness([["/repo", activeState("Experience task")]]);
   await startSession(harness, "/repo");
   await beginAgentRun(harness);
@@ -3969,7 +3972,7 @@ test("SI v0.3 eligible Run Experience captures task facts, outcome, and settled 
 
   assert.equal(harness.experienceStore.records.length, 1);
   const record = harness.experienceStore.records[0]!.experience;
-  assert.equal(record.schemaVersion, 3);
+  assert.equal(record.schemaVersion, 4);
   assert.deepEqual(record.runStart, {
     taskStatus: "active",
     taskGoal: "Experience task",
@@ -4007,7 +4010,7 @@ test("SI v0.3 eligible Run Experience captures task facts, outcome, and settled 
   assert.equal(JSON.stringify(record).includes("evidence"), false);
 });
 
-test("SI v0.3 preserves idle introduction and Policy declaration positions", async () => {
+test("SI v0.6 preserves idle introduction and Policy declaration positions", async () => {
   const harness = createHarness();
   await startSession(harness, "/repo");
   await beginAgentRun(harness);
@@ -4032,7 +4035,7 @@ test("SI v0.3 preserves idle introduction and Policy declaration positions", asy
 
   assert.equal(first.ref.startsWith("ev:"), true);
   const record = harness.experienceStore.records[0]!.experience;
-  assert.equal(record.schemaVersion, 3);
+  assert.equal(record.schemaVersion, 4);
   assert.deepEqual(record.runStart, { taskStatus: "idle", taskGoal: null });
   assert.equal(record.task.goal, "Introduced task");
   assert.equal(record.task.taskRelation, "introduced_during_run");
@@ -4068,7 +4071,7 @@ test("SI v0.3 preserves idle introduction and Policy declaration positions", asy
   assert.equal(record.execution.toolErrors, 1);
 });
 
-test("SI v0.3 keeps completed run-start Task A distinct from introduced settlement Task B", async () => {
+test("SI v0.6 keeps completed run-start Task A distinct from introduced settlement Task B", async () => {
   const completedTaskA = completedState();
   const taskA: PindieState = {
     task: { ...completedTaskA.task!, goal: "Task A" },
@@ -4085,7 +4088,7 @@ test("SI v0.3 keeps completed run-start Task A distinct from introduced settleme
 
   assert.equal(harness.experienceStore.records.length, 1);
   const record = harness.experienceStore.records[0]!.experience;
-  assert.equal(record.schemaVersion, 3);
+  assert.equal(record.schemaVersion, 4);
   assert.deepEqual(record.runStart, { taskStatus: "done", taskGoal: "Task A" });
   assert.deepEqual(record.task, {
     goal: "Task B",
@@ -4321,7 +4324,8 @@ test("SI v0.5 /adapt rejects unknown, busy, missing-root, and insufficient evide
 
   reader.result = {
     records: [{ recordId: "only.json", experience: commandExperience("only", createPolicySnapshot({ approach: "direct-action" })) }],
-    loadedSchemaV3: 1,
+    loadedSchemaV3: 0,
+    loadedSchemaV4: 1,
     unsupportedSchema: 0,
     invalid: 0,
   };
