@@ -30,23 +30,45 @@ class ManualScheduler {
   }
 }
 
+interface FakeSessionPresentation {
+  name?: string;
+  entries?: unknown[];
+  setNameError?: Error;
+}
+
 interface FakeRuntimeControl {
   readonly adapter: PiRuntimeAdapter;
   readonly calls: SessionReplacementOptions[];
   readonly nativeCallCount: () => number;
   readonly messages: Array<{ message: unknown; options: unknown }>;
+  readonly events: string[];
   readonly facts: { isStreaming: boolean; isCompacting: boolean; pendingMessageCount: number };
   setReplacement(handler: (options?: SessionReplacementOptions) => Promise<SessionReplacementResult>): void;
   setSessionId(id: string): void;
+  setActiveSessionPresentation(presentation: FakeSessionPresentation): void;
+  setNextSessionNameError(error: Error): void;
+  activeSessionName(): string | undefined;
   setFacts(facts: Partial<FakeRuntimeControl["facts"]>): void;
 }
 
 function fakeSession(
   id: string,
   facts: FakeRuntimeControl["facts"],
+  presentation: FakeSessionPresentation,
+  events: string[],
 ): AgentSession {
+  let sessionName = presentation.name;
   return {
     sessionId: id,
+    sessionManager: {
+      getSessionName: () => sessionName,
+      getEntries: () => presentation.entries ?? [],
+    },
+    setSessionName: (name: string) => {
+      events.push("setSessionName");
+      if (presentation.setNameError) throw presentation.setNameError;
+      sessionName = name;
+    },
     get isStreaming() { return facts.isStreaming; },
     get isCompacting() { return facts.isCompacting; },
     get pendingMessageCount() { return facts.pendingMessageCount; },
@@ -58,13 +80,19 @@ function fakeRuntime(): FakeRuntimeControl {
   const facts = { isStreaming: false, isCompacting: false, pendingMessageCount: 0 };
   const calls: SessionReplacementOptions[] = [];
   const messages: Array<{ message: unknown; options: unknown }> = [];
-  let activeSession = fakeSession("session-1", facts);
+  const events: string[] = [];
+  let activeSessionPresentation: FakeSessionPresentation = {};
+  let activeSession = fakeSession("session-1", facts, activeSessionPresentation, events);
   let nextSessionNumber = 2;
+  let nextSessionNameError: Error | undefined;
   let replacement: (options?: SessionReplacementOptions) => Promise<SessionReplacementResult> = async (options) => {
     if (options) calls.push(options);
-    activeSession = fakeSession(`session-${nextSessionNumber++}`, facts);
+    activeSessionPresentation = { setNameError: nextSessionNameError };
+    nextSessionNameError = undefined;
+    activeSession = fakeSession(`session-${nextSessionNumber++}`, facts, activeSessionPresentation, events);
     await options?.withSession?.({
       sendMessage: async (message: unknown, options: unknown) => {
+        events.push("sendMessage");
         messages.push({ message, options });
       },
       sendUserMessage: async () => {
@@ -87,9 +115,19 @@ function fakeRuntime(): FakeRuntimeControl {
     calls,
     nativeCallCount: () => nativeCallCount,
     messages,
+    events,
     facts,
     setReplacement: (handler) => { replacement = handler; },
-    setSessionId: (id) => { activeSession = fakeSession(id, facts); },
+    setSessionId: (id) => {
+      activeSessionPresentation = {};
+      activeSession = fakeSession(id, facts, activeSessionPresentation, events);
+    },
+    setActiveSessionPresentation: (presentation) => {
+      activeSessionPresentation = presentation;
+      activeSession = fakeSession(activeSession.sessionId, facts, activeSessionPresentation, events);
+    },
+    setNextSessionNameError: (error) => { nextSessionNameError = error; },
+    activeSessionName: () => activeSession.sessionManager.getSessionName(),
     setFacts: (next) => Object.assign(facts, next),
   };
   return control;
@@ -177,6 +215,61 @@ test("an idle matching Session receives one native replacement with hidden resum
     /<PINDIE_LONG_TASK_RESUME>[\s\S]*Progress carried from the outgoing Session\.[\s\S]*Use Reality as the source of factual truth\./i,
   );
   assert.match(message.content, /This is not new user intent\./i);
+});
+
+test("automatic rollover names the fresh Session before hidden resume and continues the lineage", async () => {
+  const control = fakeRuntime();
+  control.setActiveSessionPresentation({
+    entries: [{ type: "message", message: { role: "user", content: "Foo" } }],
+  });
+  const scheduler = new ManualScheduler();
+  const supervisor = new LongTaskRolloverSupervisor(control.adapter, { schedule: scheduler.schedule });
+
+  await attempt(supervisor, scheduler, request("session-1"));
+
+  assert.equal(control.activeSessionName(), "Foo · cont. 2");
+  assert.deepEqual(control.events, ["setSessionName", "sendMessage"]);
+
+  await attempt(supervisor, scheduler, request("session-2"));
+
+  assert.equal(control.activeSessionName(), "Foo · cont. 3");
+  assert.deepEqual(control.events, [
+    "setSessionName",
+    "sendMessage",
+    "setSessionName",
+    "sendMessage",
+  ]);
+});
+
+test("lineage ordinal survives a newly created supervisor with a reset safety chain", async () => {
+  const control = fakeRuntime();
+  control.setActiveSessionPresentation({ name: "Foo · cont. 2" });
+  const scheduler = new ManualScheduler();
+  const supervisor = new LongTaskRolloverSupervisor(control.adapter, { schedule: scheduler.schedule });
+
+  await attempt(supervisor, scheduler, request("session-1"));
+
+  assert.equal(control.activeSessionName(), "Foo · cont. 3");
+});
+
+test("Session naming failure is isolated from successful hidden resume", async () => {
+  const control = fakeRuntime();
+  const scheduler = new ManualScheduler();
+  const warnings: string[] = [];
+  control.setNextSessionNameError(new Error("native name write failed"));
+  const supervisor = new LongTaskRolloverSupervisor(control.adapter, {
+    schedule: scheduler.schedule,
+    logger: (message) => warnings.push(message),
+  });
+
+  await attempt(supervisor, scheduler, request("session-1"));
+
+  assert.equal(control.adapter.activeSessionId, "session-2");
+  assert.equal(control.nativeCallCount(), 1);
+  assert.equal(control.messages.length, 1);
+  assert.deepEqual(control.events, ["setSessionName", "sendMessage"]);
+  assert.equal(scheduler.callbacks.length, 0);
+  assert.equal(warnings.some((message) => /lineage naming failed/i.test(message)), true);
 });
 
 test("replacement cancellation and failure do not retry", async () => {

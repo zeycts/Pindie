@@ -118,6 +118,143 @@ test("PiRuntimeAdapter replaces a real Pindie Pi session", async () => {
   }
 });
 
+test("Host-owned automatic rollover persists native lineage naming without adding it to LLM context", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pindie-session-lineage-name-"));
+  const home = join(root, "home");
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+  const sessionDir = join(root, "sessions");
+  const previousHome = process.env.HOME;
+  const previousDiscordEnvironment = {
+    PINDIE_DISCORD_TOKEN: process.env.PINDIE_DISCORD_TOKEN,
+    PINDIE_DISCORD_USER_ID: process.env.PINDIE_DISCORD_USER_ID,
+    PINDIE_DISCORD_GUILD_ID: process.env.PINDIE_DISCORD_GUILD_ID,
+  };
+  const faux = fauxProvider({ provider: `pindie-lineage-name-${Date.now()}-${Math.random()}` });
+  let host: Awaited<ReturnType<typeof createPindieHost>> | undefined;
+  let providerContext: unknown;
+
+  try {
+    await mkdir(cwd);
+    await mkdir(agentDir, { recursive: true });
+    await mkdir(home, { recursive: true });
+    process.env.HOME = home;
+    delete process.env.PINDIE_DISCORD_TOKEN;
+    delete process.env.PINDIE_DISCORD_USER_ID;
+    delete process.env.PINDIE_DISCORD_GUILD_ID;
+
+    const modelRuntime = await ModelRuntime.create({
+      authPath: join(agentDir, "auth.json"),
+      modelsPath: null,
+      refreshOnCreate: false,
+    });
+    modelRuntime.registerNativeProvider(faux.provider);
+    await modelRuntime.refresh({ allowNetwork: false });
+
+    const sessionManager = SessionManager.create(cwd, sessionDir);
+    const sourcePrompt = "  Persist the original Long Task identity.\n";
+    sessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: sourcePrompt }],
+      timestamp: Date.now(),
+    } as never);
+    sessionManager.appendMessage(fauxAssistantMessage("persist the source Session") as never);
+    assert.equal(sessionManager.getSessionName(), undefined);
+
+    const scheduled: Array<() => void> = [];
+    let freshSessionRebound!: () => void;
+    const freshSessionReboundPromise = new Promise<void>((resolve) => {
+      freshSessionRebound = resolve;
+    });
+    host = await createPindieHost({
+      cwd,
+      agentDir,
+      sessionManager,
+      longTaskRollover: { schedule: (callback) => scheduled.push(callback) },
+      dependencies: {
+        createAgentSessionServices: async (serviceOptions) =>
+          createAgentSessionServices({ ...serviceOptions, modelRuntime }),
+        createAgentSessionFromServices: async (sessionOptions) =>
+          createAgentSessionFromServices({ ...sessionOptions, model: faux.getModel() }),
+        createInteractiveMode: (nativeRuntime) => {
+          nativeRuntime.setRebindSession(async (session) => {
+            await session.bindExtensions({});
+            freshSessionRebound();
+          });
+          return { run: async () => {} };
+        },
+      },
+    });
+    await host.runtime.activeSession.bindExtensions({});
+
+    const sourceSessionId = host.runtime.activeSessionId;
+    const expectedName = "Persist the original Long Task identity. · cont. 2";
+    const checkpoint = createTaskContinuity({
+      createdAt: "2026-09-04T00:00:00.000Z",
+      taskFingerprint: `sha256:${"e".repeat(64)}`,
+      sourceSessionId,
+      progressSummary: "The current Session reached a durable handoff frontier.",
+      decisions: ["Keep Session naming outside semantic Task state."],
+    });
+    faux.setResponses([(context) => {
+      providerContext = context;
+      return fauxAssistantMessage("deterministic automatic resume response");
+    }]);
+
+    const publisher = getCommittedRolloverPublisher();
+    assert.ok(publisher);
+    publisher({ sourceSessionId, checkpoint });
+    const scheduledRollover = scheduled.shift();
+    assert.ok(scheduledRollover);
+    scheduledRollover();
+    await freshSessionReboundPromise;
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const currentSession = host.runtime.activeSession;
+      if (
+        currentSession.sessionId !== sourceSessionId &&
+        currentSession.sessionManager.getSessionName() !== undefined
+      ) break;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    assert.notEqual(host.runtime.activeSessionId, sourceSessionId);
+    const freshSession = host.runtime.activeSession;
+    for (let attempt = 0; attempt < 100 && providerContext === undefined; attempt += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    assert.ok(providerContext, "hidden resume should reach the faux provider");
+    await freshSession.waitForIdle();
+    assert.equal(freshSession.sessionManager.getSessionName(), expectedName);
+    const sessionInfoEntries = freshSession.sessionManager.getEntries().filter((entry) => entry.type === "session_info");
+    assert.equal(sessionInfoEntries.length, 1);
+    assert.equal((sessionInfoEntries[0] as { name?: string }).name, expectedName);
+    const freshSessionFile = freshSession.sessionFile;
+    assert.ok(freshSessionFile);
+    assert.equal(SessionManager.open(freshSessionFile).getSessionName(), expectedName);
+
+    const contextMessages = freshSession.sessionManager.buildSessionContext().messages;
+    assert.equal(contextMessages.some((message) => messageText(message).includes(expectedName)), false);
+    assert.equal(
+      contextMessages.some((message) => (message as unknown as { type?: unknown }).type === "session_info"),
+      false,
+    );
+    const providerMessages = (providerContext as { messages?: readonly unknown[] } | undefined)?.messages ?? [];
+    assert.equal(providerMessages.some((message) => messageText(message).includes(expectedName)), false);
+
+    await host.dispose();
+    host = undefined;
+  } finally {
+    await host?.dispose();
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    for (const [name, value] of Object.entries(previousDiscordEnvironment)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Host-owned replacement preserves the Pindie extension surface and project State", async () => {
   const root = await mkdtemp(join(tmpdir(), "pindie-host-compatibility-"));
   const home = join(root, "home");

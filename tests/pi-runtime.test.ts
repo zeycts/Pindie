@@ -8,6 +8,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+  DEFAULT_LONG_TASK_SESSION_NAME,
+  formatLongTaskContinuationSessionName,
+  MAX_SESSION_LINEAGE_NAME_LENGTH,
   PiRuntimeAdapter,
   type SessionReplacementOptions,
   type SessionReplacementResult,
@@ -26,9 +29,16 @@ function fakeSession(
   id: string,
   usage?: ContextUsage,
   facts: { isStreaming?: boolean; isCompacting?: boolean; pendingMessageCount?: number } = {},
+  presentation: { name?: string; entries?: unknown[] } = {},
 ): AgentSession {
+  let sessionName = presentation.name;
   return {
     sessionId: id,
+    sessionManager: {
+      getSessionName: () => sessionName,
+      getEntries: () => presentation.entries ?? [],
+    },
+    setSessionName: (name: string) => { sessionName = name; },
     getContextUsage: () => usage,
     get isStreaming() { return facts.isStreaming ?? false; },
     get isCompacting() { return facts.isCompacting ?? false; },
@@ -73,6 +83,112 @@ function fakeRuntime(initialSession: AgentSession): FakeRuntimeControl {
     disposeCalls: () => disposeCalls,
   };
 }
+
+test("lineage formatting is presentation-only and bounded", () => {
+  assert.equal(formatLongTaskContinuationSessionName("Foo"), "Foo · cont. 2");
+  assert.equal(formatLongTaskContinuationSessionName("Foo · cont. 2"), "Foo · cont. 3");
+  assert.equal(formatLongTaskContinuationSessionName("Foo · cont. 9"), "Foo · cont. 10");
+  assert.equal(
+    formatLongTaskContinuationSessionName("Foo · cont. 1"),
+    "Foo · cont. 1 · cont. 2",
+  );
+  assert.equal(
+    formatLongTaskContinuationSessionName("\n  Foo   with\t whitespace \n"),
+    "Foo with whitespace · cont. 2",
+  );
+  const longName = formatLongTaskContinuationSessionName("A".repeat(200));
+  assert.equal(longName.endsWith(" · cont. 2"), true);
+  assert.equal(longName.includes("…"), true);
+  assert.equal(formatLongTaskContinuationSessionName("A".repeat(200)).length <= MAX_SESSION_LINEAGE_NAME_LENGTH, true);
+  assert.equal(formatLongTaskContinuationSessionName(""), `${DEFAULT_LONG_TASK_SESSION_NAME} · cont. 2`);
+  assert.equal(formatLongTaskContinuationSessionName(undefined), `${DEFAULT_LONG_TASK_SESSION_NAME} · cont. 2`);
+});
+
+test("adapter prefers an explicit active Session name", () => {
+  const session = fakeSession("session-1", undefined, {}, {
+    name: "  Explicit   Session  ",
+    entries: [{ type: "message", message: { role: "user", content: "fallback prompt" } }],
+  });
+  const control = fakeRuntime(session);
+  const adapter = new PiRuntimeAdapter(control.runtime);
+
+  assert.equal(adapter.getActiveSessionDisplayIdentity(), "Explicit Session");
+});
+
+test("adapter falls back to the first real textual user message", () => {
+  const session = fakeSession("session-1", undefined, {}, {
+    entries: [
+      { type: "custom_message", customType: "pindie-long-task-resume", content: "hidden resume" },
+      { type: "message", message: { role: "assistant", content: [{ type: "text", text: "assistant" }] } },
+      { type: "message", message: { role: "toolResult", content: [{ type: "text", text: "tool" }] } },
+      { type: "message", message: { role: "user", content: [{ type: "image", data: "x", mimeType: "image/png" }] } },
+      {
+        type: "message",
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "\n  First   human" },
+            { type: "image", data: "x", mimeType: "image/png" },
+            { type: "text", text: " prompt\t" },
+          ],
+        },
+      },
+      { type: "message", message: { role: "user", content: "later prompt" } },
+    ],
+  });
+  const control = fakeRuntime(session);
+  const adapter = new PiRuntimeAdapter(control.runtime);
+
+  assert.equal(adapter.getActiveSessionDisplayIdentity(), "First human prompt");
+});
+
+test("adapter safely falls back when no explicit or textual user identity exists", () => {
+  const session = fakeSession("session-1", undefined, {}, {
+    entries: [
+      { type: "custom_message", customType: "pindie-long-task-resume", content: "hidden resume" },
+      { type: "message", message: { role: "assistant", content: "assistant" } },
+      { type: "message", message: { role: "user", content: [{ type: "image", data: "x", mimeType: "image/png" }] } },
+    ],
+  });
+  const control = fakeRuntime(session);
+  const adapter = new PiRuntimeAdapter(control.runtime);
+
+  assert.equal(adapter.getActiveSessionDisplayIdentity(), DEFAULT_LONG_TASK_SESSION_NAME);
+});
+
+test("setActiveSessionName delegates to the current active Session", () => {
+  const first = fakeSession("session-1");
+  const second = fakeSession("session-2");
+  const control = fakeRuntime(first);
+  const adapter = new PiRuntimeAdapter(control.runtime);
+
+  adapter.setActiveSessionName("first name");
+  assert.equal(first.sessionManager.getSessionName(), "first name");
+  control.setSession(second);
+  adapter.setActiveSessionName("fresh name");
+
+  assert.equal(first.sessionManager.getSessionName(), "first name");
+  assert.equal(second.sessionManager.getSessionName(), "fresh name");
+});
+
+test("setting a name after native replacement affects the fresh Session", async () => {
+  const first = fakeSession("session-1");
+  const second = fakeSession("session-2");
+  const control = fakeRuntime(first);
+  control.setNewSession(async (options) => {
+    control.setSession(second);
+    await options?.withSession?.({ sendMessage: async () => undefined } as never);
+    return { cancelled: false };
+  });
+  const adapter = new PiRuntimeAdapter(control.runtime);
+
+  await adapter.replaceWithFreshSession({
+    withSession: async () => adapter.setActiveSessionName("fresh name"),
+  });
+
+  assert.equal(first.sessionManager.getSessionName(), undefined);
+  assert.equal(second.sessionManager.getSessionName(), "fresh name");
+});
 
 test("adapter projects the current active Session and identity", () => {
   const first = fakeSession("session-1");
