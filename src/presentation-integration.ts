@@ -17,6 +17,10 @@ import {
   type StrategyCandidateReader,
 } from "./strategy-candidates.ts";
 import {
+  validateStrategyRevisionDecisionBinding,
+  type StrategyRevisionDecisionReader,
+} from "./strategy-decisions.ts";
+import {
   deriveEfficiencySnapshot,
   formatEfficiencyReport,
 } from "./efficiency.ts";
@@ -42,6 +46,7 @@ export interface PresentationIntegrationOptions {
   getProjectRoot: () => string | null;
   experienceReader: RunExperienceReader;
   strategyCandidateReader: StrategyCandidateReader;
+  strategyDecisionReader?: StrategyRevisionDecisionReader;
   getAuthoritativeState: () => PindieState | null;
   getStateUnavailableReason: () => string | null;
   getRunStale: () => boolean;
@@ -67,6 +72,7 @@ export class PresentationIntegration {
   private readonly getProjectRoot: () => string | null;
   private readonly experienceReader: RunExperienceReader;
   private readonly strategyCandidateReader: StrategyCandidateReader;
+  private readonly strategyDecisionReader: StrategyRevisionDecisionReader | null;
   private readonly getAuthoritativeState: () => PindieState | null;
   private readonly getStateUnavailableReason: () => string | null;
   private readonly getRunStale: () => boolean;
@@ -92,6 +98,7 @@ export class PresentationIntegration {
     this.getProjectRoot = options.getProjectRoot;
     this.experienceReader = options.experienceReader;
     this.strategyCandidateReader = options.strategyCandidateReader;
+    this.strategyDecisionReader = options.strategyDecisionReader ?? null;
     this.getAuthoritativeState = options.getAuthoritativeState;
     this.getStateUnavailableReason = options.getStateUnavailableReason;
     this.getRunStale = options.getRunStale;
@@ -326,12 +333,24 @@ export class PresentationIntegration {
       );
       return;
     }
+    let priorTerminalDecision = false;
+    if (this.strategyDecisionReader !== null) {
+      try {
+        const decision = await this.strategyDecisionReader.read(projectRoot, requestedId);
+        if (decision !== null) {
+          validateStrategyRevisionDecisionBinding(decision, candidate);
+          priorTerminalDecision = true;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Pindie could not show Trial review: Decision read/binding failed: ${message}`, "warning");
+        return;
+      }
+    }
     try {
       const review = deriveCandidateTrialReview(candidate, read.records, {
         currentProjectMatch: true,
-        // Slice C has no decision artifact/store; the absence of one is the
-        // deterministic no-prior-decision fact until Slice D owns decisions.
-        priorTerminalDecision: false,
+        priorTerminalDecision,
       });
       ctx.ui.notify(formatCandidateTrialReview(read, review), "info");
     } catch (error) {

@@ -95,6 +95,7 @@ export function renderPindieSystemContract(): string {
     "- Policy declaration is optional and is not required ceremony.",
     "- Strategy Revision Candidates are inactive hypotheses; creation is valid only during explicitly entered /adapt <strategy-id> work.",
     "- Candidate revisions remain unavailable to normal Policy declarations; only an explicitly armed /trial <candidate-id> Run may select its exact Candidate revision.",
+    "- Project-local promoted revisions may be listed in a bounded normal Run catalog and are selectable only by their exact selector; promotion never changes the default Policy or replaces the Seed.",
     "- Candidates never override State, the Execution Gateway, Verification, or Task authority; receiving a Trial Packet does not create Policy attribution.",
   ];
   renderSeedStrategies(lines);

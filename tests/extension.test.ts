@@ -22,10 +22,15 @@ import { PINDIE_CONTEXT_LIFECYCLE_TYPE } from "../src/context-governor.ts";
 import {
   installCommittedRolloverReceiver,
 } from "../src/long-task-control.ts";
-import { createPolicySnapshot, type PolicySnapshot } from "../src/policy.ts";
+import {
+  createPolicySnapshot,
+  createPolicySnapshotFromRevisions,
+  type PolicySnapshot,
+} from "../src/policy.ts";
 import {
   createStrategyRevisionCandidate,
   strategyCandidateSemanticFingerprint,
+  strategyRevisionSelectionFromCandidate,
   type StrategyRevisionCandidate,
 } from "../src/strategy-candidates.ts";
 import { getSeedStrategy } from "../src/strategies.ts";
@@ -46,6 +51,10 @@ import type {
   RunExperienceReader,
   RunExperienceStore,
 } from "../src/experience-store.ts";
+import type {
+  StrategyRevisionDecision,
+  StrategyRevisionDecisionStore,
+} from "../src/strategy-decisions.ts";
 import type { PindieStateStore, TaskContinuityStore } from "../src/store.ts";
 import type { TaskContinuityV1 } from "../src/task-continuity.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
@@ -243,9 +252,10 @@ function activeState(goal = "Wire Pi extension"): PindieState {
 
 function trialCandidate(
   candidateId = "00000000-0000-4000-8000-000000000001",
+  targetId = "architecture-first",
 ): StrategyRevisionCandidate {
   return createStrategyRevisionCandidate({
-    target: getSeedStrategy("architecture-first")!,
+    target: getSeedStrategy(targetId)!,
     candidateId,
     createdAt: "2026-01-01T00:00:00.000Z",
     proposal: {
@@ -257,6 +267,30 @@ function trialCandidate(
       hypothesis: "A narrower boundary check may reduce avoidable rework.",
     },
   });
+}
+
+function candidatePolicy(
+  candidate: StrategyRevisionCandidate,
+  status: "trial" | "promoted" = "trial",
+): PolicySnapshot {
+  return createPolicySnapshotFromRevisions({
+    approach: strategyRevisionSelectionFromCandidate(candidate, status),
+  });
+}
+
+function testDecisionStore(
+  initial: readonly StrategyRevisionDecision[] = [],
+): StrategyRevisionDecisionStore & { readonly decisions: Map<string, StrategyRevisionDecision> } {
+  const decisions = new Map(initial.map((decision) => [decision.candidateId, decision]));
+  return {
+    decisions,
+    read: async (_root, candidateId) => decisions.get(candidateId) ?? null,
+    readAll: async () => [...decisions.values()],
+    save: async (_root, decision) => {
+      if (decisions.has(decision.candidateId)) throw new Error("terminal Decision already exists");
+      decisions.set(decision.candidateId, decision);
+    },
+  };
 }
 
 function commandExperience(goal: string, policy: PolicySnapshot | null = null): RunExperience {
@@ -4940,4 +4974,181 @@ test("continuity persistence failure clears only handoff runtime state and leave
   assert.equal(harness.integration.runtime.state.task?.openLoops.nextIntent, input.nextIntent);
   assert.equal(harness.store.states.get("/repo")?.task?.openLoops.nextIntent, input.nextIntent);
   assert.equal(harness.integration.stateUnavailableReason, null);
+});
+
+test("SI v0.6 /promote creates one immutable Decision and normal Runs explicitly attribute promoted Policy", async () => {
+  const promotedCandidate = trialCandidate();
+  const competingCandidate = trialCandidate("00000000-0000-4000-8000-000000000002");
+  const rejectedCandidate = trialCandidate("00000000-0000-4000-8000-000000000003", "direct-action");
+  const candidates = new Map([
+    [promotedCandidate.candidateId, promotedCandidate],
+    [competingCandidate.candidateId, competingCandidate],
+    [rejectedCandidate.candidateId, rejectedCandidate],
+  ]);
+  const candidateReader = {
+    read: async (_root: string, candidateId: string) => candidates.get(candidateId) ?? null,
+  };
+  const experienceReader = new ExtensionTestExperienceReader();
+  experienceReader.result = {
+    records: [
+      { recordId: "trial-one", experience: commandExperience("shared goal", candidatePolicy(promotedCandidate)) },
+      { recordId: "trial-two", experience: commandExperience("shared goal", candidatePolicy(promotedCandidate)) },
+      { recordId: "competing-one", experience: commandExperience("competing goal", candidatePolicy(competingCandidate)) },
+      { recordId: "competing-two", experience: commandExperience("competing goal", candidatePolicy(competingCandidate)) },
+      { recordId: "seed", experience: commandExperience("shared goal", createPolicySnapshot({ approach: "architecture-first" })) },
+      { recordId: "direct-seed", experience: commandExperience("direct goal", createPolicySnapshot({ approach: "direct-action" })) },
+    ],
+    loadedSchemaV3: 0,
+    loadedSchemaV4: 6,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const decisions = testDecisionStore();
+  const harness = createHarness([["/repo", activeState("Promotion task")]], {}, {
+    experienceReader,
+    strategyCandidateReader: candidateReader,
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+    now: () => Date.parse("2026-02-01T00:00:00.000Z"),
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  const commandContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+
+  await harness.api.commands.get("promote").handler(promotedCandidate.candidateId, commandContext);
+  assert.equal(decisions.decisions.size, 1);
+  const promotedDecision = decisions.decisions.get(promotedCandidate.candidateId)!;
+  assert.equal(promotedDecision.decision, "promoted");
+  assert.deepEqual(promotedDecision.evidence.trialRecordIds, ["trial-one", "trial-two"]);
+  assert.match(notices.at(-1)?.message ?? "", /promoted.*explicit normal Policy selection/i);
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.deepEqual(harness.store.saves, []);
+
+  await harness.api.commands.get("promote").handler(promotedCandidate.candidateId, commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /terminal Decision|duplicate|conflicting/i);
+  await harness.api.commands.get("promote").handler(competingCandidate.candidateId, commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /already has one promoted/i);
+  assert.equal(decisions.decisions.size, 1);
+
+  const normalBaseline = await harnessBeforeAgentStart(harness);
+  assert.match(normalBaseline.systemPrompt, /<PINDIE_PROMOTED_STRATEGIES>/);
+  assert.match(normalBaseline.systemPrompt, new RegExp(promotedCandidate.candidateId));
+  assert.match(normalBaseline.systemPrompt, /Revision status: promoted/);
+  assert.doesNotMatch(normalBaseline.systemPrompt, new RegExp(competingCandidate.candidateId));
+  const selector = {
+    strategyId: promotedCandidate.target.strategyId,
+    revisionIdentity: promotedCandidate.candidateId,
+    revisionFingerprint: strategyCandidateSemanticFingerprint(promotedCandidate),
+  };
+  await executeSemanticTool(harness, "pindie_policy_set", "promoted-policy", { approach: selector });
+  assert.equal(harness.integration.policySnapshot?.approach.revisionIdentity, promotedCandidate.candidateId);
+  assert.equal(harness.integration.policySnapshot?.approach.revisionStatusAtRun, "promoted");
+  await captureObservationEvidence(harness, "promoted-observation");
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  const promotedExperience = (harness.experienceStore as ExtensionTestExperienceStore).records.at(-1)?.experience;
+  assert.equal(promotedExperience?.schemaVersion, 4);
+  assert.equal(promotedExperience?.policy.finalSnapshot?.approach.revisionIdentity, promotedCandidate.candidateId);
+  assert.equal(promotedExperience?.policy.finalSnapshot?.approach.revisionStatusAtRun, "promoted");
+
+  await beginAgentRun(harness);
+  await executeSemanticTool(harness, "pindie_policy_set", "seed-policy-after-promotion", { approach: "architecture-first" });
+  assert.equal(harness.integration.policySnapshot?.approach.revisionIdentity, "seed");
+  assert.equal(harness.integration.policySnapshot?.approach.revisionStatusAtRun, "seed");
+  await captureObservationEvidence(harness, "seed-observation-after-promotion");
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("SI v0.6 /promote enforces the exact gate while /reject remains explicit and unavailable in normal Policy", async () => {
+  const candidate = trialCandidate();
+  const candidateReader = { read: async () => candidate };
+  const experienceReader = new ExtensionTestExperienceReader();
+  experienceReader.result = {
+    records: [{ recordId: "one-trial", experience: commandExperience("one goal", candidatePolicy(candidate)) }],
+    loadedSchemaV3: 0,
+    loadedSchemaV4: 1,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const decisions = testDecisionStore();
+  const harness = createHarness([["/repo", activeState("Rejection task")]], {}, {
+    experienceReader,
+    strategyCandidateReader: candidateReader,
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  const commandContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+
+  await harness.api.commands.get("promote").handler(candidate.candidateId, commandContext);
+  assert.equal(decisions.decisions.size, 0);
+  assert.match(notices.at(-1)?.message ?? "", /exact Promotion Eligibility gate|at least 2|Seed baseline/i);
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+
+  await harness.api.commands.get("reject").handler(candidate.candidateId, commandContext);
+  assert.equal(decisions.decisions.get(candidate.candidateId)?.decision, "rejected");
+  assert.deepEqual(decisions.decisions.get(candidate.candidateId)?.evidence.trialRecordIds, ["one-trial"]);
+  assert.match(notices.at(-1)?.message ?? "", /rejected.*historical hypothesis|preserves/i);
+  assert.deepEqual(harness.store.saves, []);
+
+  const baseline = await harnessBeforeAgentStart(harness);
+  assert.doesNotMatch(baseline.systemPrompt, new RegExp(candidate.candidateId));
+  const selector = {
+    strategyId: candidate.target.strategyId,
+    revisionIdentity: candidate.candidateId,
+    revisionFingerprint: strategyCandidateSemanticFingerprint(candidate),
+  };
+  await assert.rejects(
+    harness.api.tool("pindie_policy_set").execute("rejected-selector", { approach: selector }, undefined, undefined, context("/repo")),
+    /without an active Candidate Trial|unavailable|promoted/i,
+  );
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("SI v0.6 trust read/write failures fall back to Seeds and never alter Task authority", async () => {
+  const candidate = trialCandidate();
+  const experienceReader = new ExtensionTestExperienceReader();
+  experienceReader.result = {
+    records: [{ recordId: "trial-one", experience: commandExperience("one goal", candidatePolicy(candidate)) }],
+    loadedSchemaV3: 0,
+    loadedSchemaV4: 1,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const brokenReader: StrategyRevisionDecisionStore = {
+    read: async () => null,
+    readAll: async () => { throw new Error("trust disk unavailable"); },
+    save: async () => { throw new Error("trust disk unavailable"); },
+  };
+  const harness = createHarness([["/repo", activeState("Trust isolation")]], {}, {
+    experienceReader,
+    strategyCandidateReader: { read: async () => candidate },
+    strategyDecisionStore: brokenReader,
+    strategyDecisionReader: brokenReader,
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  await harness.api.commands.get("reject").handler(candidate.candidateId, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  assert.match(notices.at(-1)?.message ?? "", /trust Decision storage|no trust transition/i);
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.deepEqual(harness.store.saves, []);
+  const baseline = await harnessBeforeAgentStart(harness);
+  assert.doesNotMatch(baseline.systemPrompt, /<PINDIE_PROMOTED_STRATEGIES>/);
+  assert.equal(harness.integration.stateUnavailableReason, null);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 });
