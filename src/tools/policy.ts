@@ -3,6 +3,7 @@ import { Type } from "typebox";
 
 import {
   createPolicySnapshotForRun,
+  formatStrategySelectionLabel,
   type PolicySnapshot,
   type StrategyRevisionSelection,
   type StrategyRevisionSelector,
@@ -58,9 +59,9 @@ function result(snapshot: PolicySnapshot) {
       text: [
         "Current Policy Snapshot declared.",
         "",
-        `Approach: ${snapshot.approach.id}`,
+        `Approach: ${formatStrategySelectionLabel(snapshot.approach)}`,
         `Modifiers: ${snapshot.modifiers.length > 0
-          ? snapshot.modifiers.map((strategy) => strategy.id).join(", ")
+          ? snapshot.modifiers.map(formatStrategySelectionLabel).join(", ")
           : "none"}`,
       ].join("\n"),
     }],

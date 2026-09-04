@@ -3,6 +3,7 @@ import type {
   RunExperienceSourceRecord,
 } from "./experience-store.ts";
 import {
+  formatStrategySelectionLabel,
   isSeedStrategySelection,
   policySnapshotIdentity,
   strategySelectionId,
@@ -396,10 +397,11 @@ function formatSummary(summary: NumericSummary, percent = false): string {
 
 function profileLabel(profile: PolicyEvidenceProfile): string {
   if (profile.snapshot === null) return "no-explicit-policy";
-  const modifiers = profile.identity.modifierIds.length === 0
+  const modifiers = profile.snapshot.modifiers.length === 0
     ? ""
-    : ` + ${profile.identity.modifierIds.join(", ")}`;
-  return `${profile.identity.approachId}${modifiers}`;
+    : ` + ${profile.snapshot.modifiers.map((selection) =>
+      formatStrategySelectionLabel(selection)).join(", ")}`;
+  return `${formatStrategySelectionLabel(profile.snapshot.approach)}${modifiers}`;
 }
 
 const MAX_RENDERED_PROFILE_RECORD_IDS = 5;

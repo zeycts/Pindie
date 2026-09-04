@@ -3,7 +3,10 @@ import {
   type PindieCapability,
   type SemanticSnapshot,
 } from "./semantics.ts";
-import type { PolicySnapshot } from "./policy.ts";
+import {
+  formatStrategySelectionLabel,
+  type PolicySnapshot,
+} from "./policy.ts";
 import {
   getTaskStatus,
   getVerificationStatus,
@@ -130,10 +133,11 @@ function renderCurrentPindiePolicySnapshot(
   return [
     "",
     "Current Policy Snapshot:",
-    `- Approach: ${policySnapshot.approach.id} (${policySnapshot.approach.kind})`,
+    `- Approach: ${formatStrategySelectionLabel(policySnapshot.approach)} (${policySnapshot.approach.kind})`,
     "  Modifiers:",
     ...(policySnapshot.modifiers.length > 0
-      ? policySnapshot.modifiers.map((strategy) => `  - ${strategy.id} (${strategy.kind})`)
+      ? policySnapshot.modifiers.map((strategy) =>
+        `  - ${formatStrategySelectionLabel(strategy)} (${strategy.kind})`)
       : ["  - none"]),
   ];
 }
