@@ -5,7 +5,6 @@ import type {
 import {
   formatStrategySelectionLabel,
   isSeedStrategySelection,
-  policySnapshotIdentity,
   strategySelectionId,
   strategySelectionRevisionFingerprint,
   strategySelectionRevisionIdentity,
@@ -149,11 +148,37 @@ function copyPolicySnapshot(snapshot: PolicySnapshot | null): PolicySnapshot | n
   });
 }
 
-/** Deterministic revision-aware identity for a complete explicit Policy Snapshot. */
-export function policyProfileId(snapshot: PolicySnapshot | null): string {
+/**
+ * Deterministic Evaluation-only identity for one complete Policy Snapshot.
+ *
+ * Unlike policySnapshotIdentity(), this identity includes the status under
+ * which each immutable revision was used in the Run. Status is attribution
+ * metadata, not part of stable Strategy revision identity.
+ */
+export function policyEvidenceProfileId(snapshot: PolicySnapshot | null): string {
   if (snapshot === null) return NO_EXPLICIT_POLICY_PROFILE_ID;
-  return `policy:${policySnapshotIdentity(snapshot)}`;
+  const selectionIdentity = (selection: PolicyStrategySelection) => ({
+    strategyId: strategySelectionId(selection),
+    kind: selection.kind,
+    revisionIdentity: strategySelectionRevisionIdentity(selection),
+    revisionFingerprint: strategySelectionRevisionFingerprint(selection),
+    revisionStatusAtRun: strategySelectionRevisionStatus(selection),
+  });
+  const modifiers = [...snapshot.modifiers]
+    .map(selectionIdentity)
+    .sort((left, right) => {
+      const leftText = JSON.stringify(left);
+      const rightText = JSON.stringify(right);
+      return compareText(leftText, rightText);
+    });
+  return `policy:${JSON.stringify({
+    approach: selectionIdentity(snapshot.approach),
+    modifiers,
+  })}`;
 }
+
+/** Compatibility name for callers that refer to the Evaluation profile ID. */
+export const policyProfileId = policyEvidenceProfileId;
 
 /** Derive bounded measurements from one valid supported Run Experience. */
 export function evaluateRunExperience(
@@ -272,7 +297,7 @@ function createMutableProfile(evaluation: RunEvaluation): MutableProfile {
   const snapshot = copyPolicySnapshot(evaluation.policy.finalSnapshot);
   const modifierIds = snapshot?.modifiers.map((modifier) => modifier.id) ?? [];
   return {
-    profileId: policyProfileId(snapshot),
+    profileId: policyEvidenceProfileId(snapshot),
     snapshot,
     identity: {
       approachId: snapshot?.approach.id ?? null,
@@ -302,7 +327,7 @@ export function derivePolicyEvidenceProfiles(
   const profiles = new Map<string, MutableProfile>();
   for (const evaluation of evaluations) {
     if (!evaluation.attributionEligible) continue;
-    const id = policyProfileId(evaluation.policy.finalSnapshot);
+    const id = policyEvidenceProfileId(evaluation.policy.finalSnapshot);
     let profile = profiles.get(id);
     if (!profile) {
       profile = createMutableProfile(evaluation);
@@ -370,7 +395,7 @@ export function deriveComparableCohorts(
           .sort((left, right) => compareText(left, right)),
       ),
       policyProfileIds: Object.freeze(
-        [...new Set(cohort.map((evaluation) => policyProfileId(evaluation.policy.finalSnapshot)))]
+        [...new Set(cohort.map((evaluation) => policyEvidenceProfileId(evaluation.policy.finalSnapshot)))]
           .sort((left, right) => compareText(left, right)),
       ),
     })));

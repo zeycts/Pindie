@@ -10,10 +10,11 @@ import {
   type RunExperienceSourceRecord,
 } from "../src/experience-store.ts";
 import {
+  deriveCandidateTrialReview,
   deriveComparableCohorts,
   deriveExperienceEvaluation,
   derivePolicyEvidenceProfiles,
-  policyProfileId,
+  policyEvidenceProfileId,
   deriveRunEvaluations,
   evaluateRunExperience,
   formatExperienceReport,
@@ -32,6 +33,12 @@ import {
   type RunExperience,
   type RunExperienceExecution,
 } from "../src/run-experience.ts";
+import {
+  createStrategyRevisionCandidate,
+  strategyCandidateSemanticFingerprint,
+  type StrategyRevisionCandidate,
+} from "../src/strategy-candidates.ts";
+import { getSeedStrategy } from "../src/strategies.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
 import type { PindieState } from "../src/state.ts";
 
@@ -161,6 +168,24 @@ function legacyV3(value: RunExperience): any {
 
 function source(recordId: string, value: RunExperience | any): RunExperienceSourceRecord {
   return { recordId, experience: value };
+}
+
+const SHARED_CANDIDATE_ID = "00000000-0000-4000-8000-000000000001";
+
+function sharedCandidate(): StrategyRevisionCandidate {
+  return createStrategyRevisionCandidate({
+    target: getSeedStrategy("architecture-first")!,
+    candidateId: SHARED_CANDIDATE_ID,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    proposal: {
+      summary: "Use a bounded architectural check before changing code.",
+      useWhen: ["the change crosses a known interface boundary"],
+      avoidWhen: ["the issue is already a local correction"],
+      principles: ["name the boundary", "verify the smallest coherent change"],
+      sourceRecordIds: ["adapt-one", "adapt-two"],
+      hypothesis: "A narrower boundary check may reduce avoidable rework.",
+    },
+  });
 }
 
 async function writeRecord(
@@ -730,16 +755,109 @@ test("Experience Policy profiles label Seed, Trial, and promoted revisions witho
   assert.doesNotMatch(report, /sha256:/);
   assert.equal(evaluation.profiles.length, 3);
   const trialProfile = evaluation.profiles.find((profile) =>
-    profile.profileId === policyProfileId(trialPolicy));
+    profile.profileId === policyEvidenceProfileId(trialPolicy));
   const promotedProfile = evaluation.profiles.find((profile) =>
-    profile.profileId === policyProfileId(promotedPolicy));
-  assert.equal(trialProfile?.profileId, policyProfileId(trialPolicy));
-  assert.equal(promotedProfile?.profileId, policyProfileId(promotedPolicy));
+    profile.profileId === policyEvidenceProfileId(promotedPolicy));
+  assert.equal(trialProfile?.profileId, policyEvidenceProfileId(trialPolicy));
+  assert.equal(promotedProfile?.profileId, policyEvidenceProfileId(promotedPolicy));
   assert.notEqual(trialProfile?.profileId, promotedProfile?.profileId);
-  assert.equal(policySnapshotIdentity(trialPolicy), trialProfile?.profileId.slice("policy:".length));
-  assert.equal(policySnapshotIdentity(promotedPolicy), promotedProfile?.profileId.slice("policy:".length));
+  assert.notEqual(policySnapshotIdentity(trialPolicy), policySnapshotIdentity(promotedPolicy));
   assert.equal("candidateStatus" in trialPolicy.approach, false);
   assert.equal("trust" in promotedPolicy.approach, false);
+});
+
+test("Experience evidence profiles separate Trial and promoted use of one Candidate revision", () => {
+  const selectedCandidate = sharedCandidate();
+  const candidateFingerprint = strategyCandidateSemanticFingerprint(selectedCandidate);
+  const selection = (status: "trial" | "promoted") => createStrategyRevisionSelection({
+    strategyId: selectedCandidate.target.strategyId,
+    kind: selectedCandidate.target.kind,
+    revisionIdentity: selectedCandidate.candidateId,
+    revisionFingerprint: candidateFingerprint,
+    revisionStatusAtRun: status,
+    semantics: selectedCandidate.proposal,
+  });
+  const trialPolicy = createPolicySnapshotFromRevisions({
+    approach: selection("trial"),
+    modifiers: ["verify-as-you-go", "minimal-change"],
+  });
+  const equivalentTrialPolicy = createPolicySnapshotFromRevisions({
+    approach: selection("trial"),
+    modifiers: ["minimal-change", "verify-as-you-go"],
+  });
+  const promotedPolicy = createPolicySnapshotFromRevisions({
+    approach: selection("promoted"),
+    modifiers: ["minimal-change", "verify-as-you-go"],
+  });
+  const trialProfileId = policyEvidenceProfileId(trialPolicy);
+  const equivalentTrialProfileId = policyEvidenceProfileId(equivalentTrialPolicy);
+  const promotedProfileId = policyEvidenceProfileId(promotedPolicy);
+
+  assert.equal(trialPolicy.approach.revisionIdentity, selectedCandidate.candidateId);
+  assert.equal(promotedPolicy.approach.revisionIdentity, selectedCandidate.candidateId);
+  assert.equal(trialPolicy.approach.revisionFingerprint, candidateFingerprint);
+  assert.equal(promotedPolicy.approach.revisionFingerprint, candidateFingerprint);
+  assert.equal(policySnapshotIdentity(trialPolicy), policySnapshotIdentity(promotedPolicy));
+  assert.notEqual(trialProfileId, promotedProfileId);
+  assert.equal(trialProfileId, equivalentTrialProfileId);
+  assert.ok(trialProfileId.includes(selectedCandidate.candidateId));
+  assert.ok(trialProfileId.includes(candidateFingerprint));
+  assert.match(trialProfileId, /"revisionStatusAtRun":"trial"/);
+  assert.match(promotedProfileId, /"revisionStatusAtRun":"promoted"/);
+
+  const records = [
+    source("trial-a.json", experience("same goal", { policy: trialPolicy })),
+    source("trial-b.json", experience("same goal", { policy: equivalentTrialPolicy })),
+    source("promoted.json", experience("same goal", { policy: promotedPolicy })),
+  ];
+  assert.deepEqual(records.map((record) => record.experience.schemaVersion), [4, 4, 4]);
+
+  const evaluation = deriveExperienceEvaluation(records);
+  assert.equal(evaluation.profiles.length, 2);
+  const trialProfile = evaluation.profiles.find((profile) => profile.profileId === trialProfileId);
+  const promotedProfile = evaluation.profiles.find((profile) => profile.profileId === promotedProfileId);
+  assert.ok(trialProfile);
+  assert.ok(promotedProfile);
+  assert.equal(trialProfile.runCount, 2);
+  assert.equal(promotedProfile.runCount, 1);
+  assert.deepEqual(trialProfile.sourceRecordIds, ["trial-a.json", "trial-b.json"]);
+  assert.deepEqual(promotedProfile.sourceRecordIds, ["promoted.json"]);
+  assert.equal(trialProfile.snapshot?.approach.revisionStatusAtRun, "trial");
+  assert.equal(promotedProfile.snapshot?.approach.revisionStatusAtRun, "promoted");
+
+  const report = formatExperienceReport({
+    records,
+    loadedSchemaV3: 0,
+    loadedSchemaV4: records.length,
+    unsupportedSchema: 0,
+    invalid: 0,
+  }, evaluation);
+  assert.match(report, /  - architecture-first · trial 00000000 \+ minimal-change, verify-as-you-go · runs 2/);
+  assert.match(report, /  - architecture-first · promoted 00000000 \+ minimal-change, verify-as-you-go · runs 1/);
+
+  assert.equal(evaluation.cohorts.length, 1);
+  const cohort = evaluation.cohorts[0]!;
+  assert.deepEqual(cohort.sourceRecordIds, ["promoted.json", "trial-a.json", "trial-b.json"]);
+  assert.deepEqual(
+    [...cohort.policyProfileIds].sort(),
+    [trialProfileId, promotedProfileId].sort(),
+  );
+
+  const review = deriveCandidateTrialReview(selectedCandidate, [
+    ...records,
+    source("seed.json", experience("same goal", {
+      policy: createPolicySnapshot({ approach: "architecture-first" }),
+    })),
+  ]);
+  assert.deepEqual(
+    review.trialEvaluations.map((run) => run.source.recordId),
+    ["trial-a.json", "trial-b.json"],
+  );
+  assert.equal(review.candidateProfile.runCount, 2);
+  assert.deepEqual(review.candidateProfile.sourceRecordIds, ["trial-a.json", "trial-b.json"]);
+  assert.equal(review.promotionEligibility.eligibleTrialRunCount, 2);
+  assert.equal(review.promotionEligibility.eligible, true);
+  assert.equal(review.seedBaselineProfile.runCount, 1);
 });
 
 test("Comparable cohorts require exact repeated goals and preserve provenance without winners", () => {
@@ -754,7 +872,10 @@ test("Comparable cohorts require exact repeated goals and preserve provenance wi
   assert.deepEqual(cohorts[0], {
     taskGoal: "exact goal",
     sourceRecordIds: ["a.json", "b.json"],
-    policyProfileIds: ["no-explicit-policy", 'policy:{"approach":{"strategyId":"direct-action","kind":"approach","revisionIdentity":"seed","revisionFingerprint":"sha256:87f363ac07a4bfcb34899e25542f92ae0c491fbe87978d3aa75f39e6a3ec63c9"},"modifiers":[]}'],
+    policyProfileIds: [
+      "no-explicit-policy",
+      policyEvidenceProfileId(createPolicySnapshot({ approach: "direct-action" })),
+    ],
   });
   assert.equal(JSON.stringify(cohorts).includes("winner"), false);
   assert.equal(JSON.stringify(cohorts).includes("rank"), false);
