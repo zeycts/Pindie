@@ -188,7 +188,7 @@ test("Host-owned automatic rollover persists native lineage naming without addin
     await host.runtime.activeSession.bindExtensions({});
 
     const sourceSessionId = host.runtime.activeSessionId;
-    const expectedName = "Persist the original Long Task identity. · cont. 2";
+    const expectedName = "cont. 2 · Persist the original Long Task identity.";
     const checkpoint = createTaskContinuity({
       createdAt: "2026-09-04T00:00:00.000Z",
       taskFingerprint: `sha256:${"e".repeat(64)}`,

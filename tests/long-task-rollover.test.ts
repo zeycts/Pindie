@@ -227,12 +227,12 @@ test("automatic rollover names the fresh Session before hidden resume and contin
 
   await attempt(supervisor, scheduler, request("session-1"));
 
-  assert.equal(control.activeSessionName(), "Foo · cont. 2");
+  assert.equal(control.activeSessionName(), "cont. 2 · Foo");
   assert.deepEqual(control.events, ["setSessionName", "sendMessage"]);
 
   await attempt(supervisor, scheduler, request("session-2"));
 
-  assert.equal(control.activeSessionName(), "Foo · cont. 3");
+  assert.equal(control.activeSessionName(), "cont. 3 · Foo");
   assert.deepEqual(control.events, [
     "setSessionName",
     "sendMessage",
@@ -249,7 +249,7 @@ test("lineage ordinal survives a newly created supervisor with a reset safety ch
 
   await attempt(supervisor, scheduler, request("session-1"));
 
-  assert.equal(control.activeSessionName(), "Foo · cont. 3");
+  assert.equal(control.activeSessionName(), "cont. 3 · Foo");
 });
 
 test("Session naming failure is isolated from successful hidden resume", async () => {

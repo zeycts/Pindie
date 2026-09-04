@@ -10,7 +10,32 @@ import type { ImageContent } from "@earendil-works/pi-ai/compat";
 export const MAX_SESSION_LINEAGE_NAME_LENGTH = 96;
 export const DEFAULT_LONG_TASK_SESSION_NAME = "Pindie Long Task";
 
-const CANONICAL_CONTINUATION_SUFFIX = /^(.+) · cont\. ([2-9]|[1-9]\d+)$/u;
+const CANONICAL_CONTINUATION_PREFIX = /^cont\. ([2-9]|[1-9]\d+) · (.+)$/u;
+const HISTORICAL_CONTINUATION_SUFFIX = /^(.+) · cont\. ([2-9]|[1-9]\d+)$/u;
+
+interface ParsedContinuationLineage {
+  readonly ordinal: bigint;
+  readonly base: string;
+}
+
+function parseContinuationLineage(source: string): ParsedContinuationLineage | undefined {
+  const canonical = CANONICAL_CONTINUATION_PREFIX.exec(source);
+  if (canonical) {
+    return {
+      ordinal: BigInt(canonical[1]!),
+      base: canonical[2]!,
+    };
+  }
+
+  // Keep a small compatibility path for Sessions persisted before the leading
+  // prefix became canonical. New names are always generated in leading form.
+  const historical = HISTORICAL_CONTINUATION_SUFFIX.exec(source);
+  if (!historical) return undefined;
+  return {
+    ordinal: BigInt(historical[2]!),
+    base: historical[1]!,
+  };
+}
 
 /** Normalize text used only for a human-facing Pi Session display name. */
 export function normalizeSessionDisplayWhitespace(value: string): string {
@@ -24,17 +49,17 @@ export function formatLongTaskContinuationSessionName(
   const source = normalizeSessionDisplayWhitespace(
     typeof sourceDisplayIdentity === "string" ? sourceDisplayIdentity : "",
   ) || DEFAULT_LONG_TASK_SESSION_NAME;
-  const continuation = CANONICAL_CONTINUATION_SUFFIX.exec(source);
-  const base = continuation?.[1] ?? source;
-  const ordinal = continuation === null ? 2n : BigInt(continuation[2]!) + 1n;
-  const suffix = ` · cont. ${ordinal}`;
-  const availableBaseLength = MAX_SESSION_LINEAGE_NAME_LENGTH - suffix.length;
+  const continuation = parseContinuationLineage(source);
+  const base = continuation?.base ?? source;
+  const ordinal = continuation === undefined ? 2n : continuation.ordinal + 1n;
+  const prefix = `cont. ${ordinal} · `;
+  const availableBaseLength = MAX_SESSION_LINEAGE_NAME_LENGTH - prefix.length;
 
   // An unreasonably large ordinal can itself exceed the compact bound. Preserve
-  // the canonical suffix rather than ever cutting its meaning.
-  if (availableBaseLength <= 0) return suffix;
-  if (base.length <= availableBaseLength) return `${base}${suffix}`;
-  return `${base.slice(0, Math.max(0, availableBaseLength - 1))}…${suffix}`;
+  // the canonical prefix rather than ever cutting its meaning.
+  if (availableBaseLength <= 0) return prefix;
+  if (base.length <= availableBaseLength) return `${prefix}${base}`;
+  return `${prefix}${base.slice(0, Math.max(0, availableBaseLength - 1))}…`;
 }
 
 function extractTextualUserContent(content: unknown): string | undefined {
