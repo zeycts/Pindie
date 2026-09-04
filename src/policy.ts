@@ -245,6 +245,23 @@ export function isSeedStrategySelection(
   }
 }
 
+/**
+ * Render the compact human-facing label for one Strategy revision.
+ *
+ * Canonical Seed revisions retain their familiar logical ID. Non-Seed
+ * revisions expose their Run status and a bounded Candidate UUID prefix while
+ * leaving the full exact revision identity on the underlying selection.
+ */
+export function formatStrategySelectionLabel(
+  selection: PolicyStrategySelection,
+): string {
+  const strategyId = strategySelectionId(selection);
+  if (isSeedStrategySelection(selection)) return strategyId;
+  return `${strategyId} · ${strategySelectionRevisionStatus(selection)} ${
+    strategySelectionRevisionIdentity(selection).slice(0, 8)
+  }`;
+}
+
 /** Convert a runtime selection to the bounded canonical v4 representation. */
 export function serializeStrategyRevisionSelection(
   selection: PolicyStrategySelection,

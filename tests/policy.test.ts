@@ -6,6 +6,7 @@ import {
   createPolicySnapshot,
   createPolicySnapshotFromRevisions,
   createStrategyRevisionSelection,
+  formatStrategySelectionLabel,
   isSeedStrategySelection,
   policySnapshotIdentity,
   serializePolicySnapshot,
@@ -115,6 +116,63 @@ test("SI v0.6 revision identity is explicit while ordinary Policy declaration re
     /approach must be a Seed Strategy ID/i,
   );
   assert.deepEqual(declared, []);
+});
+
+test("Policy presentation preserves Seed shorthand and identifies Trial/promoted revisions without changing Policy identity", async () => {
+  const seed = createPolicySnapshot({ approach: "architecture-first" });
+  const trial = revisionSelection("trial");
+  const promoted = revisionSelection("promoted");
+  const trialPolicy = createPolicySnapshotFromRevisions({ approach: trial });
+  const promotedPolicy = createPolicySnapshotFromRevisions({ approach: promoted });
+
+  assert.equal(formatStrategySelectionLabel(seed.approach), "architecture-first");
+  assert.equal(formatStrategySelectionLabel(trial), "architecture-first · trial 00000000");
+  assert.equal(formatStrategySelectionLabel(promoted), "architecture-first · promoted 00000000");
+  assert.equal(
+    policySnapshotIdentity(trialPolicy),
+    policySnapshotIdentity(promotedPolicy),
+    "Run status remains attribution metadata outside Policy identity",
+  );
+
+  const declared: PolicySnapshot[] = [];
+  const revisions = [trial, promoted];
+  let resolved = 0;
+  const tool = createPindiePolicySetTool({
+    onPolicySet: (snapshot) => declared.push(snapshot),
+    resolveRevisionSelector: () => revisions[resolved++]!,
+  });
+  const trialResult = await (tool.execute as any)("trial", {
+    approach: {
+      strategyId: "architecture-first",
+      revisionIdentity: REVISION_ID,
+      revisionFingerprint: REVISION_FINGERPRINT,
+    },
+  });
+  const promotedResult = await (tool.execute as any)("promoted", {
+    approach: {
+      strategyId: "architecture-first",
+      revisionIdentity: REVISION_ID,
+      revisionFingerprint: REVISION_FINGERPRINT,
+    },
+  });
+  const trialText = trialResult.content.map((part: { text?: string }) => part.text ?? "").join("\\n");
+  const promotedText = promotedResult.content.map((part: { text?: string }) => part.text ?? "").join("\\n");
+
+  assert.match(trialText, /Approach: architecture-first · trial 00000000/);
+  assert.match(promotedText, /Approach: architecture-first · promoted 00000000/);
+  for (const text of [trialText, promotedText]) {
+    assert.doesNotMatch(text, /sha256:/);
+    assert.doesNotMatch(text, /00000000-0000-4000-8000-000000000001/);
+  }
+  assert.equal(resolved, 2);
+  assert.equal(declared[0]?.approach, trial);
+  assert.equal(declared[1]?.approach, promoted);
+  assert.equal(policySnapshotIdentity(declared[0]!), policySnapshotIdentity(trialPolicy));
+  assert.equal(policySnapshotIdentity(declared[1]!), policySnapshotIdentity(promotedPolicy));
+  assert.equal(trial.revisionStatusAtRun, "trial");
+  assert.equal(promoted.revisionStatusAtRun, "promoted");
+  assert.equal("candidateStatus" in trial, false);
+  assert.equal("trust" in promoted, false);
 });
 
 test("SI02 policy declaration tool is optional, structured, and replaces the current Snapshot", async () => {

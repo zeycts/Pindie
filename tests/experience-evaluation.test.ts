@@ -13,6 +13,7 @@ import {
   deriveComparableCohorts,
   deriveExperienceEvaluation,
   derivePolicyEvidenceProfiles,
+  policyProfileId,
   deriveRunEvaluations,
   evaluateRunExperience,
   formatExperienceReport,
@@ -21,6 +22,7 @@ import {
   createPolicySnapshot,
   createPolicySnapshotFromRevisions,
   createStrategyRevisionSelection,
+  policySnapshotIdentity,
   type PolicySnapshot,
 } from "../src/policy.ts";
 import {
@@ -678,6 +680,66 @@ test("Policy Evidence Profiles aggregate complete normalized Policies and preser
   assert.equal(JSON.stringify(profiles).includes("score"), false);
   assert.equal(JSON.stringify(profiles).includes("ranking"), false);
   assert.equal(JSON.stringify(profiles).includes("effectiveness"), false);
+});
+
+test("Experience Policy profiles label Seed, Trial, and promoted revisions without exposing fingerprints", () => {
+  const seedPolicy = createPolicySnapshot({ approach: "architecture-first" });
+  const revisionSemantics = {
+    summary: "Use a bounded architectural check before changing code.",
+    useWhen: ["the change crosses a known interface boundary"],
+    avoidWhen: ["the issue is already a local correction"],
+    principles: ["name the boundary", "verify the smallest coherent change"],
+  };
+  const trial = createStrategyRevisionSelection({
+    strategyId: "architecture-first",
+    kind: "approach",
+    revisionIdentity: "11111111-1111-4111-8111-111111111111",
+    revisionFingerprint: `sha256:${"3".repeat(64)}`,
+    revisionStatusAtRun: "trial",
+    semantics: revisionSemantics,
+  });
+  const promoted = createStrategyRevisionSelection({
+    strategyId: "architecture-first",
+    kind: "approach",
+    revisionIdentity: "22222222-2222-4222-8222-222222222222",
+    revisionFingerprint: `sha256:${"4".repeat(64)}`,
+    revisionStatusAtRun: "promoted",
+    semantics: revisionSemantics,
+  });
+  const trialPolicy = createPolicySnapshotFromRevisions({ approach: trial });
+  const promotedPolicy = createPolicySnapshotFromRevisions({ approach: promoted });
+  const records = [
+    source("seed.json", experience("seed", { policy: seedPolicy })),
+    source("trial.json", experience("trial", { policy: trialPolicy })),
+    source("promoted.json", experience("promoted", { policy: promotedPolicy })),
+  ];
+
+  const evaluation = deriveExperienceEvaluation(records);
+  const read: RunExperienceReadResult = {
+    records,
+    loadedSchemaV3: 0,
+    loadedSchemaV4: records.length,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const report = formatExperienceReport(read, evaluation);
+
+  assert.match(report, /  - architecture-first · trial 11111111 · runs 1/);
+  assert.match(report, /  - architecture-first · promoted 22222222 · runs 1/);
+  assert.match(report, /  - architecture-first · runs 1/);
+  assert.doesNotMatch(report, /sha256:/);
+  assert.equal(evaluation.profiles.length, 3);
+  const trialProfile = evaluation.profiles.find((profile) =>
+    profile.profileId === policyProfileId(trialPolicy));
+  const promotedProfile = evaluation.profiles.find((profile) =>
+    profile.profileId === policyProfileId(promotedPolicy));
+  assert.equal(trialProfile?.profileId, policyProfileId(trialPolicy));
+  assert.equal(promotedProfile?.profileId, policyProfileId(promotedPolicy));
+  assert.notEqual(trialProfile?.profileId, promotedProfile?.profileId);
+  assert.equal(policySnapshotIdentity(trialPolicy), trialProfile?.profileId.slice("policy:".length));
+  assert.equal(policySnapshotIdentity(promotedPolicy), promotedProfile?.profileId.slice("policy:".length));
+  assert.equal("candidateStatus" in trialPolicy.approach, false);
+  assert.equal("trust" in promotedPolicy.approach, false);
 });
 
 test("Comparable cohorts require exact repeated goals and preserve provenance without winners", () => {
