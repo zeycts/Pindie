@@ -64,6 +64,11 @@ export interface CreateStrategyRevisionCandidateInput {
   readonly createdAt?: string;
 }
 
+export interface StrategyCandidateReader {
+  /** Read one immutable Candidate by its exact canonical project-local ID. */
+  read(projectRoot: string, candidateId: string): Promise<StrategyRevisionCandidate | null>;
+}
+
 export interface StrategyCandidateStore {
   save(projectRoot: string, candidate: StrategyRevisionCandidate): Promise<void>;
 }
@@ -73,6 +78,16 @@ export interface FileStrategyCandidateStoreOptions {
 }
 
 const CANONICAL_CANDIDATE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const CANDIDATE_FIELDS = [
+  "schemaVersion",
+  "candidateId",
+  "createdAt",
+  "target",
+  "proposal",
+  "evidence",
+  "hypothesis",
+] as const;
+const TARGET_FIELDS = ["strategyId", "kind", "baseFingerprint"] as const;
 const PROPOSAL_FIELDS = [
   "summary",
   "useWhen",
@@ -81,6 +96,13 @@ const PROPOSAL_FIELDS = [
   "sourceRecordIds",
   "hypothesis",
 ] as const;
+const ARTIFACT_PROPOSAL_FIELDS = [
+  "summary",
+  "useWhen",
+  "avoidWhen",
+  "principles",
+] as const;
+const EVIDENCE_FIELDS = ["sourceRecordIds"] as const;
 
 type CandidateProposalField = typeof PROPOSAL_FIELDS[number];
 
@@ -90,6 +112,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function hasExactFields(
+  value: Record<string, unknown>,
+  expectedFields: readonly string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...expectedFields].sort();
+  return actual.length === expected.length &&
+    actual.every((field, index) => field === expected[index]);
 }
 
 function invalid(message: string): never {
@@ -174,6 +206,101 @@ function strategySemanticsEqual(
 }
 
 /**
+ * Validate one immutable schema-v1 Candidate artifact without repairing it.
+ * The returned value is a defensive canonical copy and never contains a
+ * derived fingerprint or runtime status field.
+ */
+export function validateStrategyRevisionCandidateArtifact(
+  value: unknown,
+  requestedCandidateId?: string,
+): StrategyRevisionCandidate {
+  if (!isRecord(value) || !hasExactFields(value, CANDIDATE_FIELDS)) {
+    invalid("artifact fields are invalid.");
+  }
+  if (value.schemaVersion !== STRATEGY_CANDIDATE_SCHEMA_VERSION) {
+    invalid("schemaVersion must be 1.");
+  }
+  if (
+    typeof value.candidateId !== "string" ||
+    !isCanonicalStrategyCandidateId(value.candidateId)
+  ) {
+    invalid("candidateId must be a canonical lowercase UUID-v4.");
+  }
+  if (requestedCandidateId !== undefined && value.candidateId !== requestedCandidateId) {
+    invalid("requested Candidate ID does not match artifact candidateId.");
+  }
+  const createdAt = boundedString(value.createdAt, "createdAt", Number.MAX_SAFE_INTEGER);
+  if (!isRecord(value.target) || !hasExactFields(value.target, TARGET_FIELDS)) {
+    invalid("target fields are invalid.");
+  }
+  if (
+    typeof value.target.strategyId !== "string" ||
+    value.target.strategyId.trim() === "" ||
+    (value.target.kind !== "approach" && value.target.kind !== "modifier") ||
+    typeof value.target.baseFingerprint !== "string" ||
+    value.target.baseFingerprint.trim() === ""
+  ) {
+    invalid("target identity is invalid.");
+  }
+  if (!isRecord(value.proposal) || !hasExactFields(value.proposal, ARTIFACT_PROPOSAL_FIELDS)) {
+    invalid("proposal fields are invalid.");
+  }
+  if (!isRecord(value.evidence) || !hasExactFields(value.evidence, EVIDENCE_FIELDS)) {
+    invalid("evidence fields are invalid.");
+  }
+
+  const validatedProposal = validateStrategyCandidateProposal({
+    summary: value.proposal.summary,
+    useWhen: value.proposal.useWhen,
+    avoidWhen: value.proposal.avoidWhen,
+    principles: value.proposal.principles,
+    sourceRecordIds: value.evidence.sourceRecordIds,
+    hypothesis: value.hypothesis,
+  });
+  const target = getSeedStrategy(value.target.strategyId);
+  if (
+    target === null ||
+    target.kind !== value.target.kind ||
+    value.target.baseFingerprint !== seedStrategyFingerprint(target)
+  ) {
+    invalid("target Strategy or immutable Seed binding is invalid.");
+  }
+  const proposal = {
+    summary: validatedProposal.summary,
+    useWhen: [...validatedProposal.useWhen],
+    avoidWhen: [...validatedProposal.avoidWhen],
+    principles: [...validatedProposal.principles],
+  };
+  if (strategySemanticsEqual(proposal, seedStrategySemantics(target))) {
+    invalid("proposal must differ from the Seed Strategy semantics.");
+  }
+
+  return Object.freeze({
+    schemaVersion: STRATEGY_CANDIDATE_SCHEMA_VERSION,
+    candidateId: value.candidateId,
+    createdAt,
+    target: Object.freeze({
+      strategyId: target.id,
+      kind: target.kind,
+      baseFingerprint: seedStrategyFingerprint(target),
+    }),
+    proposal: Object.freeze({
+      summary: proposal.summary,
+      useWhen: Object.freeze(proposal.useWhen),
+      avoidWhen: Object.freeze(proposal.avoidWhen),
+      principles: Object.freeze(proposal.principles),
+    }),
+    evidence: Object.freeze({
+      sourceRecordIds: Object.freeze([...validatedProposal.sourceRecordIds]),
+    }),
+    hypothesis: validatedProposal.hypothesis,
+  });
+}
+
+/** Alias used by callers that treat the artifact as a parsed Candidate. */
+export const parseStrategyRevisionCandidate = validateStrategyRevisionCandidateArtifact;
+
+/**
  * Deterministic semantic fingerprint for a Candidate revision.
  * Timestamps, evidence provenance, and hypothesis prose are intentionally
  * outside this projection so they cannot change revision identity.
@@ -212,56 +339,20 @@ export function strategyRevisionSelectionFromCandidate(
   candidate: StrategyRevisionCandidate,
   status: Exclude<StrategyRevisionStatusAtRun, "seed">,
 ): StrategyRevisionSelection {
-  if (
-    !isRecord(candidate) ||
-    candidate.schemaVersion !== STRATEGY_CANDIDATE_SCHEMA_VERSION ||
-    typeof candidate.candidateId !== "string" ||
-    !isCanonicalStrategyCandidateId(candidate.candidateId) ||
-    typeof candidate.createdAt !== "string" ||
-    candidate.createdAt.trim() === "" ||
-    !isRecord(candidate.target) ||
-    typeof candidate.target.strategyId !== "string" ||
-    (candidate.target.kind !== "approach" && candidate.target.kind !== "modifier") ||
-    typeof candidate.target.baseFingerprint !== "string" ||
-    !isRecord(candidate.proposal) ||
-    !isRecord(candidate.evidence) ||
-    !Array.isArray(candidate.evidence.sourceRecordIds) ||
-    typeof candidate.hypothesis !== "string"
-  ) {
-    invalid("Candidate artifact identity or structure is invalid.");
-  }
-
-  const target = getSeedStrategy(candidate.target.strategyId);
-  const validatedProposal = validateStrategyCandidateProposal({
-    ...candidate.proposal,
-    sourceRecordIds: candidate.evidence.sourceRecordIds,
-    hypothesis: candidate.hypothesis,
-  });
-  const normalizedProposal = {
-    summary: validatedProposal.summary,
-    useWhen: [...validatedProposal.useWhen],
-    avoidWhen: [...validatedProposal.avoidWhen],
-    principles: [...validatedProposal.principles],
-  };
-  const fingerprint = strategyCandidateSemanticFingerprint({
-    target: candidate.target,
-    proposal: normalizedProposal,
-  });
-  if (
-    target === null ||
-    target.kind !== candidate.target.kind ||
-    candidate.target.baseFingerprint !== seedStrategyFingerprint(target) ||
-    strategySemanticsEqual(normalizedProposal, seedStrategySemantics(target))
-  ) {
-    invalid("Candidate artifact fingerprint or Seed binding is invalid.");
-  }
+  const validatedCandidate = validateStrategyRevisionCandidateArtifact(candidate);
+  const fingerprint = strategyCandidateSemanticFingerprint(validatedCandidate);
   return createStrategyRevisionSelection({
-    strategyId: target.id,
-    kind: target.kind,
-    revisionIdentity: candidate.candidateId,
+    strategyId: validatedCandidate.target.strategyId,
+    kind: validatedCandidate.target.kind,
+    revisionIdentity: validatedCandidate.candidateId,
     revisionFingerprint: fingerprint,
     revisionStatusAtRun: status,
-    semantics: normalizedProposal,
+    semantics: {
+      summary: validatedCandidate.proposal.summary,
+      useWhen: [...validatedCandidate.proposal.useWhen],
+      avoidWhen: [...validatedCandidate.proposal.avoidWhen],
+      principles: [...validatedCandidate.proposal.principles],
+    },
   });
 }
 
@@ -327,12 +418,52 @@ function isMissing(error: unknown): boolean {
   return isRecord(error) && error.code === "ENOENT";
 }
 
-/** Durable, project-local, write-only storage for immutable Candidates. */
-export class FileStrategyCandidateStore implements StrategyCandidateStore {
+/** Durable, project-local storage for immutable Candidates. */
+export class FileStrategyCandidateStore implements StrategyCandidateStore, StrategyCandidateReader {
   private readonly baseDir: string;
 
   constructor(options: FileStrategyCandidateStoreOptions = {}) {
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "projects");
+  }
+
+  async read(
+    projectRoot: string,
+    candidateId: string,
+  ): Promise<StrategyRevisionCandidate | null> {
+    // Validate before constructing the Candidate file path. Do not normalize
+    // malformed or uppercase IDs into a different artifact lookup.
+    if (!isCanonicalStrategyCandidateId(candidateId)) {
+      throw new Error("Cannot read Strategy Revision Candidate: candidateId must be a canonical lowercase UUID-v4.");
+    }
+    const candidatePath = join(
+      this.strategyCandidateDirectory(projectRoot),
+      `${candidateId}.json`,
+    );
+    let contents: string;
+    try {
+      contents = await readFile(candidatePath, "utf8");
+    } catch (error) {
+      if (isMissing(error)) return null;
+      throw new Error(
+        `Could not read Pindie Strategy Revision Candidate file '${candidatePath}': ${errorMessage(error)}`,
+      );
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(contents);
+    } catch (error) {
+      throw new Error(
+        `Could not read Pindie Strategy Revision Candidate file '${candidatePath}': invalid JSON (${errorMessage(error)}).`,
+      );
+    }
+    try {
+      return validateStrategyRevisionCandidateArtifact(parsed, candidateId);
+    } catch (error) {
+      throw new Error(
+        `Could not read Pindie Strategy Revision Candidate file '${candidatePath}': ${errorMessage(error)}`,
+      );
+    }
   }
 
   async save(projectRoot: string, candidate: StrategyRevisionCandidate): Promise<void> {
