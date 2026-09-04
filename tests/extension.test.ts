@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ContextUsage, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import {
   PINDIE_STATE_CHECKPOINT_TYPE,
@@ -18,6 +18,7 @@ import {
   registerPindieExtension,
   type PindieExtensionOptions,
 } from "../src/extension.ts";
+import { PINDIE_CONTEXT_LIFECYCLE_TYPE } from "../src/context-governor.ts";
 import {
   installCommittedRolloverReceiver,
 } from "../src/long-task-control.ts";
@@ -365,11 +366,13 @@ function context(
   hasPendingMessages = false,
   sessionId = "remote-session",
   getEntries: () => unknown[] = () => sessionEntries,
+  contextUsage: ContextUsage | undefined = undefined,
 ): Record<string, unknown> {
   return {
     cwd,
     hasUI: false,
     hasPendingMessages: () => hasPendingMessages,
+    getContextUsage: () => contextUsage,
     sessionManager: { getEntries, getSessionId: () => sessionId, getSessionName: () => undefined },
     ui: { notify: () => undefined },
   };
@@ -545,6 +548,36 @@ async function harnessBeforeAgentStart(
     systemPrompt: string;
     message: { customType: string; content: string; display: boolean };
   };
+}
+
+function contextUsage(percent: number | null, contextWindow = 100): ContextUsage {
+  return {
+    tokens: percent === null ? null : percent,
+    contextWindow,
+    percent,
+  };
+}
+
+async function projectContext(
+  harness: ReturnType<typeof createHarness>,
+  percent: number | null,
+  messages: unknown[] = [],
+): Promise<unknown> {
+  return harness.api.handler("context")(
+    { type: "context", messages },
+    context("/repo", [], false, "remote-session", undefined, contextUsage(percent)),
+  );
+}
+
+function contextLifecycleMessages(result: unknown): Array<Record<string, unknown>> {
+  if (typeof result !== "object" || result === null || !("messages" in result)) return [];
+  const messages = (result as { messages?: unknown }).messages;
+  if (!Array.isArray(messages)) return [];
+  return messages.filter((message): message is Record<string, unknown> =>
+    typeof message === "object" &&
+    message !== null &&
+    (message as { customType?: unknown }).customType === PINDIE_CONTEXT_LIFECYCLE_TYPE,
+  );
 }
 
 async function callGuard(
@@ -791,6 +824,7 @@ test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
     "agent_end",
     "agent_settled",
     "before_agent_start",
+    "context",
     "session_compact",
     "session_compact_failed",
     "session_shutdown",
@@ -1265,6 +1299,9 @@ test("successful compaction appends exactly one hidden current State Checkpoint"
   assert.equal(sent.message.customType, PINDIE_STATE_CHECKPOINT_TYPE);
   assert.equal(sent.message.display, false);
   assert.ok(isPindieStateCheckpointMessage({ role: "custom", ...sent.message }));
+  assert.equal(harness.integration.contextGovernor.snapshot.successfulCompactions, 1);
+  assert.equal(harness.integration.contextGovernor.snapshot.pressureCompactions, 0);
+  assert.equal(harness.integration.contextGovernor.snapshot.pressure, "normal");
   for (const expected of [
     "Compacted authoritative goal",
     "Constraints:\n- Keep the exact semantic State",
@@ -1336,6 +1373,8 @@ test("failed or aborted compaction emits no State Checkpoint", async () => {
     context("/repo"),
   );
   assert.equal(harness.api.sentMessages.length, 0);
+  assert.equal(harness.integration.contextGovernor.snapshot.successfulCompactions, 0);
+  assert.equal(harness.integration.contextGovernor.snapshot.pressureCompactions, 0);
 });
 
 test("P04 before_agent_start captures coherent authoritative facts once per Run", async () => {
@@ -1356,7 +1395,162 @@ test("P04 before_agent_start captures coherent authoritative facts once per Run"
   assert.match(result.message.content, /Verification status: passed/);
   assert.match(result.message.content, /Goal:\nWire Pi extension/);
   assert.equal(harness.store.saves.length, 0);
-  assert.equal(harness.api.handlers.has("context"), false);
+  assert.equal(harness.api.handlers.has("context"), true);
+});
+
+test("Context Governor projects no message at normal pressure and one bounded message at elevated/high pressure", async () => {
+  const harness = createHarness([ ["/repo", activeState()] ], {}, {
+    enableTaskHandoff: true,
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  const normal = await projectContext(harness, 10, [{ role: "user", content: "work" }]);
+  assert.equal(normal, undefined);
+
+  const elevated = await projectContext(harness, 70, [{ role: "user", content: "work" }]);
+  const elevatedMessages = contextLifecycleMessages(elevated);
+  assert.equal(elevatedMessages.length, 1);
+  assert.equal(elevatedMessages[0]?.display, false);
+  assert.match(String(elevatedMessages[0]?.content), /elevated/);
+  assert.match(String(elevatedMessages[0]?.content), /not new user intent/i);
+
+  const high = await projectContext(harness, 88, [{ role: "user", content: "work" }]);
+  const highMessages = contextLifecycleMessages(high);
+  assert.equal(highMessages.length, 1);
+  assert.match(String(highMessages[0]?.content), /high/);
+  assert.match(String(highMessages[0]?.content), /pindie_task_handoff/);
+});
+
+test("active Context Governor guidance is re-projected without transcript persistence or accumulation", async () => {
+  const harness = createHarness([ ["/repo", activeState()] ], {}, {
+    enableTaskHandoff: true,
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  const firstInput = [{ role: "user", content: "work" }];
+  const first = await projectContext(harness, 75, firstInput);
+  const secondInput = [{ role: "user", content: "work" }];
+  const second = await projectContext(harness, 75, secondInput);
+  const reprojected = await projectContext(
+    harness,
+    75,
+    (first as { messages: unknown[] }).messages,
+  );
+
+  assert.equal(firstInput.length, 1);
+  assert.equal(secondInput.length, 1);
+  assert.equal(contextLifecycleMessages(first).length, 1);
+  assert.equal(contextLifecycleMessages(second).length, 1);
+  assert.equal(contextLifecycleMessages(reprojected).length, 1);
+  assert.equal((first as { messages: unknown[] }).messages.length, 2);
+  assert.equal((second as { messages: unknown[] }).messages.length, 2);
+  assert.equal((reprojected as { messages: unknown[] }).messages.length, 2);
+  assert.deepEqual(harness.api.sentMessages, []);
+  assert.deepEqual(harness.api.appendedEntries, []);
+});
+
+test("Context Governor observes pressure but gates handoff guidance on current semantic authority", async () => {
+  const cases: Array<{
+    name: string;
+    state: PindieState | undefined;
+    loadError?: Error;
+  }> = [
+    { name: "no active Task", state: EMPTY_STATE },
+    { name: "Human Gate", state: gatedState() },
+    { name: "blocker", state: blockedState() },
+    { name: "unavailable authority", state: undefined, loadError: new Error("State unavailable") },
+  ];
+
+  for (const scenario of cases) {
+    const harness = createHarness(
+      scenario.state === undefined ? [] : [["/repo", scenario.state]],
+      {},
+      { enableTaskHandoff: true },
+    );
+    if (scenario.loadError) harness.store.loadErrors.set("/repo", scenario.loadError);
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+
+    assert.equal(await projectContext(harness, 90), undefined, scenario.name);
+    assert.equal(harness.integration.contextGovernor.snapshot.pressure, "high", scenario.name);
+  }
+
+  const stale = createHarness([ ["/repo", activeState()] ], {}, {
+    enableTaskHandoff: true,
+  });
+  await startSession(stale, "/repo");
+  await beginAgentRun(stale);
+  stale.store.states.set("/repo", activeState("Externally changed Task"));
+  await stale.integration.runtime.refresh();
+  assert.equal(await projectContext(stale, 90), undefined);
+  assert.equal(stale.integration.contextGovernor.snapshot.pressure, "high");
+});
+
+test("Context Governor suppresses guidance after a valid pending handoff and during adaptation", async () => {
+  const pending = createHarness([ ["/repo", activeState()] ], {}, {
+    enableTaskHandoff: true,
+  });
+  await startSession(pending, "/repo");
+  await beginAgentRun(pending);
+  const input = handoffInput();
+  assert.equal(await callGuard(pending, toolCall("pindie_task_handoff", input, "pending-context-handoff")), undefined);
+  await pending.api.tool("pindie_task_handoff").execute("pending-context-handoff", input);
+  await pending.api.handler("tool_result")(
+    toolResult("pindie_task_handoff", false, "pending-context-handoff"),
+    context("/repo"),
+  );
+  assert.equal(await projectContext(pending, 90), undefined);
+
+  const reader = new ExtensionTestExperienceReader();
+  reader.result = {
+    records: [
+      { recordId: "adapt-one.json", experience: commandExperience("adapt one", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "adapt-two.json", experience: commandExperience("adapt two", createPolicySnapshot({ approach: "direct-action" })) },
+    ],
+    loadedSchemaV3: 2,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const adaptation = createHarness([ ["/repo", activeState()] ], {}, {
+    enableTaskHandoff: true,
+    experienceReader: reader,
+  });
+  await startSession(adaptation, "/repo");
+  await adaptation.api.commands.get("adapt").handler("direct-action", {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  await beginAgentRun(adaptation);
+  assert.equal(await projectContext(adaptation, 90), undefined);
+});
+
+test("Context Governor resets at Session lifecycle boundaries", async () => {
+  const harness = createHarness([ ["/repo", activeState()] ], {}, {
+    enableTaskHandoff: true,
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  await projectContext(harness, 90);
+  assert.equal(harness.integration.contextGovernor.snapshot.pressure, "high");
+
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "reload" },
+    context("/repo"),
+  );
+  assert.deepEqual(harness.integration.contextGovernor.snapshot, {
+    pressure: "normal",
+    contextPercent: null,
+    contextWindow: null,
+    successfulCompactions: 0,
+    pressureCompactions: 0,
+    postCompactionBaselinePercent: null,
+  });
+  await startSession(harness, "/repo", "reload");
+  await beginAgentRun(harness);
+  assert.equal(await projectContext(harness, 10), undefined);
 });
 
 test("SI04 stable contract and Run Baseline preserve authority information across Run states", async () => {
@@ -1466,7 +1660,6 @@ test("H01 Pindie leaves historical continuation probes in transcript order", asy
   const harness = createHarness([["/repo", activeState()]]);
   await startSession(harness, "/repo");
   await beginAgentRun(harness);
-  assert.equal(harness.api.handlers.has("context"), false);
   const messages = [
     { role: "user", content: "Continue", timestamp: 1 },
     continuationProbe("old probe one", 2),
@@ -1496,7 +1689,6 @@ test("H05 a fresh user Run does not rewrite prior continuation probes", async ()
     context("/repo"),
   );
   await beginAgentRun(harness);
-  assert.equal(harness.api.handlers.has("context"), false);
 });
 
 test("P06 unavailable Run Baseline remains factual and consistent with fail-closed guards", async () => {

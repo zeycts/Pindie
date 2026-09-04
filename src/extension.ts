@@ -15,6 +15,12 @@ import {
   renderPindieProjectMutationUpdate,
 } from "./context.ts";
 import {
+  ContextLifecycleGovernor,
+  formatContextLifecycleGuidance,
+  PINDIE_CONTEXT_LIFECYCLE_TYPE,
+  type ContextGovernorTuning,
+} from "./context-governor.ts";
+import {
   PINDIE_CONTINUATION_PROBE_MESSAGE,
   PINDIE_CONTINUATION_PROBE_TYPE,
   shouldProbeContinuation,
@@ -114,6 +120,8 @@ export interface PindieExtensionOptions {
   clearActivityRefresh?: (timer: ReturnType<typeof setTimeout>) => void;
   /** Explicit isolated-test seam; Host ownership is the production activation path. */
   enableTaskHandoff?: boolean;
+  /** Isolated tuning seam for the session-scoped Context Lifecycle Governor. */
+  contextGovernorTuning?: ContextGovernorTuning;
   /** Internal test seam for runtime-only project mutation observation. */
   captureProjectFingerprint?: (projectRoot: string) => Promise<ProjectFingerprint>;
   /** Optional transport-independent Remote core; omitted keeps the existing extension unchanged. */
@@ -126,6 +134,7 @@ export interface PindieExtensionIntegration {
   readonly reasoning: ReasoningController;
   readonly runCost: RunCostTracker;
   readonly runTimer: RunTimer;
+  readonly contextGovernor: ContextLifecycleGovernor;
   readonly policySnapshot: PolicySnapshot | null;
   readonly stateUnavailableReason: string | null;
 }
@@ -222,6 +231,7 @@ export function registerPindieExtension(
   const runtime = new PindieRuntime(stateStore);
   const run = new RunIntegration(runtime);
   const handoff = new TaskHandoffRuntime();
+  const contextGovernor = new ContextLifecycleGovernor(options.contextGovernorTuning);
   const execution = new ExecutionIntegration({
     captureProjectFingerprint: options.captureProjectFingerprint,
   });
@@ -542,6 +552,7 @@ export function registerPindieExtension(
     run.resetAgentRun();
     if (nativeSessionId !== null) handoff.startSession(nativeSessionId);
     execution.discardRuntime();
+    contextGovernor.reset();
     lastCheckpointCompactionId = null;
 
     try {
@@ -633,6 +644,7 @@ export function registerPindieExtension(
     run.resetAgentRun();
     handoff.shutdownSession();
     execution.discardRuntime();
+    contextGovernor.reset();
     lastCheckpointCompactionId = null;
     presentation.setStatusContext(null);
   });
@@ -716,6 +728,10 @@ export function registerPindieExtension(
   });
 
   pi.on("session_compact", (event, ctx) => {
+    contextGovernor.observeSuccessfulCompaction({
+      id: event.compactionEntry.id,
+      reason: event.reason,
+    });
     const compactionId = event.compactionEntry.id;
     if (lastCheckpointCompactionId === compactionId) return;
     lastCheckpointCompactionId = compactionId;
@@ -750,6 +766,57 @@ export function registerPindieExtension(
   // Failed or aborted compactions do not establish a new model-history
   // boundary, so they must not emit a potentially misleading checkpoint.
   pi.on("session_compact_failed", () => undefined);
+
+  pi.on("context", (event, ctx) => {
+    contextGovernor.observeUsage(ctx.getContextUsage());
+
+    if (!taskHandoffEnabled || !run.hasActiveAgentRun) return;
+    const guidance = formatContextLifecycleGuidance(
+      contextGovernor.snapshot.pressure,
+    );
+    if (guidance === null) return;
+
+    const agentRunGeneration = run.activeAgentRunGeneration;
+    if (agentRunGeneration === null) return;
+
+    let sessionId: string;
+    try {
+      sessionId = ctx.sessionManager.getSessionId();
+    } catch {
+      return;
+    }
+    if (!run.isAgentRunCurrent(agentRunGeneration)) return;
+    if (handoff.isPendingFor(sessionId, agentRunGeneration)) return;
+    if (adaptation.isActiveForGeneration(agentRunGeneration)) return;
+
+    const derivation = run.deriveSnapshot();
+    const state = run.authoritativeState;
+    const task = state?.task;
+    if (
+      !derivation.ok ||
+      derivation.snapshot.authority !== "coherent" ||
+      derivation.snapshot.taskStatus !== "active" ||
+      task === undefined ||
+      task === null ||
+      task.humanGate !== null ||
+      task.openLoops.blockers.length > 0
+    ) return;
+
+    return {
+      messages: [
+        ...event.messages.filter((message) =>
+          !(message.role === "custom" && message.customType === PINDIE_CONTEXT_LIFECYCLE_TYPE)
+        ),
+        {
+          role: "custom" as const,
+          customType: PINDIE_CONTEXT_LIFECYCLE_TYPE,
+          content: guidance,
+          display: false,
+          timestamp: Date.now(),
+        },
+      ],
+    };
+  });
 
   const settleTaskHandoff = async (
     ctx: ExtensionContext,
@@ -1296,6 +1363,7 @@ export function registerPindieExtension(
     runActivity: presentation.runActivity,
     runCost: presentation.runCost,
     runTimer: presentation.runTimer,
+    contextGovernor,
     get policySnapshot() {
       return run.policySnapshot;
     },
