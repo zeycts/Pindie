@@ -1036,7 +1036,7 @@ The authoritative SI v0.6 contract is maintained in [`docs/self-improvement-v0.6
 
 SI v0.6 is implemented in explicit slices. The current Slice A substrate provides:
 
-- deterministic semantic fingerprints for new schema-v1 Candidate artifacts;
+- deterministic derived semantic fingerprints for immutable schema-v1 Candidate artifacts;
 - revision-aware Policy identity and canonical schema-v4 Policy serialization;
 - backward-compatible Seed-only `pindie_policy_set` declarations;
 - schema-v3 historical Experience reading plus schema-v4 writing and deterministic Evaluation normalization; and

@@ -30,8 +30,6 @@ export interface StrategyRevisionCandidate {
   readonly schemaVersion: typeof STRATEGY_CANDIDATE_SCHEMA_VERSION;
   readonly candidateId: string;
   readonly createdAt: string;
-  /** Deterministic fingerprint of target identity/base and proposed semantics. */
-  readonly fingerprint: string;
   readonly target: {
     readonly strategyId: string;
     readonly kind: SeedStrategyKind;
@@ -221,7 +219,6 @@ export function strategyRevisionSelectionFromCandidate(
     !isCanonicalStrategyCandidateId(candidate.candidateId) ||
     typeof candidate.createdAt !== "string" ||
     candidate.createdAt.trim() === "" ||
-    typeof candidate.fingerprint !== "string" ||
     !isRecord(candidate.target) ||
     typeof candidate.target.strategyId !== "string" ||
     (candidate.target.kind !== "approach" && candidate.target.kind !== "modifier") ||
@@ -246,15 +243,15 @@ export function strategyRevisionSelectionFromCandidate(
     avoidWhen: [...validatedProposal.avoidWhen],
     principles: [...validatedProposal.principles],
   };
+  const fingerprint = strategyCandidateSemanticFingerprint({
+    target: candidate.target,
+    proposal: normalizedProposal,
+  });
   if (
     target === null ||
     target.kind !== candidate.target.kind ||
     candidate.target.baseFingerprint !== seedStrategyFingerprint(target) ||
-    strategySemanticsEqual(normalizedProposal, seedStrategySemantics(target)) ||
-    candidate.fingerprint !== strategyCandidateSemanticFingerprint({
-      target: candidate.target,
-      proposal: normalizedProposal,
-    })
+    strategySemanticsEqual(normalizedProposal, seedStrategySemantics(target))
   ) {
     invalid("Candidate artifact fingerprint or Seed binding is invalid.");
   }
@@ -262,7 +259,7 @@ export function strategyRevisionSelectionFromCandidate(
     strategyId: target.id,
     kind: target.kind,
     revisionIdentity: candidate.candidateId,
-    revisionFingerprint: candidate.fingerprint,
+    revisionFingerprint: fingerprint,
     revisionStatusAtRun: status,
     semantics: normalizedProposal,
   });
@@ -312,16 +309,11 @@ export function createStrategyRevisionCandidate(
     avoidWhen: Object.freeze(normalizedProposal.avoidWhen),
     principles: Object.freeze(normalizedProposal.principles),
   });
-  const fingerprint = strategyCandidateSemanticFingerprint({
-    target: targetRecord,
-    proposal: proposalRecord,
-  });
 
   return Object.freeze({
     schemaVersion: STRATEGY_CANDIDATE_SCHEMA_VERSION,
     candidateId,
     createdAt,
-    fingerprint,
     target: targetRecord,
     proposal: proposalRecord,
     evidence: Object.freeze({

@@ -160,13 +160,17 @@ test("Seed fingerprints are deterministic and Candidate construction does not mu
   assert.equal(Object.isFrozen(candidate.proposal), true);
   assert.equal(Object.isFrozen(candidate.proposal.useWhen), true);
   assert.equal(candidate.schemaVersion, 1);
-  assert.match(candidate.fingerprint, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(candidate.fingerprint, createStrategyRevisionCandidate({
+  assert.equal("fingerprint" in candidate, false);
+  assert.equal(JSON.stringify(candidate).includes("fingerprint"), false);
+  const fingerprint = strategyCandidateSemanticFingerprint(candidate);
+  assert.match(fingerprint, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(fingerprint, strategyCandidateSemanticFingerprint(createStrategyRevisionCandidate({
     target,
     proposal: proposal(["different-one", "different-two"]),
     candidateId: candidate.candidateId,
     createdAt: "2027-01-01T00:00:00.000Z",
-  }).fingerprint);
+  })));
+
   assert.throws(() => createStrategyRevisionCandidate({
     target,
     proposal: {
@@ -214,7 +218,10 @@ test("Candidate fingerprints bind revision semantics and remain inactive outside
   const trialPolicy = createPolicySnapshotFromRevisions({ approach: trialSelection });
   assert.equal(trialSelection.strategyId, target.id);
   assert.equal(trialSelection.revisionIdentity, candidate.candidateId);
-  assert.equal(trialSelection.revisionFingerprint, candidate.fingerprint);
+  assert.equal(
+    trialSelection.revisionFingerprint,
+    strategyCandidateSemanticFingerprint(candidate),
+  );
   assert.equal(trialSelection.revisionStatusAtRun, "trial");
   assert.equal(isSeedStrategySelection(trialSelection), false);
   assert.notEqual(
@@ -227,6 +234,35 @@ test("Candidate fingerprints bind revision semantics and remain inactive outside
     (policyTool.execute as any)("inactive", { approach: trialSelection }),
     /approach must be a Seed Strategy ID/i,
   );
+});
+
+test("pre-Slice-A schema-v1 Candidate artifacts remain valid without persisted fingerprints", () => {
+  const target = SEED_STRATEGIES.find((strategy) => strategy.id === "direct-action")!;
+  const candidateProposal = proposal(["old-one", "old-two"]);
+  const candidate = {
+    schemaVersion: 1 as const,
+    candidateId: "00000000-0000-4000-8000-000000000006",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    target: {
+      strategyId: target.id,
+      kind: target.kind,
+      baseFingerprint: seedStrategyFingerprint(target),
+    },
+    proposal: {
+      summary: candidateProposal.summary,
+      useWhen: candidateProposal.useWhen,
+      avoidWhen: candidateProposal.avoidWhen,
+      principles: candidateProposal.principles,
+    },
+    evidence: { sourceRecordIds: candidateProposal.sourceRecordIds },
+    hypothesis: candidateProposal.hypothesis,
+  };
+
+  assert.equal("fingerprint" in candidate, false);
+  const fingerprint = strategyCandidateSemanticFingerprint(candidate);
+  assert.equal(fingerprint, strategyCandidateSemanticFingerprint(candidate));
+  const selection = strategyRevisionSelectionFromCandidate(candidate, "trial");
+  assert.equal(selection.revisionFingerprint, fingerprint);
 });
 
 test("Adaptation evidence selects only attributable target-policy Runs, newest first, and caps at eight", () => {
@@ -366,7 +402,9 @@ test("Candidate persistence is project-local, schema-v1, UUID-v4, and atomic", a
   await store.save("/project-a", candidate);
   const directory = store.strategyCandidateDirectory("/project-a");
   assert.deepEqual(await readdir(directory), [`${candidate.candidateId}.json`]);
-  assert.deepEqual(JSON.parse(await readFile(join(directory, `${candidate.candidateId}.json`))), candidate);
+  const persisted = JSON.parse(await readFile(join(directory, `${candidate.candidateId}.json`)));
+  assert.deepEqual(persisted, candidate);
+  assert.equal("fingerprint" in persisted, false);
   assert.equal((await readdir(store.strategyCandidateDirectory("/project-b")).catch(() => [])).length, 0);
   await assert.rejects(store.save("/project-a", candidate), /already exists/);
 });

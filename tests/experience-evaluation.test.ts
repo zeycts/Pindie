@@ -231,22 +231,33 @@ test("Experience Reader preserves filenames, isolates bad records, and does not 
   );
 });
 
-test("schema-v3 parser canonicalizes Seed identity and rejects impossible bounded facts", () => {
+test("schema-v3 parser requires exact recorded Seed semantics and rejects impossible bounded facts", () => {
   const explicit = legacyV3(experience("parse", {
     policy: createPolicySnapshot({
       approach: "architecture-first",
       modifiers: ["minimal-change", "verify-as-you-go"],
     }),
   }));
-  assert.equal(parseRunExperience(explicit)?.schemaVersion, 3);
-
-  const canonicalized = structuredClone(explicit) as any;
-  canonicalized.policy.finalSnapshot.approach.summary = "forged prose";
-  const parsedCanonicalized = parseRunExperience(canonicalized);
+  const parsed = parseRunExperience(explicit);
+  const canonicalApproach = createPolicySnapshot({ approach: "architecture-first" }).approach;
+  assert.equal(parsed?.schemaVersion, 3);
+  assert.equal(parsed?.policy.finalSnapshot?.approach.revisionIdentity, "seed");
   assert.equal(
-    parsedCanonicalized?.policy.finalSnapshot?.approach.summary,
-    createPolicySnapshot({ approach: "architecture-first" }).approach.summary,
+    parsed?.policy.finalSnapshot?.approach.revisionFingerprint,
+    canonicalApproach.revisionFingerprint,
   );
+
+  const semanticMutations: Array<[string, (selection: any) => void]> = [
+    ["summary", (selection) => { selection.summary = "forged prose"; }],
+    ["useWhen", (selection) => { selection.useWhen[0] = "forged guidance"; }],
+    ["avoidWhen", (selection) => { selection.avoidWhen[0] = "forged boundary"; }],
+    ["principles", (selection) => { selection.principles[0] = "forged principle"; }],
+  ];
+  for (const [name, mutate] of semanticMutations) {
+    const forged = structuredClone(explicit) as any;
+    mutate(forged.policy.finalSnapshot.approach);
+    assert.equal(parseRunExperience(forged), null, name);
+  }
 
   const invalidCases: Array<[string, (record: any) => void]> = [
     ["forged Strategy ID", (record) => {
@@ -381,6 +392,35 @@ test("schema-v3 parser canonicalizes Seed identity and rejects impossible bounde
     mutate(record);
     assert.equal(parseRunExperience(record), null, name);
   }
+});
+
+test("schema-v4 parser rejects unknown fields while schema-v3 keeps its historical field handling", () => {
+  const valid = structuredClone(experience("strict v4", {
+    policy: createPolicySnapshot({ approach: "architecture-first" }),
+  })) as any;
+  const invalidCases: Array<[string, (record: any) => void]> = [
+    ["root", (record) => { record.reward = 1; }],
+    ["runStart", (record) => { record.runStart.reward = 1; }],
+    ["task", (record) => { record.task.trialState = "invalid"; }],
+    ["policy", (record) => { record.policy.arbitraryMetadata = true; }],
+    ["Policy Snapshot", (record) => { record.policy.finalSnapshot.trialState = true; }],
+    ["Strategy revision selection", (record) => { record.policy.finalSnapshot.approach.reward = 1; }],
+    ["revision semantics", (record) => { record.policy.finalSnapshot.approach.semantics.reward = 1; }],
+    ["execution", (record) => { record.execution.trialState = true; }],
+    ["first declaration position", (record) => { record.policy.finalPolicyFirstDeclaredAfter.trialState = true; }],
+    ["last declaration position", (record) => { record.policy.finalPolicyLastDeclaredAfter.trialState = true; }],
+    ["outcome", (record) => { record.outcome.reward = 1; }],
+    ["metrics", (record) => { record.metrics.arbitraryMetadata = true; }],
+  ];
+  for (const [name, mutate] of invalidCases) {
+    const record = structuredClone(valid);
+    mutate(record);
+    assert.equal(parseRunExperience(record), null, name);
+  }
+
+  const legacy = legacyV3(valid);
+  legacy.reward = 1;
+  assert.ok(parseRunExperience(legacy));
 });
 
 test("schema-v3 parser accepts valid consequential subsets and declaration positions", () => {

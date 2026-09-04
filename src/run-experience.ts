@@ -415,6 +415,69 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const V4_ROOT_FIELDS = [
+  "schemaVersion",
+  "recordedAt",
+  "runStart",
+  "task",
+  "policy",
+  "execution",
+  "outcome",
+  "metrics",
+] as const;
+const V4_RUN_START_FIELDS = ["taskStatus", "taskGoal"] as const;
+const V4_TASK_FIELDS = ["goal", "taskRelation"] as const;
+const V4_POLICY_FIELDS = [
+  "finalSnapshot",
+  "declarationCount",
+  "finalPolicyDeclarationCount",
+  "finalPolicyFirstDeclaredAfter",
+  "finalPolicyLastDeclaredAfter",
+] as const;
+const V4_POLICY_SNAPSHOT_FIELDS = ["approach", "modifiers"] as const;
+const V4_REVISION_SELECTION_FIELDS = [
+  "strategyId",
+  "kind",
+  "revisionIdentity",
+  "revisionFingerprint",
+  "revisionStatusAtRun",
+  "semantics",
+] as const;
+const V4_REVISION_SEMANTICS_FIELDS = [
+  "summary",
+  "useWhen",
+  "avoidWhen",
+  "principles",
+] as const;
+const V4_EXECUTION_FIELDS = [
+  "toolCalls",
+  "observations",
+  "consequentialCalls",
+  "projectMutationEffectCalls",
+  "verificationCalls",
+  "toolErrors",
+  "deniedCalls",
+] as const;
+const V4_OUTCOME_FIELDS = [
+  "taskStatus",
+  "verificationStatus",
+  "completionRelation",
+  "hasBlockers",
+  "hasQuestions",
+  "humanGateOpen",
+] as const;
+const V4_METRICS_FIELDS = ["durationMs", "cost"] as const;
+
+function hasExactFields(
+  value: Record<string, unknown>,
+  expectedFields: readonly string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...expectedFields].sort();
+  return actual.length === expected.length &&
+    actual.every((field, index) => field === expected[index]);
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
@@ -443,9 +506,14 @@ function parseLegacySeedStrategy(
     return null;
   }
   const strategy = SEED_STRATEGIES.find((candidate) => candidate.id === value.id);
-  return strategy?.kind === kind
-    ? createSeedStrategyRevisionSelection(strategy)
-    : null;
+  if (strategy?.kind !== kind ||
+    value.summary !== strategy.summary ||
+    JSON.stringify(value.useWhen) !== JSON.stringify(strategy.useWhen) ||
+    JSON.stringify(value.avoidWhen) !== JSON.stringify(strategy.avoidWhen ?? []) ||
+    JSON.stringify(value.principles) !== JSON.stringify(strategy.principles)) {
+    return null;
+  }
+  return createSeedStrategyRevisionSelection(strategy);
 }
 
 function parseLegacyPolicySnapshot(value: unknown): PolicySnapshot | null {
@@ -470,7 +538,10 @@ function parseRevisionSelection(
   value: unknown,
   kind: "approach" | "modifier",
 ): StrategyRevisionSelection | null {
-  if (!isRecord(value) || value.kind !== kind) return null;
+  if (!isRecord(value) || value.kind !== kind ||
+    !hasExactFields(value, V4_REVISION_SELECTION_FIELDS) ||
+    !isRecord(value.semantics) ||
+    !hasExactFields(value.semantics, V4_REVISION_SEMANTICS_FIELDS)) return null;
   try {
     const selection = createStrategyRevisionSelection(value);
     return selection.kind === kind ? selection : null;
@@ -480,7 +551,7 @@ function parseRevisionSelection(
 }
 
 function parseRevisionAwarePolicySnapshot(value: unknown): PolicySnapshot | null {
-  if (!isRecord(value)) return null;
+  if (!isRecord(value) || !hasExactFields(value, V4_POLICY_SNAPSHOT_FIELDS)) return null;
   const approach = parseRevisionSelection(value.approach, "approach");
   if (approach === null || !Array.isArray(value.modifiers)) return null;
   const modifiers = value.modifiers.map((modifier) =>
@@ -497,8 +568,11 @@ function parseRevisionAwarePolicySnapshot(value: unknown): PolicySnapshot | null
   });
 }
 
-function parseExecution(value: unknown): RunExperienceExecution | null {
-  if (!isRecord(value)) return null;
+function parseExecution(
+  value: unknown,
+  strictV4 = false,
+): RunExperienceExecution | null {
+  if (!isRecord(value) || (strictV4 && !hasExactFields(value, V4_EXECUTION_FIELDS))) return null;
   const fields: (keyof RunExperienceExecution)[] = [
     "toolCalls",
     "observations",
@@ -554,8 +628,8 @@ function countersEqual(
 
 /**
  * Validates and copies supported immutable Experience. Schema-v3 is legacy
- * Seed-only history; schema-v4 carries revision-aware Policy facts. Unknown
- * fields are deliberately discarded instead of entering Evaluation.
+ * Seed-only history with its prior permissive object-field handling;
+ * schema-v4 carries revision-aware Policy facts and validates exact fields.
  */
 export function parseRunExperience(value: unknown): SupportedRunExperience | null {
   if (!isRecord(value)) return null;
@@ -565,21 +639,28 @@ export function parseRunExperience(value: unknown): SupportedRunExperience | nul
     typeof value.recordedAt !== "string" || value.recordedAt.length === 0) {
     return null;
   }
+  const strictV4 = schemaVersion === RUN_EXPERIENCE_SCHEMA_VERSION;
+  if (strictV4 && !hasExactFields(value, V4_ROOT_FIELDS)) return null;
 
   const runStart = value.runStart;
-  if (!isRecord(runStart) || !isOneOf(runStart.taskStatus, TASK_STATUSES) ||
+  if (!isRecord(runStart) ||
+    (strictV4 && !hasExactFields(runStart, V4_RUN_START_FIELDS)) ||
+    !isOneOf(runStart.taskStatus, TASK_STATUSES) ||
     (typeof runStart.taskGoal !== "string" && runStart.taskGoal !== null)) {
     return null;
   }
 
   const task = value.task;
-  if (!isRecord(task) || typeof task.goal !== "string" ||
+  if (!isRecord(task) ||
+    (strictV4 && !hasExactFields(task, V4_TASK_FIELDS)) ||
+    typeof task.goal !== "string" ||
     !isOneOf(task.taskRelation, TASK_RELATIONS)) {
     return null;
   }
 
   const policy = value.policy;
   if (!isRecord(policy) ||
+    (strictV4 && !hasExactFields(policy, V4_POLICY_FIELDS)) ||
     !isNonNegativeSafeInteger(policy.declarationCount) ||
     !isNonNegativeSafeInteger(policy.finalPolicyDeclarationCount)) {
     return null;
@@ -592,18 +673,19 @@ export function parseRunExperience(value: unknown): SupportedRunExperience | nul
   if (policy.finalSnapshot !== null && finalSnapshot === null) return null;
   const finalPolicyFirstDeclaredAfter = policy.finalPolicyFirstDeclaredAfter === null
     ? null
-    : parseExecution(policy.finalPolicyFirstDeclaredAfter);
+    : parseExecution(policy.finalPolicyFirstDeclaredAfter, strictV4);
   const finalPolicyLastDeclaredAfter = policy.finalPolicyLastDeclaredAfter === null
     ? null
-    : parseExecution(policy.finalPolicyLastDeclaredAfter);
+    : parseExecution(policy.finalPolicyLastDeclaredAfter, strictV4);
   if (
     (policy.finalPolicyFirstDeclaredAfter !== null && finalPolicyFirstDeclaredAfter === null) ||
     (policy.finalPolicyLastDeclaredAfter !== null && finalPolicyLastDeclaredAfter === null)
   ) return null;
 
-  const execution = parseExecution(value.execution);
+  const execution = parseExecution(value.execution, strictV4);
   const outcome = value.outcome;
   if (execution === null || !isRecord(outcome) ||
+    (strictV4 && !hasExactFields(outcome, V4_OUTCOME_FIELDS)) ||
     !isOneOf(outcome.taskStatus, TASK_STATUSES) ||
     !isOneOf(outcome.verificationStatus, VERIFICATION_STATUSES) ||
     !isOneOf(outcome.completionRelation, COMPLETION_RELATIONS) ||
@@ -673,6 +755,7 @@ export function parseRunExperience(value: unknown): SupportedRunExperience | nul
 
   const metrics = value.metrics;
   if (!isRecord(metrics) ||
+    (strictV4 && !hasExactFields(metrics, V4_METRICS_FIELDS)) ||
     (metrics.durationMs !== null && !isNonNegativeFiniteNumber(metrics.durationMs)) ||
     (metrics.cost !== null && !isNonNegativeFiniteNumber(metrics.cost))) {
     return null;
