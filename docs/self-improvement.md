@@ -1032,9 +1032,17 @@ The output of SI v0.5 is an auditable set of evidence-backed Strategy Revision C
 
 ### SI v0.6 — Candidate Trial & Promotion
 
-Directional goal: allow an explicitly chosen Candidate revision to enter controlled Agent Runs, record revision-aware Experience, compare its evidence against the Seed baseline where defensible, and support an auditable promote/reject decision without silently replacing policy.
+The authoritative SI v0.6 contract is maintained in [`docs/self-improvement-v0.6.md`](./self-improvement-v0.6.md). Its directional goal is to allow an explicitly chosen Candidate revision to enter controlled Agent Runs, record revision-aware Experience, compare its evidence against the Seed baseline where defensible, and support an auditable promote/reject decision without silently replacing policy.
 
-This milestone is where Strategy revision identity may first need to enter Policy Snapshot/Experience semantics. The exact trial, rollback, promotion, and revision-aware schema contract must be designed just-in-time from real SI v0.5 Candidate dogfood rather than frozen here.
+SI v0.6 is implemented in explicit slices. The current Slice A substrate provides:
+
+- deterministic semantic fingerprints for new schema-v1 Candidate artifacts;
+- revision-aware Policy identity and canonical schema-v4 Policy serialization;
+- backward-compatible Seed-only `pindie_policy_set` declarations;
+- schema-v3 historical Experience reading plus schema-v4 writing and deterministic Evaluation normalization; and
+- Seed-only `/adapt` evidence selection across v3/v4 records, excluding non-Seed revision attribution.
+
+Slice A intentionally does not activate Candidates or implement Trial leases, Candidate retrieval, promotion/rejection, automatic Policy selection, or other later slices. Normal coding Runs therefore remain Seed-only, and existing schema-v3 Experience/Candidate artifacts are never migrated or rewritten.
 
 ### SI v0.7 — Strategy Derivation
 

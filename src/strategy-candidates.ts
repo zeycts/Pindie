@@ -1,8 +1,13 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import {
+  createStrategyRevisionSelection,
+  type StrategyRevisionSelection,
+  type StrategyRevisionStatusAtRun,
+} from "./policy.ts";
 import {
   getSeedStrategy,
   seedStrategyFingerprint,
@@ -25,6 +30,8 @@ export interface StrategyRevisionCandidate {
   readonly schemaVersion: typeof STRATEGY_CANDIDATE_SCHEMA_VERSION;
   readonly candidateId: string;
   readonly createdAt: string;
+  /** Deterministic fingerprint of target identity/base and proposed semantics. */
+  readonly fingerprint: string;
   readonly target: {
     readonly strategyId: string;
     readonly kind: SeedStrategyKind;
@@ -168,6 +175,99 @@ function strategySemanticsEqual(
   });
 }
 
+/**
+ * Deterministic semantic fingerprint for a Candidate revision.
+ * Timestamps, evidence provenance, and hypothesis prose are intentionally
+ * outside this projection so they cannot change revision identity.
+ */
+export function strategyCandidateSemanticFingerprint(
+  candidate: Pick<StrategyRevisionCandidate, "target" | "proposal">,
+): string {
+  const semanticProjection = {
+    target: {
+      strategyId: candidate.target.strategyId,
+      kind: candidate.target.kind,
+      baseFingerprint: candidate.target.baseFingerprint,
+    },
+    proposal: {
+      summary: candidate.proposal.summary,
+      useWhen: [...candidate.proposal.useWhen],
+      avoidWhen: [...candidate.proposal.avoidWhen],
+      principles: [...candidate.proposal.principles],
+    },
+  };
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(semanticProjection))
+    .digest("hex")}`;
+}
+
+/** Short aliases for callers that name the artifact rather than its revision. */
+export const strategyCandidateFingerprint = strategyCandidateSemanticFingerprint;
+export const candidateSemanticFingerprint = strategyCandidateSemanticFingerprint;
+
+/**
+ * Represent a validated immutable Candidate as a revision selection. This is
+ * only a data conversion for evaluation/tests; it does not activate the
+ * Candidate or make it available to the model-facing policy tool.
+ */
+export function strategyRevisionSelectionFromCandidate(
+  candidate: StrategyRevisionCandidate,
+  status: Exclude<StrategyRevisionStatusAtRun, "seed">,
+): StrategyRevisionSelection {
+  if (
+    !isRecord(candidate) ||
+    candidate.schemaVersion !== STRATEGY_CANDIDATE_SCHEMA_VERSION ||
+    typeof candidate.candidateId !== "string" ||
+    !isCanonicalStrategyCandidateId(candidate.candidateId) ||
+    typeof candidate.createdAt !== "string" ||
+    candidate.createdAt.trim() === "" ||
+    typeof candidate.fingerprint !== "string" ||
+    !isRecord(candidate.target) ||
+    typeof candidate.target.strategyId !== "string" ||
+    (candidate.target.kind !== "approach" && candidate.target.kind !== "modifier") ||
+    typeof candidate.target.baseFingerprint !== "string" ||
+    !isRecord(candidate.proposal) ||
+    !isRecord(candidate.evidence) ||
+    !Array.isArray(candidate.evidence.sourceRecordIds) ||
+    typeof candidate.hypothesis !== "string"
+  ) {
+    invalid("Candidate artifact identity or structure is invalid.");
+  }
+
+  const target = getSeedStrategy(candidate.target.strategyId);
+  const validatedProposal = validateStrategyCandidateProposal({
+    ...candidate.proposal,
+    sourceRecordIds: candidate.evidence.sourceRecordIds,
+    hypothesis: candidate.hypothesis,
+  });
+  const normalizedProposal = {
+    summary: validatedProposal.summary,
+    useWhen: [...validatedProposal.useWhen],
+    avoidWhen: [...validatedProposal.avoidWhen],
+    principles: [...validatedProposal.principles],
+  };
+  if (
+    target === null ||
+    target.kind !== candidate.target.kind ||
+    candidate.target.baseFingerprint !== seedStrategyFingerprint(target) ||
+    strategySemanticsEqual(normalizedProposal, seedStrategySemantics(target)) ||
+    candidate.fingerprint !== strategyCandidateSemanticFingerprint({
+      target: candidate.target,
+      proposal: normalizedProposal,
+    })
+  ) {
+    invalid("Candidate artifact fingerprint or Seed binding is invalid.");
+  }
+  return createStrategyRevisionSelection({
+    strategyId: target.id,
+    kind: target.kind,
+    revisionIdentity: candidate.candidateId,
+    revisionFingerprint: candidate.fingerprint,
+    revisionStatusAtRun: status,
+    semantics: normalizedProposal,
+  });
+}
+
 export function isCanonicalStrategyCandidateId(value: string): boolean {
   return CANONICAL_CANDIDATE_ID.test(value);
 }
@@ -201,21 +301,29 @@ export function createStrategyRevisionCandidate(
     invalid("createdAt must be a non-empty string.");
   }
 
+  const targetRecord = Object.freeze({
+    strategyId: target.id,
+    kind: target.kind,
+    baseFingerprint: seedStrategyFingerprint(target),
+  });
+  const proposalRecord = Object.freeze({
+    summary: normalizedProposal.summary,
+    useWhen: Object.freeze(normalizedProposal.useWhen),
+    avoidWhen: Object.freeze(normalizedProposal.avoidWhen),
+    principles: Object.freeze(normalizedProposal.principles),
+  });
+  const fingerprint = strategyCandidateSemanticFingerprint({
+    target: targetRecord,
+    proposal: proposalRecord,
+  });
+
   return Object.freeze({
     schemaVersion: STRATEGY_CANDIDATE_SCHEMA_VERSION,
     candidateId,
     createdAt,
-    target: Object.freeze({
-      strategyId: target.id,
-      kind: target.kind,
-      baseFingerprint: seedStrategyFingerprint(target),
-    }),
-    proposal: Object.freeze({
-      summary: normalizedProposal.summary,
-      useWhen: Object.freeze(normalizedProposal.useWhen),
-      avoidWhen: Object.freeze(normalizedProposal.avoidWhen),
-      principles: Object.freeze(normalizedProposal.principles),
-    }),
+    fingerprint,
+    target: targetRecord,
+    proposal: proposalRecord,
     evidence: Object.freeze({
       sourceRecordIds: Object.freeze([...proposal.sourceRecordIds]),
     }),

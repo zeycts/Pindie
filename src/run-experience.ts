@@ -1,12 +1,13 @@
 import type { ToolEffect } from "./execution-semantics.ts";
 import {
+  createSeedStrategyRevisionSelection,
+  createStrategyRevisionSelection,
   policySnapshotIdentity,
+  serializePolicySnapshot,
   type PolicySnapshot,
+  type StrategyRevisionSelection,
 } from "./policy.ts";
-import {
-  SEED_STRATEGIES,
-  type SeedStrategy,
-} from "./strategies.ts";
+import { SEED_STRATEGIES } from "./strategies.ts";
 import type {
   CompletionRunRelation,
   SemanticSnapshot,
@@ -18,7 +19,8 @@ import {
   type VerificationStatus,
 } from "./state.ts";
 
-export const RUN_EXPERIENCE_SCHEMA_VERSION = 3 as const;
+export const LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION = 3 as const;
+export const RUN_EXPERIENCE_SCHEMA_VERSION = 4 as const;
 
 /** Bounded execution facts collected for one Agent Run. */
 export interface RunExperienceExecution {
@@ -43,8 +45,7 @@ export interface RunExperiencePolicy {
   readonly finalPolicyLastDeclaredAfter: RunExperienceExecution | null;
 }
 
-export interface RunExperience {
-  readonly schemaVersion: typeof RUN_EXPERIENCE_SCHEMA_VERSION;
+interface RunExperienceFields {
   readonly recordedAt: string;
   readonly runStart: {
     readonly taskStatus: TaskStatus;
@@ -69,6 +70,20 @@ export interface RunExperience {
     readonly cost: number | null;
   };
 }
+
+/** Current immutable Run Experience written by new Runs. */
+export interface RunExperience extends RunExperienceFields {
+  readonly schemaVersion: typeof RUN_EXPERIENCE_SCHEMA_VERSION;
+}
+
+/** Immutable schema-v3 Seed-only historical Run Experience. */
+export interface LegacyRunExperienceV3 extends RunExperienceFields {
+  readonly schemaVersion: typeof LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION;
+}
+
+export type SupportedRunExperience = RunExperience | LegacyRunExperienceV3;
+
+export type NormalizedRunExperience = RunExperience;
 
 const ZERO_EXECUTION: RunExperienceExecution = Object.freeze({
   toolCalls: 0,
@@ -285,7 +300,7 @@ export function assembleRunExperience(
     policy: Object.freeze({
       finalSnapshot: input.policy.finalSnapshot === null
         ? null
-        : copyPolicySnapshot(input.policy.finalSnapshot),
+        : serializePolicySnapshot(input.policy.finalSnapshot),
       declarationCount: input.policy.declarationCount,
       finalPolicyDeclarationCount: input.policy.finalPolicyDeclarationCount,
       finalPolicyFirstDeclaredAfter: input.policy.finalPolicyFirstDeclaredAfter === null
@@ -311,6 +326,50 @@ export function assembleRunExperience(
   };
 
   return Object.freeze(record);
+}
+
+/** Normalize either supported on-disk schema to the current evaluation shape. */
+export function normalizeRunExperience(
+  experience: SupportedRunExperience,
+): NormalizedRunExperience {
+  return Object.freeze({
+    schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION,
+    recordedAt: experience.recordedAt,
+    runStart: Object.freeze({
+      taskStatus: experience.runStart.taskStatus,
+      taskGoal: experience.runStart.taskGoal,
+    }),
+    task: Object.freeze({
+      goal: experience.task.goal,
+      taskRelation: experience.task.taskRelation,
+    }),
+    policy: Object.freeze({
+      finalSnapshot: experience.policy.finalSnapshot === null
+        ? null
+        : serializePolicySnapshot(experience.policy.finalSnapshot),
+      declarationCount: experience.policy.declarationCount,
+      finalPolicyDeclarationCount: experience.policy.finalPolicyDeclarationCount,
+      finalPolicyFirstDeclaredAfter: experience.policy.finalPolicyFirstDeclaredAfter === null
+        ? null
+        : copyExecution(experience.policy.finalPolicyFirstDeclaredAfter),
+      finalPolicyLastDeclaredAfter: experience.policy.finalPolicyLastDeclaredAfter === null
+        ? null
+        : copyExecution(experience.policy.finalPolicyLastDeclaredAfter),
+    }),
+    execution: copyExecution(experience.execution),
+    outcome: Object.freeze({
+      taskStatus: experience.outcome.taskStatus,
+      verificationStatus: experience.outcome.verificationStatus,
+      completionRelation: experience.outcome.completionRelation,
+      hasBlockers: experience.outcome.hasBlockers,
+      hasQuestions: experience.outcome.hasQuestions,
+      humanGateOpen: experience.outcome.humanGateOpen,
+    }),
+    metrics: Object.freeze({
+      durationMs: experience.metrics.durationMs,
+      cost: experience.metrics.cost,
+    }),
+  });
 }
 
 export function isEligibleRunExperience(
@@ -372,10 +431,10 @@ function isOneOf<T extends string>(value: unknown, values: readonly T[]): value 
   return typeof value === "string" && values.includes(value as T);
 }
 
-function parseSeedStrategy(
+function parseLegacySeedStrategy(
   value: unknown,
   kind: "approach" | "modifier",
-): SeedStrategy | null {
+): StrategyRevisionSelection | null {
   if (!isRecord(value) || value.kind !== kind ||
     typeof value.id !== "string" || value.id.length === 0 ||
     typeof value.summary !== "string" || !isStringArray(value.useWhen) ||
@@ -384,18 +443,51 @@ function parseSeedStrategy(
     return null;
   }
   const strategy = SEED_STRATEGIES.find((candidate) => candidate.id === value.id);
-  return strategy?.kind === kind ? strategy : null;
+  return strategy?.kind === kind
+    ? createSeedStrategyRevisionSelection(strategy)
+    : null;
 }
 
-function parsePolicySnapshot(value: unknown): PolicySnapshot | null {
+function parseLegacyPolicySnapshot(value: unknown): PolicySnapshot | null {
   if (!isRecord(value)) return null;
-  const approach = parseSeedStrategy(value.approach, "approach");
+  const approach = parseLegacySeedStrategy(value.approach, "approach");
   if (approach === null || !Array.isArray(value.modifiers)) return null;
   const modifiers = value.modifiers.map((modifier) =>
-    parseSeedStrategy(modifier, "modifier"),
+    parseLegacySeedStrategy(modifier, "modifier"),
   );
   if (modifiers.some((modifier) => modifier === null)) return null;
-  const parsedModifiers = modifiers as SeedStrategy[];
+  const parsedModifiers = modifiers as StrategyRevisionSelection[];
+  if (new Set(parsedModifiers.map((modifier) => modifier.id)).size !== parsedModifiers.length) {
+    return null;
+  }
+  return Object.freeze({
+    approach,
+    modifiers: Object.freeze(parsedModifiers),
+  });
+}
+
+function parseRevisionSelection(
+  value: unknown,
+  kind: "approach" | "modifier",
+): StrategyRevisionSelection | null {
+  if (!isRecord(value) || value.kind !== kind) return null;
+  try {
+    const selection = createStrategyRevisionSelection(value);
+    return selection.kind === kind ? selection : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseRevisionAwarePolicySnapshot(value: unknown): PolicySnapshot | null {
+  if (!isRecord(value)) return null;
+  const approach = parseRevisionSelection(value.approach, "approach");
+  if (approach === null || !Array.isArray(value.modifiers)) return null;
+  const modifiers = value.modifiers.map((modifier) =>
+    parseRevisionSelection(modifier, "modifier"),
+  );
+  if (modifiers.some((modifier) => modifier === null)) return null;
+  const parsedModifiers = modifiers as StrategyRevisionSelection[];
   if (new Set(parsedModifiers.map((modifier) => modifier.id)).size !== parsedModifiers.length) {
     return null;
   }
@@ -461,11 +553,15 @@ function countersEqual(
 }
 
 /**
- * Validates and copies the bounded schema-v3 shape used by Evaluation.
- * Unknown fields are deliberately discarded instead of entering the evaluator.
+ * Validates and copies supported immutable Experience. Schema-v3 is legacy
+ * Seed-only history; schema-v4 carries revision-aware Policy facts. Unknown
+ * fields are deliberately discarded instead of entering Evaluation.
  */
-export function parseRunExperience(value: unknown): RunExperience | null {
-  if (!isRecord(value) || value.schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION ||
+export function parseRunExperience(value: unknown): SupportedRunExperience | null {
+  if (!isRecord(value)) return null;
+  const schemaVersion = value.schemaVersion;
+  if ((schemaVersion !== LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION &&
+      schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION) ||
     typeof value.recordedAt !== "string" || value.recordedAt.length === 0) {
     return null;
   }
@@ -490,7 +586,9 @@ export function parseRunExperience(value: unknown): RunExperience | null {
   }
   const finalSnapshot = policy.finalSnapshot === null
     ? null
-    : parsePolicySnapshot(policy.finalSnapshot);
+    : schemaVersion === LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION
+      ? parseLegacyPolicySnapshot(policy.finalSnapshot)
+      : parseRevisionAwarePolicySnapshot(policy.finalSnapshot);
   if (policy.finalSnapshot !== null && finalSnapshot === null) return null;
   const finalPolicyFirstDeclaredAfter = policy.finalPolicyFirstDeclaredAfter === null
     ? null
@@ -581,7 +679,7 @@ export function parseRunExperience(value: unknown): RunExperience | null {
   }
 
   return Object.freeze({
-    schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION,
+    schemaVersion,
     recordedAt: value.recordedAt,
     runStart: Object.freeze({
       taskStatus: runStart.taskStatus,
@@ -614,6 +712,6 @@ export function parseRunExperience(value: unknown): RunExperience | null {
   });
 }
 
-export function isRunExperience(value: unknown): value is RunExperience {
+export function isRunExperience(value: unknown): value is SupportedRunExperience {
   return parseRunExperience(value) !== null;
 }

@@ -6,7 +6,11 @@ import {
   policySnapshotIdentity,
   type PolicySnapshot,
 } from "./policy.ts";
-import type { RunExperienceExecution } from "./run-experience.ts";
+import {
+  normalizeRunExperience,
+  type RunExperienceExecution,
+  type SupportedRunExperience,
+} from "./run-experience.ts";
 
 export interface RunEvaluation {
   /** Completed-before-run facts describe a preexisting Task, not this Run's outcome. */
@@ -123,17 +127,17 @@ function copyPolicySnapshot(snapshot: PolicySnapshot | null): PolicySnapshot | n
   });
 }
 
-/** Deterministic identity for a complete explicit Policy Snapshot. */
+/** Deterministic revision-aware identity for a complete explicit Policy Snapshot. */
 export function policyProfileId(snapshot: PolicySnapshot | null): string {
   if (snapshot === null) return NO_EXPLICIT_POLICY_PROFILE_ID;
   return `policy:${policySnapshotIdentity(snapshot)}`;
 }
 
-/** Derive bounded measurements from one valid schema-v3 Run Experience. */
+/** Derive bounded measurements from one valid supported Run Experience. */
 export function evaluateRunExperience(
   source: RunExperienceSourceRecord,
 ): RunEvaluation {
-  const { experience } = source;
+  const experience: SupportedRunExperience = normalizeRunExperience(source.experience);
   const toolCalls = experience.execution.toolCalls;
   const finalSnapshot = experience.policy.finalSnapshot;
   const finalPolicyLastDeclaredAfter = experience.policy.finalPolicyLastDeclaredAfter;
@@ -269,7 +273,7 @@ function createMutableProfile(evaluation: RunEvaluation): MutableProfile {
   };
 }
 
-/** Aggregate evaluations by complete normalized Policy Snapshot identity. */
+/** Aggregate evaluations by complete normalized revision-aware Policy identity. */
 export function derivePolicyEvidenceProfiles(
   evaluations: readonly RunEvaluation[],
 ): readonly PolicyEvidenceProfile[] {
@@ -414,6 +418,7 @@ export function formatExperienceReport(
     "Experience Evaluation",
     "",
     `Loaded schema-v3 records: ${read.loadedSchemaV3}`,
+    `Loaded schema-v4 records: ${read.loadedSchemaV4 ?? 0}`,
     `Unsupported-schema records: ${read.unsupportedSchema}`,
     `Invalid/unreadable records: ${read.invalid}`,
     `Evaluated Runs: ${evaluation.evaluations.length}`,

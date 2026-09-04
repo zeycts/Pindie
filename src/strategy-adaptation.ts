@@ -5,6 +5,7 @@ import {
   type RunEvaluation,
 } from "./experience-evaluation.ts";
 import type { RunExperienceSourceRecord } from "./experience-store.ts";
+import { isSeedStrategySelection } from "./policy.ts";
 import { MAX_ADAPTATION_PACKET_RUNS } from "./strategy-candidates.ts";
 import {
   seedStrategyFingerprint,
@@ -74,8 +75,9 @@ function targetParticipated(
   const snapshot = evaluation.policy.finalSnapshot;
   if (!evaluation.attributionEligible || snapshot === null) return false;
   return target.kind === "approach"
-    ? snapshot.approach.id === target.id
-    : snapshot.modifiers.some((modifier) => modifier.id === target.id);
+    ? snapshot.approach.id === target.id && isSeedStrategySelection(snapshot.approach)
+    : snapshot.modifiers.some((modifier) =>
+      modifier.id === target.id && isSeedStrategySelection(modifier));
 }
 
 function boundedTaskGoal(goal: string): string {

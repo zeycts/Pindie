@@ -17,9 +17,15 @@ import {
   evaluateRunExperience,
   formatExperienceReport,
 } from "../src/experience-evaluation.ts";
-import { createPolicySnapshot, type PolicySnapshot } from "../src/policy.ts";
+import {
+  createPolicySnapshot,
+  createPolicySnapshotFromRevisions,
+  createStrategyRevisionSelection,
+  type PolicySnapshot,
+} from "../src/policy.ts";
 import {
   assembleRunExperience,
+  normalizeRunExperience,
   parseRunExperience,
   type RunExperience,
   type RunExperienceExecution,
@@ -138,7 +144,20 @@ function completedBeforeExperience(goal: string, policy: PolicySnapshot | null =
   return record;
 }
 
-function source(recordId: string, value: RunExperience): RunExperienceSourceRecord {
+function legacyV3(value: RunExperience): any {
+  const record = structuredClone(value) as any;
+  record.schemaVersion = 3;
+  if (record.policy.finalSnapshot !== null) {
+    const seedPolicy = createPolicySnapshot({
+      approach: record.policy.finalSnapshot.approach.strategyId,
+      modifiers: record.policy.finalSnapshot.modifiers.map((modifier: any) => modifier.strategyId),
+    });
+    record.policy.finalSnapshot = seedPolicy;
+  }
+  return record;
+}
+
+function source(recordId: string, value: RunExperience | any): RunExperienceSourceRecord {
   return { recordId, experience: value };
 }
 
@@ -158,6 +177,7 @@ test("Experience Reader returns zero counts for a missing directory", async (t) 
   assert.deepEqual(result, {
     records: [],
     loadedSchemaV3: 0,
+    loadedSchemaV4: 0,
     unsupportedSchema: 0,
     invalid: 0,
   });
@@ -169,7 +189,7 @@ test("Experience Reader preserves filenames, isolates bad records, and does not 
   const reader = new FileRunExperienceReader({ baseDir });
   const directory = reader.experienceDirectory("/project");
   await mkdir(directory, { recursive: true });
-  const valid = JSON.stringify(experience("valid"), null, 2);
+  const valid = JSON.stringify(legacyV3(experience("valid")), null, 2);
   const secondValid = JSON.stringify(experience("also valid"), null, 2);
   await writeRecord(directory, "00000000-0000-4000-8000-000000000001.json", valid);
   await writeRecord(directory, "00000000-0000-4000-8000-000000000002.json", JSON.stringify({ schemaVersion: 1 }));
@@ -196,7 +216,8 @@ test("Experience Reader preserves filenames, isolates bad records, and does not 
 
   const result = await reader.read("/project");
 
-  assert.equal(result.loadedSchemaV3, 2);
+  assert.equal(result.loadedSchemaV3, 1);
+  assert.equal(result.loadedSchemaV4, 1);
   assert.equal(result.unsupportedSchema, 3);
   assert.equal(result.invalid, 3);
   assert.deepEqual(result.records.map((record) => record.recordId), [
@@ -211,12 +232,12 @@ test("Experience Reader preserves filenames, isolates bad records, and does not 
 });
 
 test("schema-v3 parser canonicalizes Seed identity and rejects impossible bounded facts", () => {
-  const explicit = experience("parse", {
+  const explicit = legacyV3(experience("parse", {
     policy: createPolicySnapshot({
       approach: "architecture-first",
       modifiers: ["minimal-change", "verify-as-you-go"],
     }),
-  });
+  }));
   assert.equal(parseRunExperience(explicit)?.schemaVersion, 3);
 
   const canonicalized = structuredClone(explicit) as any;
@@ -403,6 +424,60 @@ test("schema-v3 parser accepts valid consequential subsets and declaration posit
   assert.ok(parseRunExperience(changed));
 });
 
+test("schema-v3 and schema-v4 normalize to one revision-aware Evaluation shape", () => {
+  const seedPolicy = createPolicySnapshot({
+    approach: "architecture-first",
+    modifiers: ["minimal-change"],
+  });
+  const current = experience("normalization", { policy: seedPolicy });
+  const legacy = legacyV3(current);
+  const parsedLegacy = parseRunExperience(legacy);
+  const parsedCurrent = parseRunExperience(current);
+  assert.equal(parsedLegacy?.schemaVersion, 3);
+  assert.equal(parsedCurrent?.schemaVersion, 4);
+  assert.ok(parsedLegacy);
+  assert.ok(parsedCurrent);
+
+  const normalizedLegacy = normalizeRunExperience(parsedLegacy);
+  const normalizedCurrent = normalizeRunExperience(parsedCurrent);
+  assert.equal(normalizedLegacy.schemaVersion, 4);
+  assert.deepEqual(normalizedLegacy, normalizedCurrent);
+  assert.deepEqual(
+    evaluateRunExperience(source("legacy.json", parsedLegacy)).policy.finalSnapshot,
+    evaluateRunExperience(source("current.json", parsedCurrent)).policy.finalSnapshot,
+  );
+
+  const revision = createStrategyRevisionSelection({
+    strategyId: "architecture-first",
+    kind: "approach",
+    revisionIdentity: "00000000-0000-4000-8000-000000000099",
+    revisionFingerprint: `sha256:${"2".repeat(64)}`,
+    revisionStatusAtRun: "trial",
+    semantics: {
+      summary: "Use a bounded architectural check before changing code.",
+      useWhen: ["the change crosses a known interface boundary"],
+      avoidWhen: ["the issue is already a local correction"],
+      principles: ["name the boundary", "verify the smallest coherent change"],
+    },
+  });
+  const revisionRecord = experience("revision normalization", {
+    policy: createPolicySnapshotFromRevisions({ approach: revision }),
+  });
+  const parsedRevision = parseRunExperience(revisionRecord);
+  assert.ok(parsedRevision);
+  assert.equal(parsedRevision.policy.finalSnapshot?.approach.revisionIdentity, revision.revisionIdentity);
+  assert.equal(parsedRevision.policy.finalSnapshot?.approach.revisionStatusAtRun, "trial");
+  assert.equal(parsedRevision.policy.finalSnapshot?.approach.id, "architecture-first");
+  assert.equal(
+    Object.keys(normalizeRunExperience(parsedRevision).policy.finalSnapshot!.approach).join(","),
+    "strategyId,kind,revisionIdentity,revisionFingerprint,revisionStatusAtRun,semantics",
+  );
+
+  const forgedSeed = structuredClone(current) as any;
+  forgedSeed.policy.finalSnapshot.approach.semantics.summary = "forged Seed semantics";
+  assert.equal(parseRunExperience(forgedSeed), null);
+});
+
 test("Run Evaluation marks completed-before-Run facts non-attributable", () => {
   const policy = createPolicySnapshot({ approach: "direct-action" });
   const completedBefore = completedBeforeExperience("same goal", policy);
@@ -421,7 +496,8 @@ test("Run Evaluation marks completed-before-Run facts non-attributable", () => {
   ];
   const evaluations = deriveRunEvaluations(records);
   const profiles = derivePolicyEvidenceProfiles(evaluations);
-  const directProfile = profiles.find((profile) => profile.profileId === 'policy:{"approachId":"direct-action","modifierIds":[]}');
+  const directProfile = profiles.find((profile) =>
+    profile.identity.approachId === "direct-action" && profile.identity.modifierIds.length === 0);
   assert.equal(directProfile?.runCount, 1);
   assert.equal(profiles.find((profile) => profile.profileId === "no-explicit-policy")?.runCount, 1);
   assert.equal(profiles.some((profile) => profile.sourceRecordIds.includes("before.json")), false);
@@ -576,7 +652,7 @@ test("Comparable cohorts require exact repeated goals and preserve provenance wi
   assert.deepEqual(cohorts[0], {
     taskGoal: "exact goal",
     sourceRecordIds: ["a.json", "b.json"],
-    policyProfileIds: ["no-explicit-policy", 'policy:{"approachId":"direct-action","modifierIds":[]}'],
+    policyProfileIds: ["no-explicit-policy", 'policy:{"approach":{"strategyId":"direct-action","kind":"approach","revisionIdentity":"seed","revisionFingerprint":"sha256:87f363ac07a4bfcb34899e25542f92ae0c491fbe87978d3aa75f39e6a3ec63c9"},"modifiers":[]}'],
   });
   assert.equal(JSON.stringify(cohorts).includes("winner"), false);
   assert.equal(JSON.stringify(cohorts).includes("rank"), false);
@@ -593,6 +669,7 @@ test("Experience report is bounded and explicitly evidence-only", () => {
   const report = formatExperienceReport(read, deriveExperienceEvaluation(read.records));
 
   assert.match(report, /Loaded schema-v3 records: 1/);
+  assert.match(report, /Loaded schema-v4 records: 0/);
   assert.match(report, /Unsupported-schema records: 2/);
   assert.match(report, /Invalid\/unreadable records: 3/);
   assert.match(report, /Evaluated Runs: 1/);

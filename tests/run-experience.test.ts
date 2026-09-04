@@ -264,7 +264,7 @@ test("Run Experience assembly preserves factual task/outcome/metrics and no tran
   });
 
   assert.deepEqual(record, {
-    schemaVersion: 3,
+    schemaVersion: 4,
     recordedAt: "2026-01-01T00:00:00.000Z",
     runStart: {
       taskStatus: "idle",
