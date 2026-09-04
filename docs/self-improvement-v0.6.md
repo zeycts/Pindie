@@ -2,49 +2,30 @@
 
 Status: architecture contract for SI v0.6.
 
-This document is the just-in-time refinement of the directional SI v0.6 section in `docs/self-improvement.md`. It does not change the stable Self-Improvement ownership model or the SI v0.1–v0.5 contracts.
+This document is the just-in-time refinement of the directional SI v0.6 section in `docs/self-improvement.md`. It preserves the SI v0.1–v0.5 ownership model.
 
 ## 1. Goal
 
-SI v0.5 ends at an immutable, inactive Strategy Revision Candidate:
+SI v0.5 ends at an immutable inactive Candidate. SI v0.6 closes the first real policy-learning loop:
 
 ```text
-Experience
-  ↓
-Evaluation
-  ↓
-/adapt <seed-strategy-id>
-  ↓
-Strategy Revision Candidate
-  ↓
-inactive
+Seed-attributed Experience
+        ↓
+Candidate hypothesis
+        ↓
+explicit Candidate Trial
+        ↓
+revision-aware Experience
+        ↓
+Trial evidence review
+        ↓
+explicit Human decision
+   reject | promote
+              ↓
+     trusted selectable revision
 ```
 
-SI v0.6 closes the first real policy-learning loop:
-
-```text
-immutable Seed revision
-        │
-        │ evidence-backed adaptation
-        ▼
-Candidate revision
-        │
-        │ explicit controlled Trial
-        ▼
-revision-aware Run Experience
-        │
-        ▼
-Trial evidence profile
-        │
-        ├── explicit reject
-        │
-        └── explicit promote
-                 │
-                 ▼
-        trusted selectable revision
-```
-
-The milestone must preserve this distinction:
+Keep the concepts distinct:
 
 ```text
 Candidate = hypothesis
@@ -52,73 +33,41 @@ Trial     = experiment
 Promotion = human-approved trust transition
 ```
 
-Promotion is not automatic Strategy replacement.
+Promotion never silently replaces Seed policy.
 
-## 2. Stable ownership boundary
+## 2. Stable authority boundary
 
-SI v0.6 must not weaken existing Pindie authority.
+Strategy revisions remain advisory Policy. They cannot change deterministic Environment authority.
 
-```text
-Pindie Environment
-  State / Reality / Snapshot / Capabilities / Gateway
-        │
-        │ immutable legality
-        ▼
-Pindie Policy
-  Seed revisions / Candidate Trials / promoted revisions
-        │
-        │ advisory cognition only
-        ▼
-Pi Agent Run
-```
+A Candidate, Trial, or promoted revision must never grant/revoke capabilities, bypass the Gateway, mutate `PindieState` merely by selection, redefine success criteria, fabricate Verification, resolve Human Gates, alter Task legality, or change Pi's low-level Agent Loop.
 
-A Candidate, Trial, or promoted revision must never:
+The model still owns cognitive Policy declaration inside the legal action space.
 
-- grant or revoke capabilities;
-- bypass the Execution Gateway;
-- mutate `PindieState` merely by being selected;
-- redefine success criteria;
-- fabricate Verification evidence;
-- resolve Human Gates;
-- alter Task legality;
-- alter Pi's low-level Agent Loop;
-- create a second inference loop.
+## 3. Strategy identity vs Revision identity
 
-The model still owns cognitive policy choice inside the legal action space.
-
-## 3. Strategy identity and Revision identity
-
-SI v0.5 already separated logical Strategy identity from Strategy semantics. SI v0.6 makes revision identity executable.
-
-Example:
-
-```text
-Strategy identity
-  architecture-first
-
-Revisions
-  seed
-  candidate 84e4...
-  promoted candidate 84e4...
-```
-
-The logical Strategy identity remains stable:
+The logical Strategy identity remains:
 
 ```text
 strategyId
 kind: approach | modifier
 ```
 
-A revision adds exact semantics and provenance.
+Its revisions are separate:
 
-Conceptually, a runtime-selectable Strategy revision contains:
+```text
+architecture-first
+  ├─ Seed revision
+  └─ Candidate revision <candidate-id>
+```
+
+A runtime-selectable revision must carry enough identity to distinguish exact semantics:
 
 ```text
 strategyId
 kind
-revisionIdentity
+revisionIdentity      # seed | candidate UUID
 revisionFingerprint
-revisionStatusAtRun
+revisionStatusAtRun   # seed | trial | promoted
 semantics
   summary
   useWhen[]
@@ -126,31 +75,13 @@ semantics
   principles[]
 ```
 
-`revisionIdentity` is:
+Policy identity must include revision identity. The same logical Strategy IDs with different revisions are different Policies.
 
-```text
-seed
-```
+## 4. Candidate integrity
 
-for the immutable Seed root, or the immutable Candidate UUID for a Candidate-derived revision.
+Candidate files remain immutable SI v0.5 artifacts.
 
-`revisionStatusAtRun` distinguishes factual trust/use state:
-
-```text
-seed
-trial
-promoted
-```
-
-The stable Policy identity must include revision identity. Two Policies that use the same Strategy IDs but different revisions are different Policy identities.
-
-## 4. Candidate fingerprint
-
-SI v0.6 requires a deterministic Candidate fingerprint in addition to the Candidate UUID.
-
-The Candidate UUID identifies the artifact. The fingerprint binds the exact revision semantics.
-
-The fingerprint should be deterministic SHA-256 over a canonical representation containing at least:
+SI v0.6 adds a deterministic Candidate semantic fingerprint. It binds at least:
 
 ```text
 target.strategyId
@@ -162,33 +93,15 @@ proposal.avoidWhen[]
 proposal.principles[]
 ```
 
-Do not include `createdAt`, evidence record IDs, or hypothesis prose in the semantic revision fingerprint.
+Do not include timestamps, evidence IDs, or hypothesis prose in the semantic fingerprint.
 
-The Candidate artifact remains immutable.
+SI v0.6 may add strict project-local Candidate read-by-ID. It does not need a general Strategy database. A Candidate is usable only when its schema, Candidate UUID, Seed target/kind, Seed base fingerprint, and Candidate fingerprint remain valid.
 
-## 5. Candidate reading boundary
+Malformed artifacts are rejected, not migrated or repaired.
 
-SI v0.5 storage is intentionally write-only. SI v0.6 may add strict project-local Candidate reading because explicit Trial and decision operations need to resolve one Candidate by ID.
+## 5. Trial is runtime-only
 
-The first reader should support exact read-by-ID rather than a general Strategy database.
-
-A Candidate is usable only when:
-
-- the file name is the canonical Candidate UUID;
-- the artifact passes the exact Candidate schema;
-- target Strategy ID/kind still resolve to the immutable Seed catalog;
-- the current Seed fingerprint equals `target.baseFingerprint`;
-- the Candidate semantic fingerprint is valid;
-- no terminal reject decision already exists;
-- a Trial request is not trying to reinterpret another project's Candidate.
-
-Do not migrate or repair malformed Candidate files.
-
-## 6. Trial has no durable Trial artifact
-
-SI v0.6 must not introduce a `strategy-trials/` history store.
-
-A Trial attempt is runtime control, not durable learning data.
+Do not introduce a durable `strategy-trials/` store.
 
 The durable facts already have appropriate homes:
 
@@ -196,20 +109,14 @@ The durable facts already have appropriate homes:
 Candidate object
   → strategy-candidates/<candidate-id>.json
 
-what actually happened during Trial
-  → revision-aware Run Experience
+what actually happened in a Trial Run
+  → Run Experience
 
 promote/reject decision
-  → Strategy Revision Decision artifact
+  → strategy-decisions/<candidate-id>.json
 ```
 
-Therefore Trial itself uses only a runtime lease.
-
-This avoids duplicating Run history into a second Trial database.
-
-## 7. Explicit Trial entry
-
-Trial must never be assigned automatically.
+Trial itself is only a Session/Run-scoped lease.
 
 Conceptual entry:
 
@@ -217,577 +124,360 @@ Conceptual entry:
 /trial <candidate-id>
 ```
 
-The exact command name may vary, but the semantics are fixed:
+The exact command name is not important; the contract is:
 
-- user/operator explicitly chooses one Candidate;
-- Pindie must be idle;
-- the Candidate belongs to the current project;
-- only one pending/active Trial lease may exist;
-- the lease is bound to the current native Session;
-- the pending lease binds to the next Agent Run;
-- the active lease is bound to that Agent Run generation;
-- it expires at Run settlement, Session replacement/reload, or cancellation;
-- it is never persisted.
+- user explicitly chooses one Candidate;
+- Pindie is idle;
+- only one pending/active Trial lease exists;
+- pending Trial is bound to the current native Session and next Agent Run;
+- active Trial is bound to that Run generation;
+- it clears at Run settlement, Session replacement/reload, or cancellation;
+- it is never persisted;
+- no automatic Trial assignment exists in v0.6.
 
-A Trial command does not itself claim the Candidate is better.
+A Candidate may be trialed repeatedly, but each Trial is explicitly requested.
 
-A Candidate may be trialed repeatedly, but each Trial must be explicitly requested. There is no automatic trial scheduler in v0.6.
+## 6. Trial Packet and Policy declaration
 
-## 8. Trial Packet
-
-When a pending Trial lease binds to an Agent Run, Pindie may inject one bounded Trial Packet into that Run.
-
-The packet should contain only:
+When a pending Trial binds to a Run, Pindie may inject one bounded Trial Packet containing only:
 
 ```text
-candidate ID
-logical target Strategy ID/kind
-Candidate fingerprint
+candidate ID + fingerprint
+target Strategy ID/kind
 Seed base fingerprint
 Candidate proposed semantics
 Candidate hypothesis
-explicit statement that this is a controlled Trial
-exact revision selector allowed for this Run
+explicit controlled-Trial boundary
+exact revision selector allowed in this Run
 ```
 
-It must not include the whole Experience archive, raw transcripts, hidden reasoning, or claims that the Candidate is superior.
+Normal Runs never receive inactive Candidate data.
 
-The packet is available only to the Trial Run.
+Arming a Trial does not fabricate Policy attribution. The model must still declare the Policy that actually guides execution.
 
-Normal coding Runs must not receive inactive Candidate data.
+`pindie_policy_set` therefore becomes revision-aware. Seed shorthand may remain backward compatible, but every non-Seed selection must identify the exact revision explicitly.
 
-## 9. Model-owned Policy declaration remains intact
+An inactive Candidate revision is legal only under its matching active Trial lease. A promoted revision is legal in normal Runs. All other inactive Candidates remain unavailable.
 
-An explicit `/trial` gives the model permission to use one otherwise-inactive revision. It must not fabricate Policy attribution merely because the user armed a Trial.
+If the model never successfully declares the armed Candidate revision, that Run is not Candidate Trial evidence.
 
-The model still declares the cognitive Policy that actually guides the Run.
+## 7. Revision-aware Policy Snapshot
 
-`pindie_policy_set` therefore becomes revision-aware.
-
-Conceptually, each selected Strategy role must resolve to an explicit revision:
-
-```text
-approach
-  strategyId
-  revision
-
-modifiers[]
-  strategyId
-  revision
-```
-
-Backward-compatible Seed shorthand may remain for ordinary declarations, but a non-Seed revision must never be inferred merely from the logical Strategy ID.
-
-An inactive Candidate revision is legal only when the active Trial lease authorizes that exact Candidate in that exact Run.
-
-A promoted revision is legal during ordinary coding Runs.
-
-No other inactive Candidate is selectable.
-
-If the model never successfully declares the armed Candidate revision, the Run is not Candidate Trial evidence.
-
-## 10. Revision-aware Policy Snapshot
-
-Policy Snapshot remains Run-scoped and model-declared, but its Strategy selections now carry exact revision identity.
+Policy Snapshot remains Run-scoped, optional, and model-declared.
 
 Conceptually:
 
 ```text
 PolicySnapshot
-  approach
-    strategyId
-    kind: approach
-    revisionIdentity
-    revisionFingerprint
-    revisionStatusAtRun
-    semantics
-
-  modifiers[]
-    strategyId
-    kind: modifier
-    revisionIdentity
-    revisionFingerprint
-    revisionStatusAtRun
-    semantics
+  approach: StrategyRevisionSelection
+  modifiers: StrategyRevisionSelection[]
 ```
 
-Do not add rationale, confidence, reward, score, workflow phases, or hidden policy history.
+where each selection contains the logical Strategy identity, exact revision identity/fingerprint/status, and bounded revision semantics.
 
-A new Agent Run still starts with no declared Policy Snapshot.
+Do not add rationale, confidence, reward, workflow phases, or durable Policy history.
 
-## 11. Experience schema v4 is required
+## 8. Experience schema v4
 
-Schema v3 cannot distinguish:
+Schema v3 cannot distinguish `architecture-first@seed` from `architecture-first@candidate`. Its Policy identity is Seed-ID-only and its parser canonicalizes against the immutable Seed catalog.
 
-```text
-architecture-first@seed
-```
+Therefore the first executable non-Seed revision requires schema v4.
 
-from:
-
-```text
-architecture-first@candidate-84e4...
-```
-
-because its Policy identity is based only on Seed Strategy IDs and its parser canonicalizes against the immutable Seed catalog.
-
-Therefore the first Run that permits a non-Seed revision requires revision-aware Experience schema v4.
-
-Schema v4 should preserve the existing bounded Run Experience structure and change only what revision-aware attribution requires.
-
-Conceptually:
+Schema v4 keeps the existing bounded Run Experience structure and changes only Policy facts required for revision-aware attribution:
 
 ```text
 schemaVersion: 4
-
-runStart
-  ... existing facts
-
-task
-  ... existing facts
-
+runStart      # same factual boundary
+task          # same
 policy
-  finalSnapshot | null
-    revision-aware approach/modifiers
+  finalSnapshot | null   # revision-aware
   declarationCount
   finalPolicyDeclarationCount
   finalPolicyFirstDeclaredAfter | null
   finalPolicyLastDeclaredAfter | null
-
-execution
-  ... existing counters
-
-outcome
-  ... existing facts
-
-metrics
-  ... existing metrics
+execution     # same counters
+outcome       # same facts
+metrics       # same
 ```
 
-Do not use schema v4 as an excuse to add transcript, reasoning, scores, task classification, or arbitrary Trial metadata.
+No transcript, reasoning, quality score, task taxonomy, or arbitrary Trial log enters v4.
 
-## 12. Schema v3 remains immutable baseline history
-
-Schema v1/v2 remain unsupported historical records.
-
-Schema v3 becomes supported legacy Seed-only Experience.
-
-Schema v4 is the current revision-aware writer format.
-
-Do not rewrite or migrate schema-v3 files.
-
-Evaluation should normalize valid v3 and v4 records into one revision-aware derived representation:
+### Historical compatibility
 
 ```text
-schema-v3 Seed Policy
-  → revisionIdentity = seed
-  → revisionStatusAtRun = seed
-  → current Seed fingerprint
-
-schema-v4 Policy
-  → use recorded revision identity/fingerprint/status
+v1/v2 → unsupported immutable history
+v3    → supported legacy Seed-only Experience
+v4    → current revision-aware writer
 ```
 
-This is necessary because SI v0.6 still needs historical Seed evidence as the baseline for Candidate Trials.
+Never rewrite v3 files.
 
-## 13. Adaptation must continue after schema v4
+Evaluation normalizes valid v3 and v4 records into one revision-aware derived representation. A v3 Seed selection is interpreted as the immutable Seed revision; v4 uses its recorded revision identity/fingerprint/status.
 
-Switching the current writer to schema v4 must not silently kill `/adapt`.
+This preserves historical Seed evidence as the Candidate baseline.
 
-Future Candidate creation still targets the immutable Seed baseline in SI v0.6.
+## 9. `/adapt` must continue after v4
 
-Its eligible source evidence may come from:
+Switching the current writer to v4 must not break SI v0.5 adaptation.
 
-- valid schema-v3 Runs where the target Seed Strategy participated;
-- valid schema-v4 Runs where the target **Seed revision** participated.
+In SI v0.6, new Candidates still target the immutable Seed revision. Eligible source evidence may come from:
 
-Runs using Trial or promoted Candidate revisions are not Seed evidence for a new Seed-targeted Candidate in SI v0.6.
+- schema-v3 Runs containing that Seed Strategy;
+- schema-v4 Runs containing that exact Seed revision.
 
-Revision-on-revision adaptation is deferred.
+Trial/promoted Candidate revision Runs are not Seed evidence for Seed-targeted `/adapt`.
 
-## 14. Trial evidence eligibility
+Revision-on-revision adaptation remains deferred.
 
-A valid Trial Run is not automatically useful promotion evidence merely because a Trial lease existed.
+## 10. Candidate Trial evidence
 
-A Candidate Trial evidence record must satisfy at least:
+A Trial lease existing is not enough. Promotion evidence requires an actual revision-attributed Run.
 
-- valid schema-v4 Experience;
+One Candidate Trial Experience is eligible only when:
+
+- it is valid schema-v4 Experience;
 - ordinary Run `attributionEligible` is true;
-- final explicit Policy contains the exact Candidate revision in the target role;
-- `revisionStatusAtRun` for that revision is `trial`;
-- Candidate UUID and fingerprint match the immutable Candidate artifact;
+- final Policy contains the exact Candidate revision in the target role;
+- `revisionStatusAtRun = trial` for that revision;
+- Candidate UUID/fingerprint match the immutable artifact;
 - continuous final-Policy exposure contains at least one non-policy tool call;
-- the source record belongs to the current project.
+- the Experience belongs to the current project.
 
-A Trial lease with no successful Candidate declaration produces no Candidate Trial evidence.
+A Candidate declared after all non-policy execution has finished does not count toward promotion eligibility.
 
-A Candidate declared only after all non-policy execution has finished does not count toward promotion eligibility.
+Do not invent an exposure score; preserve the existing declaration/exposure facts.
 
-The full exposure facts remain visible; Pindie must not invent an exposure score.
-
-## 15. Trial evidence profile
+## 11. Trial evidence review
 
 Evaluation remains deterministic and recomputable.
 
-For one Candidate, Pindie may derive a bounded Trial Evidence Profile containing factual/derived quantities already consistent with SI v0.4, for example:
+For one Candidate, derive a bounded Trial profile using the same factual style as SI v0.4:
 
 ```text
 eligible Trial Run count
 verification-passed count
 completed-during-Run count
-tool error / denial totals
-first-declaration progress
-last-activation progress
+tool error / denied-call totals
+declaration positions
 continuous exposure calls/ratio
-duration
-cost
+duration / cost
 source Experience IDs
 ```
 
-The Candidate profile is an evidence inventory, not a Candidate score.
+Also derive the corresponding Seed baseline profile from supported v3/v4 Seed evidence.
 
-## 16. Seed baseline comparison
+Show exact-goal comparable cohorts when they exist. Outside that factual cohort boundary, display Candidate and Seed evidence inventories side-by-side without claiming superiority.
 
-A Candidate is a revision of one immutable Seed Strategy, so its review should show the corresponding Seed evidence profile.
+No Candidate score, ranking, reward, or causal claim exists in v0.6.
 
-Baseline evidence may use valid attributable v3/v4 Runs where the exact Seed revision participated.
+## 12. Promotion eligibility
 
-Candidate Trial evidence and Seed baseline evidence may be displayed side-by-side.
+Promotion eligibility means only:
 
-Do not claim one outperforms the other merely because aggregate counts differ across unrelated Tasks.
+> enough auditable Trial evidence exists for a human to make a trust decision.
 
-Comparative claims remain limited by SI v0.4's factual comparability boundary. Exact same Task goal cohorts may be surfaced when available.
+It does **not** mean the Harness proved the Candidate is better.
 
-If no defensible comparable cohort exists, show the evidence inventories without a superiority claim.
-
-## 17. Promotion eligibility is evidence sufficiency, not superiority
-
-SI v0.6 must not create an automatic `candidateIsBetter` judgment.
-
-A deterministic Promotion Eligibility gate means only:
-
-> enough auditable Trial evidence exists for a human to make a promote/reject decision.
-
-The first contract requires at least:
+The first gate requires at least:
 
 ```text
-2 distinct eligible Candidate Trial Experience records
+2 distinct eligible Candidate Trial records
 +
-Candidate/Seed fingerprint integrity
+valid Candidate/Seed fingerprint binding
 +
-Candidate has no prior terminal decision
+current project match
 +
-current project identity matches
+no prior terminal decision for this Candidate
++
+Seed baseline provenance still available
 ```
 
-The existing Candidate provenance already supplies at least two historical Seed-attributable source records. Promotion review should re-read current Experience and fail closed if the required baseline provenance can no longer be established.
+Negative Trial evidence remains visible. Eligibility does not require every Trial to pass Verification or complete the Task.
 
-Do not require every Trial Run to pass Verification or complete the Task. Negative Trial evidence is evidence and must remain visible.
+No automatic promotion occurs when the threshold is reached.
 
-Do not automatically promote when the threshold is reached.
+## 13. Human-owned decision
 
-## 18. Human-owned promote/reject decision
-
-Promotion/rejection is a consequential Self-Improvement trust decision and remains explicit in v0.6.
-
-Conceptually:
+Promotion/rejection remains explicit operator authority, conceptually:
 
 ```text
 /promote <candidate-id>
 /reject <candidate-id>
 ```
 
-These are operator commands, not model tools.
+These are commands, not model tools.
 
-Promotion requires Promotion Eligibility.
+Promotion requires Promotion Eligibility. Rejection may be explicit whenever the user has enough evidence/judgment.
 
-Rejection may be explicit before or after Trial if the user has enough judgment to reject the hypothesis.
+The decision does not mutate `PindieState` or project Reality.
 
-Neither command mutates `PindieState` or project files.
+## 14. Immutable Strategy Revision Decision
 
-## 19. Immutable Strategy Revision Decision artifact
-
-Promotion/rejection is persisted separately from the immutable Candidate.
-
-Conceptually:
+Do not mutate Candidate status. Persist one terminal sidecar decision per Candidate:
 
 ```text
 StrategyRevisionDecisionV1
 
-schemaVersion
 candidateId
 candidateFingerprint
 decidedAt
-
 target
   strategyId
   kind
   baseFingerprint
-
 decision
   promoted | rejected
-
 evidence
   trialRecordIds[]
 ```
 
-Persist one terminal decision per Candidate, keyed by Candidate ID, under the project's Pindie storage namespace:
+Storage:
 
 ```text
 ~/.pindie/projects/<project-id>/
-  strategy-candidates/
-    <candidate-id>.json
-  strategy-decisions/
-    <candidate-id>.json
+  strategy-candidates/<candidate-id>.json
+  strategy-decisions/<candidate-id>.json
 ```
 
-Decision files are immutable and fail closed on duplicate Candidate decisions.
+Decision files are immutable and duplicate decisions fail closed.
 
-No mutable Candidate `status` field is introduced.
-
-## 20. Promotion means trusted selectable revision
-
-Promotion does **not** mean:
-
-```text
-Seed file rewritten
-Candidate silently becomes default
-current Policy mutated mid-Run
-all future Runs forced to use Candidate
-```
+## 15. Promotion semantics
 
 Promotion means:
 
-> this project-local Candidate revision is now trusted enough to be selectable by normal model-owned Policy declaration.
+> this project-local Candidate revision is trusted enough to become selectable by normal model-owned Policy declaration.
 
-The Seed remains immutable and selectable.
+Promotion does **not**:
 
-Therefore promotion is operationally reversible without a mutable active-strategy pointer:
+- rewrite Seed;
+- silently make the Candidate default;
+- mutate current Policy mid-Run;
+- force future Runs to use it.
 
-```text
-future Run chooses promoted revision
-or
-future Run chooses Seed revision
-```
+The immutable Seed remains visible and selectable. Therefore v0.6 needs no mutable active-revision pointer or rollback state machine: a future Run can explicitly select Seed instead of the promoted revision.
 
-SI v0.6 does not need a `rollback` state machine because Promotion does not overwrite the Seed or become a mandatory default.
+Revocation/retirement/supersession is later portfolio-evolution work.
 
-Revocation/retirement/supersession of a promoted revision is deferred until real portfolio-evolution evidence justifies that lifecycle.
+## 16. Bounded promoted portfolio
 
-## 21. Bounded promoted portfolio in v0.6
+SI v0.6 allows at most one promoted Candidate revision per Seed Strategy per project.
 
-SI v0.6 permits at most one promoted Candidate revision for each immutable Seed Strategy in one project.
-
-This keeps the normal project-local revision catalog bounded:
+This bounds the normal portfolio to:
 
 ```text
-7 Seed Strategies
+7 Seed revisions
 +
-max 7 promoted revisions
+max 7 project-local promoted revisions
 ```
 
-If a promoted revision already exists for a target Strategy, another Candidate for that target may still remain historical or be trialed, but v0.6 must not promote it until a later milestone defines explicit supersession/rebase/retirement semantics.
+If a target already has a promoted revision, another Candidate may remain historical or be trialed, but v0.6 cannot promote it until later supersession/rebase semantics exist.
 
-This avoids inventing portfolio management prematurely.
+Normal coding Runs may receive a bounded promoted-revision catalog in addition to the stable Seed catalog. Inactive/rejected Candidates never enter normal context.
 
-## 22. Promoted revision visibility
+The Harness must never infer a promoted revision solely from logical Strategy ID; revision choice is explicit.
 
-Normal coding Runs may receive a bounded project-local promoted-revision catalog in addition to the stable Seed catalog.
+A normal Run using a promoted revision records `revisionStatusAtRun = promoted` in schema-v4 Experience.
 
-The projection must clearly distinguish:
+## 17. Failure and Long Task boundaries
 
-```text
-logical Strategy ID
-Seed revision
-promoted Candidate revision ID
-revision semantics
-```
+Self-Improvement artifacts are never Task authority. Candidate/Decision read/write or Evaluation failure must not mutate Task truth, Verification, Human Gates, capabilities, or project Reality. When revision trust cannot be established, fail closed to Seed-only Policy availability.
 
-Do not hide the Seed merely because a promoted revision exists.
+Long Task Runtime and Trial are orthogonal. A Trial lease belongs to one Agent Run and does not silently carry across automatic Session rollover. A fresh resumed Run starts without that Trial lease. Promoted revisions are durable trusted Policy and may be selected normally later.
 
-Do not inject rejected or inactive Candidate revisions into normal Runs.
-
-Promoted revision projection is advisory Policy context, not Environment truth.
-
-## 23. Normal Policy selection after promotion
-
-The model may declare either:
-
-```text
-architecture-first@seed
-```
-
-or the project's promoted `architecture-first` revision.
-
-The exact wire syntax is an implementation detail, but revision identity must be explicit and unambiguous.
-
-The Harness must never infer a promoted revision solely from logical Strategy ID.
-
-A promoted revision used in a normal Run records:
-
-```text
-revisionStatusAtRun = promoted
-```
-
-in schema-v4 Experience.
-
-This allows future milestones to distinguish Trial evidence from post-promotion use of the same immutable revision semantics.
-
-## 24. Decision audit packet
-
-Before promotion, Pindie should render a bounded deterministic review containing:
-
-```text
-Candidate identity / target / hypothesis
-Candidate proposed semantics
-Candidate creation source Experience IDs
-eligible Trial evidence profile
-Seed baseline evidence profile
-exact-goal comparable cohorts when available
-Candidate/Seed fingerprints
-clear non-causal boundary
-```
-
-The review must not say:
-
-```text
-Candidate score = 91
-Candidate is 23% better
-promotion recommended with 87% confidence
-```
-
-unless a later milestone introduces and validates those semantics.
-
-The Human owns the final trust judgment.
-
-## 25. Failure isolation
-
-Self-Improvement persistence must remain outside Task authority.
-
-Failure to read a Candidate, write a Decision artifact, evaluate Trial evidence, or project promoted revisions must not:
-
-- mutate Task truth;
-- change Verification status;
-- open a Human Gate;
-- invalidate project Reality;
-- bypass the Gateway;
-- make a project implementation Task fail.
-
-When revision trust cannot be established, fail closed to Seed-only Policy availability.
-
-## 26. Interaction with Long Task Runtime
-
-Long Task Runtime and SI v0.6 are orthogonal.
-
-A Trial Policy may span a Run inside any Session. If Long Task Runtime rolls to a fresh Session, the old Run's Trial lease ends normally.
-
-A fresh automatically resumed Run does not silently inherit the prior Trial lease.
-
-If the user wants the Candidate trialed again in the fresh Run, a later design may automate that only after real evidence justifies it. SI v0.6 does not.
-
-Promoted revisions, unlike Trial leases, are project-local trusted policy and may be selected normally in any future Run.
-
-## 27. v0.6 non-goals
+## 18. v0.6 non-goals
 
 Do not implement:
 
-- automatic Candidate trial assignment;
-- automatic promotion or rejection;
-- Candidate scoring/ranking;
-- global reward functions;
-- causal-effect estimation;
-- LLM-as-judge promotion;
+- automatic Trial assignment;
+- automatic promote/reject;
+- Candidate scoring/ranking or global reward;
+- causal-effect estimation or LLM-as-judge promotion;
 - revision-on-revision adaptation;
 - Seed mutation;
 - promoted revision as silent default;
-- mutable active-Strategy pointers;
+- mutable active-revision pointers;
 - rollback/retirement/supersession state machines;
 - more than one promoted revision per Seed target;
-- task taxonomy/classification;
-- semantic task similarity or embeddings;
-- new Strategy identities;
-- Strategy Derivation;
+- task taxonomy, semantic similarity, embeddings;
+- new Strategy identities / Strategy Derivation;
 - learned Skills;
-- multi-Agent evaluation;
-- a dedicated policy/evaluator Agent;
-- a second Agent Loop.
+- dedicated evaluator/policy Agent;
+- second Agent Loop.
 
-## 28. Implementation slices
-
-Implement SI v0.6 in bounded slices.
+## 19. Implementation slices
 
 ### Slice A — Revision-aware Policy & Experience substrate
 
-Goal: make revision identity representable without activating Candidates yet.
+Make revision identity representable without activating Candidates:
 
-- add deterministic Candidate semantic fingerprint;
-- define revision-aware Strategy selection / Policy identity;
-- preserve Seed declaration compatibility;
-- introduce schema-v4 Run Experience;
-- read/evaluate schema v3 as legacy Seed-only evidence plus schema v4;
-- keep all inactive Candidates unselectable;
-- keep normal runtime behavior Seed-only.
+- Candidate semantic fingerprint;
+- revision-aware Strategy selection and Policy identity;
+- Seed declaration backward compatibility;
+- schema-v4 Experience writer/parser;
+- v3 + v4 Evaluation normalization;
+- `/adapt` continues using Seed-attributed v3/v4 evidence;
+- normal runtime remains Seed-only.
 
 ### Slice B — Explicit Candidate Trial
 
-Goal: allow one explicitly chosen Candidate into one controlled Run.
+Allow one explicitly chosen Candidate into one controlled Run:
 
 - strict Candidate reader by ID;
 - runtime-only Trial lease;
 - bounded Trial Packet;
-- exact Candidate revision becomes selectable only under that lease;
-- Trial Run writes revision-aware schema-v4 Experience;
+- exact Candidate revision selectable only under that lease;
+- Trial Run produces revision-aware Experience;
 - no promotion/rejection yet.
 
-### Slice C — Trial Evaluation & Decision Review
+### Slice C — Trial Evaluation & Review
 
-Goal: make Candidate Trial evidence inspectable without changing policy trust.
+Make Trial evidence inspectable without changing trust:
 
-- derive Trial evidence profiles;
-- derive Seed baseline profile across supported v3/v4 evidence;
-- surface exact-goal comparable cohorts when available;
-- deterministic Promotion Eligibility gate;
-- bounded human review packet;
-- no policy mutation yet.
+- Candidate Trial profile;
+- Seed baseline profile;
+- exact-goal cohorts when available;
+- deterministic Promotion Eligibility;
+- bounded non-causal review;
+- no policy trust mutation yet.
 
 ### Slice D — Promotion / Rejection & Promoted Selection
 
-Goal: complete the first trust transition.
+Complete the trust transition:
 
-- immutable Strategy Revision Decision artifact;
+- immutable Decision artifact;
 - explicit human promote/reject commands;
 - max one promoted revision per Seed target;
-- promoted revisions projected into normal Policy context;
-- `pindie_policy_set` may select promoted revisions explicitly;
-- rejected/inactive Candidates remain unavailable;
-- compatibility tests and real dogfood closure.
+- promoted revisions appear in normal bounded Policy context;
+- `pindie_policy_set` can explicitly select promoted revisions;
+- inactive/rejected revisions remain unavailable;
+- compatibility + real dogfood closure.
 
-## 29. Completion criterion
+## 20. Completion criterion
 
-SI v0.6 is complete only when real dogfood demonstrates the full loop:
+SI v0.6 is complete only when real dogfood demonstrates:
 
 ```text
-Seed-attributed Experience
-        ↓
+Seed evidence
+  ↓
 Candidate
-        ↓
-explicit Trial Run 1
-        ↓
-explicit Trial Run 2
-        ↓
+  ↓
+Trial Run 1
+  ↓
+Trial Run 2
+  ↓
 revision-aware Experience
-        ↓
-Candidate vs Seed evidence review
-        ↓
-explicit human promote or reject
-        ↓
+  ↓
+Candidate / Seed evidence review
+  ↓
+explicit promote or reject
+  ↓
 if promoted:
-normal coding Run explicitly selects promoted revision
-        ↓
+normal coding Run explicitly uses promoted revision
+  ↓
 Experience records promoted revision identity
 ```
 
-At that point Pindie has crossed the first real Self-Improvement boundary:
+That is the first complete Pindie Self-Improvement trust loop:
 
 ```text
 Experience
@@ -796,5 +486,3 @@ Experience
 → human-approved policy trust
 → future policy use
 ```
-
-while deterministic Environment authority remains unchanged.
