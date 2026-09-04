@@ -51,9 +51,10 @@ import type {
   RunExperienceReader,
   RunExperienceStore,
 } from "../src/experience-store.ts";
-import type {
-  StrategyRevisionDecision,
-  StrategyRevisionDecisionStore,
+import {
+  createStrategyRevisionDecision,
+  type StrategyRevisionDecision,
+  type StrategyRevisionDecisionStore,
 } from "../src/strategy-decisions.ts";
 import type { PindieStateStore, TaskContinuityStore } from "../src/store.ts";
 import type { TaskContinuityV1 } from "../src/task-continuity.ts";
@@ -4534,7 +4535,7 @@ test("SI v0.6 /trial refuses malformed, unavailable, busy, missing, and invalid 
   const command = harness.api.commands.get("trial");
 
   await command.handler("", commandContext);
-  assert.match(notices.at(-1)?.message ?? "", /Usage: \/trial <candidate-id>/);
+  assert.match(notices.at(-1)?.message ?? "", /No Candidate selected\. Use command completion/i);
   await command.handler("not-a-uuid", commandContext);
   assert.match(notices.at(-1)?.message ?? "", /canonical lowercase UUID-v4/i);
   assert.equal(reader.calls, 0);
@@ -4569,6 +4570,151 @@ test("SI v0.6 /trial refuses malformed, unavailable, busy, missing, and invalid 
   });
   assert.match(noRootNotices.at(-1)?.message ?? "", /no current project root/i);
   assert.equal(noRoot.api.sentUserMessages.length, 0);
+});
+
+test("SI v0.6 Candidate lifecycle completions are semantic, filtered, and read-only", async () => {
+  const eligible = trialCandidate("00000000-0000-4000-8000-000000000001", "architecture-first");
+  const oneTrial = trialCandidate("00000000-0000-4000-8000-000000000002", "direct-action");
+  const noSeed = trialCandidate("00000000-0000-4000-8000-000000000003", "explore-first");
+  const rejected = trialCandidate("00000000-0000-4000-8000-000000000004", "hypothesis-driven");
+  const promoted = trialCandidate("00000000-0000-4000-8000-000000000005", "reproduce-first");
+  const candidates = [eligible, oneTrial, noSeed, rejected, promoted];
+  const candidatesById = new Map(candidates.map((candidate) => [candidate.candidateId, candidate]));
+  const candidateReader = {
+    readAll: async () => [...candidatesById.values()],
+    read: async (_root: string, candidateId: string) => candidatesById.get(candidateId) ?? null,
+  };
+  const decisions = testDecisionStore([
+    createStrategyRevisionDecision({
+      candidate: rejected,
+      decision: "rejected",
+      trialRecordIds: [],
+      decidedAt: "2026-02-01T00:00:00.000Z",
+    }),
+    createStrategyRevisionDecision({
+      candidate: promoted,
+      decision: "promoted",
+      trialRecordIds: [],
+      decidedAt: "2026-02-01T00:00:00.000Z",
+    }),
+  ]);
+  const reader = new ExtensionTestExperienceReader();
+  reader.result = {
+    records: [
+      { recordId: "eligible-one", experience: commandExperience("eligible one", candidatePolicy(eligible)) },
+      { recordId: "eligible-two", experience: commandExperience("eligible two", candidatePolicy(eligible)) },
+      { recordId: "eligible-seed", experience: commandExperience("eligible seed", createPolicySnapshot({ approach: "architecture-first" })) },
+      { recordId: "one-trial", experience: commandExperience("one trial", candidatePolicy(oneTrial)) },
+      { recordId: "one-seed", experience: commandExperience("one seed", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "no-seed-one", experience: commandExperience("no seed one", candidatePolicy(noSeed)) },
+      { recordId: "no-seed-two", experience: commandExperience("no seed two", candidatePolicy(noSeed)) },
+    ],
+    loadedSchemaV3: 0,
+    loadedSchemaV4: 7,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const harness = createHarness([["/repo", activeState("Candidate completion task")]], {}, {
+    experienceReader: reader,
+    strategyCandidateReader: candidateReader,
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+  });
+  await startSession(harness, "/repo");
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  const savesBefore = structuredClone(harness.store.saves);
+  const decisionsBefore = [...decisions.decisions.entries()];
+
+  const complete = async (name: string) => await harness.api.commands.get(name).getArgumentCompletions("");
+  const trialOptions = await complete("trial");
+  const reviewOptions = await complete("trial-review");
+  const promoteOptions = await complete("promote");
+  const rejectOptions = await complete("reject");
+
+  assert.ok(trialOptions);
+  assert.deepEqual(new Set(trialOptions!.map((option: any) => option.value)), new Set([
+    eligible.candidateId,
+    oneTrial.candidateId,
+    noSeed.candidateId,
+  ]));
+  assert.equal(trialOptions!.some((option: any) => option.value === rejected.candidateId), false);
+  assert.equal(trialOptions!.some((option: any) => option.value === promoted.candidateId), false);
+  assert.match(trialOptions!.find((option: any) => option.value === eligible.candidateId)!.label, /architecture-first · Use a bounded architectural check/);
+  assert.equal(trialOptions!.find((option: any) => option.value === eligible.candidateId)!.label.includes(eligible.candidateId), false);
+
+  assert.ok(reviewOptions);
+  assert.equal(reviewOptions!.length, candidates.length);
+  assert.match(reviewOptions![0]!.label, /2 eligible trials/);
+  assert.match(reviewOptions!.find((option: any) => option.value === oneTrial.candidateId)!.label, /1 eligible trial(?!s)/);
+  assert.match(reviewOptions!.find((option: any) => option.value === eligible.candidateId)!.label, /promotion eligible/);
+
+  assert.deepEqual(promoteOptions, [{
+    value: eligible.candidateId,
+    label: "architecture-first · Use a bounded architectural check before changing code. · promotion eligible",
+  }]);
+  assert.deepEqual(new Set(rejectOptions!.map((option: any) => option.value)), new Set([
+    eligible.candidateId,
+    oneTrial.candidateId,
+    noSeed.candidateId,
+  ]));
+  assert.equal(rejectOptions!.some((option: any) => option.value === rejected.candidateId), false);
+  assert.equal(rejectOptions!.some((option: any) => option.value === promoted.candidateId), false);
+  for (const options of [trialOptions!, reviewOptions!, promoteOptions!, rejectOptions!]) {
+    for (const option of options) {
+      assert.equal(option.value.length, 36);
+      assert.equal(option.label.length <= 160, true);
+    }
+  }
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.deepEqual(harness.store.saves, savesBefore);
+  assert.deepEqual([...decisions.decisions.entries()], decisionsBefore);
+});
+
+test("SI v0.6 stale Candidate completions remain subject to fresh command authority", async () => {
+  const candidate = trialCandidate();
+  const candidates = new Map([[candidate.candidateId, candidate]]);
+  const candidateReader = {
+    readAll: async () => [...candidates.values()],
+    read: async (_root: string, candidateId: string) => candidates.get(candidateId) ?? null,
+  };
+  const decisions = testDecisionStore();
+  const reader = new ExtensionTestExperienceReader();
+  reader.result = {
+    records: [
+      { recordId: "trial-one", experience: commandExperience("stale one", candidatePolicy(candidate)) },
+      { recordId: "trial-two", experience: commandExperience("stale two", candidatePolicy(candidate)) },
+      { recordId: "seed", experience: commandExperience("stale seed", createPolicySnapshot({ approach: "architecture-first" })) },
+    ],
+    loadedSchemaV3: 0,
+    loadedSchemaV4: 3,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    experienceReader: reader,
+    strategyCandidateReader: candidateReader,
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+  });
+  await startSession(harness, "/repo");
+  const options = await harness.api.commands.get("promote").getArgumentCompletions("");
+  assert.deepEqual(options?.map((option: any) => option.value), [candidate.candidateId]);
+
+  await decisions.save("/repo", createStrategyRevisionDecision({
+    candidate,
+    decision: "rejected",
+    trialRecordIds: ["trial-one", "trial-two"],
+    decidedAt: "2026-02-01T00:00:00.000Z",
+  }));
+  const notices: Array<{ message: string; type: string }> = [];
+  await harness.api.commands.get("promote").handler(options![0]!.value, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+
+  assert.match(notices.at(-1)?.message ?? "", /terminal Decision already exists/i);
+  assert.equal(decisions.decisions.get(candidate.candidateId)?.decision, "rejected");
 });
 
 test("SI v0.6 Trial and Adaptation slow paths are mutually exclusive", async () => {
