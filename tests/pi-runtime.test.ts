@@ -84,24 +84,36 @@ function fakeRuntime(initialSession: AgentSession): FakeRuntimeControl {
   };
 }
 
-test("lineage formatting is presentation-only and bounded", () => {
-  assert.equal(formatLongTaskContinuationSessionName("Foo"), "Foo · cont. 2");
-  assert.equal(formatLongTaskContinuationSessionName("Foo · cont. 2"), "Foo · cont. 3");
-  assert.equal(formatLongTaskContinuationSessionName("Foo · cont. 9"), "Foo · cont. 10");
+test("lineage formatting is leading, strict, compatible, and bounded", () => {
+  assert.equal(formatLongTaskContinuationSessionName("Foo"), "cont. 2 · Foo");
+  assert.equal(formatLongTaskContinuationSessionName("cont. 2 · Foo"), "cont. 3 · Foo");
+  assert.equal(formatLongTaskContinuationSessionName("cont. 9 · Foo"), "cont. 10 · Foo");
+  assert.equal(formatLongTaskContinuationSessionName("Foo · cont. 2"), "cont. 3 · Foo");
   assert.equal(
     formatLongTaskContinuationSessionName("Foo · cont. 1"),
-    "Foo · cont. 1 · cont. 2",
+    "cont. 2 · Foo · cont. 1",
+  );
+  assert.equal(
+    formatLongTaskContinuationSessionName("A title containing cont. 2"),
+    "cont. 2 · A title containing cont. 2",
+  );
+  assert.equal(
+    formatLongTaskContinuationSessionName("\n  cont.\t 2 \n ·  Foo \n"),
+    "cont. 3 · Foo",
   );
   assert.equal(
     formatLongTaskContinuationSessionName("\n  Foo   with\t whitespace \n"),
-    "Foo with whitespace · cont. 2",
+    "cont. 2 · Foo with whitespace",
   );
+
+  const prefix = "cont. 2 · ";
+  const availableBaseLength = MAX_SESSION_LINEAGE_NAME_LENGTH - prefix.length;
   const longName = formatLongTaskContinuationSessionName("A".repeat(200));
-  assert.equal(longName.endsWith(" · cont. 2"), true);
-  assert.equal(longName.includes("…"), true);
-  assert.equal(formatLongTaskContinuationSessionName("A".repeat(200)).length <= MAX_SESSION_LINEAGE_NAME_LENGTH, true);
-  assert.equal(formatLongTaskContinuationSessionName(""), `${DEFAULT_LONG_TASK_SESSION_NAME} · cont. 2`);
-  assert.equal(formatLongTaskContinuationSessionName(undefined), `${DEFAULT_LONG_TASK_SESSION_NAME} · cont. 2`);
+  assert.equal(longName, `${prefix}${"A".repeat(availableBaseLength - 1)}…`);
+  assert.equal(longName.startsWith(prefix), true);
+  assert.equal(longName.length <= MAX_SESSION_LINEAGE_NAME_LENGTH, true);
+  assert.equal(formatLongTaskContinuationSessionName(""), `${prefix}${DEFAULT_LONG_TASK_SESSION_NAME}`);
+  assert.equal(formatLongTaskContinuationSessionName(undefined), `${prefix}${DEFAULT_LONG_TASK_SESSION_NAME}`);
 });
 
 test("adapter prefers an explicit active Session name", () => {
