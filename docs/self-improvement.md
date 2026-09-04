@@ -1048,9 +1048,7 @@ Slices A-C intentionally do not implement promotion/rejection, automatic Policy 
 
 ### SI v0.7 — Strategy Derivation
 
-Directional goal: allow a genuinely new Strategy identity to emerge from repeated useful patterns when evidence shows that revising an existing Seed Strategy is no longer the right abstraction.
-
-A derived Strategy must enter the same candidate/trial/evaluation path before becoming trusted policy. Detailed derivation semantics remain intentionally unspecified until Candidate Trial produces real revision evidence.
+The authoritative SI v0.7 architecture contract is maintained in [`docs/self-improvement-v0.7.md`](./self-improvement-v0.7.md). Its directional goal is an explicit Human-owned slow path from repeated eligible real Experience to an optional new logical Strategy hypothesis, one-Run Candidate Trials, separate source/Trial evidence review, and immutable Human trust artifacts. It preserves schema-v4 Experience and the existing candidate-command UX without automatic learning, novelty claims, Derived-Strategy adaptation, or changes to State, authority, Task, Long Task Runtime, or Pi's Agent Loop.
 
 ### Later direction — Strategy Portfolio Evolution
 
