@@ -23,6 +23,12 @@ import {
   installCommittedRolloverReceiver,
 } from "../src/long-task-control.ts";
 import { createPolicySnapshot, type PolicySnapshot } from "../src/policy.ts";
+import {
+  createStrategyRevisionCandidate,
+  strategyCandidateSemanticFingerprint,
+  type StrategyRevisionCandidate,
+} from "../src/strategy-candidates.ts";
+import { getSeedStrategy } from "../src/strategies.ts";
 import { RemoteCompanion, type RemoteSurface } from "../src/remote-companion.ts";
 import {
   EMPTY_STATE,
@@ -233,6 +239,24 @@ function activeState(goal = "Wire Pi extension"): PindieState {
       completed: false,
     },
   };
+}
+
+function trialCandidate(
+  candidateId = "00000000-0000-4000-8000-000000000001",
+): StrategyRevisionCandidate {
+  return createStrategyRevisionCandidate({
+    target: getSeedStrategy("architecture-first")!,
+    candidateId,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    proposal: {
+      summary: "Use a bounded architectural check before changing code.",
+      useWhen: ["the change crosses a known interface boundary"],
+      avoidWhen: ["the issue is already a local correction"],
+      principles: ["name the boundary", "verify the smallest coherent change"],
+      sourceRecordIds: ["record-one", "record-two"],
+      hypothesis: "A narrower boundary check may reduce avoidable rework.",
+    },
+  });
 }
 
 function commandExperience(goal: string, policy: PolicySnapshot | null = null): RunExperience {
@@ -4332,6 +4356,216 @@ test("SI v0.5 /adapt rejects unknown, busy, missing-root, and insufficient evide
   await harness.api.commands.get("adapt").handler("direct-action", commandContext);
   assert.match(notices.at(-1)?.message ?? "", /only 1 eligible attributable Run/i);
   assert.equal(harness.api.sentUserMessages.length, 0);
+});
+
+test("SI v0.6 Slice B /trial arms the next real Run without manufacturing user intent", async () => {
+  const candidate = trialCandidate();
+  const readerCalls: Array<{ root: string; id: string }> = [];
+  const harness = createHarness([["/repo", activeState("Trial task")]], {}, {
+    strategyCandidateReader: {
+      read: async (root, id) => {
+        readerCalls.push({ root, id });
+        return id === candidate.candidateId ? candidate : null;
+      },
+    },
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  const command = harness.api.commands.get("trial");
+  assert.ok(command);
+
+  await command.handler(candidate.candidateId, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+
+  assert.deepEqual(readerCalls, [{ root: "/repo", id: candidate.candidateId }]);
+  assert.deepEqual(harness.api.sentUserMessages, []);
+  assert.equal(harness.integration.trial.hasPendingTrial, true);
+  assert.equal(harness.integration.trial.hasActiveTrial, false);
+  assert.match(notices.at(-1)?.message ?? "", /Trial armed for the next Agent Run/i);
+
+  const runStart = await harnessBeforeAgentStart(harness);
+  assert.equal((runStart.systemPrompt.match(/<PINDIE_TRIAL_PACKET>/g) ?? []).length, 1);
+  assert.equal((runStart.systemPrompt.match(/<\/PINDIE_TRIAL_PACKET>/g) ?? []).length, 1);
+  assert.doesNotMatch(runStart.message.content, /<PINDIE_TRIAL_PACKET>/);
+  assert.equal(harness.integration.trial.hasActiveTrial, true);
+  assert.equal(typeof harness.integration.trial.activeTrial?.agentRunGeneration, "number");
+  assert.match(runStart.message.content, /<PINDIE_RUN_BASELINE>/);
+
+  const activeSelection = harness.integration.trial.activeTrial!.revisionSelection;
+  const selector = {
+    strategyId: activeSelection.strategyId,
+    revisionIdentity: activeSelection.revisionIdentity,
+    revisionFingerprint: activeSelection.revisionFingerprint,
+  };
+  await executeSemanticTool(harness, "pindie_policy_set", "trial-policy", {
+    approach: selector,
+    modifiers: ["minimal-change"],
+  });
+  await captureObservationEvidence(harness, "trial-observation");
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+
+  assert.equal(harness.integration.trial.hasTrial, false);
+  assert.equal(harness.experienceStore.records.length, 1);
+  const record = harness.experienceStore.records[0]!.experience;
+  const finalApproach = record.policy.finalSnapshot?.approach;
+  assert.equal(finalApproach?.revisionIdentity, candidate.candidateId);
+  assert.equal(finalApproach?.revisionFingerprint, strategyCandidateSemanticFingerprint(candidate));
+  assert.equal(finalApproach?.revisionStatusAtRun, "trial");
+  assert.deepEqual(finalApproach?.semantics, candidate.proposal);
+  assert.equal(JSON.stringify(record).includes("trialActive"), false);
+  assert.equal(JSON.stringify(record).includes("candidateId"), false);
+
+  await beginAgentRun(harness);
+  assert.doesNotMatch(
+    (await harnessBeforeAgentStart(harness)).systemPrompt,
+    /<PINDIE_TRIAL_PACKET>/,
+  );
+  await assert.rejects(
+    harness.api.tool("pindie_policy_set").execute(
+      "after-trial",
+      { approach: selector },
+      undefined,
+      undefined,
+      context("/repo"),
+    ),
+    /without an active Candidate Trial/i,
+  );
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("SI v0.6 /trial refuses malformed, unavailable, busy, missing, and invalid Candidates", async () => {
+  const valid = trialCandidate();
+  const reader = {
+    calls: 0,
+    async read(_root: string, id: string) {
+      this.calls += 1;
+      return id === valid.candidateId ? valid : null;
+    },
+  };
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    strategyCandidateReader: reader,
+  });
+  const notices: Array<{ message: string; type: string }> = [];
+  const commandContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+  await startSession(harness, "/repo");
+  const command = harness.api.commands.get("trial");
+
+  await command.handler("", commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /Usage: \/trial <candidate-id>/);
+  await command.handler("not-a-uuid", commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /canonical lowercase UUID-v4/i);
+  assert.equal(reader.calls, 0);
+  await command.handler(`${valid.candidateId} extra`, commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /Usage: \/trial <candidate-id>/);
+
+  await command.handler(valid.candidateId, { ...commandContext, isIdle: () => false });
+  assert.match(notices.at(-1)?.message ?? "", /Agent is busy/i);
+
+  await command.handler("00000000-0000-4000-8000-000000000002", commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /not found/i);
+  assert.equal(harness.integration.trial.hasTrial, false);
+
+  const malformed = createHarness([["/repo", activeState()]], {}, {
+    strategyCandidateReader: { read: async () => ({ schemaVersion: 1 } as any) },
+  });
+  const malformedNotices: Array<{ message: string; type: string }> = [];
+  await startSession(malformed, "/repo");
+  await malformed.api.commands.get("trial").handler(valid.candidateId, {
+    ...commandContext,
+    ui: { notify: (message: string, type: string) => malformedNotices.push({ message, type }) },
+  });
+  assert.match(malformedNotices.at(-1)?.message ?? "", /invalid Candidate/i);
+  assert.equal(malformed.integration.trial.hasTrial, false);
+
+  const noRoot = createHarness([], {}, { strategyCandidateReader: reader });
+  const noRootNotices: Array<{ message: string; type: string }> = [];
+  await noRoot.api.commands.get("trial").handler(valid.candidateId, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => noRootNotices.push({ message, type }) },
+  });
+  assert.match(noRootNotices.at(-1)?.message ?? "", /no current project root/i);
+  assert.equal(noRoot.api.sentUserMessages.length, 0);
+});
+
+test("SI v0.6 Trial and Adaptation slow paths are mutually exclusive", async () => {
+  const candidate = trialCandidate();
+  const candidateReader = { read: async () => candidate };
+  const trialFirst = createHarness([["/repo", activeState()]], {}, { strategyCandidateReader: candidateReader });
+  await startSession(trialFirst, "/repo");
+  const trialNotices: Array<{ message: string; type: string }> = [];
+  const trialContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => trialNotices.push({ message, type }) },
+  };
+  await trialFirst.api.commands.get("trial").handler(candidate.candidateId, trialContext);
+  await trialFirst.api.commands.get("adapt").handler("direct-action", {
+    ...trialContext,
+    ui: trialContext.ui,
+  });
+  assert.match(trialNotices.at(-1)?.message ?? "", /Candidate Trial.*pending or active/i);
+  assert.equal(trialFirst.api.sentUserMessages.length, 0);
+
+  const reader = new ExtensionTestExperienceReader();
+  reader.result = {
+    records: [
+      { recordId: "adapt-one.json", experience: commandExperience("one", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "adapt-two.json", experience: commandExperience("two", createPolicySnapshot({ approach: "direct-action" })) },
+    ],
+    loadedSchemaV3: 0,
+    loadedSchemaV4: 2,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const adaptFirst = createHarness([["/repo", activeState()]], {}, {
+    experienceReader: reader,
+    strategyCandidateReader: candidateReader,
+  });
+  await startSession(adaptFirst, "/repo");
+  const adaptNotices: Array<{ message: string; type: string }> = [];
+  const adaptContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => adaptNotices.push({ message, type }) },
+  };
+  await adaptFirst.api.commands.get("adapt").handler("direct-action", adaptContext);
+  assert.equal(adaptFirst.api.sentUserMessages.length, 1);
+  await adaptFirst.api.commands.get("trial").handler(candidate.candidateId, adaptContext);
+  assert.match(adaptNotices.at(-1)?.message ?? "", /adaptation attempt.*pending or active/i);
+  assert.equal(adaptFirst.integration.trial.hasTrial, false);
+});
+
+test("SI v0.6 Trial leases clear across Session replacement and fresh Runs", async () => {
+  const candidate = trialCandidate();
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    strategyCandidateReader: { read: async () => candidate },
+  });
+  await startSession(harness, "/repo");
+  await harness.api.commands.get("trial").handler(candidate.candidateId, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  await beginAgentRun(harness);
+  assert.equal(harness.integration.trial.hasActiveTrial, true);
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "new" },
+    context("/repo"),
+  );
+  await startSession(harness, "/repo", "new");
+  assert.equal(harness.integration.trial.hasTrial, false);
+  const fresh = await harnessBeforeAgentStart(harness);
+  assert.doesNotMatch(fresh.systemPrompt, /<PINDIE_TRIAL_PACKET>/);
+  assert.equal(harness.integration.trial.hasTrial, false);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 });
 
 test("Slice A handoff is dormant by default and enabled only through the internal staging seam", () => {

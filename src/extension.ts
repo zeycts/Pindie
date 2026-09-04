@@ -38,6 +38,8 @@ import {
 } from "./strategy-adaptation.ts";
 import {
   FileStrategyCandidateStore,
+  isCanonicalStrategyCandidateId,
+  type StrategyCandidateReader,
   type StrategyCandidateStore,
 } from "./strategy-candidates.ts";
 import { getSeedStrategy, SEED_STRATEGIES } from "./strategies.ts";
@@ -54,7 +56,11 @@ import { PresentationIntegration } from "./presentation-integration.ts";
 import { RemoteCompanion, type RemotePi, type RemoteStatusFacts } from "./remote-companion.ts";
 import { DiscordRemote, discordRemoteConfig } from "./discord-remote.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
-import type { PolicySnapshot } from "./policy.ts";
+import type {
+  PolicySnapshot,
+  StrategyRevisionSelection,
+  StrategyRevisionSelector,
+} from "./policy.ts";
 import type { ProjectFingerprint } from "./project-mutation.ts";
 import type { ReasoningController } from "./reasoning.ts";
 import type { RunActivityTracker } from "./run-activity.ts";
@@ -84,6 +90,9 @@ import {
   PINDIE_TASK_HANDOFF_TOOL,
   TaskHandoffRuntime,
 } from "./task-handoff-runtime.ts";
+import {
+  TrialRuntime,
+} from "./strategy-trial.ts";
 import type { SubscriptionUsageProvider } from "./subscription-usage.ts";
 import {
   createPindieGateOpenTool,
@@ -110,6 +119,7 @@ export interface PindieExtensionOptions {
   experienceStore?: RunExperienceStore;
   experienceReader?: RunExperienceReader;
   strategyCandidateStore?: StrategyCandidateStore;
+  strategyCandidateReader?: StrategyCandidateReader;
   resolveProjectRoot?: ProjectRootResolver;
   subscriptionUsageProvider?: SubscriptionUsageProvider;
   getStatusWidth?: () => number | undefined;
@@ -135,6 +145,7 @@ export interface PindieExtensionIntegration {
   readonly runCost: RunCostTracker;
   readonly runTimer: RunTimer;
   readonly contextGovernor: ContextLifecycleGovernor;
+  readonly trial: TrialRuntime;
   readonly policySnapshot: PolicySnapshot | null;
   readonly stateUnavailableReason: string | null;
 }
@@ -222,7 +233,13 @@ export function registerPindieExtension(
   const strategyCandidateStore = options.strategyCandidateStore ?? new FileStrategyCandidateStore({
     baseDir: experienceStorageBaseDir,
   });
+  const strategyCandidateReader = options.strategyCandidateReader ?? (
+    typeof (strategyCandidateStore as Partial<StrategyCandidateReader>).read === "function"
+      ? strategyCandidateStore as unknown as StrategyCandidateReader
+      : new FileStrategyCandidateStore({ baseDir: experienceStorageBaseDir })
+  );
   const adaptation = new AdaptationRuntime();
+  const trial = new TrialRuntime();
   const continuityNow = options.now ?? Date.now;
   // A successful Candidate consumes the lease before settlement, so retain only
   // this generation marker long enough to exclude the adaptation Run from
@@ -398,6 +415,10 @@ export function registerPindieExtension(
       ctx.ui.notify("Pindie could not start /adapt: another adaptation attempt is already active.", "warning");
       return;
     }
+    if (trial.hasTrial) {
+      ctx.ui.notify("Pindie could not start /adapt: a Candidate Trial is already pending or active.", "warning");
+      return;
+    }
     const target = getSeedStrategy(requestedId);
     if (target === null) {
       ctx.ui.notify(`Pindie could not start /adapt: '${requestedId}' is not a valid Seed Strategy ID.`, "warning");
@@ -440,6 +461,10 @@ export function registerPindieExtension(
       ctx.ui.notify("Pindie could not start /adapt: the Agent became busy while reading Experience.", "warning");
       return;
     }
+    if (trial.hasTrial) {
+      ctx.ui.notify("Pindie could not start /adapt: a Candidate Trial is already pending or active.", "warning");
+      return;
+    }
     if (!adaptation.establish(sessionId, target, packet)) {
       ctx.ui.notify("Pindie could not start /adapt: another adaptation attempt is already active.", "warning");
       return;
@@ -460,12 +485,127 @@ export function registerPindieExtension(
     );
   };
 
+  const handleTrialCommand = async (
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> => {
+    const requestedId = args.trim();
+    if (!requestedId || /\s/.test(requestedId)) {
+      ctx.ui.notify("Usage: /trial <candidate-id>", "warning");
+      return;
+    }
+    // Reject before any Candidate path construction or reader call.
+    if (!isCanonicalStrategyCandidateId(requestedId)) {
+      ctx.ui.notify(
+        "Pindie could not arm /trial: candidate-id must be a canonical lowercase UUID-v4.",
+        "warning",
+      );
+      return;
+    }
+    const projectRoot = runtime.projectRoot;
+    if (projectRoot === null) {
+      ctx.ui.notify("Pindie could not arm /trial: no current project root is loaded.", "warning");
+      return;
+    }
+    if (!ctx.isIdle()) {
+      ctx.ui.notify("Pindie could not arm /trial: the Agent is busy.", "warning");
+      return;
+    }
+    if (trial.hasTrial) {
+      ctx.ui.notify("Pindie could not arm /trial: another Candidate Trial is already pending or active.", "warning");
+      return;
+    }
+    if (adaptation.hasAttempt) {
+      ctx.ui.notify("Pindie could not arm /trial: an adaptation attempt is already pending or active.", "warning");
+      return;
+    }
+
+    let sessionId: string;
+    try {
+      sessionId = ctx.sessionManager.getSessionId();
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not arm /trial: ${errorMessage(error)}`, "warning");
+      return;
+    }
+
+    let candidate;
+    try {
+      candidate = await strategyCandidateReader.read(projectRoot, requestedId);
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not arm /trial: Candidate read failed: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    if (candidate === null) {
+      ctx.ui.notify(`Pindie could not arm /trial: Candidate '${requestedId}' was not found for this project.`, "warning");
+      return;
+    }
+    if (candidate.candidateId !== requestedId) {
+      ctx.ui.notify("Pindie could not arm /trial: invalid Candidate identity did not match the requested ID.", "warning");
+      return;
+    }
+
+    let currentSessionId: string;
+    try {
+      currentSessionId = ctx.sessionManager.getSessionId();
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not arm /trial: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    if (
+      currentSessionId !== sessionId ||
+      runtime.projectRoot !== projectRoot ||
+      !ctx.isIdle()
+    ) {
+      ctx.ui.notify("Pindie could not arm /trial: the current Session, project, or Agent state changed while reading the Candidate.", "warning");
+      return;
+    }
+    if (trial.hasTrial) {
+      ctx.ui.notify("Pindie could not arm /trial: another Candidate Trial is already pending or active.", "warning");
+      return;
+    }
+    if (adaptation.hasAttempt) {
+      ctx.ui.notify("Pindie could not arm /trial: an adaptation attempt is already pending or active.", "warning");
+      return;
+    }
+    try {
+      if (!trial.establish(sessionId, candidate)) {
+        ctx.ui.notify("Pindie could not arm /trial: another Candidate Trial is already pending or active.", "warning");
+        return;
+      }
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not arm /trial: invalid Candidate: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    ctx.ui.notify(
+      `Trial armed for the next Agent Run (Candidate ${candidate.candidateId}).`,
+      "info",
+    );
+  };
+
   const taskToolOptions = {
     getRunDuration: () => presentation.runTimer.durationMs,
     onStateChange: semanticStateChanged,
   };
   pi.registerTool(createPindiePolicySetTool({
     onPolicySet: (snapshot) => run.setPolicySnapshot(snapshot),
+    resolveRevisionSelector: (
+      selector: StrategyRevisionSelector,
+      kind: "approach" | "modifier",
+      ctx: ExtensionContext,
+    ): StrategyRevisionSelection => {
+      let sessionId: string;
+      try {
+        sessionId = ctx.sessionManager.getSessionId();
+      } catch (error) {
+        throw new Error(`Candidate revision selector could not resolve the current Session: ${errorMessage(error)}`);
+      }
+      return trial.resolveRevisionSelector(
+        sessionId,
+        run.activeAgentRunGeneration,
+        selector,
+        kind,
+      );
+    },
   }));
   pi.registerTool(createPindieStrategyCandidateTool({
     adaptation,
@@ -526,6 +666,11 @@ export function registerPindieExtension(
     handler: async (args, ctx) => handleAdaptationCommand(args, ctx),
   });
 
+  pi.registerCommand("trial", {
+    description: "Arm one explicit Strategy Revision Candidate Trial for the next Agent Run",
+    handler: async (args, ctx) => handleTrialCommand(args, ctx),
+  });
+
   pi.registerCommand("reasoning", {
     description: "Choose who controls thinking level (auto|manual)",
     getArgumentCompletions: (prefix) => ["auto", "manual"]
@@ -547,6 +692,7 @@ export function registerPindieExtension(
     presentation.clearStatus(ctx);
     presentation.resetSubscriptionUsage();
     adaptation.clear();
+    trial.clear();
     adaptationRunGeneration = null;
     run.resetStateAuthority();
     run.resetAgentRun();
@@ -639,6 +785,7 @@ export function registerPindieExtension(
     presentation.resetTrackers();
     presentation.clearStatus(ctx);
     adaptation.clear();
+    trial.clear();
     adaptationRunGeneration = null;
     run.resetStateAuthority();
     run.resetAgentRun();
@@ -650,81 +797,115 @@ export function registerPindieExtension(
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
-    presentation.setStatusContext(ctx);
-    run.resetAgentRun();
-    execution.discardRuntime();
-    if (run.authoritativeState !== null) {
-      try {
-        await run.refreshAuthoritativeState();
-      } catch (error) {
-        markUnavailable(
-          `Could not refresh Pindie State before this Agent Run: ${errorMessage(error)}`,
-        );
+    const trialWasArmed = trial.hasTrial;
+    let trialBound = false;
+    try {
+      presentation.setStatusContext(ctx);
+      if (trial.hasActiveTrial) trial.clear();
+      run.resetAgentRun();
+      execution.discardRuntime();
+      if (run.authoritativeState !== null) {
+        try {
+          await run.refreshAuthoritativeState();
+        } catch (error) {
+          markUnavailable(
+            `Could not refresh Pindie State before this Agent Run: ${errorMessage(error)}`,
+          );
+        }
       }
-    }
-    // Refresh precedes all identity snapshots so a new Run always begins from
-    // authoritative project State rather than a previous session snapshot.
-    execution.beginEvidenceScope(runtime.externalStateEpoch);
-    run.beginAgentRunFacts();
-    if (taskHandoffEnabled) {
-      handoff.beginAgentRun(
-        ctx.sessionManager.getSessionId(),
-        run.activeAgentRunGeneration!,
-      );
-    }
-    let adaptationLease = null;
-    if (adaptation.hasAttempt) {
-      try {
-        adaptationLease = adaptation.bind(
+      // Refresh precedes all identity snapshots so a new Run always begins from
+      // authoritative project State rather than a previous session snapshot.
+      execution.beginEvidenceScope(runtime.externalStateEpoch);
+      run.beginAgentRunFacts();
+      if (taskHandoffEnabled) {
+        handoff.beginAgentRun(
           ctx.sessionManager.getSessionId(),
           run.activeAgentRunGeneration!,
         );
-      } catch (error) {
-        adaptation.clear();
-        adaptationRunGeneration = null;
-        throw error;
       }
-      adaptationRunGeneration = adaptationLease?.agentRunGeneration ?? null;
-    } else {
-      adaptationRunGeneration = null;
-    }
-    let derivation = run.deriveSnapshot();
-    if (!derivation.ok) {
-      markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
-      derivation = run.deriveSnapshot();
-    }
-    presentation.reasoning.beforeAgentStart();
-    presentation.applyRequestedThinkingLevel();
-    presentation.clearActivityLingerRefresh();
-    presentation.runActivity.start();
-    presentation.startCost(ctx.sessionManager.getEntries());
-    presentation.startTimer(ctx);
-    presentation.refreshStatus(ctx);
-    void options.remoteCompanion?.companion.status(remoteStatusFacts());
+      if (adaptation.hasAttempt && trial.hasTrial) {
+        adaptation.clear();
+        trial.clear();
+        adaptationRunGeneration = null;
+        throw new Error("Pindie rejected this Agent Run: an Adaptation Packet and Trial Packet cannot coexist.");
+      }
+      let adaptationLease = null;
+      if (adaptation.hasAttempt) {
+        try {
+          adaptationLease = adaptation.bind(
+            ctx.sessionManager.getSessionId(),
+            run.activeAgentRunGeneration!,
+          );
+        } catch (error) {
+          adaptation.clear();
+          adaptationRunGeneration = null;
+          throw error;
+        }
+        adaptationRunGeneration = adaptationLease?.agentRunGeneration ?? null;
+      } else {
+        adaptationRunGeneration = null;
+      }
+      let trialLease = null;
+      if (adaptationLease === null && trial.hasPendingTrial) {
+        let sessionId: string;
+        try {
+          sessionId = ctx.sessionManager.getSessionId();
+        } catch (error) {
+          trial.clear();
+          throw error;
+        }
+        trialLease = trial.bind(sessionId, run.activeAgentRunGeneration!);
+        if (trialLease === null) {
+          // A pending lease is bound to exactly the Session that armed it.
+          // A mismatch is a fail-closed stale lease, not a normal Run input.
+          trial.clear();
+        } else {
+          trialBound = true;
+        }
+      }
+      let derivation = run.deriveSnapshot();
+      if (!derivation.ok) {
+        markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
+        derivation = run.deriveSnapshot();
+      }
+      presentation.reasoning.beforeAgentStart();
+      presentation.applyRequestedThinkingLevel();
+      presentation.clearActivityLingerRefresh();
+      presentation.runActivity.start();
+      presentation.startCost(ctx.sessionManager.getEntries());
+      presentation.startTimer(ctx);
+      presentation.refreshStatus(ctx);
+      void options.remoteCompanion?.companion.status(remoteStatusFacts());
 
-    if (!derivation.ok) {
-      adaptation.clear();
-      adaptationRunGeneration = null;
-      throw new Error(
-        `Pindie unavailable semantic derivation failed: ${derivation.error}`,
-      );
+      if (!derivation.ok) {
+        adaptation.clear();
+        trial.clear();
+        adaptationRunGeneration = null;
+        throw new Error(
+          `Pindie unavailable semantic derivation failed: ${derivation.error}`,
+        );
+      }
+      const state = run.authoritativeState;
+      const packetLease = adaptationLease ?? trialLease;
+      const systemPrompt = packetLease === null
+        ? appendPindieSystemContract(event.systemPrompt)
+        : `${appendPindieSystemContract(event.systemPrompt)}\n\n${packetLease.renderedPacket}`;
+      const unavailableReason = run.stateUnavailableReason ??
+        (state === null
+          ? "No project State has been loaded for this session."
+          : null);
+      return {
+        systemPrompt,
+        message: createPindieRunBaselineMessage(
+          state,
+          derivation.snapshot,
+          unavailableReason,
+        ),
+      };
+    } catch (error) {
+      if (trialWasArmed || trialBound) trial.clear();
+      throw error;
     }
-    const state = run.authoritativeState;
-    const systemPrompt = adaptationLease === null
-      ? appendPindieSystemContract(event.systemPrompt)
-      : `${appendPindieSystemContract(event.systemPrompt)}\n\n${adaptationLease.renderedPacket}`;
-    const unavailableReason = run.stateUnavailableReason ??
-      (state === null
-        ? "No project State has been loaded for this session."
-        : null);
-    return {
-      systemPrompt,
-      message: createPindieRunBaselineMessage(
-        state,
-        derivation.snapshot,
-        unavailableReason,
-      ),
-    };
   });
 
   pi.on("session_compact", (event, ctx) => {
@@ -1245,6 +1426,8 @@ export function registerPindieExtension(
     const settlementGeneration = run.activeAgentRunGeneration;
     const isAdaptationRun = settlementGeneration !== null &&
       adaptationRunGeneration === settlementGeneration;
+    const isTrialRun = settlementGeneration !== null &&
+      trial.isActiveForGeneration(settlementGeneration);
     adaptation.clear();
     adaptationRunGeneration = null;
 
@@ -1317,6 +1500,11 @@ export function registerPindieExtension(
       }
     }
 
+    // Trial attribution is observed above while the final Policy Snapshot is
+    // still available. Clear the one-Run lease only after Experience has had
+    // its complete chance to freeze and persist those inputs.
+    if (isTrialRun) trial.clear();
+
     if (
       settlementGeneration !== null &&
       !run.isAgentRunCurrent(settlementGeneration)
@@ -1364,6 +1552,7 @@ export function registerPindieExtension(
     runCost: presentation.runCost,
     runTimer: presentation.runTimer,
     contextGovernor,
+    trial,
     get policySnapshot() {
       return run.policySnapshot;
     },

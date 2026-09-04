@@ -1,6 +1,6 @@
 # Pindie Self-Improvement v0.6 — Candidate Trial & Promotion
 
-Status: architecture contract for SI v0.6.
+Status: architecture contract for SI v0.6. Slice A and Slice B are implemented; Slice C/D remain out of scope here.
 
 This document is the just-in-time refinement of the directional SI v0.6 section in `docs/self-improvement.md`. It preserves the SI v0.1–v0.5 ownership model.
 

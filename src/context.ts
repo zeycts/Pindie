@@ -94,7 +94,8 @@ export function renderPindieSystemContract(): string {
     "- Strategies never override actual user intent, project constraints, State or semantic authority, capabilities or Execution Gateway decisions, verification reality, or Human Gates.",
     "- Policy declaration is optional and is not required ceremony.",
     "- Strategy Revision Candidates are inactive hypotheses; creation is valid only during explicitly entered /adapt <strategy-id> work.",
-    "- Candidates never override State, the Execution Gateway, Verification, or Task authority and never become active Policy in SI v0.5.",
+    "- Candidate revisions remain unavailable to normal Policy declarations; only an explicitly armed /trial <candidate-id> Run may select its exact Candidate revision.",
+    "- Candidates never override State, the Execution Gateway, Verification, or Task authority; receiving a Trial Packet does not create Policy attribution.",
   ];
   renderSeedStrategies(lines);
   lines.push(PINDIE_SYSTEM_CONTRACT_END);

@@ -1,19 +1,41 @@
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import {
-  createPolicySnapshot,
+  createPolicySnapshotForRun,
   type PolicySnapshot,
+  type StrategyRevisionSelection,
+  type StrategyRevisionSelector,
 } from "../policy.ts";
+
+const RevisionSelector = Type.Object(
+  {
+    strategyId: Type.String({
+      minLength: 1,
+      description: "Logical Strategy ID owned by the Harness.",
+    }),
+    revisionIdentity: Type.String({
+      minLength: 1,
+      description: "Exact Candidate UUID supplied by the active Trial Packet.",
+    }),
+    revisionFingerprint: Type.String({
+      minLength: 1,
+      description: "Exact derived Candidate fingerprint supplied by the active Trial Packet.",
+    }),
+  },
+  { additionalProperties: false },
+);
+const StrategySelection = Type.Union([
+  Type.String({ description: "Seed Strategy ID." }),
+  RevisionSelector,
+]);
 
 const PolicySetParameters = Type.Object(
   {
-    approach: Type.String({
-      description: "ID of exactly one Seed Strategy whose kind is approach.",
-    }),
-    modifiers: Type.Optional(Type.Array(Type.String(), {
+    approach: StrategySelection,
+    modifiers: Type.Optional(Type.Array(StrategySelection, {
       uniqueItems: true,
-      description: "Unique IDs of zero or more Seed Strategies whose kind is modifier.",
+      description: "Unique Seed IDs or exact active Candidate revision selectors whose kind is modifier.",
     })),
   },
   { additionalProperties: false },
@@ -21,6 +43,12 @@ const PolicySetParameters = Type.Object(
 
 export interface PindiePolicyToolOptions {
   onPolicySet: (snapshot: PolicySnapshot) => void;
+  /** The Harness resolves exact non-Seed selectors against the active Trial. */
+  resolveRevisionSelector?: (
+    selector: StrategyRevisionSelector,
+    kind: "approach" | "modifier",
+    ctx: ExtensionContext,
+  ) => StrategyRevisionSelection;
 }
 
 function result(snapshot: PolicySnapshot) {
@@ -49,8 +77,13 @@ export function createPindiePolicySetTool(
     description: "Optionally declare or replace the current Agent Run's cognitive Policy Snapshot. Use this only when a named Strategy materially guides the current work or the current approach meaningfully changes; do not call merely to populate metadata.",
     parameters: PolicySetParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params) {
-      const snapshot = createPolicySnapshot(params);
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const snapshot = createPolicySnapshotForRun(
+        params,
+        options.resolveRevisionSelector === undefined
+          ? undefined
+          : (selector, kind) => options.resolveRevisionSelector!(selector, kind, ctx),
+      );
       options.onPolicySet(snapshot);
       return result(snapshot);
     },

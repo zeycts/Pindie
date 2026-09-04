@@ -50,6 +50,7 @@ function assertPindieSurface(session: AgentSession): void {
   const commandNames = new Set(session.extensionRunner.getRegisteredCommands().map((command) => command.name));
   assert.equal(commandNames.has("experience"), true);
   assert.equal(commandNames.has("adapt"), true);
+  assert.equal(commandNames.has("trial"), true);
   assert.equal(session.resourceLoader.getSkills().skills.some((skill) => skill.name === "git-workflow"), true);
 }
 

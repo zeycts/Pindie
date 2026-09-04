@@ -9,6 +9,13 @@ import {
 export type StrategyRevisionIdentity = "seed" | string;
 export type StrategyRevisionStatusAtRun = "seed" | "trial" | "promoted";
 
+/** Compact model-facing selector for one exact non-Seed revision. */
+export interface StrategyRevisionSelector {
+  readonly strategyId: string;
+  readonly revisionIdentity: string;
+  readonly revisionFingerprint: string;
+}
+
 export interface StrategyRevisionSemantics {
   readonly summary: string;
   readonly useWhen: readonly string[];
@@ -55,6 +62,11 @@ export interface PolicySnapshot {
 
 const CANONICAL_REVISION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REVISION_FINGERPRINT = /^sha256:[0-9a-f]{64}$/;
+const REVISION_SELECTOR_FIELDS = [
+  "strategyId",
+  "revisionIdentity",
+  "revisionFingerprint",
+] as const;
 const MAX_SUMMARY_LENGTH = 512;
 const MAX_GUIDANCE_LENGTH = 256;
 const MAX_GUIDANCE_ITEMS = 8;
@@ -78,6 +90,30 @@ function copySemantics(semantics: StrategyRevisionSemantics): StrategyRevisionSe
     avoidWhen: Object.freeze([...semantics.avoidWhen]),
     principles: Object.freeze([...semantics.principles]),
   });
+}
+
+function hasExactFields(
+  value: Record<string, unknown>,
+  expectedFields: readonly string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...expectedFields].sort();
+  return actual.length === expected.length &&
+    actual.every((field, index) => field === expected[index]);
+}
+
+/** Validate the compact selector shape without resolving its revision. */
+export function isStrategyRevisionSelector(
+  value: unknown,
+): value is StrategyRevisionSelector {
+  return isRecord(value) &&
+    hasExactFields(value, REVISION_SELECTOR_FIELDS) &&
+    typeof value.strategyId === "string" &&
+    value.strategyId.trim() !== "" &&
+    typeof value.revisionIdentity === "string" &&
+    CANONICAL_REVISION_ID.test(value.revisionIdentity) &&
+    typeof value.revisionFingerprint === "string" &&
+    REVISION_FINGERPRINT.test(value.revisionFingerprint);
 }
 
 function defineHidden<T extends object, K extends string, V>(
@@ -436,6 +472,55 @@ export function createPolicySnapshot(input: unknown): PolicySnapshot {
   }
 
   const modifiers = modifierIds.map((modifier) => seedStrategy(modifier, "modifier"));
+  return Object.freeze({
+    approach,
+    modifiers: Object.freeze(modifiers),
+  });
+}
+
+/**
+ * Resolve a model declaration for a normal Run. Seed IDs retain the exact
+ * ordinary syntax; object values are only compact exact selectors and must be
+ * resolved by the Harness against a currently legal revision lease.
+ */
+export function createPolicySnapshotForRun(
+  input: unknown,
+  resolveRevisionSelector?: (
+    selector: StrategyRevisionSelector,
+    kind: SeedStrategyKind,
+  ) => StrategyRevisionSelection,
+): PolicySnapshot {
+  // Preserve the pre-revision Seed-only behavior byte-for-byte for callers
+  // that have no revision resolver (including ordinary legacy integrations).
+  if (resolveRevisionSelector === undefined) return createPolicySnapshot(input);
+  if (!isRecord(input)) return invalidPolicyInput("an approach is required.");
+
+  const select = (
+    value: unknown,
+    expectedKind: SeedStrategyKind,
+  ): StrategyRevisionSelection => {
+    if (typeof value === "string") return seedStrategy(value, expectedKind);
+    if (!isStrategyRevisionSelector(value)) {
+      return invalidPolicyInput(
+        `${expectedKind} must be a Seed Strategy ID or an exact Candidate revision selector.`,
+      );
+    }
+    const selection = resolveRevisionSelector(value, expectedKind);
+    if (selection.kind !== expectedKind) {
+      return invalidPolicyInput(`${expectedKind} selection has the wrong Strategy kind.`);
+    }
+    return selection;
+  };
+
+  const approach = select(input.approach, "approach");
+  if (input.modifiers !== undefined && !Array.isArray(input.modifiers)) {
+    return invalidPolicyInput("modifiers must be an array of Seed IDs or exact Candidate revision selectors.");
+  }
+  const modifiers = (input.modifiers ?? []).map((modifier) =>
+    select(modifier, "modifier"));
+  if (new Set(modifiers.map((modifier) => selectionId(modifier))).size !== modifiers.length) {
+    return invalidPolicyInput("modifiers must be unique by logical Strategy identity.");
+  }
   return Object.freeze({
     approach,
     modifiers: Object.freeze(modifiers),
