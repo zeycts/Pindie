@@ -828,6 +828,48 @@ test("SI v0.4 /experience renders empty and mixed evidence read-only", async () 
   assert.deepEqual(noRootReader.roots, []);
 });
 
+test("SI v0.6 /trial-review renders read-only Candidate and Seed evidence", async () => {
+  const selectedCandidate = trialCandidate();
+  const reader = new ExtensionTestExperienceReader();
+  const candidateReader = {
+    roots: [] as string[],
+    async read(projectRoot: string, candidateId: string) {
+      this.roots.push(`${projectRoot}:${candidateId}`);
+      return candidateId === selectedCandidate.candidateId ? selectedCandidate : null;
+    },
+  };
+  const harness = createHarness([ ["/repo", activeState()] ], {}, {
+    experienceReader: reader,
+    strategyCandidateReader: candidateReader,
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  const command = harness.api.commands.get("trial-review");
+  assert.ok(command);
+
+  await command.handler(selectedCandidate.candidateId, {
+    ...context("/wrong-cwd"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+
+  assert.deepEqual(candidateReader.roots, [`/repo:${selectedCandidate.candidateId}`]);
+  assert.deepEqual(reader.roots, ["/repo"]);
+  assert.equal(notices.at(-1)?.type, "info");
+  assert.match(notices.at(-1)?.message ?? "", /Candidate Trial Review/);
+  assert.match(notices.at(-1)?.message ?? "", /Candidate Trial Evidence/);
+  assert.match(notices.at(-1)?.message ?? "", /Seed Baseline Evidence/);
+  assert.match(notices.at(-1)?.message ?? "", /Promotion Eligibility: not eligible/);
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.deepEqual(harness.store.saves, []);
+
+  await command.handler("not-a-candidate", {
+    ...context("/repo"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  assert.match(notices.at(-1)?.message ?? "", /canonical lowercase UUID-v4/i);
+});
+
 test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
   const { api } = createHarness();
 

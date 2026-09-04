@@ -6,10 +6,16 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+  deriveCandidateTrialReview,
   deriveExperienceEvaluation,
+  formatCandidateTrialReview,
   formatExperienceReport,
 } from "./experience-evaluation.ts";
 import type { RunExperienceReader } from "./experience-store.ts";
+import {
+  isCanonicalStrategyCandidateId,
+  type StrategyCandidateReader,
+} from "./strategy-candidates.ts";
 import {
   deriveEfficiencySnapshot,
   formatEfficiencyReport,
@@ -35,6 +41,7 @@ export interface PresentationIntegrationOptions {
   getState: () => PindieState | null;
   getProjectRoot: () => string | null;
   experienceReader: RunExperienceReader;
+  strategyCandidateReader: StrategyCandidateReader;
   getAuthoritativeState: () => PindieState | null;
   getStateUnavailableReason: () => string | null;
   getRunStale: () => boolean;
@@ -59,6 +66,7 @@ export class PresentationIntegration {
   private readonly getState: () => PindieState | null;
   private readonly getProjectRoot: () => string | null;
   private readonly experienceReader: RunExperienceReader;
+  private readonly strategyCandidateReader: StrategyCandidateReader;
   private readonly getAuthoritativeState: () => PindieState | null;
   private readonly getStateUnavailableReason: () => string | null;
   private readonly getRunStale: () => boolean;
@@ -83,6 +91,7 @@ export class PresentationIntegration {
     this.getState = options.getState;
     this.getProjectRoot = options.getProjectRoot;
     this.experienceReader = options.experienceReader;
+    this.strategyCandidateReader = options.strategyCandidateReader;
     this.getAuthoritativeState = options.getAuthoritativeState;
     this.getStateUnavailableReason = options.getStateUnavailableReason;
     this.getRunStale = options.getRunStale;
@@ -254,6 +263,80 @@ export class PresentationIntegration {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       ctx.ui.notify(`Could not read Pindie Experience: ${message}`, "warning");
+    }
+  }
+
+  async handleTrialReviewCommand(
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> {
+    const requestedId = args.trim();
+    if (!requestedId || /\s/.test(requestedId)) {
+      ctx.ui.notify("Usage: /trial-review <candidate-id>", "warning");
+      return;
+    }
+    if (!isCanonicalStrategyCandidateId(requestedId)) {
+      ctx.ui.notify(
+        "Pindie could not show Trial review: candidate-id must be a canonical lowercase UUID-v4.",
+        "warning",
+      );
+      return;
+    }
+    const projectRoot = this.getProjectRoot();
+    if (projectRoot === null) {
+      ctx.ui.notify("Pindie could not show Trial review: no current project root is loaded.", "warning");
+      return;
+    }
+
+    let candidate;
+    try {
+      candidate = await this.strategyCandidateReader.read(projectRoot, requestedId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Pindie could not show Trial review: Candidate read failed: ${message}`, "warning");
+      return;
+    }
+    if (candidate === null) {
+      ctx.ui.notify(
+        `Pindie could not show Trial review: Candidate '${requestedId}' was not found for this project.`,
+        "warning",
+      );
+      return;
+    }
+    if (candidate.candidateId !== requestedId) {
+      ctx.ui.notify(
+        "Pindie could not show Trial review: Candidate identity did not match the requested ID.",
+        "warning",
+      );
+      return;
+    }
+
+    let read;
+    try {
+      read = await this.experienceReader.read(projectRoot);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Pindie could not show Trial review: Experience reading failed: ${message}`, "warning");
+      return;
+    }
+    if (this.getProjectRoot() !== projectRoot) {
+      ctx.ui.notify(
+        "Pindie could not show Trial review: the current project changed while reading evidence.",
+        "warning",
+      );
+      return;
+    }
+    try {
+      const review = deriveCandidateTrialReview(candidate, read.records, {
+        currentProjectMatch: true,
+        // Slice C has no decision artifact/store; the absence of one is the
+        // deterministic no-prior-decision fact until Slice D owns decisions.
+        priorTerminalDecision: false,
+      });
+      ctx.ui.notify(formatCandidateTrialReview(read, review), "info");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Pindie could not show Trial review: evidence evaluation failed: ${message}`, "warning");
     }
   }
 
