@@ -30,12 +30,14 @@ import {
   assembleRunExperience,
   type RunExperience,
 } from "../src/run-experience.ts";
+import { taskContractFingerprint } from "../src/task-continuity.ts";
 import type {
   RunExperienceReadResult,
   RunExperienceReader,
   RunExperienceStore,
 } from "../src/experience-store.ts";
-import type { PindieStateStore } from "../src/store.ts";
+import type { PindieStateStore, TaskContinuityStore } from "../src/store.ts";
+import type { TaskContinuityV1 } from "../src/task-continuity.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
 
 type CapturedHandler = (
@@ -128,10 +130,24 @@ class CapturedExtensionAPI {
 class ExtensionTestExperienceStore implements RunExperienceStore {
   readonly records: Array<{ projectRoot: string; experience: RunExperience }> = [];
   saveError: Error | null = null;
+  events: string[] | null = null;
 
   async save(projectRoot: string, experience: RunExperience): Promise<void> {
     if (this.saveError) throw this.saveError;
+    this.events?.push("experience");
     this.records.push({ projectRoot, experience });
+  }
+}
+
+class ExtensionTestContinuityStore implements TaskContinuityStore {
+  readonly records: Array<{ projectRoot: string; checkpoint: TaskContinuityV1 }> = [];
+  saveError: Error | null = null;
+  events: string[] | null = null;
+
+  async save(projectRoot: string, checkpoint: TaskContinuityV1): Promise<void> {
+    if (this.saveError) throw this.saveError;
+    this.events?.push("continuity");
+    this.records.push({ projectRoot, checkpoint });
   }
 }
 
@@ -158,13 +174,32 @@ class ExtensionTestStore implements PindieStateStore {
   readonly loads: string[] = [];
   readonly saves: Array<{ projectRoot: string; state: PindieState }> = [];
   saveError: Error | null = null;
+  private nextLoadBarrier: {
+    readonly markEntered: () => void;
+    readonly pending: Promise<void>;
+  } | null = null;
 
   constructor(entries: Array<[string, PindieState]> = []) {
     for (const [root, state] of entries) this.states.set(root, state);
   }
 
+  pauseNextLoad(): { entered: Promise<void>; release: () => void } {
+    let markEntered!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    this.nextLoadBarrier = { markEntered, pending };
+    return { entered, release };
+  }
+
   async load(projectRoot: string): Promise<PindieState> {
     this.loads.push(projectRoot);
+    const barrier = this.nextLoadBarrier;
+    if (barrier !== null) {
+      this.nextLoadBarrier = null;
+      barrier.markEntered();
+      await barrier.pending;
+    }
     const error = this.loadErrors.get(projectRoot);
     if (error) throw error;
     return this.states.get(projectRoot) ?? EMPTY_STATE;
@@ -389,6 +424,14 @@ function toolResult(
     content,
     details: undefined,
     isError,
+  };
+}
+
+function handoffInput(nextIntent = "Continue in the next Session"): Record<string, unknown> {
+  return {
+    progressSummary: "The implementation is coherent at the current work frontier.",
+    decisions: ["Keep Task truth in PindieState."],
+    nextIntent,
   };
 }
 
@@ -4090,4 +4133,246 @@ test("SI v0.5 /adapt rejects unknown, busy, missing-root, and insufficient evide
   await harness.api.commands.get("adapt").handler("direct-action", commandContext);
   assert.match(notices.at(-1)?.message ?? "", /only 1 eligible attributable Run/i);
   assert.equal(harness.api.sentUserMessages.length, 0);
+});
+
+test("Slice A handoff is dormant by default and enabled only through the internal staging seam", () => {
+  assert.equal(createHarness([ ["/repo", activeState()] ]).api.tools.has("pindie_task_handoff"), false);
+  assert.equal(
+    createHarness([["/repo", activeState()]], {}, { enableTaskHandoff: true }).api.tools.has("pindie_task_handoff"),
+    true,
+  );
+});
+
+test("Slice A handoff stages Task progress and commits continuity only after Experience settlement", async () => {
+  const events: string[] = [];
+  const experienceStore = new ExtensionTestExperienceStore();
+  experienceStore.events = events;
+  const continuityStore = new ExtensionTestContinuityStore();
+  continuityStore.events = events;
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    enableTaskHandoff: true,
+    experienceStore,
+    continuityStore,
+    now: () => Date.parse("2026-09-03T01:02:03.000Z"),
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  const before = structuredClone(harness.integration.runtime.state);
+  const input = handoffInput();
+  assert.equal(await callGuard(harness, toolCall("pindie_task_handoff", input, "handoff-a")), undefined);
+  const toolResultValue = await harness.api.tool("pindie_task_handoff").execute("handoff-a", input);
+  assert.equal(toolResultValue.terminate, true);
+  assert.match(toolResultValue.content[0].text, /remains unfinished/i);
+  assert.match(toolResultValue.content[0].text, /Handoff staged/i);
+  assert.equal(continuityStore.records.length, 0);
+  assert.equal(harness.integration.runtime.state.task?.openLoops.nextIntent, input.nextIntent);
+  assert.deepEqual(harness.integration.runtime.state.task?.openLoops.blockers, before.task?.openLoops.blockers);
+  assert.deepEqual(harness.integration.runtime.state.task?.openLoops.questions, before.task?.openLoops.questions);
+
+  await harness.api.handler("tool_result")(
+    toolResult("pindie_task_handoff", false, "handoff-a"),
+    context("/repo"),
+  );
+  assert.equal(continuityStore.records.length, 0);
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.deepEqual(harness.api.sentMessages, []);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+
+  assert.deepEqual(events, ["experience", "continuity"]);
+  assert.equal(experienceStore.records.length, 1);
+  assert.equal(experienceStore.records[0]!.experience.execution.toolCalls, 1);
+  assert.equal(experienceStore.records[0]!.experience.execution.consequentialCalls, 1);
+  assert.equal(experienceStore.records[0]!.experience.execution.projectMutationEffectCalls, 0);
+  assert.equal(experienceStore.records[0]!.experience.execution.deniedCalls, 0);
+  assert.equal(continuityStore.records.length, 1);
+  const checkpoint = continuityStore.records[0]!.checkpoint;
+  assert.equal(checkpoint.schemaVersion, 1);
+  assert.equal(checkpoint.sourceSessionId, "remote-session");
+  assert.equal(checkpoint.createdAt, "2026-09-03T01:02:03.000Z");
+  assert.equal(checkpoint.taskFingerprint, taskContractFingerprint(harness.integration.runtime.state.task!));
+  assert.match(checkpoint.checkpointId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+});
+
+test("handoff admission rejects in-flight work without semantic denial telemetry", async () => {
+  const experienceStore = new ExtensionTestExperienceStore();
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    enableTaskHandoff: true,
+    experienceStore,
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  assert.equal(await callGuard(harness, toolCall("read", {}, "read-before-handoff")), undefined);
+  const denied = await callGuard(harness, toolCall("pindie_task_handoff", handoffInput(), "handoff-after-read"));
+  assert.equal(denied.block, true);
+  assert.match(denied.reason, /another authorized tool call is still in flight/i);
+
+  await harness.api.handler("tool_result")(
+    toolResult("read", false, "read-before-handoff"),
+    context("/repo"),
+  );
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(experienceStore.records[0]!.experience.execution.deniedCalls, 0);
+  assert.equal(experienceStore.records[0]!.experience.execution.projectMutationEffectCalls, 0);
+});
+
+test("handoff reserves the terminal frontier before async State preflight", async () => {
+  const experienceStore = new ExtensionTestExperienceStore();
+  const continuityStore = new ExtensionTestContinuityStore();
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    enableTaskHandoff: true,
+    experienceStore,
+    continuityStore,
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  const refreshBarrier = harness.store.pauseNextLoad();
+  const handoff = callGuard(
+    harness,
+    toolCall("pindie_task_handoff", handoffInput(), "handoff-async-preflight"),
+  );
+  await refreshBarrier.entered;
+
+  const laterCall = await callGuard(
+    harness,
+    toolCall("read", {}, "read-during-handoff-preflight"),
+  );
+  assert.equal(laterCall.block, true);
+  assert.match(laterCall.reason, /terminal work frontier/i);
+
+  refreshBarrier.release();
+  assert.equal(await handoff, undefined);
+  const executionResult = await harness.api.tool("pindie_task_handoff").execute(
+    "handoff-async-preflight",
+    handoffInput(),
+  );
+  assert.equal(executionResult.terminate, true);
+  await harness.api.handler("tool_result")(
+    toolResult("pindie_task_handoff", false, "handoff-async-preflight"),
+    context("/repo"),
+  );
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    context("/repo"),
+  );
+  assert.equal(experienceStore.records[0]!.experience.execution.deniedCalls, 0);
+});
+
+test("handoff requires coherent active Task authority", async () => {
+  for (const state of [EMPTY_STATE, blockedState(), gatedState(), completedState()]) {
+    const harness = createHarness([["/repo", state]], {}, { enableTaskHandoff: true });
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+    const denied = await callGuard(harness, toolCall("pindie_task_handoff", handoffInput()));
+    assert.equal(denied.block, true);
+    assert.match(denied.reason, /coherent|active|capability/i);
+  }
+});
+
+test("handoff admission arms a terminal latch before later observation or project calls", async () => {
+  const experienceStore = new ExtensionTestExperienceStore();
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    enableTaskHandoff: true,
+    experienceStore,
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  assert.equal(await callGuard(harness, toolCall("pindie_task_handoff", handoffInput(), "handoff-first")), undefined);
+  const observation = await callGuard(harness, toolCall("read", {}, "read-after-handoff"));
+  const project = await callGuard(harness, toolCall("edit", {}, "edit-after-handoff"));
+  assert.equal(observation.block, true);
+  assert.equal(project.block, true);
+  assert.match(observation.reason, /terminal work frontier/i);
+  assert.match(project.reason, /terminal work frontier/i);
+
+  await harness.api.handler("tool_result")(
+    toolResult("pindie_task_handoff", true, "handoff-first"),
+    context("/repo"),
+  );
+  assert.equal(await callGuard(harness, toolCall("edit", {}, "edit-after-failed-handoff")), undefined);
+  await harness.api.handler("tool_result")(
+    toolResult("edit", true, "edit-after-failed-handoff"),
+    context("/repo"),
+  );
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(experienceStore.records[0]!.experience.execution.deniedCalls, 0);
+});
+
+test("stale Session, Run, Task, and pending-message settlement guards never commit a checkpoint", async () => {
+  const staleSessionStore = new ExtensionTestContinuityStore();
+  const staleSession = createHarness([["/repo", activeState()]], {}, {
+    enableTaskHandoff: true,
+    continuityStore: staleSessionStore,
+  });
+  await startSession(staleSession, "/repo");
+  await beginAgentRun(staleSession);
+  assert.equal(await callGuard(staleSession, toolCall("pindie_task_handoff", handoffInput(), "stale-session-handoff")), undefined);
+  await staleSession.api.tool("pindie_task_handoff").execute("stale-session-handoff", handoffInput());
+  await staleSession.api.handler("tool_result")(toolResult("pindie_task_handoff", false, "stale-session-handoff"), context("/repo"));
+  await staleSession.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", [], false, "different-session"));
+  assert.equal(staleSessionStore.records.length, 0);
+
+  const staleRunStore = new ExtensionTestContinuityStore();
+  const staleRun = createHarness([["/repo", activeState()]], {}, {
+    enableTaskHandoff: true,
+    continuityStore: staleRunStore,
+  });
+  await startSession(staleRun, "/repo");
+  await beginAgentRun(staleRun);
+  assert.equal(await callGuard(staleRun, toolCall("pindie_task_handoff", handoffInput(), "stale-run-handoff")), undefined);
+  await staleRun.api.tool("pindie_task_handoff").execute("stale-run-handoff", handoffInput());
+  await staleRun.api.handler("tool_result")(toolResult("pindie_task_handoff", false, "stale-run-handoff"), context("/repo"));
+  await beginAgentRun(staleRun);
+  await staleRun.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(staleRunStore.records.length, 0);
+
+  const mismatchStore = new ExtensionTestContinuityStore();
+  const mismatch = createHarness([["/repo", activeState()]], {}, {
+    enableTaskHandoff: true,
+    continuityStore: mismatchStore,
+  });
+  await startSession(mismatch, "/repo");
+  await beginAgentRun(mismatch);
+  assert.equal(await callGuard(mismatch, toolCall("pindie_task_handoff", handoffInput(), "mismatch-handoff")), undefined);
+  await mismatch.api.tool("pindie_task_handoff").execute("mismatch-handoff", handoffInput());
+  await mismatch.api.handler("tool_result")(toolResult("pindie_task_handoff", false, "mismatch-handoff"), context("/repo"));
+  mismatch.store.states.set("/repo", activeState("A different Task"));
+  await mismatch.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(mismatchStore.records.length, 0);
+
+  const pendingMessageStore = new ExtensionTestContinuityStore();
+  const pendingMessage = createHarness([["/repo", activeState()]], {}, {
+    enableTaskHandoff: true,
+    continuityStore: pendingMessageStore,
+  });
+  await startSession(pendingMessage, "/repo");
+  await beginAgentRun(pendingMessage);
+  assert.equal(await callGuard(pendingMessage, toolCall("pindie_task_handoff", handoffInput(), "pending-message-handoff")), undefined);
+  await pendingMessage.api.tool("pindie_task_handoff").execute("pending-message-handoff", handoffInput());
+  await pendingMessage.api.handler("tool_result")(toolResult("pindie_task_handoff", false, "pending-message-handoff"), context("/repo"));
+  await pendingMessage.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", [], true));
+  assert.equal(pendingMessageStore.records.length, 0);
+});
+
+test("continuity persistence failure clears only handoff runtime state and leaves Task truth valid", async () => {
+  const continuityStore = new ExtensionTestContinuityStore();
+  continuityStore.saveError = new Error("continuity disk unavailable");
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    enableTaskHandoff: true,
+    continuityStore,
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  const input = handoffInput("Continue after failed checkpoint");
+  assert.equal(await callGuard(harness, toolCall("pindie_task_handoff", input, "failed-persistence-handoff")), undefined);
+  await harness.api.tool("pindie_task_handoff").execute("failed-persistence-handoff", input);
+  await harness.api.handler("tool_result")(toolResult("pindie_task_handoff", false, "failed-persistence-handoff"), context("/repo"));
+  await assert.doesNotReject(harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo")));
+  assert.equal(continuityStore.records.length, 0);
+  assert.equal(harness.integration.runtime.state.task?.openLoops.nextIntent, input.nextIntent);
+  assert.equal(harness.store.states.get("/repo")?.task?.openLoops.nextIntent, input.nextIntent);
+  assert.equal(harness.integration.stateUnavailableReason, null);
 });

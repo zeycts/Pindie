@@ -11,8 +11,13 @@ import {
   type PindieTask,
   type VerificationCheck,
 } from "./state.ts";
+import {
+  validateTaskContinuity,
+  type TaskContinuityV1,
+} from "./task-continuity.ts";
 
 const STATE_FILE_NAME = "state.json";
+const CONTINUITY_FILE_NAME = "continuity.json";
 const LOCK_DIRECTORY_NAME = "state.lock";
 const LOCK_OWNER_FILE_NAME = "owner.json";
 const LOCK_RECLAIM_DIRECTORY_NAME = ".reclaim";
@@ -28,6 +33,16 @@ export interface PindieStateStore {
   load(projectRoot: string): Promise<PindieState>;
   save(projectRoot: string, state: PindieState): Promise<void>;
   withProjectLock<T>(projectRoot: string, operation: () => Promise<T>): Promise<T>;
+}
+
+export interface TaskContinuityStore {
+  save(projectRoot: string, checkpoint: TaskContinuityV1): Promise<void>;
+}
+
+export interface FileTaskContinuityStoreOptions {
+  baseDir?: string;
+  /** Test-only failure seam immediately before the atomic rename. */
+  onBeforeRename?: () => Promise<void>;
 }
 
 export interface FileStateStoreOptions {
@@ -261,4 +276,46 @@ export class FileStateStore implements PindieStateStore {
   private stateDir(projectRoot: string): string { return join(this.baseDir, getProjectId(projectRoot)); }
   private statePath(projectRoot: string): string { return join(this.stateDir(projectRoot), STATE_FILE_NAME); }
   private lockPath(projectRoot: string): string { return join(this.stateDir(projectRoot), LOCK_DIRECTORY_NAME); }
+}
+
+/** Durable, latest-only project-local storage for the current Task handoff. */
+export class FileTaskContinuityStore implements TaskContinuityStore {
+  private readonly baseDir: string;
+  private readonly onBeforeRename: (() => Promise<void>) | undefined;
+
+  constructor(options: FileTaskContinuityStoreOptions = {}) {
+    this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "projects");
+    this.onBeforeRename = options.onBeforeRename;
+  }
+
+  async save(projectRoot: string, checkpoint: TaskContinuityV1): Promise<void> {
+    const validation = validateTaskContinuity(checkpoint);
+    if (!validation.ok) {
+      throw new Error(`Cannot save invalid Task continuity: ${validation.errors.join(" ")}`);
+    }
+    const path = this.continuityPath(projectRoot);
+    const directory = this.continuityDirectory(projectRoot);
+    const temporaryPath = join(directory, `.${CONTINUITY_FILE_NAME}.${randomUUID()}.tmp`);
+    try {
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        temporaryPath,
+        `${JSON.stringify(checkpoint, null, 2)}\n`,
+        { encoding: "utf8", flag: "wx" },
+      );
+      await this.onBeforeRename?.();
+      await rename(temporaryPath, path);
+    } catch (error) {
+      await rm(temporaryPath, { force: true }).catch(() => undefined);
+      throw new Error(`Could not save Task continuity file '${path}': ${errorMessage(error)}`);
+    }
+  }
+
+  continuityDirectory(projectRoot: string): string {
+    return join(this.baseDir, getProjectId(projectRoot));
+  }
+
+  continuityPath(projectRoot: string): string {
+    return join(this.continuityDirectory(projectRoot), CONTINUITY_FILE_NAME);
+  }
 }

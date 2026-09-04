@@ -65,8 +65,18 @@ import { getTaskStatus, getVerificationStatus, validateState } from "./state.ts"
 import {
   FileStateStore,
   StateLockBusyError,
+  FileTaskContinuityStore,
+  type TaskContinuityStore,
   type PindieStateStore,
 } from "./store.ts";
+import {
+  createTaskContinuity,
+  taskContractFingerprint,
+} from "./task-continuity.ts";
+import {
+  PINDIE_TASK_HANDOFF_TOOL,
+  TaskHandoffRuntime,
+} from "./task-handoff-runtime.ts";
 import type { SubscriptionUsageProvider } from "./subscription-usage.ts";
 import {
   createPindieGateOpenTool,
@@ -77,6 +87,7 @@ import { createPindieStrategyCandidateTool } from "./tools/strategy-candidate.ts
 import { createPindieGitObserveTool } from "./tools/git-observe.ts";
 import {
   createPindieTaskCompleteTool,
+  createPindieTaskHandoffTool,
   createPindieTaskProgressTool,
   createPindieTaskRefineTool,
   createPindieTaskReplaceTool,
@@ -88,6 +99,7 @@ type ProjectRootResolver = (cwd: string) => Promise<string>;
 
 export interface PindieExtensionOptions {
   store?: PindieStateStore;
+  continuityStore?: TaskContinuityStore;
   experienceStore?: RunExperienceStore;
   experienceReader?: RunExperienceReader;
   strategyCandidateStore?: StrategyCandidateStore;
@@ -99,6 +111,8 @@ export interface PindieExtensionOptions {
   activityLingerMs?: number;
   scheduleActivityRefresh?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearActivityRefresh?: (timer: ReturnType<typeof setTimeout>) => void;
+  /** Internal staging seam for Slice A; production keeps handoff dormant. */
+  enableTaskHandoff?: boolean;
   /** Internal test seam for runtime-only project mutation observation. */
   captureProjectFingerprint?: (projectRoot: string) => Promise<ProjectFingerprint>;
   /** Optional transport-independent Remote core; omitted keeps the existing extension unchanged. */
@@ -188,16 +202,21 @@ export function registerPindieExtension(
   const experienceReader = options.experienceReader ?? new FileRunExperienceReader({
     baseDir: experienceStorageBaseDir,
   });
+  const continuityStore = options.continuityStore ?? new FileTaskContinuityStore({
+    baseDir: experienceStorageBaseDir,
+  });
   const strategyCandidateStore = options.strategyCandidateStore ?? new FileStrategyCandidateStore({
     baseDir: experienceStorageBaseDir,
   });
   const adaptation = new AdaptationRuntime();
+  const continuityNow = options.now ?? Date.now;
   // A successful Candidate consumes the lease before settlement, so retain only
   // this generation marker long enough to exclude the adaptation Run from
   // ordinary coding Experience accounting.
   let adaptationRunGeneration: number | null = null;
   const runtime = new PindieRuntime(stateStore);
   const run = new RunIntegration(runtime);
+  const handoff = new TaskHandoffRuntime();
   const execution = new ExecutionIntegration({
     captureProjectFingerprint: options.captureProjectFingerprint,
   });
@@ -449,6 +468,22 @@ export function registerPindieExtension(
     resolveEvidence: (refs) => execution.resolveVerificationEvidence(refs),
   }));
   pi.registerTool(createPindieTaskCompleteTool(runtime, taskToolOptions));
+  if (options.enableTaskHandoff) {
+    pi.registerTool(createPindieTaskHandoffTool(runtime, {
+      ...taskToolOptions,
+      onHandoffStaged: (toolCallId, state, progressSummary, decisions) => {
+        if (state.task === null) {
+          throw new Error("Pindie rejected this handoff: no current Task is available to stage.");
+        }
+        handoff.stageHandoff(
+          toolCallId,
+          state.task,
+          progressSummary,
+          decisions,
+        );
+      },
+    }));
+  }
   pi.registerTool(createPindieGateOpenTool(runtime, {
     onStateChange: semanticStateChanged,
   }));
@@ -485,9 +520,10 @@ export function registerPindieExtension(
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    const remoteSessionId = options.remoteCompanion
+    const nativeSessionId = options.remoteCompanion || options.enableTaskHandoff
       ? ctx.sessionManager.getSessionId()
       : null;
+    const remoteSessionId = options.remoteCompanion ? nativeSessionId : null;
     const remoteSessionName = options.remoteCompanion
       ? ctx.sessionManager.getSessionName()
       : undefined;
@@ -499,6 +535,7 @@ export function registerPindieExtension(
     adaptationRunGeneration = null;
     run.resetStateAuthority();
     run.resetAgentRun();
+    if (nativeSessionId !== null) handoff.startSession(nativeSessionId);
     execution.discardRuntime();
     lastCheckpointCompactionId = null;
 
@@ -589,6 +626,7 @@ export function registerPindieExtension(
     adaptationRunGeneration = null;
     run.resetStateAuthority();
     run.resetAgentRun();
+    handoff.shutdownSession();
     execution.discardRuntime();
     lastCheckpointCompactionId = null;
     presentation.setStatusContext(null);
@@ -611,6 +649,12 @@ export function registerPindieExtension(
     // authoritative project State rather than a previous session snapshot.
     execution.beginEvidenceScope(runtime.externalStateEpoch);
     run.beginAgentRunFacts();
+    if (options.enableTaskHandoff) {
+      handoff.beginAgentRun(
+        ctx.sessionManager.getSessionId(),
+        run.activeAgentRunGeneration!,
+      );
+    }
     let adaptationLease = null;
     if (adaptation.hasAttempt) {
       try {
@@ -702,11 +746,117 @@ export function registerPindieExtension(
   // boundary, so they must not emit a potentially misleading checkpoint.
   pi.on("session_compact_failed", () => undefined);
 
+  const settleTaskHandoff = async (
+    ctx: ExtensionContext,
+    settlementGeneration: number | null,
+  ): Promise<void> => {
+    const pending = handoff.pendingHandoff;
+    if (pending === null) return;
+
+    const failClosed = (): void => handoff.clearHandoff();
+    if (
+      settlementGeneration === null ||
+      !run.isAgentRunCurrent(settlementGeneration) ||
+      !handoff.isPendingFor(pending.sourceSessionId, pending.agentRunGeneration)
+    ) {
+      failClosed();
+      return;
+    }
+
+    let currentSessionId: string;
+    try {
+      currentSessionId = ctx.sessionManager.getSessionId();
+      if (ctx.hasPendingMessages()) {
+        failClosed();
+        return;
+      }
+    } catch {
+      failClosed();
+      return;
+    }
+    if (
+      currentSessionId !== pending.sourceSessionId ||
+      handoff.currentSessionId !== pending.sourceSessionId ||
+      runtime.projectRoot === null
+    ) {
+      failClosed();
+      return;
+    }
+
+    try {
+      await run.refreshAuthoritativeState();
+    } catch {
+      failClosed();
+      return;
+    }
+    if (
+      !run.isAgentRunCurrent(settlementGeneration) ||
+      !handoff.isPendingFor(pending.sourceSessionId, pending.agentRunGeneration)
+    ) {
+      failClosed();
+      return;
+    }
+
+    let derivation = run.deriveSnapshot();
+    const state = run.authoritativeState;
+    const task = state?.task ?? null;
+    if (!derivation.ok || derivation.snapshot.authority !== "coherent") {
+      failClosed();
+      return;
+    }
+    const snapshot = derivation.snapshot;
+    if (
+      snapshot.taskStatus !== "active" ||
+      task === null ||
+      task.completed ||
+      task.humanGate !== null ||
+      task.openLoops.blockers.length > 0 ||
+      taskContractFingerprint(task) !== pending.taskFingerprint
+    ) {
+      failClosed();
+      return;
+    }
+
+    try {
+      if (ctx.hasPendingMessages()) {
+        failClosed();
+        return;
+      }
+    } catch {
+      failClosed();
+      return;
+    }
+
+    try {
+      const checkpoint = createTaskContinuity({
+        createdAt: new Date(continuityNow()).toISOString(),
+        taskFingerprint: pending.taskFingerprint,
+        sourceSessionId: pending.sourceSessionId,
+        progressSummary: pending.progressSummary,
+        decisions: pending.decisions,
+      });
+      await continuityStore.save(runtime.projectRoot, checkpoint);
+    } catch (error) {
+      console.warn(`[Pindie] Dropped Task continuity checkpoint: ${errorMessage(error)}`);
+    }
+    failClosed();
+  };
+
   pi.on("agent_end", (event, ctx) => {
     if (
       adaptationRunGeneration !== null &&
       adaptationRunGeneration === run.activeAgentRunGeneration
     ) return;
+    if (options.enableTaskHandoff) {
+      try {
+        if (handoff.shouldSuppressContinuation({
+          sessionId: ctx.sessionManager.getSessionId(),
+          agentRunGeneration: run.activeAgentRunGeneration!,
+        })) return;
+      } catch {
+        return;
+      }
+    } else if (handoff.shouldSuppressContinuation()) return;
     const derivation = run.deriveSnapshot();
     if (!derivation.ok) return;
     const finalAssistantMessage = [...event.messages]
@@ -751,12 +901,37 @@ export function registerPindieExtension(
 
   pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
     const effect = classifyToolEffect(event.toolName);
+    const isHandoffCall = options.enableTaskHandoff === true &&
+      event.toolName === PINDIE_TASK_HANDOFF_TOOL;
+    if (isHandoffCall) {
+      // Reserve and arm the provisional terminal frontier before any async
+      // authoritative-State refresh or Gateway work can yield to another call.
+      const admission = handoff.reserveHandoff(event.toolCallId);
+      if (!admission.allowed) {
+        const reason = admission.reason === "work_in_flight"
+          ? "Pindie rejected this handoff at the current work frontier: another authorized tool call is still in flight. Retry the handoff after that call settles."
+          : admission.reason === "terminal_latch"
+            ? "Pindie rejected this call: the current Run already has a terminal handoff reservation."
+            : "Pindie rejected this handoff: no current Agent Run is available.";
+        return { block: true, reason };
+      }
+    } else if (!handoff.beginNormalToolCall(event.toolCallId)) {
+      return {
+        block: true,
+        reason: "Pindie blocked this call: a Task handoff has reserved the current Run's terminal work frontier.",
+      };
+    }
+    const cancelToolAdmission = (): void => {
+      if (isHandoffCall) handoff.cancelHandoffReservation(event.toolCallId);
+      else handoff.cancelNormalToolCall(event.toolCallId);
+    };
     const adaptationRunActive = adaptationRunGeneration !== null &&
       adaptationRunGeneration === run.activeAgentRunGeneration;
     if (adaptationRunActive &&
       effect.requiredCapability !== "observe.project" &&
       effect.requiredCapability !== "observe.git" &&
       effect.requiredCapability !== "policy.adapt") {
+      cancelToolAdmission();
       run.recordDeniedCall(effect);
       return {
         block: true,
@@ -790,6 +965,7 @@ export function registerPindieExtension(
 
     const derivation = run.deriveSnapshot();
     if (!derivation.ok) {
+      cancelToolAdmission();
       const reason = derivation.error;
       markUnavailable(`Internal semantic derivation failed: ${reason}`);
       return {
@@ -806,6 +982,7 @@ export function registerPindieExtension(
     }
     const authorization = authorizeToolEffect(capabilities, effect);
     if (!authorization.allowed) {
+      cancelToolAdmission();
       run.recordDeniedCall(effect);
       return {
         block: true,
@@ -814,6 +991,36 @@ export function registerPindieExtension(
           authorization.requiredCapability,
         ),
       };
+    }
+
+    if (isHandoffCall) {
+      if (snapshot.authority !== "coherent") {
+        cancelToolAdmission();
+        run.recordDeniedCall(effect);
+        return {
+          block: true,
+          reason: "Pindie rejected this handoff: coherent Task authority is required at the current work frontier.",
+        };
+      }
+      if (snapshot.taskStatus !== "active") {
+        cancelToolAdmission();
+        run.recordDeniedCall(effect);
+        return {
+          block: true,
+          reason: "Pindie rejected this handoff: an active, unblocked Task is required at the current work frontier.",
+        };
+      }
+    }
+
+    if (isHandoffCall) {
+      if (!handoff.isHandoffReservedFor(event.toolCallId)) {
+        return {
+          block: true,
+          reason: "Pindie rejected this handoff: its provisional Session or Agent Run reservation is stale.",
+        };
+      }
+      run.recordAuthorizedCall(event.toolCallId, effect);
+      return;
     }
 
     await execution.recordAuthorizedConsequentialCall(
@@ -825,8 +1032,41 @@ export function registerPindieExtension(
     run.recordAuthorizedCall(event.toolCallId, effect);
   });
 
-  pi.on("tool_result", async (event) => {
-    const telemetryKind = run.recordToolResult(event.toolCallId, event.isError);
+  pi.on("tool_result", async (event, ctx) => {
+    let handoffBinding: { sessionId: string; agentRunGeneration: number } | null | undefined;
+    if (options.enableTaskHandoff) {
+      try {
+        const agentRunGeneration = run.activeAgentRunGeneration;
+        handoffBinding = agentRunGeneration === null
+          ? null
+          : {
+              sessionId: ctx.sessionManager.getSessionId(),
+              agentRunGeneration,
+            };
+      } catch {
+        handoffBinding = null;
+      }
+    }
+    const handoffResult = handoff.handleToolResult(
+      event.toolCallId,
+      event.toolName,
+      event.isError,
+      handoffBinding,
+    );
+    const telemetryKind = event.toolName === PINDIE_TASK_HANDOFF_TOOL &&
+      handoffResult === "ignored"
+      ? null
+      : run.recordToolResult(event.toolCallId, event.isError);
+    if (
+      handoffResult === "handoff_invalidated" ||
+      handoffResult === "handoff_failed"
+    ) {
+      if (handoffResult === "handoff_invalidated") {
+        console.warn("[Pindie] Task handoff settlement was invalidated fail-closed.");
+      }
+      return;
+    }
+    if (handoffResult === "handoff_succeeded") return;
     const authorizedExecution = execution.takeAuthorizedExecution(
       event.toolCallId,
     );
@@ -992,7 +1232,17 @@ export function registerPindieExtension(
     if (
       settlementGeneration !== null &&
       !run.isAgentRunCurrent(settlementGeneration)
-    ) return;
+    ) {
+      if (handoff.pendingHandoff?.agentRunGeneration === settlementGeneration) {
+        handoff.clearHandoff();
+      }
+      return;
+    }
+
+    // Experience is fully frozen and persisted before a staged handoff can
+    // become the latest durable continuity checkpoint.
+    await settleTaskHandoff(ctx, settlementGeneration);
+    handoff.clear();
 
     execution.discardRuntime();
     run.resetAgentRun();
