@@ -1,6 +1,6 @@
 # Pindie Self-Improvement v0.6 — Candidate Trial & Promotion
 
-Status: architecture contract for SI v0.6. Slice A and Slice B are implemented; Slice C/D remain out of scope here.
+Status: architecture contract for SI v0.6. Slices A, B, and C are implemented; Slice D remains out of scope here.
 
 This document is the just-in-time refinement of the directional SI v0.6 section in `docs/self-improvement.md`. It preserves the SI v0.1–v0.5 ownership model.
 
@@ -431,7 +431,7 @@ Allow one explicitly chosen Candidate into one controlled Run:
 
 ### Slice C — Trial Evaluation & Review
 
-Make Trial evidence inspectable without changing trust:
+Make Trial evidence inspectable without changing trust. The current read-only presentation is `/trial-review <candidate-id>`; it does not promote or reject a Candidate.
 
 - Candidate Trial profile;
 - Seed baseline profile;

@@ -1032,7 +1032,7 @@ The output of SI v0.5 is an auditable set of evidence-backed Strategy Revision C
 
 ### SI v0.6 — Candidate Trial & Promotion
 
-The authoritative SI v0.6 contract is maintained in [`docs/self-improvement-v0.6.md`](./self-improvement-v0.6.md). Its directional goal is to allow an explicitly chosen Candidate revision to enter controlled Agent Runs, record revision-aware Experience, compare its evidence against the Seed baseline where defensible, and support an auditable promote/reject decision without silently replacing policy. Slice B implements only the explicit Candidate Trial entry and Run-scoped attribution substrate; Trial evaluation and promotion remain later slices.
+The authoritative SI v0.6 contract is maintained in [`docs/self-improvement-v0.6.md`](./self-improvement-v0.6.md). Its directional goal is to allow an explicitly chosen Candidate revision to enter controlled Agent Runs, record revision-aware Experience, compare its evidence against the Seed baseline where defensible, and support an auditable promote/reject decision without silently replacing policy. Slice C now adds read-only Trial evidence review and deterministic Promotion Eligibility; promotion/rejection remains a later slice.
 
 SI v0.6 is implemented in explicit slices. The current Slice A substrate provides:
 
@@ -1044,7 +1044,7 @@ SI v0.6 is implemented in explicit slices. The current Slice A substrate provide
 
 Slice B now additionally provides a strict project-local Candidate read by ID, a runtime-only one-Run Trial lease, a bounded Trial Packet, and exact Candidate revision selection only under the active lease. Trial Runs remain ordinary schema-v4 Experience Runs and require explicit Candidate Policy declaration for attribution.
 
-Slice A/B intentionally do not implement Trial evaluation, promotion/rejection, automatic Policy selection, or other later slices. Existing schema-v3 Experience/Candidate artifacts remain immutable and are never migrated or rewritten.
+Slices A-C intentionally do not implement promotion/rejection, automatic Policy selection, or other later slices. Existing schema-v3 Experience/Candidate artifacts remain immutable and are never migrated or rewritten.
 
 ### SI v0.7 — Strategy Derivation
 

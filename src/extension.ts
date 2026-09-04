@@ -256,6 +256,7 @@ export function registerPindieExtension(
     getState: () => runtime.projectRoot === null ? null : runtime.state,
     getProjectRoot: () => runtime.projectRoot,
     experienceReader,
+    strategyCandidateReader,
     getAuthoritativeState: () => run.authoritativeState,
     getStateUnavailableReason: () => run.stateUnavailableReason,
     getRunStale: () => run.agentRunIsStale,
@@ -669,6 +670,11 @@ export function registerPindieExtension(
   pi.registerCommand("trial", {
     description: "Arm one explicit Strategy Revision Candidate Trial for the next Agent Run",
     handler: async (args, ctx) => handleTrialCommand(args, ctx),
+  });
+
+  pi.registerCommand("trial-review", {
+    description: "Show read-only evidence and Promotion Eligibility for one Candidate Trial",
+    handler: async (args, ctx) => presentation.handleTrialReviewCommand(args, ctx),
   });
 
   pi.registerCommand("reasoning", {
