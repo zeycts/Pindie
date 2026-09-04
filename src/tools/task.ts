@@ -10,7 +10,13 @@ import {
 } from "../context.ts";
 import { PindieStateConflictError, type PindieRuntime } from "../runtime.ts";
 import { StateLockBusyError } from "../store.ts";
-import type { PindieState, VerificationCheck } from "../state.ts";
+import { getTaskStatus, type PindieState, type VerificationCheck } from "../state.ts";
+import {
+  assertTaskContinuityContent,
+  MAX_CONTINUITY_DECISION_LENGTH,
+  MAX_CONTINUITY_DECISIONS,
+  MAX_CONTINUITY_PROGRESS_SUMMARY_LENGTH,
+} from "../task-continuity.ts";
 import type { PindieEvent } from "../transitions.ts";
 import {
   MAX_EVIDENCE_REFS_PER_CHECK,
@@ -72,6 +78,27 @@ const TaskProgressParameters = Type.Object(
   { additionalProperties: false },
 );
 
+const TaskHandoffParameters = Type.Object(
+  {
+    progressSummary: Type.String({
+      minLength: 1,
+      maxLength: MAX_CONTINUITY_PROGRESS_SUMMARY_LENGTH,
+      description: "Bounded summary of the whole unfinished Task's current progress.",
+    }),
+    decisions: Type.Array(Type.String({
+      minLength: 1,
+      maxLength: MAX_CONTINUITY_DECISION_LENGTH,
+    }), {
+      maxItems: MAX_CONTINUITY_DECISIONS,
+      description: "Still-relevant decisions that a fresh Session cannot cheaply reconstruct.",
+    }),
+    nextIntent: Type.Union([Type.String(), Type.Null()], {
+      description: "The next meaningful Task direction, applied through existing Task progress semantics.",
+    }),
+  },
+  { additionalProperties: false },
+);
+
 const VerificationCheckSchema = Type.Object(
   {
     name: Type.String({
@@ -119,6 +146,15 @@ export interface PindieTaskToolDetails {
 export interface PindieTaskToolOptions {
   getRunDuration?: () => number | null;
   onStateChange?: () => void;
+}
+
+export interface PindieTaskHandoffToolOptions extends PindieTaskToolOptions {
+  onHandoffStaged: (
+    toolCallId: string,
+    state: PindieState,
+    progressSummary: string,
+    decisions: readonly string[],
+  ) => void;
 }
 
 export interface PindieVerificationToolOptions extends PindieTaskToolOptions {
@@ -263,6 +299,33 @@ function assertVerificationRecordInput(params: unknown): asserts params is {
   }
 }
 
+function assertTaskHandoffInput(params: unknown): asserts params is {
+  progressSummary: string;
+  decisions: string[];
+  nextIntent: string | null;
+} {
+  if (typeof params !== "object" || params === null) {
+    throw new Error("Invalid pindie_task_handoff input.");
+  }
+  const value = params as Record<string, unknown>;
+  if (typeof value.progressSummary !== "string" || value.progressSummary.trim() === "") {
+    throw new Error("Invalid pindie_task_handoff input: progressSummary must be non-empty.");
+  }
+  if (!Array.isArray(value.decisions)) {
+    throw new Error("Invalid pindie_task_handoff input: decisions must be an array.");
+  }
+  if (!value.decisions.every((decision) => typeof decision === "string")) {
+    throw new Error("Invalid pindie_task_handoff input: decisions must contain strings.");
+  }
+  assertTaskContinuityContent({
+    progressSummary: value.progressSummary,
+    decisions: value.decisions,
+  });
+  if (typeof value.nextIntent !== "string" && value.nextIntent !== null) {
+    throw new Error("Invalid pindie_task_handoff input: nextIntent must be a string or null.");
+  }
+}
+
 export function createPindieTaskStartTool(
   runtime: PindieRuntime,
   options: PindieTaskToolOptions = {},
@@ -383,6 +446,44 @@ export function createPindieTaskProgressTool(
         "Open loops updated.",
         state,
         `Current Pindie Progress:\n${renderCurrentPindieTaskProgress(state)}`,
+      );
+    },
+  });
+}
+
+export function createPindieTaskHandoffTool(
+  runtime: PindieRuntime,
+  options: PindieTaskHandoffToolOptions,
+) {
+  return defineTool({
+    name: "pindie_task_handoff",
+    label: "Stage Pindie Task Handoff",
+    description: "Stage a bounded working-memory handoff at the current unfinished Task frontier.",
+    parameters: TaskHandoffParameters,
+    executionMode: "sequential",
+    async execute(toolCallId, params) {
+      assertTaskHandoffInput(params);
+      const currentTask = runtime.state.task;
+      if (currentTask === null || getTaskStatus(runtime.state) !== "active") {
+        throw new Error("Pindie rejected this handoff: an active, unblocked Task is required.");
+      }
+      const state = await dispatchOrThrow(runtime, {
+        type: "set_open_loops",
+        blockers: [...currentTask.openLoops.blockers],
+        questions: [...currentTask.openLoops.questions],
+        nextIntent: params.nextIntent,
+      }, options.onStateChange);
+      options.onHandoffStaged(
+        toolCallId,
+        state,
+        params.progressSummary,
+        params.decisions,
+      );
+      return result(
+        "Task remains unfinished. Handoff staged; the current Run should end at this work frontier.",
+        state,
+        null,
+        true,
       );
     },
   });

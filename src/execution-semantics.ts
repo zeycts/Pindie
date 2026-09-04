@@ -57,6 +57,7 @@ export function classifyToolEffect(toolName: string): ToolEffect {
     case "pindie_task_refine":
       return classified("task.refine", "none");
     case "pindie_task_progress":
+    case "pindie_task_handoff":
       return classified("task.progress", "none");
     case "pindie_verification_record":
       return classified("verification.record", "none");
