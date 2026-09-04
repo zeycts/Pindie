@@ -174,13 +174,32 @@ class ExtensionTestStore implements PindieStateStore {
   readonly loads: string[] = [];
   readonly saves: Array<{ projectRoot: string; state: PindieState }> = [];
   saveError: Error | null = null;
+  private nextLoadBarrier: {
+    readonly markEntered: () => void;
+    readonly pending: Promise<void>;
+  } | null = null;
 
   constructor(entries: Array<[string, PindieState]> = []) {
     for (const [root, state] of entries) this.states.set(root, state);
   }
 
+  pauseNextLoad(): { entered: Promise<void>; release: () => void } {
+    let markEntered!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    this.nextLoadBarrier = { markEntered, pending };
+    return { entered, release };
+  }
+
   async load(projectRoot: string): Promise<PindieState> {
     this.loads.push(projectRoot);
+    const barrier = this.nextLoadBarrier;
+    if (barrier !== null) {
+      this.nextLoadBarrier = null;
+      barrier.markEntered();
+      await barrier.pending;
+    }
     const error = this.loadErrors.get(projectRoot);
     if (error) throw error;
     return this.states.get(projectRoot) ?? EMPTY_STATE;
@@ -4196,6 +4215,49 @@ test("handoff admission rejects in-flight work without semantic denial telemetry
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
   assert.equal(experienceStore.records[0]!.experience.execution.deniedCalls, 0);
   assert.equal(experienceStore.records[0]!.experience.execution.projectMutationEffectCalls, 0);
+});
+
+test("handoff reserves the terminal frontier before async State preflight", async () => {
+  const experienceStore = new ExtensionTestExperienceStore();
+  const continuityStore = new ExtensionTestContinuityStore();
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    enableTaskHandoff: true,
+    experienceStore,
+    continuityStore,
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  const refreshBarrier = harness.store.pauseNextLoad();
+  const handoff = callGuard(
+    harness,
+    toolCall("pindie_task_handoff", handoffInput(), "handoff-async-preflight"),
+  );
+  await refreshBarrier.entered;
+
+  const laterCall = await callGuard(
+    harness,
+    toolCall("read", {}, "read-during-handoff-preflight"),
+  );
+  assert.equal(laterCall.block, true);
+  assert.match(laterCall.reason, /terminal work frontier/i);
+
+  refreshBarrier.release();
+  assert.equal(await handoff, undefined);
+  const executionResult = await harness.api.tool("pindie_task_handoff").execute(
+    "handoff-async-preflight",
+    handoffInput(),
+  );
+  assert.equal(executionResult.terminate, true);
+  await harness.api.handler("tool_result")(
+    toolResult("pindie_task_handoff", false, "handoff-async-preflight"),
+    context("/repo"),
+  );
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    context("/repo"),
+  );
+  assert.equal(experienceStore.records[0]!.experience.execution.deniedCalls, 0);
 });
 
 test("handoff requires coherent active Task authority", async () => {

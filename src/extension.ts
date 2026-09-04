@@ -903,19 +903,11 @@ export function registerPindieExtension(
     const effect = classifyToolEffect(event.toolName);
     const isHandoffCall = options.enableTaskHandoff === true &&
       event.toolName === PINDIE_TASK_HANDOFF_TOOL;
-    if (!isHandoffCall && !handoff.beginNormalToolCall(event.toolCallId)) {
-      return {
-        block: true,
-        reason: "Pindie blocked this call: a Task handoff has reserved the current Run's terminal work frontier.",
-      };
-    }
-    const cancelNormalAdmission = (): void => {
-      if (!isHandoffCall) handoff.cancelNormalToolCall(event.toolCallId);
-    };
     if (isHandoffCall) {
-      const admission = handoff.checkHandoffAdmission();
+      // Reserve and arm the provisional terminal frontier before any async
+      // authoritative-State refresh or Gateway work can yield to another call.
+      const admission = handoff.reserveHandoff(event.toolCallId);
       if (!admission.allowed) {
-        handoff.admitHandoff(event.toolCallId);
         const reason = admission.reason === "work_in_flight"
           ? "Pindie rejected this handoff at the current work frontier: another authorized tool call is still in flight. Retry the handoff after that call settles."
           : admission.reason === "terminal_latch"
@@ -923,14 +915,23 @@ export function registerPindieExtension(
             : "Pindie rejected this handoff: no current Agent Run is available.";
         return { block: true, reason };
       }
+    } else if (!handoff.beginNormalToolCall(event.toolCallId)) {
+      return {
+        block: true,
+        reason: "Pindie blocked this call: a Task handoff has reserved the current Run's terminal work frontier.",
+      };
     }
+    const cancelToolAdmission = (): void => {
+      if (isHandoffCall) handoff.cancelHandoffReservation(event.toolCallId);
+      else handoff.cancelNormalToolCall(event.toolCallId);
+    };
     const adaptationRunActive = adaptationRunGeneration !== null &&
       adaptationRunGeneration === run.activeAgentRunGeneration;
     if (adaptationRunActive &&
       effect.requiredCapability !== "observe.project" &&
       effect.requiredCapability !== "observe.git" &&
       effect.requiredCapability !== "policy.adapt") {
-      cancelNormalAdmission();
+      cancelToolAdmission();
       run.recordDeniedCall(effect);
       return {
         block: true,
@@ -964,7 +965,7 @@ export function registerPindieExtension(
 
     const derivation = run.deriveSnapshot();
     if (!derivation.ok) {
-      cancelNormalAdmission();
+      cancelToolAdmission();
       const reason = derivation.error;
       markUnavailable(`Internal semantic derivation failed: ${reason}`);
       return {
@@ -981,7 +982,7 @@ export function registerPindieExtension(
     }
     const authorization = authorizeToolEffect(capabilities, effect);
     if (!authorization.allowed) {
-      cancelNormalAdmission();
+      cancelToolAdmission();
       run.recordDeniedCall(effect);
       return {
         block: true,
@@ -994,7 +995,7 @@ export function registerPindieExtension(
 
     if (isHandoffCall) {
       if (snapshot.authority !== "coherent") {
-        cancelNormalAdmission();
+        cancelToolAdmission();
         run.recordDeniedCall(effect);
         return {
           block: true,
@@ -1002,7 +1003,7 @@ export function registerPindieExtension(
         };
       }
       if (snapshot.taskStatus !== "active") {
-        cancelNormalAdmission();
+        cancelToolAdmission();
         run.recordDeniedCall(effect);
         return {
           block: true,
@@ -1012,14 +1013,11 @@ export function registerPindieExtension(
     }
 
     if (isHandoffCall) {
-      const admission = handoff.admitHandoff(event.toolCallId);
-      if (!admission.allowed) {
-        const reason = admission.reason === "work_in_flight"
-          ? "Pindie rejected this handoff at the current work frontier: another authorized tool call is still in flight. Retry the handoff after that call settles."
-          : admission.reason === "terminal_latch"
-            ? "Pindie rejected this call: the current Run already has a terminal handoff reservation."
-            : "Pindie rejected this handoff: no current Agent Run is available.";
-        return { block: true, reason };
+      if (!handoff.isHandoffReservedFor(event.toolCallId)) {
+        return {
+          block: true,
+          reason: "Pindie rejected this handoff: its provisional Session or Agent Run reservation is stale.",
+        };
       }
       run.recordAuthorizedCall(event.toolCallId, effect);
       return;

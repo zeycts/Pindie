@@ -93,7 +93,7 @@ export class TaskHandoffRuntime {
     this.inFlightToolCallIds.delete(toolCallId);
   }
 
-  admitHandoff(toolCallId: string): HandoffAdmission {
+  reserveHandoff(toolCallId: string): HandoffAdmission {
     const admission = this.checkHandoffAdmission();
     if (!admission.allowed) {
       this.blockedToolCallIds.add(toolCallId);
@@ -109,6 +109,20 @@ export class TaskHandoffRuntime {
     };
     this.terminalLatch = true;
     return { allowed: true };
+  }
+
+  cancelHandoffReservation(toolCallId: string): void {
+    if (this.handoffReservation?.toolCallId !== toolCallId) return;
+    this.clearHandoff();
+  }
+
+  isHandoffReservedFor(toolCallId: string): boolean {
+    const reservation = this.handoffReservation;
+    return reservation !== null &&
+      reservation.toolCallId === toolCallId &&
+      this.terminalLatch &&
+      this.sessionId === reservation.sourceSessionId &&
+      this.agentRunGeneration === reservation.agentRunGeneration;
   }
 
   checkHandoffAdmission(): HandoffAdmission {
