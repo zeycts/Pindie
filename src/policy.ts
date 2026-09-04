@@ -272,7 +272,8 @@ export function serializePolicySnapshot(
 /**
  * Construct a revision-aware selection for internal representation/evaluation.
  * This is not an activation path and does not make an inactive Candidate
- * selectable by the model-facing policy tool.
+ * selectable by the model-facing policy tool. Project-local promoted
+ * selections are likewise resolved only by the normal Run's Harness catalog.
  */
 export function createStrategyRevisionSelection(
   value: unknown,
@@ -481,7 +482,8 @@ export function createPolicySnapshot(input: unknown): PolicySnapshot {
 /**
  * Resolve a model declaration for a normal Run. Seed IDs retain the exact
  * ordinary syntax; object values are only compact exact selectors and must be
- * resolved by the Harness against a currently legal revision lease.
+ * resolved by the Harness against a currently legal Trial lease or promoted
+ * project-local revision catalog.
  */
 export function createPolicySnapshotForRun(
   input: unknown,
@@ -502,7 +504,7 @@ export function createPolicySnapshotForRun(
     if (typeof value === "string") return seedStrategy(value, expectedKind);
     if (!isStrategyRevisionSelector(value)) {
       return invalidPolicyInput(
-        `${expectedKind} must be a Seed Strategy ID or an exact Candidate revision selector.`,
+        `${expectedKind} must be a Seed Strategy ID or an exact Trial/promoted revision selector.`,
       );
     }
     const selection = resolveRevisionSelector(value, expectedKind);
@@ -514,7 +516,7 @@ export function createPolicySnapshotForRun(
 
   const approach = select(input.approach, "approach");
   if (input.modifiers !== undefined && !Array.isArray(input.modifiers)) {
-    return invalidPolicyInput("modifiers must be an array of Seed IDs or exact Candidate revision selectors.");
+    return invalidPolicyInput("modifiers must be an array of Seed IDs or exact Trial/promoted revision selectors.");
   }
   const modifiers = (input.modifiers ?? []).map((modifier) =>
     select(modifier, "modifier"));

@@ -25,6 +25,9 @@ import {
   PINDIE_CONTINUATION_PROBE_TYPE,
   shouldProbeContinuation,
 } from "./continuation.ts";
+import {
+  deriveCandidateTrialReview,
+} from "./experience-evaluation.ts";
 import { ExecutionIntegration } from "./execution-integration.ts";
 import {
   FileRunExperienceReader,
@@ -42,6 +45,17 @@ import {
   type StrategyCandidateReader,
   type StrategyCandidateStore,
 } from "./strategy-candidates.ts";
+import {
+  createStrategyRevisionDecision,
+  emptyPromotedStrategyRevisionCatalog,
+  FileStrategyDecisionStore,
+  formatPromotedStrategyRevisionCatalog,
+  loadPromotedStrategyRevisionCatalog,
+  validateStrategyRevisionDecisionBinding,
+  type PromotedStrategyRevisionCatalog,
+  type StrategyRevisionDecisionReader,
+  type StrategyRevisionDecisionStore,
+} from "./strategy-decisions.ts";
 import { getSeedStrategy, SEED_STRATEGIES } from "./strategies.ts";
 import {
   assembleRunExperience,
@@ -120,6 +134,8 @@ export interface PindieExtensionOptions {
   experienceReader?: RunExperienceReader;
   strategyCandidateStore?: StrategyCandidateStore;
   strategyCandidateReader?: StrategyCandidateReader;
+  strategyDecisionStore?: StrategyRevisionDecisionStore;
+  strategyDecisionReader?: StrategyRevisionDecisionReader;
   resolveProjectRoot?: ProjectRootResolver;
   subscriptionUsageProvider?: SubscriptionUsageProvider;
   getStatusWidth?: () => number | undefined;
@@ -146,6 +162,7 @@ export interface PindieExtensionIntegration {
   readonly runTimer: RunTimer;
   readonly contextGovernor: ContextLifecycleGovernor;
   readonly trial: TrialRuntime;
+  readonly promotedStrategyRevisionCatalog: PromotedStrategyRevisionCatalog;
   readonly policySnapshot: PolicySnapshot | null;
   readonly stateUnavailableReason: string | null;
 }
@@ -238,8 +255,13 @@ export function registerPindieExtension(
       ? strategyCandidateStore as unknown as StrategyCandidateReader
       : new FileStrategyCandidateStore({ baseDir: experienceStorageBaseDir })
   );
+  const strategyDecisionStore = options.strategyDecisionStore ?? new FileStrategyDecisionStore({
+    baseDir: experienceStorageBaseDir,
+  });
+  const strategyDecisionReader = options.strategyDecisionReader ?? strategyDecisionStore;
   const adaptation = new AdaptationRuntime();
   const trial = new TrialRuntime();
+  let promotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
   const continuityNow = options.now ?? Date.now;
   // A successful Candidate consumes the lease before settlement, so retain only
   // this generation marker long enough to exclude the adaptation Run from
@@ -257,6 +279,7 @@ export function registerPindieExtension(
     getProjectRoot: () => runtime.projectRoot,
     experienceReader,
     strategyCandidateReader,
+    strategyDecisionReader,
     getAuthoritativeState: () => run.authoritativeState,
     getStateUnavailableReason: () => run.stateUnavailableReason,
     getRunStale: () => run.agentRunIsStale,
@@ -269,6 +292,29 @@ export function registerPindieExtension(
   });
   const resolveProjectRoot = options.resolveProjectRoot ??
     defaultResolveProjectRoot;
+  const loadPromotedCatalog = async (
+    projectRoot: string | null,
+  ): Promise<PromotedStrategyRevisionCatalog> => {
+    if (projectRoot === null) return emptyPromotedStrategyRevisionCatalog();
+    try {
+      const catalog = await loadPromotedStrategyRevisionCatalog(
+        projectRoot,
+        strategyDecisionReader,
+        strategyCandidateReader,
+      );
+      return runtime.projectRoot === projectRoot
+        ? catalog
+        : emptyPromotedStrategyRevisionCatalog();
+    } catch (error) {
+      // Trust artifacts are outside semantic State. A malformed/unreadable
+      // catalog never makes the project unavailable; it simply yields the
+      // safe immutable Seed-only Policy surface for this Run.
+      console.warn(
+        `[Pindie] Promoted Strategy catalog unavailable; using Seed-only Policy availability: ${errorMessage(error)}`,
+      );
+      return emptyPromotedStrategyRevisionCatalog();
+    }
+  };
   type LiveRemoteSession = { sessionId: string; ctx: ExtensionContext; generation: number };
   let liveRemoteSession: LiveRemoteSession | null = null;
   let nextRemoteLeaseGeneration = 0;
@@ -583,6 +629,205 @@ export function registerPindieExtension(
     );
   };
 
+  const handleStrategyDecisionCommand = async (
+    terminalDecision: "promoted" | "rejected",
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> => {
+    const requestedId = args.trim();
+    const command = terminalDecision === "promoted" ? "/promote" : "/reject";
+    if (!requestedId || /\s/.test(requestedId)) {
+      ctx.ui.notify(`Usage: ${command} <candidate-id>`, "warning");
+      return;
+    }
+    if (!isCanonicalStrategyCandidateId(requestedId)) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: candidate-id must be a canonical lowercase UUID-v4.`,
+        "warning",
+      );
+      return;
+    }
+    const projectRoot = runtime.projectRoot;
+    if (projectRoot === null) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: no current project root is loaded.`,
+        "warning",
+      );
+      return;
+    }
+    if (!ctx.isIdle()) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: the Agent is busy.`,
+        "warning",
+      );
+      return;
+    }
+
+    let candidate;
+    try {
+      candidate = await strategyCandidateReader.read(projectRoot, requestedId);
+    } catch (error) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: Candidate read failed: ${errorMessage(error)}`,
+        "warning",
+      );
+      return;
+    }
+    if (candidate === null) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: Candidate '${requestedId}' was not found for this project.`,
+        "warning",
+      );
+      return;
+    }
+    if (candidate.candidateId !== requestedId) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: Candidate identity did not match the requested ID.`,
+        "warning",
+      );
+      return;
+    }
+
+    let existingDecision;
+    try {
+      existingDecision = await strategyDecisionReader.read(projectRoot, requestedId);
+    } catch (error) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: Decision read failed; no trust transition occurred: ${errorMessage(error)}`,
+        "warning",
+      );
+      return;
+    }
+    if (existingDecision !== null) {
+      try {
+        validateStrategyRevisionDecisionBinding(existingDecision, candidate);
+      } catch (error) {
+        ctx.ui.notify(
+          `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: existing Decision binding is invalid; no trust transition occurred: ${errorMessage(error)}`,
+          "warning",
+        );
+        return;
+      }
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: an immutable terminal Decision already exists; duplicate or conflicting Decisions are rejected.`,
+        "warning",
+      );
+      return;
+    }
+
+    let read;
+    try {
+      read = await experienceReader.read(projectRoot);
+    } catch (error) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: Experience reading failed; no trust transition occurred: ${errorMessage(error)}`,
+        "warning",
+      );
+      return;
+    }
+    if (runtime.projectRoot !== projectRoot || !ctx.isIdle()) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: the current project or Agent state changed while reading evidence; no trust transition occurred.`,
+        "warning",
+      );
+      return;
+    }
+
+    let review;
+    try {
+      review = deriveCandidateTrialReview(candidate, read.records, {
+        currentProjectMatch: true,
+        priorTerminalDecision: false,
+      });
+    } catch (error) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: evidence evaluation failed; no trust transition occurred: ${errorMessage(error)}`,
+        "warning",
+      );
+      return;
+    }
+
+    // Re-read the complete immutable trust set before making the new decision.
+    // This validates duplicate/conflicting artifacts and the one-promoted-per-
+    // Seed invariant without changing State or Task authority.
+    let promotedCatalog: PromotedStrategyRevisionCatalog;
+    try {
+      promotedCatalog = await loadPromotedStrategyRevisionCatalog(
+        projectRoot,
+        strategyDecisionReader,
+        strategyCandidateReader,
+      );
+    } catch (error) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: trust Decision storage could not be validated; no trust transition occurred: ${errorMessage(error)}`,
+        "warning",
+      );
+      return;
+    }
+    if (runtime.projectRoot !== projectRoot || !ctx.isIdle()) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: the current project or Agent state changed while validating trust; no trust transition occurred.`,
+        "warning",
+      );
+      return;
+    }
+
+    if (terminalDecision === "promoted" && promotedCatalog.entries.some((entry) =>
+      entry.candidate.target.strategyId === candidate.target.strategyId &&
+      entry.candidate.target.kind === candidate.target.kind &&
+      entry.candidate.target.baseFingerprint === candidate.target.baseFingerprint
+    )) {
+      ctx.ui.notify(
+        `Pindie could not promote Candidate '${requestedId}': this Seed Strategy already has one promoted Candidate revision in this project.`,
+        "warning",
+      );
+      return;
+    }
+
+    if (terminalDecision === "promoted" && !review.promotionEligibility.eligible) {
+      const reasons = review.promotionEligibility.reasons.length > 0
+        ? ` Reasons: ${review.promotionEligibility.reasons.join("; ")}.`
+        : "";
+      ctx.ui.notify(
+        `Pindie could not promote Candidate '${requestedId}': the exact Promotion Eligibility gate is not satisfied.${reasons}`,
+        "warning",
+      );
+      return;
+    }
+
+    let decision;
+    try {
+      decision = createStrategyRevisionDecision({
+        candidate,
+        decision: terminalDecision,
+        trialRecordIds: review.candidateProfile.sourceRecordIds,
+        decidedAt: new Date(continuityNow()).toISOString(),
+      });
+    } catch (error) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: Decision construction failed; no trust transition occurred: ${errorMessage(error)}`,
+        "warning",
+      );
+      return;
+    }
+    try {
+      await strategyDecisionStore.save(projectRoot, decision);
+    } catch (error) {
+      ctx.ui.notify(
+        `Pindie could not ${terminalDecision === "promoted" ? "promote" : "reject"} Candidate: Decision was not persisted; no trust transition occurred: ${errorMessage(error)}`,
+        "warning",
+      );
+      return;
+    }
+
+    ctx.ui.notify(
+      terminalDecision === "promoted"
+        ? `Candidate '${requestedId}' promoted for explicit normal Policy selection. The Seed remains selectable and the promoted revision is not a default.`
+        : `Candidate '${requestedId}' rejected as a historical hypothesis. Its immutable Decision preserves ${decision.evidence.trialRecordIds.length} eligible Trial Experience ID${decision.evidence.trialRecordIds.length === 1 ? "" : "s"}.`,
+      "info",
+    );
+  };
+
   const taskToolOptions = {
     getRunDuration: () => presentation.runTimer.durationMs,
     onStateChange: semanticStateChanged,
@@ -600,12 +845,18 @@ export function registerPindieExtension(
       } catch (error) {
         throw new Error(`Candidate revision selector could not resolve the current Session: ${errorMessage(error)}`);
       }
-      return trial.resolveRevisionSelector(
-        sessionId,
-        run.activeAgentRunGeneration,
-        selector,
-        kind,
-      );
+      if (trial.activeFor(sessionId, run.activeAgentRunGeneration) !== null) {
+        return trial.resolveRevisionSelector(
+          sessionId,
+          run.activeAgentRunGeneration,
+          selector,
+          kind,
+        );
+      }
+      if (promotedStrategyRevisionCatalog.entries.length === 0) {
+        throw new Error("Candidate revision selector is unavailable without an active Candidate Trial or a promoted revision in the current project catalog.");
+      }
+      return promotedStrategyRevisionCatalog.resolve(selector, kind);
     },
   }));
   pi.registerTool(createPindieStrategyCandidateTool({
@@ -677,6 +928,16 @@ export function registerPindieExtension(
     handler: async (args, ctx) => presentation.handleTrialReviewCommand(args, ctx),
   });
 
+  pi.registerCommand("promote", {
+    description: "Explicitly promote one eligible Strategy Revision Candidate",
+    handler: async (args, ctx) => handleStrategyDecisionCommand("promoted", args, ctx),
+  });
+
+  pi.registerCommand("reject", {
+    description: "Explicitly reject one Strategy Revision Candidate",
+    handler: async (args, ctx) => handleStrategyDecisionCommand("rejected", args, ctx),
+  });
+
   pi.registerCommand("reasoning", {
     description: "Choose who controls thinking level (auto|manual)",
     getArgumentCompletions: (prefix) => ["auto", "manual"]
@@ -699,6 +960,7 @@ export function registerPindieExtension(
     presentation.resetSubscriptionUsage();
     adaptation.clear();
     trial.clear();
+    promotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
     adaptationRunGeneration = null;
     run.resetStateAuthority();
     run.resetAgentRun();
@@ -792,6 +1054,7 @@ export function registerPindieExtension(
     presentation.clearStatus(ctx);
     adaptation.clear();
     trial.clear();
+    promotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
     adaptationRunGeneration = null;
     run.resetStateAuthority();
     run.resetAgentRun();
@@ -891,11 +1154,16 @@ export function registerPindieExtension(
           `Pindie unavailable semantic derivation failed: ${derivation.error}`,
         );
       }
+      promotedStrategyRevisionCatalog = await loadPromotedCatalog(runtime.projectRoot);
       const state = run.authoritativeState;
       const packetLease = adaptationLease ?? trialLease;
+      const staticContract = appendPindieSystemContract(event.systemPrompt);
+      const promotedContext = packetLease === null
+        ? formatPromotedStrategyRevisionCatalog(promotedStrategyRevisionCatalog)
+        : "";
       const systemPrompt = packetLease === null
-        ? appendPindieSystemContract(event.systemPrompt)
-        : `${appendPindieSystemContract(event.systemPrompt)}\n\n${packetLease.renderedPacket}`;
+        ? `${staticContract}${promotedContext === "" ? "" : `\n\n${promotedContext}`}`
+        : `${staticContract}\n\n${packetLease.renderedPacket}`;
       const unavailableReason = run.stateUnavailableReason ??
         (state === null
           ? "No project State has been loaded for this session."
@@ -1510,6 +1778,7 @@ export function registerPindieExtension(
     // still available. Clear the one-Run lease only after Experience has had
     // its complete chance to freeze and persist those inputs.
     if (isTrialRun) trial.clear();
+    promotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
 
     if (
       settlementGeneration !== null &&
@@ -1559,6 +1828,9 @@ export function registerPindieExtension(
     runTimer: presentation.runTimer,
     contextGovernor,
     trial,
+    get promotedStrategyRevisionCatalog() {
+      return promotedStrategyRevisionCatalog;
+    },
     get policySnapshot() {
       return run.policySnapshot;
     },

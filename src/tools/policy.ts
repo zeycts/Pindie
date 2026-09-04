@@ -16,11 +16,11 @@ const RevisionSelector = Type.Object(
     }),
     revisionIdentity: Type.String({
       minLength: 1,
-      description: "Exact Candidate UUID supplied by the active Trial Packet.",
+      description: "Exact promoted revision UUID from the current Strategy context or Candidate UUID supplied by the active Trial Packet.",
     }),
     revisionFingerprint: Type.String({
       minLength: 1,
-      description: "Exact derived Candidate fingerprint supplied by the active Trial Packet.",
+      description: "Exact Harness-derived fingerprint from the current promoted Strategy context or active Trial Packet.",
     }),
   },
   { additionalProperties: false },
@@ -35,7 +35,7 @@ const PolicySetParameters = Type.Object(
     approach: StrategySelection,
     modifiers: Type.Optional(Type.Array(StrategySelection, {
       uniqueItems: true,
-      description: "Unique Seed IDs or exact active Candidate revision selectors whose kind is modifier.",
+      description: "Unique Seed IDs or exact Trial/promoted revision selectors whose kind is modifier.",
     })),
   },
   { additionalProperties: false },
@@ -43,7 +43,7 @@ const PolicySetParameters = Type.Object(
 
 export interface PindiePolicyToolOptions {
   onPolicySet: (snapshot: PolicySnapshot) => void;
-  /** The Harness resolves exact non-Seed selectors against the active Trial. */
+  /** The Harness resolves exact non-Seed selectors against an active Trial or promoted catalog. */
   resolveRevisionSelector?: (
     selector: StrategyRevisionSelector,
     kind: "approach" | "modifier",
