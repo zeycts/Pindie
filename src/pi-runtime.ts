@@ -3,8 +3,66 @@ import type {
   AgentSessionRuntime,
   ContextUsage,
   PromptOptions,
+  SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import type { ImageContent } from "@earendil-works/pi-ai/compat";
+
+export const MAX_SESSION_LINEAGE_NAME_LENGTH = 96;
+export const DEFAULT_LONG_TASK_SESSION_NAME = "Pindie Long Task";
+
+const CANONICAL_CONTINUATION_SUFFIX = /^(.+) · cont\. ([2-9]|[1-9]\d+)$/u;
+
+/** Normalize text used only for a human-facing Pi Session display name. */
+export function normalizeSessionDisplayWhitespace(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
+}
+
+/** Format the next automatic Long Task Session display name without semantic Task data. */
+export function formatLongTaskContinuationSessionName(
+  sourceDisplayIdentity: string | null | undefined,
+): string {
+  const source = normalizeSessionDisplayWhitespace(
+    typeof sourceDisplayIdentity === "string" ? sourceDisplayIdentity : "",
+  ) || DEFAULT_LONG_TASK_SESSION_NAME;
+  const continuation = CANONICAL_CONTINUATION_SUFFIX.exec(source);
+  const base = continuation?.[1] ?? source;
+  const ordinal = continuation === null ? 2n : BigInt(continuation[2]!) + 1n;
+  const suffix = ` · cont. ${ordinal}`;
+  const availableBaseLength = MAX_SESSION_LINEAGE_NAME_LENGTH - suffix.length;
+
+  // An unreasonably large ordinal can itself exceed the compact bound. Preserve
+  // the canonical suffix rather than ever cutting its meaning.
+  if (availableBaseLength <= 0) return suffix;
+  if (base.length <= availableBaseLength) return `${base}${suffix}`;
+  return `${base.slice(0, Math.max(0, availableBaseLength - 1))}…${suffix}`;
+}
+
+function extractTextualUserContent(content: unknown): string | undefined {
+  const rawText = typeof content === "string"
+    ? content
+    : Array.isArray(content)
+      ? content
+        .filter((part): part is { type?: unknown; text?: unknown } =>
+          typeof part === "object" && part !== null,
+        )
+        .filter((part) => part.type === "text" && typeof part.text === "string")
+        .map((part) => part.text as string)
+        .join(" ")
+      : "";
+  const text = normalizeSessionDisplayWhitespace(rawText);
+  return text || undefined;
+}
+
+function firstRealUserMessageText(entries: readonly SessionEntry[]): string | undefined {
+  for (const entry of entries) {
+    if (entry.type !== "message") continue;
+    const message = entry.message as unknown as { role?: unknown; content?: unknown };
+    if (message.role !== "user") continue;
+    const text = extractTextualUserContent(message.content);
+    if (text) return text;
+  }
+  return undefined;
+}
 
 export type SessionReplacementResult = Awaited<ReturnType<AgentSessionRuntime["newSession"]>>;
 export type SessionReplacementOptions = NonNullable<Parameters<AgentSessionRuntime["newSession"]>[0]>;
@@ -37,6 +95,40 @@ export class PiRuntimeAdapter {
 
   get activeSessionId(): string {
     return this.activeSession.sessionId;
+  }
+
+  /** Read the current Session's presentation identity, never semantic Task state. */
+  getActiveSessionDisplayIdentity(): string {
+    let sessionManager: AgentSession["sessionManager"];
+    try {
+      sessionManager = this.activeSession.sessionManager;
+    } catch {
+      return DEFAULT_LONG_TASK_SESSION_NAME;
+    }
+
+    try {
+      const explicitName = sessionManager.getSessionName();
+      const normalizedName = typeof explicitName === "string"
+        ? normalizeSessionDisplayWhitespace(explicitName)
+        : "";
+      if (normalizedName) return normalizedName;
+    } catch {
+      // Continue to the textual fallback when explicit metadata is unavailable.
+    }
+
+    try {
+      const userMessage = firstRealUserMessageText(sessionManager.getEntries());
+      if (userMessage) return userMessage;
+    } catch {
+      // Session metadata is best-effort presentation information. The fallback
+      // must not make Host-owned rollover unavailable.
+    }
+    return DEFAULT_LONG_TASK_SESSION_NAME;
+  }
+
+  /** Set the name on whichever native Session is active at call time. */
+  setActiveSessionName(name: string): void {
+    this.activeSession.setSessionName(name);
   }
 
   getContextUsage(): ContextUsage | undefined {

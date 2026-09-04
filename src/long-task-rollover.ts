@@ -7,6 +7,7 @@ import {
   PINDIE_LONG_TASK_RESUME_TYPE,
 } from "./long-task-resume.ts";
 import {
+  formatLongTaskContinuationSessionName,
   PiRuntimeAdapter,
   type SessionReplacementOptions,
 } from "./pi-runtime.ts";
@@ -142,10 +143,28 @@ export class LongTaskRolloverSupervisor {
       return;
     }
 
+    // Presentation lineage is derived once from the outgoing native Session,
+    // before replacement. It is independent of the safety-fuse chain count.
+    let continuationName: string;
+    try {
+      continuationName = formatLongTaskContinuationSessionName(
+        this.runtime.getActiveSessionDisplayIdentity(),
+      );
+    } catch {
+      continuationName = formatLongTaskContinuationSessionName(undefined);
+    }
+
     let replacementStarted = false;
     const options: SessionReplacementOptions = {
       withSession: async (replacementContext) => {
         replacementStarted = true;
+        try {
+          // withSession runs after Pi installs and rebinds the fresh Session.
+          this.runtime.setActiveSessionName(continuationName);
+        } catch {
+          // Display metadata is best effort; never block or roll back resume.
+          this.report("Automatic Long Task Session lineage naming failed; continuing hidden resume.");
+        }
         // Pi 0.84.4's sendMessage(triggerTurn: true) Promise covers the full
         // Agent Run. Do not hold replacement ownership for that lifetime: the
         // fresh Session must be able to commit and request the next rollover.

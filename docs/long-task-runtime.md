@@ -270,8 +270,12 @@ Pi emits native shutdown, teardown, create and InteractiveMode rebind
         ↓
 withSession receives ReplacedSessionContext for the NEW Session
         ↓
+Host sets the fresh Session's native display name
+        ↓
 Host injects hidden runtime-resume custom message into that Session
 ```
+
+Host-owned automatic continuation Sessions receive a bounded native Pi lineage display name (`base · cont. N`) so the Session selector keeps them recognizable. This is presentation metadata only; it is not Task, continuity, Experience, or LLM context data.
 
 `withSession` runs after Pi applies/rebinds the replacement Session, so v0.1 does not need a reverse “new Session endpoint registered” channel.
 
