@@ -194,3 +194,60 @@ test("Host bootstrap failure disposes a runtime created before InteractiveMode",
 
   assert.equal(disposeCalls(), 1);
 });
+
+test("Host bootstrap failure releases process-local control ownership", async () => {
+  await assert.rejects(
+    createPindieHost({
+      sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+      dependencies: {
+        createAgentSessionRuntime: async () => {
+          throw new Error("runtime bootstrap failed");
+        },
+      },
+    }),
+    /runtime bootstrap failed/,
+  );
+
+  const host = await createPindieHost({
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+    dependencies: {
+      createAgentSessionRuntime: async () => fakeRuntime().runtime,
+      createInteractiveMode: () => ({ run: async () => {} }),
+    },
+  });
+  await host.dispose();
+});
+
+test("Host control bridge rejects a second live Host and releases on disposal", async () => {
+  const first = await createPindieHost({
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+    dependencies: {
+      createAgentSessionRuntime: async () => fakeRuntime().runtime,
+      createInteractiveMode: () => ({ run: async () => {} }),
+    },
+  });
+
+  try {
+    await assert.rejects(
+      createPindieHost({
+        sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+        dependencies: {
+          createAgentSessionRuntime: async () => fakeRuntime().runtime,
+          createInteractiveMode: () => ({ run: async () => {} }),
+        },
+      }),
+      /already owns.*control bridge/i,
+    );
+  } finally {
+    await first.dispose();
+  }
+
+  const afterRelease = await createPindieHost({
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+    dependencies: {
+      createAgentSessionRuntime: async () => fakeRuntime().runtime,
+      createInteractiveMode: () => ({ run: async () => {} }),
+    },
+  });
+  await afterRelease.dispose();
+});

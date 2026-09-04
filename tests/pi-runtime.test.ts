@@ -7,20 +7,32 @@ import {
   type ContextUsage,
 } from "@earendil-works/pi-coding-agent";
 
-import { PiRuntimeAdapter } from "../src/pi-runtime.ts";
+import {
+  PiRuntimeAdapter,
+  type SessionReplacementOptions,
+  type SessionReplacementResult,
+} from "../src/pi-runtime.ts";
 
 interface FakeRuntimeControl {
   runtime: AgentSessionRuntime;
   setSession(session: AgentSession): void;
-  setNewSession(handler: () => Promise<{ cancelled: boolean }>): void;
+  setNewSession(handler: (options?: SessionReplacementOptions) => Promise<SessionReplacementResult>): void;
   newSessionCalls(): number;
+  forwardedOptions(): SessionReplacementOptions | undefined;
   disposeCalls(): number;
 }
 
-function fakeSession(id: string, usage?: ContextUsage): AgentSession {
+function fakeSession(
+  id: string,
+  usage?: ContextUsage,
+  facts: { isStreaming?: boolean; isCompacting?: boolean; pendingMessageCount?: number } = {},
+): AgentSession {
   return {
     sessionId: id,
     getContextUsage: () => usage,
+    get isStreaming() { return facts.isStreaming ?? false; },
+    get isCompacting() { return facts.isCompacting ?? false; },
+    get pendingMessageCount() { return facts.pendingMessageCount ?? 0; },
     prompt: async () => {},
     steer: async () => {},
     followUp: async () => {},
@@ -29,17 +41,19 @@ function fakeSession(id: string, usage?: ContextUsage): AgentSession {
 
 function fakeRuntime(initialSession: AgentSession): FakeRuntimeControl {
   let session = initialSession;
-  let newSessionHandler = async () => ({ cancelled: false });
+  let newSessionHandler: (options?: SessionReplacementOptions) => Promise<SessionReplacementResult> = async () => ({ cancelled: false });
   let newSessionCalls = 0;
+  let forwardedOptions: SessionReplacementOptions | undefined;
   let disposeCalls = 0;
 
   const runtime = {
     get session() {
       return session;
     },
-    newSession: async () => {
+    newSession: async (options?: SessionReplacementOptions) => {
       newSessionCalls += 1;
-      return newSessionHandler();
+      forwardedOptions = options;
+      return newSessionHandler(options);
     },
     dispose: async () => {
       disposeCalls += 1;
@@ -55,6 +69,7 @@ function fakeRuntime(initialSession: AgentSession): FakeRuntimeControl {
       newSessionHandler = handler;
     },
     newSessionCalls: () => newSessionCalls,
+    forwardedOptions: () => forwardedOptions,
     disposeCalls: () => disposeCalls,
   };
 }
@@ -90,6 +105,39 @@ test("replaceWithFreshSession delegates directly and exposes successful identity
   assert.deepEqual(result, { cancelled: false });
   assert.equal(control.newSessionCalls(), 1);
   assert.notEqual(beforeSessionId, adapter.activeSessionId);
+});
+
+test("replaceWithFreshSession forwards the exact native options object", async () => {
+  const control = fakeRuntime(fakeSession("session-1"));
+  const adapter = new PiRuntimeAdapter(control.runtime);
+  const options: SessionReplacementOptions = {
+    withSession: async () => undefined,
+  };
+
+  await adapter.replaceWithFreshSession(options);
+
+  assert.equal(control.forwardedOptions(), options);
+});
+
+test("native withSession remains callable by the Pi runtime", async () => {
+  const control = fakeRuntime(fakeSession("session-1"));
+  const adapter = new PiRuntimeAdapter(control.runtime);
+  let callbackCalled = false;
+  const replacedContext = {
+    sendMessage: async () => undefined,
+  };
+  control.setNewSession(async (options) => {
+    await options?.withSession?.(replacedContext as never);
+    return { cancelled: false };
+  });
+
+  await adapter.replaceWithFreshSession({
+    withSession: async () => {
+      callbackCalled = true;
+    },
+  });
+
+  assert.equal(callbackCalled, true);
 });
 
 test("cancelled replacement preserves Pi cancellation and active identity", async () => {
@@ -156,6 +204,31 @@ test("messaging primitives and context usage target the current active Session",
     "second steer:after",
     "second followUp:after",
   ]);
+});
+
+test("active runtime facts always read the current Session", () => {
+  const firstFacts = { isStreaming: true, isCompacting: false, pendingMessageCount: 2 };
+  const secondFacts = { isStreaming: false, isCompacting: true, pendingMessageCount: 0 };
+  const first = fakeSession("session-1", undefined, firstFacts);
+  const second = fakeSession("session-2", undefined, secondFacts);
+  const control = fakeRuntime(first);
+  const adapter = new PiRuntimeAdapter(control.runtime);
+
+  assert.deepEqual(adapter.getActiveSessionFacts(), {
+    sessionId: "session-1",
+    isStreaming: true,
+    isCompacting: false,
+    pendingMessageCount: 2,
+  });
+
+  control.setSession(second);
+
+  assert.deepEqual(adapter.getActiveSessionFacts(), {
+    sessionId: "session-2",
+    isStreaming: false,
+    isCompacting: true,
+    pendingMessageCount: 0,
+  });
 });
 
 test("adapter disposal is idempotent", async () => {

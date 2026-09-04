@@ -26,6 +26,7 @@ const PINDIE_TOOL_NAMES = [
   "pindie_task_refine",
   "pindie_task_replace",
   "pindie_task_start",
+  "pindie_task_handoff",
   "pindie_verification_record",
 ];
 
@@ -72,10 +73,15 @@ test("PiRuntimeAdapter replaces a real Pindie Pi session", async () => {
     const adapter = new PiRuntimeAdapter(runtime);
     const beforeSessionId = adapter.activeSessionId;
 
+    const directToolNames = new Set(runtime.session.getAllTools().map((tool) => tool.name));
+    assert.equal(directToolNames.has("pindie_task_handoff"), false);
+
     const result = await adapter.replaceWithFreshSession();
 
     assert.deepEqual(result, { cancelled: false });
     assert.notEqual(beforeSessionId, adapter.activeSessionId);
+    const directReplacementToolNames = new Set(runtime.session.getAllTools().map((tool) => tool.name));
+    assert.equal(directReplacementToolNames.has("pindie_task_handoff"), false);
     assert.equal(adapter.activeSession, runtime.session);
     await adapter.dispose();
     runtime = undefined;

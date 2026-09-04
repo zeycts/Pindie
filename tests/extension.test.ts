@@ -18,6 +18,9 @@ import {
   registerPindieExtension,
   type PindieExtensionOptions,
 } from "../src/extension.ts";
+import {
+  installCommittedRolloverReceiver,
+} from "../src/long-task-control.ts";
 import { createPolicySnapshot, type PolicySnapshot } from "../src/policy.ts";
 import { RemoteCompanion, type RemoteSurface } from "../src/remote-companion.ts";
 import {
@@ -4141,6 +4144,96 @@ test("Slice A handoff is dormant by default and enabled only through the interna
     createHarness([["/repo", activeState()]], {}, { enableTaskHandoff: true }).api.tools.has("pindie_task_handoff"),
     true,
   );
+
+  const release = installCommittedRolloverReceiver(() => undefined);
+  try {
+    assert.equal(createHarness([["/repo", activeState()]]).api.tools.has("pindie_task_handoff"), true);
+  } finally {
+    release();
+  }
+});
+
+test("Host-owned handoff publishes the exact committed checkpoint after Experience and continuity", async () => {
+  const events: string[] = [];
+  let published: unknown;
+  const release = installCommittedRolloverReceiver((request) => {
+    events.push("publish");
+    published = request;
+  });
+  try {
+    const experienceStore = new ExtensionTestExperienceStore();
+    experienceStore.events = events;
+    const continuityStore = new ExtensionTestContinuityStore();
+    continuityStore.events = events;
+    const harness = createHarness([["/repo", activeState()]], {}, {
+      experienceStore,
+      continuityStore,
+      now: () => Date.parse("2026-09-04T01:02:03.000Z"),
+    });
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+    const input = handoffInput();
+    assert.equal(await callGuard(harness, toolCall("pindie_task_handoff", input, "host-owned-handoff")), undefined);
+    await harness.api.tool("pindie_task_handoff").execute("host-owned-handoff", input);
+    await harness.api.handler("tool_result")(
+      toolResult("pindie_task_handoff", false, "host-owned-handoff"),
+      context("/repo"),
+    );
+    await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+
+    assert.deepEqual(events, ["experience", "continuity", "publish"]);
+    const committedCheckpoint = continuityStore.records[0]!.checkpoint;
+    assert.equal((published as { sourceSessionId: string }).sourceSessionId, committedCheckpoint.sourceSessionId);
+    assert.equal((published as { checkpoint: unknown }).checkpoint, committedCheckpoint);
+  } finally {
+    release();
+  }
+});
+
+test("continuity save failure publishes no committed rollover request", async () => {
+  let published = false;
+  const release = installCommittedRolloverReceiver(() => { published = true; });
+  try {
+    const continuityStore = new ExtensionTestContinuityStore();
+    continuityStore.saveError = new Error("continuity disk unavailable");
+    const harness = createHarness([["/repo", activeState()]], {}, { continuityStore });
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+    const input = handoffInput();
+    assert.equal(await callGuard(harness, toolCall("pindie_task_handoff", input, "failed-save")), undefined);
+    await harness.api.tool("pindie_task_handoff").execute("failed-save", input);
+    await harness.api.handler("tool_result")(toolResult("pindie_task_handoff", false, "failed-save"), context("/repo"));
+    await assert.doesNotReject(harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo")));
+
+    assert.equal(published, false);
+    assert.equal(continuityStore.records.length, 0);
+    assert.equal(harness.integration.runtime.state.task?.openLoops.nextIntent, input.nextIntent);
+  } finally {
+    release();
+  }
+});
+
+test("Host publication failure leaves the committed checkpoint and Task State valid", async () => {
+  const release = installCommittedRolloverReceiver(() => {
+    throw new Error("Host control unavailable");
+  });
+  try {
+    const continuityStore = new ExtensionTestContinuityStore();
+    const harness = createHarness([["/repo", activeState()]], {}, { continuityStore });
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+    const input = handoffInput();
+    assert.equal(await callGuard(harness, toolCall("pindie_task_handoff", input, "publish-failure")), undefined);
+    await harness.api.tool("pindie_task_handoff").execute("publish-failure", input);
+    await harness.api.handler("tool_result")(toolResult("pindie_task_handoff", false, "publish-failure"), context("/repo"));
+    await assert.doesNotReject(harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo")));
+
+    assert.equal(continuityStore.records.length, 1);
+    assert.equal(harness.integration.runtime.state.task?.completed, false);
+    assert.equal(harness.integration.runtime.state.task?.openLoops.nextIntent, input.nextIntent);
+  } finally {
+    release();
+  }
 });
 
 test("Slice A handoff stages Task progress and commits continuity only after Experience settlement", async () => {

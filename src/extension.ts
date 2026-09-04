@@ -73,6 +73,7 @@ import {
   createTaskContinuity,
   taskContractFingerprint,
 } from "./task-continuity.ts";
+import { getCommittedRolloverPublisher } from "./long-task-control.ts";
 import {
   PINDIE_TASK_HANDOFF_TOOL,
   TaskHandoffRuntime,
@@ -111,7 +112,7 @@ export interface PindieExtensionOptions {
   activityLingerMs?: number;
   scheduleActivityRefresh?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearActivityRefresh?: (timer: ReturnType<typeof setTimeout>) => void;
-  /** Internal staging seam for Slice A; production keeps handoff dormant. */
+  /** Explicit isolated-test seam; Host ownership is the production activation path. */
   enableTaskHandoff?: boolean;
   /** Internal test seam for runtime-only project mutation observation. */
   captureProjectFingerprint?: (projectRoot: string) => Promise<ProjectFingerprint>;
@@ -192,6 +193,10 @@ export function registerPindieExtension(
   pi: ExtensionAPI,
   options: PindieExtensionOptions = {},
 ): PindieExtensionIntegration {
+  // Capture the Host lease at extension registration. A released extension
+  // publisher must never be able to target a later Host in this process.
+  const committedRolloverPublisher = getCommittedRolloverPublisher();
+  const taskHandoffEnabled = options.enableTaskHandoff === true || committedRolloverPublisher !== null;
   const stateStore = options.store ?? new FileStateStore();
   const experienceStorageBaseDir = stateStore instanceof FileStateStore
     ? stateStore.storageBaseDir
@@ -468,7 +473,7 @@ export function registerPindieExtension(
     resolveEvidence: (refs) => execution.resolveVerificationEvidence(refs),
   }));
   pi.registerTool(createPindieTaskCompleteTool(runtime, taskToolOptions));
-  if (options.enableTaskHandoff) {
+  if (taskHandoffEnabled) {
     pi.registerTool(createPindieTaskHandoffTool(runtime, {
       ...taskToolOptions,
       onHandoffStaged: (toolCallId, state, progressSummary, decisions) => {
@@ -520,7 +525,7 @@ export function registerPindieExtension(
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    const nativeSessionId = options.remoteCompanion || options.enableTaskHandoff
+    const nativeSessionId = options.remoteCompanion || taskHandoffEnabled
       ? ctx.sessionManager.getSessionId()
       : null;
     const remoteSessionId = options.remoteCompanion ? nativeSessionId : null;
@@ -649,7 +654,7 @@ export function registerPindieExtension(
     // authoritative project State rather than a previous session snapshot.
     execution.beginEvidenceScope(runtime.externalStateEpoch);
     run.beginAgentRunFacts();
-    if (options.enableTaskHandoff) {
+    if (taskHandoffEnabled) {
       handoff.beginAgentRun(
         ctx.sessionManager.getSessionId(),
         run.activeAgentRunGeneration!,
@@ -827,8 +832,9 @@ export function registerPindieExtension(
       return;
     }
 
+    let checkpoint;
     try {
-      const checkpoint = createTaskContinuity({
+      checkpoint = createTaskContinuity({
         createdAt: new Date(continuityNow()).toISOString(),
         taskFingerprint: pending.taskFingerprint,
         sourceSessionId: pending.sourceSessionId,
@@ -838,6 +844,21 @@ export function registerPindieExtension(
       await continuityStore.save(runtime.projectRoot, checkpoint);
     } catch (error) {
       console.warn(`[Pindie] Dropped Task continuity checkpoint: ${errorMessage(error)}`);
+      failClosed();
+      return;
+    }
+    if (committedRolloverPublisher !== null) {
+      try {
+        if (checkpoint.sourceSessionId !== pending.sourceSessionId) {
+          throw new Error("Committed continuity checkpoint Session identity did not match the pending handoff.");
+        }
+        committedRolloverPublisher({
+          sourceSessionId: checkpoint.sourceSessionId,
+          checkpoint,
+        });
+      } catch (error) {
+        console.warn(`[Pindie] Committed Task continuity checkpoint could not reach Host rollover control: ${errorMessage(error)}`);
+      }
     }
     failClosed();
   };
@@ -847,7 +868,7 @@ export function registerPindieExtension(
       adaptationRunGeneration !== null &&
       adaptationRunGeneration === run.activeAgentRunGeneration
     ) return;
-    if (options.enableTaskHandoff) {
+    if (taskHandoffEnabled) {
       try {
         if (handoff.shouldSuppressContinuation({
           sessionId: ctx.sessionManager.getSessionId(),
@@ -901,7 +922,7 @@ export function registerPindieExtension(
 
   pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
     const effect = classifyToolEffect(event.toolName);
-    const isHandoffCall = options.enableTaskHandoff === true &&
+    const isHandoffCall = taskHandoffEnabled &&
       event.toolName === PINDIE_TASK_HANDOFF_TOOL;
     if (isHandoffCall) {
       // Reserve and arm the provisional terminal frontier before any async
@@ -1034,7 +1055,7 @@ export function registerPindieExtension(
 
   pi.on("tool_result", async (event, ctx) => {
     let handoffBinding: { sessionId: string; agentRunGeneration: number } | null | undefined;
-    if (options.enableTaskHandoff) {
+    if (taskHandoffEnabled) {
       try {
         const agentRunGeneration = run.activeAgentRunGeneration;
         handoffBinding = agentRunGeneration === null

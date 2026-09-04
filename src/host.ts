@@ -12,6 +12,14 @@ import {
   type InteractiveModeOptions,
 } from "@earendil-works/pi-coding-agent";
 import { PiRuntimeAdapter } from "./pi-runtime.ts";
+import {
+  installCommittedRolloverReceiver,
+  type CommittedRolloverRequest,
+} from "./long-task-control.ts";
+import {
+  LongTaskRolloverSupervisor,
+  type LongTaskRolloverSupervisorOptions,
+} from "./long-task-rollover.ts";
 
 export interface PindieResourcePaths {
   extensionPath: string;
@@ -37,6 +45,7 @@ export interface PindieHostOptions {
   agentDir?: string;
   sessionManager?: SessionManager;
   interactiveModeOptions?: InteractiveModeOptions;
+  longTaskRollover?: LongTaskRolloverSupervisorOptions;
   dependencies?: PindieHostDependencies;
 }
 
@@ -100,6 +109,22 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
 
   let nativeRuntime: AgentSessionRuntime | undefined;
   let runtime: PiRuntimeAdapter | undefined;
+  let rolloverSupervisor: LongTaskRolloverSupervisor | undefined;
+  let releaseControlBridge: (() => void) | undefined;
+  releaseControlBridge = installCommittedRolloverReceiver((request: CommittedRolloverRequest) => {
+    if (!rolloverSupervisor) {
+      console.warn("[Pindie] Ignored a committed rollover request while Host runtime was bootstrapping.");
+      return;
+    }
+    rolloverSupervisor.request(request);
+  });
+
+  const releaseHostControl = (): void => {
+    releaseControlBridge?.();
+    releaseControlBridge = undefined;
+    rolloverSupervisor?.dispose();
+  };
+
   try {
     nativeRuntime = await createRuntime(createPindieRuntimeFactory(dependencies), {
       cwd,
@@ -107,6 +132,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       sessionManager,
     });
     runtime = new PiRuntimeAdapter(nativeRuntime);
+    rolloverSupervisor = new LongTaskRolloverSupervisor(runtime, options.longTaskRollover);
 
     const modeOptions: InteractiveModeOptions = {
       startupDiagnostics: [...nativeRuntime.diagnostics],
@@ -116,7 +142,10 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     const interactiveMode = createMode(nativeRuntime, modeOptions);
     let disposePromise: Promise<void> | undefined;
     const dispose = (): Promise<void> => {
-      disposePromise ??= runtime!.dispose();
+      disposePromise ??= (async () => {
+        releaseHostControl();
+        await runtime!.dispose();
+      })();
       return disposePromise;
     };
 
@@ -133,6 +162,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       dispose,
     };
   } catch (error) {
+    releaseHostControl();
     if (runtime ?? nativeRuntime) {
       try {
         await (runtime ?? nativeRuntime)!.dispose();
