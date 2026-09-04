@@ -160,7 +160,7 @@ export function validateCandidateProvenance(
     const record = recordsById.get(recordId);
     const parsed = record ? parseRunExperience(record.experience) : null;
     if (record === undefined || parsed === null) {
-      throw new Error(`Candidate rejected: source record '${recordId}' is missing or is not valid supported schema-v3/v4 Experience.`);
+      throw new Error(`Candidate rejected: source record '${recordId}' is missing or is not valid current schema-v4 Experience.`);
     }
     const evaluation = evaluateRunExperience({ recordId, experience: parsed });
     if (!evaluation.attributionEligible) {

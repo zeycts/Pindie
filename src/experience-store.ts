@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import {
   parseRunExperience,
-  type SupportedRunExperience,
+  RUN_EXPERIENCE_SCHEMA_VERSION,
   type RunExperience,
 } from "./run-experience.ts";
 import { getProjectId } from "./store.ts";
@@ -22,16 +22,16 @@ export interface FileRunExperienceStoreOptions {
 
 export interface RunExperienceSourceRecord {
   readonly recordId: string;
-  readonly experience: SupportedRunExperience;
+  readonly experience: RunExperience;
 }
 
 export interface RunExperienceReadResult {
   readonly records: readonly RunExperienceSourceRecord[];
-  /** Supported immutable legacy Seed-only records. */
-  readonly loadedSchemaV3: number;
-  /** Supported revision-aware records written by current Runs. */
-  readonly loadedSchemaV4?: number;
+  /** Valid current schema-v4 records loaded from the live Experience directory. */
+  readonly loadedRecords: number;
+  /** Records with a numeric schema version that is not the current schema. */
   readonly unsupportedSchema: number;
+  /** Malformed JSON or semantically invalid current-schema records. */
   readonly invalid: number;
 }
 
@@ -50,8 +50,7 @@ function errorMessage(error: unknown): string {
 
 const EMPTY_READ_RESULT: RunExperienceReadResult = Object.freeze({
   records: Object.freeze([]),
-  loadedSchemaV3: 0,
-  loadedSchemaV4: 0,
+  loadedRecords: 0,
   unsupportedSchema: 0,
   invalid: 0,
 });
@@ -79,8 +78,7 @@ export class FileRunExperienceReader implements RunExperienceReader {
     }
 
     const records: RunExperienceSourceRecord[] = [];
-    let loadedSchemaV3 = 0;
-    let loadedSchemaV4 = 0;
+    let loadedRecords = 0;
     let unsupportedSchema = 0;
     let invalid = 0;
     for (const entry of entries.sort((left, right) =>
@@ -97,7 +95,7 @@ export class FileRunExperienceReader implements RunExperienceReader {
       const schemaVersion = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>).schemaVersion
         : undefined;
-      if (schemaVersion !== 3 && schemaVersion !== 4) {
+      if (schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION) {
         if (typeof schemaVersion === "number") unsupportedSchema += 1;
         else invalid += 1;
         continue;
@@ -107,15 +105,13 @@ export class FileRunExperienceReader implements RunExperienceReader {
         invalid += 1;
         continue;
       }
-      if (schemaVersion === 3) loadedSchemaV3 += 1;
-      else loadedSchemaV4 += 1;
+      loadedRecords += 1;
       records.push(Object.freeze({ recordId: entry.name, experience }));
     }
 
     return Object.freeze({
       records: Object.freeze(records),
-      loadedSchemaV3,
-      loadedSchemaV4,
+      loadedRecords,
       unsupportedSchema,
       invalid,
     });
@@ -139,7 +135,7 @@ export class FileRunExperienceStore implements RunExperienceStore {
   }
 
   async save(projectRoot: string, experience: RunExperience): Promise<void> {
-    if (experience.schemaVersion !== 4) {
+    if (experience.schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION) {
       throw new Error("Could not save Pindie Run Experience: new records must use schema-v4.");
     }
     const directory = this.experienceDirectory(projectRoot);

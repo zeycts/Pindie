@@ -169,18 +169,6 @@ function candidatePolicy(
   });
 }
 
-function legacyV3(value: RunExperience): RunExperience {
-  const record = structuredClone(value) as any;
-  record.schemaVersion = 3;
-  if (record.policy.finalSnapshot !== null) {
-    record.policy.finalSnapshot = createPolicySnapshot({
-      approach: record.policy.finalSnapshot.approach.strategyId,
-      modifiers: record.policy.finalSnapshot.modifiers.map((modifier: any) => modifier.strategyId),
-    });
-  }
-  return record;
-}
-
 function parsedSource(recordId: string, value: RunExperience): RunExperienceSourceRecord {
   const parsed = parseRunExperience(value);
   assert.ok(parsed);
@@ -199,11 +187,11 @@ function validTrialSource(
 test("valid Candidate Trial evidence requires exact v4 revision identity and real exposure", () => {
   const selectedCandidate = candidate();
   const valid = validTrialSource(selectedCandidate, "trial-valid", "shared goal");
-  const legacy = parsedSource(
-    "seed-legacy",
-    legacyV3(experience("shared goal", createPolicySnapshot({ approach: "architecture-first" }))),
+  const seed = parsedSource(
+    "seed-current",
+    experience("shared goal", createPolicySnapshot({ approach: "architecture-first" })),
   );
-  const review = deriveCandidateTrialReview(selectedCandidate, [legacy, valid]);
+  const review = deriveCandidateTrialReview(selectedCandidate, [seed, valid]);
 
   assert.deepEqual(review.candidateProfile.sourceRecordIds, ["trial-valid"]);
   assert.equal(review.candidateProfile.runCount, 1);
@@ -275,8 +263,7 @@ test("non-attributable and unexposed Candidate Runs are excluded while negative 
   assert.match(
     formatCandidateTrialReview({
       records: [],
-      loadedSchemaV3: 0,
-      loadedSchemaV4: 3,
+      loadedRecords: 3,
       unsupportedSchema: 0,
       invalid: 0,
     }, review),
@@ -284,30 +271,29 @@ test("non-attributable and unexposed Candidate Runs are excluded while negative 
   );
 });
 
-test("Seed baseline accepts mixed v3/v4 exact-Seed evidence and only exact goals form cohorts", () => {
+test("Seed baseline uses only current schema-v4 evidence and exact goals form cohorts", () => {
   const selectedCandidate = candidate();
   const seedPolicy = createPolicySnapshot({ approach: "architecture-first" });
   const records = [
     validTrialSource(selectedCandidate, "trial-shared", "shared goal"),
     validTrialSource(selectedCandidate, "trial-other", "candidate-only"),
-    parsedSource("seed-v3-shared", legacyV3(experience("shared goal", seedPolicy))),
-    parsedSource("seed-v4-shared", experience("shared goal", seedPolicy)),
-    parsedSource("seed-v3-other", legacyV3(experience("seed-only", seedPolicy))),
+    parsedSource("seed-current-shared", experience("shared goal", seedPolicy)),
+    parsedSource("seed-current-other", experience("seed-only", seedPolicy)),
+    source("seed-pre-v4", { schemaVersion: 3 } as any),
   ];
   const review = deriveCandidateTrialReview(selectedCandidate, records);
 
-  assert.equal(review.seedBaselineProfile.runCount, 3);
+  assert.equal(review.seedBaselineProfile.runCount, 2);
   assert.deepEqual(review.seedBaselineProfile.sourceRecordIds, [
-    "seed-v3-other",
-    "seed-v3-shared",
-    "seed-v4-shared",
+    "seed-current-other",
+    "seed-current-shared",
   ]);
   assert.deepEqual(review.comparableCohorts, [{
     taskGoal: "shared goal",
     candidateSourceRecordIds: ["trial-shared"],
-    seedSourceRecordIds: ["seed-v3-shared", "seed-v4-shared"],
+    seedSourceRecordIds: ["seed-current-shared"],
   }]);
-  assert.equal(selectSeedBaselineEvidence(selectedCandidate, records).length, 3);
+  assert.equal(selectSeedBaselineEvidence(selectedCandidate, records).length, 2);
 });
 
 test("Promotion Eligibility is false below two Trials and deterministic when the full gate is satisfied", () => {
@@ -333,8 +319,7 @@ test("Promotion Eligibility is false below two Trials and deterministic when the
   assert.match(
     formatCandidateTrialReview({
       records,
-      loadedSchemaV3: 0,
-      loadedSchemaV4: records.length,
+      loadedRecords: records.length,
       unsupportedSchema: 0,
       invalid: 0,
     }, first),
@@ -360,8 +345,7 @@ test("Promotion Eligibility keeps Candidate and Seed inventories separate withou
   assert.deepEqual(review.comparableCohorts, []);
   const report = formatCandidateTrialReview({
     records,
-    loadedSchemaV3: 0,
-    loadedSchemaV4: records.length,
+    loadedRecords: records.length,
     unsupportedSchema: 0,
     invalid: 0,
   } satisfies RunExperienceReadResult, review);

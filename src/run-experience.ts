@@ -1,13 +1,11 @@
 import type { ToolEffect } from "./execution-semantics.ts";
 import {
-  createSeedStrategyRevisionSelection,
   createStrategyRevisionSelection,
   policySnapshotIdentity,
   serializePolicySnapshot,
   type PolicySnapshot,
   type StrategyRevisionSelection,
 } from "./policy.ts";
-import { SEED_STRATEGIES } from "./strategies.ts";
 import type {
   CompletionRunRelation,
   SemanticSnapshot,
@@ -19,7 +17,6 @@ import {
   type VerificationStatus,
 } from "./state.ts";
 
-export const LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION = 3 as const;
 export const RUN_EXPERIENCE_SCHEMA_VERSION = 4 as const;
 
 /** Bounded execution facts collected for one Agent Run. */
@@ -71,19 +68,10 @@ interface RunExperienceFields {
   };
 }
 
-/** Current immutable Run Experience written by new Runs. */
+/** Immutable schema-v4 Run Experience written by current Runs. */
 export interface RunExperience extends RunExperienceFields {
   readonly schemaVersion: typeof RUN_EXPERIENCE_SCHEMA_VERSION;
 }
-
-/** Immutable schema-v3 Seed-only historical Run Experience. */
-export interface LegacyRunExperienceV3 extends RunExperienceFields {
-  readonly schemaVersion: typeof LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION;
-}
-
-export type SupportedRunExperience = RunExperience | LegacyRunExperienceV3;
-
-export type NormalizedRunExperience = RunExperience;
 
 const ZERO_EXECUTION: RunExperienceExecution = Object.freeze({
   toolCalls: 0,
@@ -328,50 +316,6 @@ export function assembleRunExperience(
   return Object.freeze(record);
 }
 
-/** Normalize either supported on-disk schema to the current evaluation shape. */
-export function normalizeRunExperience(
-  experience: SupportedRunExperience,
-): NormalizedRunExperience {
-  return Object.freeze({
-    schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION,
-    recordedAt: experience.recordedAt,
-    runStart: Object.freeze({
-      taskStatus: experience.runStart.taskStatus,
-      taskGoal: experience.runStart.taskGoal,
-    }),
-    task: Object.freeze({
-      goal: experience.task.goal,
-      taskRelation: experience.task.taskRelation,
-    }),
-    policy: Object.freeze({
-      finalSnapshot: experience.policy.finalSnapshot === null
-        ? null
-        : serializePolicySnapshot(experience.policy.finalSnapshot),
-      declarationCount: experience.policy.declarationCount,
-      finalPolicyDeclarationCount: experience.policy.finalPolicyDeclarationCount,
-      finalPolicyFirstDeclaredAfter: experience.policy.finalPolicyFirstDeclaredAfter === null
-        ? null
-        : copyExecution(experience.policy.finalPolicyFirstDeclaredAfter),
-      finalPolicyLastDeclaredAfter: experience.policy.finalPolicyLastDeclaredAfter === null
-        ? null
-        : copyExecution(experience.policy.finalPolicyLastDeclaredAfter),
-    }),
-    execution: copyExecution(experience.execution),
-    outcome: Object.freeze({
-      taskStatus: experience.outcome.taskStatus,
-      verificationStatus: experience.outcome.verificationStatus,
-      completionRelation: experience.outcome.completionRelation,
-      hasBlockers: experience.outcome.hasBlockers,
-      hasQuestions: experience.outcome.hasQuestions,
-      humanGateOpen: experience.outcome.humanGateOpen,
-    }),
-    metrics: Object.freeze({
-      durationMs: experience.metrics.durationMs,
-      cost: experience.metrics.cost,
-    }),
-  });
-}
-
 export function isEligibleRunExperience(
   projectRoot: string | null,
   snapshot: SemanticSnapshot | null,
@@ -494,46 +438,6 @@ function isOneOf<T extends string>(value: unknown, values: readonly T[]): value 
   return typeof value === "string" && values.includes(value as T);
 }
 
-function parseLegacySeedStrategy(
-  value: unknown,
-  kind: "approach" | "modifier",
-): StrategyRevisionSelection | null {
-  if (!isRecord(value) || value.kind !== kind ||
-    typeof value.id !== "string" || value.id.length === 0 ||
-    typeof value.summary !== "string" || !isStringArray(value.useWhen) ||
-    (value.avoidWhen !== undefined && !isStringArray(value.avoidWhen)) ||
-    !isStringArray(value.principles)) {
-    return null;
-  }
-  const strategy = SEED_STRATEGIES.find((candidate) => candidate.id === value.id);
-  if (strategy?.kind !== kind ||
-    value.summary !== strategy.summary ||
-    JSON.stringify(value.useWhen) !== JSON.stringify(strategy.useWhen) ||
-    JSON.stringify(value.avoidWhen) !== JSON.stringify(strategy.avoidWhen ?? []) ||
-    JSON.stringify(value.principles) !== JSON.stringify(strategy.principles)) {
-    return null;
-  }
-  return createSeedStrategyRevisionSelection(strategy);
-}
-
-function parseLegacyPolicySnapshot(value: unknown): PolicySnapshot | null {
-  if (!isRecord(value)) return null;
-  const approach = parseLegacySeedStrategy(value.approach, "approach");
-  if (approach === null || !Array.isArray(value.modifiers)) return null;
-  const modifiers = value.modifiers.map((modifier) =>
-    parseLegacySeedStrategy(modifier, "modifier"),
-  );
-  if (modifiers.some((modifier) => modifier === null)) return null;
-  const parsedModifiers = modifiers as StrategyRevisionSelection[];
-  if (new Set(parsedModifiers.map((modifier) => modifier.id)).size !== parsedModifiers.length) {
-    return null;
-  }
-  return Object.freeze({
-    approach,
-    modifiers: Object.freeze(parsedModifiers),
-  });
-}
-
 function parseRevisionSelection(
   value: unknown,
   kind: "approach" | "modifier",
@@ -568,11 +472,8 @@ function parseRevisionAwarePolicySnapshot(value: unknown): PolicySnapshot | null
   });
 }
 
-function parseExecution(
-  value: unknown,
-  strictV4 = false,
-): RunExperienceExecution | null {
-  if (!isRecord(value) || (strictV4 && !hasExactFields(value, V4_EXECUTION_FIELDS))) return null;
+function parseExecution(value: unknown): RunExperienceExecution | null {
+  if (!isRecord(value) || !hasExactFields(value, V4_EXECUTION_FIELDS)) return null;
   const fields: (keyof RunExperienceExecution)[] = [
     "toolCalls",
     "observations",
@@ -626,25 +527,17 @@ function countersEqual(
   return EXECUTION_COUNTERS.every((counter) => left[counter] === right[counter]);
 }
 
-/**
- * Validates and copies supported immutable Experience. Schema-v3 is legacy
- * Seed-only history with its prior permissive object-field handling;
- * schema-v4 carries revision-aware Policy facts and validates exact fields.
- */
-export function parseRunExperience(value: unknown): SupportedRunExperience | null {
-  if (!isRecord(value)) return null;
-  const schemaVersion = value.schemaVersion;
-  if ((schemaVersion !== LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION &&
-      schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION) ||
-    typeof value.recordedAt !== "string" || value.recordedAt.length === 0) {
+/** Validate and defensively copy one immutable schema-v4 Experience record. */
+export function parseRunExperience(value: unknown): RunExperience | null {
+  if (!isRecord(value) || value.schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION ||
+    typeof value.recordedAt !== "string" || value.recordedAt.length === 0 ||
+    !hasExactFields(value, V4_ROOT_FIELDS)) {
     return null;
   }
-  const strictV4 = schemaVersion === RUN_EXPERIENCE_SCHEMA_VERSION;
-  if (strictV4 && !hasExactFields(value, V4_ROOT_FIELDS)) return null;
 
   const runStart = value.runStart;
   if (!isRecord(runStart) ||
-    (strictV4 && !hasExactFields(runStart, V4_RUN_START_FIELDS)) ||
+    !hasExactFields(runStart, V4_RUN_START_FIELDS) ||
     !isOneOf(runStart.taskStatus, TASK_STATUSES) ||
     (typeof runStart.taskGoal !== "string" && runStart.taskGoal !== null)) {
     return null;
@@ -652,7 +545,7 @@ export function parseRunExperience(value: unknown): SupportedRunExperience | nul
 
   const task = value.task;
   if (!isRecord(task) ||
-    (strictV4 && !hasExactFields(task, V4_TASK_FIELDS)) ||
+    !hasExactFields(task, V4_TASK_FIELDS) ||
     typeof task.goal !== "string" ||
     !isOneOf(task.taskRelation, TASK_RELATIONS)) {
     return null;
@@ -660,32 +553,30 @@ export function parseRunExperience(value: unknown): SupportedRunExperience | nul
 
   const policy = value.policy;
   if (!isRecord(policy) ||
-    (strictV4 && !hasExactFields(policy, V4_POLICY_FIELDS)) ||
+    !hasExactFields(policy, V4_POLICY_FIELDS) ||
     !isNonNegativeSafeInteger(policy.declarationCount) ||
     !isNonNegativeSafeInteger(policy.finalPolicyDeclarationCount)) {
     return null;
   }
   const finalSnapshot = policy.finalSnapshot === null
     ? null
-    : schemaVersion === LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION
-      ? parseLegacyPolicySnapshot(policy.finalSnapshot)
-      : parseRevisionAwarePolicySnapshot(policy.finalSnapshot);
+    : parseRevisionAwarePolicySnapshot(policy.finalSnapshot);
   if (policy.finalSnapshot !== null && finalSnapshot === null) return null;
   const finalPolicyFirstDeclaredAfter = policy.finalPolicyFirstDeclaredAfter === null
     ? null
-    : parseExecution(policy.finalPolicyFirstDeclaredAfter, strictV4);
+    : parseExecution(policy.finalPolicyFirstDeclaredAfter);
   const finalPolicyLastDeclaredAfter = policy.finalPolicyLastDeclaredAfter === null
     ? null
-    : parseExecution(policy.finalPolicyLastDeclaredAfter, strictV4);
+    : parseExecution(policy.finalPolicyLastDeclaredAfter);
   if (
     (policy.finalPolicyFirstDeclaredAfter !== null && finalPolicyFirstDeclaredAfter === null) ||
     (policy.finalPolicyLastDeclaredAfter !== null && finalPolicyLastDeclaredAfter === null)
   ) return null;
 
-  const execution = parseExecution(value.execution, strictV4);
+  const execution = parseExecution(value.execution);
   const outcome = value.outcome;
   if (execution === null || !isRecord(outcome) ||
-    (strictV4 && !hasExactFields(outcome, V4_OUTCOME_FIELDS)) ||
+    !hasExactFields(outcome, V4_OUTCOME_FIELDS) ||
     !isOneOf(outcome.taskStatus, TASK_STATUSES) ||
     !isOneOf(outcome.verificationStatus, VERIFICATION_STATUSES) ||
     !isOneOf(outcome.completionRelation, COMPLETION_RELATIONS) ||
@@ -755,14 +646,14 @@ export function parseRunExperience(value: unknown): SupportedRunExperience | nul
 
   const metrics = value.metrics;
   if (!isRecord(metrics) ||
-    (strictV4 && !hasExactFields(metrics, V4_METRICS_FIELDS)) ||
+    !hasExactFields(metrics, V4_METRICS_FIELDS) ||
     (metrics.durationMs !== null && !isNonNegativeFiniteNumber(metrics.durationMs)) ||
     (metrics.cost !== null && !isNonNegativeFiniteNumber(metrics.cost))) {
     return null;
   }
 
   return Object.freeze({
-    schemaVersion,
+    schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION,
     recordedAt: value.recordedAt,
     runStart: Object.freeze({
       taskStatus: runStart.taskStatus,
@@ -795,6 +686,6 @@ export function parseRunExperience(value: unknown): SupportedRunExperience | nul
   });
 }
 
-export function isRunExperience(value: unknown): value is SupportedRunExperience {
+export function isRunExperience(value: unknown): value is RunExperience {
   return parseRunExperience(value) !== null;
 }

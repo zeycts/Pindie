@@ -28,7 +28,6 @@ import {
 } from "../src/policy.ts";
 import {
   assembleRunExperience,
-  normalizeRunExperience,
   parseRunExperience,
   type RunExperience,
   type RunExperienceExecution,
@@ -100,6 +99,7 @@ function experience(
   } = {},
 ): RunExperience {
   const policy = options.policy ?? null;
+  const completionRelation = options.completionRelation ?? "not_completed";
   return assembleRunExperience({
     task: {
       ...task(goal),
@@ -109,8 +109,13 @@ function experience(
     },
     runStart: { taskStatus: "active", taskGoal: goal },
     snapshot: snapshot({
-      verificationStatus: options.verificationStatus ?? "pending",
-      completionRelation: options.completionRelation ?? "not_completed",
+      taskStatus: completionRelation === "completed_during_run" ? "done" : "active",
+      taskRelation: completionRelation === "completed_during_run"
+        ? "preexisting_changed"
+        : "preexisting_untouched",
+      verificationStatus: options.verificationStatus ??
+        (completionRelation === "completed_during_run" ? "passed" : "pending"),
+      completionRelation,
       hasBlockers: options.hasBlockers ?? false,
       hasQuestions: options.hasQuestions ?? false,
     }),
@@ -153,19 +158,6 @@ function completedBeforeExperience(goal: string, policy: PolicySnapshot | null =
   return record;
 }
 
-function legacyV3(value: RunExperience): any {
-  const record = structuredClone(value) as any;
-  record.schemaVersion = 3;
-  if (record.policy.finalSnapshot !== null) {
-    const seedPolicy = createPolicySnapshot({
-      approach: record.policy.finalSnapshot.approach.strategyId,
-      modifiers: record.policy.finalSnapshot.modifiers.map((modifier: any) => modifier.strategyId),
-    });
-    record.policy.finalSnapshot = seedPolicy;
-  }
-  return record;
-}
-
 function source(recordId: string, value: RunExperience | any): RunExperienceSourceRecord {
   return { recordId, experience: value };
 }
@@ -203,8 +195,7 @@ test("Experience Reader returns zero counts for a missing directory", async (t) 
 
   assert.deepEqual(result, {
     records: [],
-    loadedSchemaV3: 0,
-    loadedSchemaV4: 0,
+    loadedRecords: 0,
     unsupportedSchema: 0,
     invalid: 0,
   });
@@ -216,13 +207,13 @@ test("Experience Reader preserves filenames, isolates bad records, and does not 
   const reader = new FileRunExperienceReader({ baseDir });
   const directory = reader.experienceDirectory("/project");
   await mkdir(directory, { recursive: true });
-  const valid = JSON.stringify(legacyV3(experience("valid")), null, 2);
+  const valid = JSON.stringify({ schemaVersion: 3, historical: true }, null, 2);
   const secondValid = JSON.stringify(experience("also valid"), null, 2);
   await writeRecord(directory, "00000000-0000-4000-8000-000000000001.json", valid);
   await writeRecord(directory, "00000000-0000-4000-8000-000000000002.json", JSON.stringify({ schemaVersion: 1 }));
   await writeRecord(directory, "00000000-0000-4000-8000-000000000003.json", JSON.stringify({ schemaVersion: 9 }));
   await writeRecord(directory, "00000000-0000-4000-8000-000000000004.json", "{\"schemaVersion\":3");
-  const semanticallyInvalid = JSON.parse(valid) as any;
+  const semanticallyInvalid = JSON.parse(secondValid) as any;
   semanticallyInvalid.execution.observations = 4;
   await writeRecord(directory, "00000000-0000-4000-8000-000000000005.json", JSON.stringify({ schemaVersion: 2 }));
   await writeRecord(directory, "00000000-0000-4000-8000-000000000008.json", JSON.stringify(semanticallyInvalid));
@@ -243,42 +234,64 @@ test("Experience Reader preserves filenames, isolates bad records, and does not 
 
   const result = await reader.read("/project");
 
-  assert.equal(result.loadedSchemaV3, 1);
-  assert.equal(result.loadedSchemaV4, 1);
-  assert.equal(result.unsupportedSchema, 3);
+  assert.equal(result.loadedRecords, 1);
+  assert.equal(result.unsupportedSchema, 4);
   assert.equal(result.invalid, 3);
   assert.deepEqual(result.records.map((record) => record.recordId), [
-    "00000000-0000-4000-8000-000000000001.json",
     "00000000-0000-4000-8000-000000000007.json",
   ]);
-  assert.equal(result.records[0]!.experience.task.goal, "valid");
+  assert.equal(result.records[0]!.experience.task.goal, "also valid");
   assert.equal(
     await readFile(join(directory, "00000000-0000-4000-8000-000000000001.json"), "utf8"),
     before,
   );
 });
 
-test("schema-v3 parser requires exact recorded Seed semantics and rejects impossible bounded facts", () => {
-  const explicit = legacyV3(experience("parse", {
+test("Experience Reader ignores pre-v4 records outside the live directory", async (t) => {
+  const baseDir = await mkdtemp(join(tmpdir(), "pindie-experience-archive-"));
+  t.after(() => rm(baseDir, { recursive: true, force: true }));
+  const reader = new FileRunExperienceReader({ baseDir });
+  const liveDirectory = reader.experienceDirectory("/project");
+  const archiveDirectory = join(liveDirectory, "..", "archive", "experience-v3");
+  await mkdir(liveDirectory, { recursive: true });
+  await mkdir(archiveDirectory, { recursive: true });
+  const archived = JSON.stringify({ schemaVersion: 3, historical: true }, null, 2);
+  const archivedPath = join(archiveDirectory, "00000000-0000-4000-8000-000000000003.json");
+  await writeFile(archivedPath, archived, "utf8");
+  const livePath = join(liveDirectory, "00000000-0000-4000-8000-000000000004.json");
+  const live = JSON.stringify(experience("live"), null, 2);
+  await writeRecord(liveDirectory, "00000000-0000-4000-8000-000000000004.json", live);
+
+  const result = await reader.read("/project");
+
+  assert.deepEqual(result.records.map((record) => record.recordId), ["00000000-0000-4000-8000-000000000004.json"]);
+  assert.equal(result.loadedRecords, 1);
+  assert.equal(result.unsupportedSchema, 0);
+  assert.equal(result.invalid, 0);
+  assert.equal(await readFile(archivedPath, "utf8"), archived);
+  assert.equal(await readFile(livePath, "utf8"), live);
+});
+
+test("schema-v4 parser preserves exact revision semantics and rejects impossible bounded facts", () => {
+  const explicit = experience("parse", {
     policy: createPolicySnapshot({
       approach: "architecture-first",
       modifiers: ["minimal-change", "verify-as-you-go"],
     }),
-  }));
+  });
   const parsed = parseRunExperience(explicit);
-  const canonicalApproach = createPolicySnapshot({ approach: "architecture-first" }).approach;
-  assert.equal(parsed?.schemaVersion, 3);
+  assert.equal(parsed?.schemaVersion, 4);
   assert.equal(parsed?.policy.finalSnapshot?.approach.revisionIdentity, "seed");
   assert.equal(
     parsed?.policy.finalSnapshot?.approach.revisionFingerprint,
-    canonicalApproach.revisionFingerprint,
+    explicit.policy.finalSnapshot?.approach.revisionFingerprint,
   );
 
   const semanticMutations: Array<[string, (selection: any) => void]> = [
-    ["summary", (selection) => { selection.summary = "forged prose"; }],
-    ["useWhen", (selection) => { selection.useWhen[0] = "forged guidance"; }],
-    ["avoidWhen", (selection) => { selection.avoidWhen[0] = "forged boundary"; }],
-    ["principles", (selection) => { selection.principles[0] = "forged principle"; }],
+    ["summary", (selection) => { selection.semantics.summary = "forged prose"; }],
+    ["useWhen", (selection) => { selection.semantics.useWhen[0] = "forged guidance"; }],
+    ["avoidWhen", (selection) => { selection.semantics.avoidWhen[0] = "forged boundary"; }],
+    ["principles", (selection) => { selection.semantics.principles[0] = "forged principle"; }],
   ];
   for (const [name, mutate] of semanticMutations) {
     const forged = structuredClone(explicit) as any;
@@ -288,7 +301,7 @@ test("schema-v3 parser requires exact recorded Seed semantics and rejects imposs
 
   const invalidCases: Array<[string, (record: any) => void]> = [
     ["forged Strategy ID", (record) => {
-      record.policy.finalSnapshot.approach.id = "forged-approach";
+      record.policy.finalSnapshot.approach.strategyId = "forged-approach";
     }],
     ["wrong approach kind", (record) => {
       record.policy.finalSnapshot.approach.kind = "modifier";
@@ -421,7 +434,7 @@ test("schema-v3 parser requires exact recorded Seed semantics and rejects imposs
   }
 });
 
-test("schema-v4 parser rejects unknown fields while schema-v3 keeps its historical field handling", () => {
+test("schema-v4 parser rejects unknown fields and schema-v3 is unsupported", () => {
   const valid = structuredClone(experience("strict v4", {
     policy: createPolicySnapshot({ approach: "architecture-first" }),
   })) as any;
@@ -445,12 +458,14 @@ test("schema-v4 parser rejects unknown fields while schema-v3 keeps its historic
     assert.equal(parseRunExperience(record), null, name);
   }
 
-  const legacy = legacyV3(valid);
-  legacy.reward = 1;
-  assert.ok(parseRunExperience(legacy));
+  const unsupported = structuredClone(valid) as any;
+  unsupported.schemaVersion = 3;
+  unsupported.reward = 1;
+  assert.equal(parseRunExperience(unsupported), null);
+  assert.equal(parseRunExperience({ ...unsupported, schemaVersion: 99 }), null);
 });
 
-test("schema-v3 parser accepts valid consequential subsets and declaration positions", () => {
+test("schema-v4 parser accepts valid consequential subsets and declaration positions", () => {
   const valid = structuredClone(experience("valid subsets", {
     policy: createPolicySnapshot({ approach: "direct-action" }),
   })) as any;
@@ -491,29 +506,7 @@ test("schema-v3 parser accepts valid consequential subsets and declaration posit
   assert.ok(parseRunExperience(changed));
 });
 
-test("schema-v3 and schema-v4 normalize to one revision-aware Evaluation shape", () => {
-  const seedPolicy = createPolicySnapshot({
-    approach: "architecture-first",
-    modifiers: ["minimal-change"],
-  });
-  const current = experience("normalization", { policy: seedPolicy });
-  const legacy = legacyV3(current);
-  const parsedLegacy = parseRunExperience(legacy);
-  const parsedCurrent = parseRunExperience(current);
-  assert.equal(parsedLegacy?.schemaVersion, 3);
-  assert.equal(parsedCurrent?.schemaVersion, 4);
-  assert.ok(parsedLegacy);
-  assert.ok(parsedCurrent);
-
-  const normalizedLegacy = normalizeRunExperience(parsedLegacy);
-  const normalizedCurrent = normalizeRunExperience(parsedCurrent);
-  assert.equal(normalizedLegacy.schemaVersion, 4);
-  assert.deepEqual(normalizedLegacy, normalizedCurrent);
-  assert.deepEqual(
-    evaluateRunExperience(source("legacy.json", parsedLegacy)).policy.finalSnapshot,
-    evaluateRunExperience(source("current.json", parsedCurrent)).policy.finalSnapshot,
-  );
-
+test("schema-v4 parser preserves revision-aware Policy identity", () => {
   const revision = createStrategyRevisionSelection({
     strategyId: "architecture-first",
     kind: "approach",
@@ -527,22 +520,19 @@ test("schema-v3 and schema-v4 normalize to one revision-aware Evaluation shape",
       principles: ["name the boundary", "verify the smallest coherent change"],
     },
   });
-  const revisionRecord = experience("revision normalization", {
+  const record = experience("revision-aware", {
     policy: createPolicySnapshotFromRevisions({ approach: revision }),
   });
-  const parsedRevision = parseRunExperience(revisionRecord);
-  assert.ok(parsedRevision);
-  assert.equal(parsedRevision.policy.finalSnapshot?.approach.revisionIdentity, revision.revisionIdentity);
-  assert.equal(parsedRevision.policy.finalSnapshot?.approach.revisionStatusAtRun, "trial");
-  assert.equal(parsedRevision.policy.finalSnapshot?.approach.id, "architecture-first");
-  assert.equal(
-    Object.keys(normalizeRunExperience(parsedRevision).policy.finalSnapshot!.approach).join(","),
-    "strategyId,kind,revisionIdentity,revisionFingerprint,revisionStatusAtRun,semantics",
+  const parsed = parseRunExperience(record);
+  assert.ok(parsed);
+  assert.equal(parsed.schemaVersion, 4);
+  assert.equal(parsed.policy.finalSnapshot?.approach.revisionIdentity, revision.revisionIdentity);
+  assert.equal(parsed.policy.finalSnapshot?.approach.revisionStatusAtRun, "trial");
+  assert.equal(parsed.policy.finalSnapshot?.approach.id, "architecture-first");
+  assert.deepEqual(
+    evaluateRunExperience(source("revision.json", parsed)).policy.finalSnapshot,
+    record.policy.finalSnapshot,
   );
-
-  const forgedSeed = structuredClone(current) as any;
-  forgedSeed.policy.finalSnapshot.approach.semantics.summary = "forged Seed semantics";
-  assert.equal(parseRunExperience(forgedSeed), null);
 });
 
 test("Run Evaluation marks completed-before-Run facts non-attributable", () => {
@@ -575,7 +565,7 @@ test("Run Evaluation marks completed-before-Run facts non-attributable", () => {
 
   const report = formatExperienceReport({
     records,
-    loadedSchemaV3: records.length,
+    loadedRecords: records.length,
     unsupportedSchema: 0,
     invalid: 0,
   }, { evaluations, profiles, cohorts });
@@ -584,7 +574,7 @@ test("Run Evaluation marks completed-before-Run facts non-attributable", () => {
   assert.match(report, /Non-attributable Runs: 1/);
 });
 
-test("schema-v3 parser accepts every real Task verification status except none", () => {
+test("schema-v4 parser accepts every real Task verification status except none", () => {
   for (const verificationStatus of ["pending", "stale", "failed", "passed"] as const) {
     const record = structuredClone(experience(`verification ${verificationStatus}`)) as any;
     record.outcome.verificationStatus = verificationStatus;
@@ -683,7 +673,7 @@ test("Policy Evidence Profiles aggregate complete normalized Policies and preser
   const combined = profiles.find((profile) => profile.identity.approachId === "architecture-first");
   assert.ok(combined);
   assert.equal(combined.runCount, 2);
-  assert.equal(combined.verificationPassedCount, 1);
+  assert.equal(combined.verificationPassedCount, 2);
   assert.equal(combined.completedDuringRunCount, 1);
   assert.equal(combined.totalToolErrors, 4);
   assert.equal(combined.totalDeniedCalls, 8);
@@ -742,8 +732,7 @@ test("Experience Policy profiles label Seed, Trial, and promoted revisions witho
   const evaluation = deriveExperienceEvaluation(records);
   const read: RunExperienceReadResult = {
     records,
-    loadedSchemaV3: 0,
-    loadedSchemaV4: records.length,
+    loadedRecords: records.length,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -827,8 +816,7 @@ test("Experience evidence profiles separate Trial and promoted use of one Candid
 
   const report = formatExperienceReport({
     records,
-    loadedSchemaV3: 0,
-    loadedSchemaV4: records.length,
+    loadedRecords: records.length,
     unsupportedSchema: 0,
     invalid: 0,
   }, evaluation);
@@ -885,14 +873,14 @@ test("Experience report is bounded and explicitly evidence-only", () => {
   const record = source("report.json", experience("report"));
   const read: RunExperienceReadResult = {
     records: [record],
-    loadedSchemaV3: 1,
+    loadedRecords: 1,
     unsupportedSchema: 2,
     invalid: 3,
   };
   const report = formatExperienceReport(read, deriveExperienceEvaluation(read.records));
 
-  assert.match(report, /Loaded schema-v3 records: 1/);
-  assert.match(report, /Loaded schema-v4 records: 0/);
+  assert.match(report, /Loaded current Experience records: 1/);
+  assert.doesNotMatch(report, /Loaded schema-v3|Loaded schema-v4/);
   assert.match(report, /Unsupported-schema records: 2/);
   assert.match(report, /Invalid\/unreadable records: 3/);
   assert.match(report, /Evaluated Runs: 1/);
@@ -908,22 +896,41 @@ test("Experience report is bounded and explicitly evidence-only", () => {
 
 test("Experience report exposes bounded Policy attribution evidence", () => {
   const policy = createPolicySnapshot({ approach: "direct-action" });
-  const record = source("attribution.json", experience("attribution", {
+  const recordValue = experience("attribution", {
     policy,
-    finalPolicyFirstDeclaredAfter: execution({ toolCalls: 2, observations: 1, consequentialCalls: 1 }),
-    finalPolicyLastDeclaredAfter: execution({ toolCalls: 8, observations: 4, consequentialCalls: 4 }),
-  }));
-  const evaluation = deriveExperienceEvaluation([record]);
+    finalPolicyFirstDeclaredAfter: execution({
+      toolCalls: 2,
+      observations: 1,
+      consequentialCalls: 1,
+      projectMutationEffectCalls: 0,
+      verificationCalls: 0,
+      toolErrors: 0,
+      deniedCalls: 0,
+    }),
+    finalPolicyLastDeclaredAfter: execution({
+      toolCalls: 8,
+      observations: 4,
+      consequentialCalls: 4,
+      projectMutationEffectCalls: 1,
+      verificationCalls: 1,
+      toolErrors: 1,
+      deniedCalls: 2,
+    }),
+  });
+  const record = structuredClone(recordValue) as any;
+  record.policy.declarationCount = 2;
+  record.policy.finalPolicyDeclarationCount = 2;
+  const evaluation = deriveExperienceEvaluation([source("attribution.json", record)]);
   const read: RunExperienceReadResult = {
-    records: [record],
-    loadedSchemaV3: 1,
+    records: [source("attribution.json", record)],
+    loadedRecords: 1,
     unsupportedSchema: 0,
     invalid: 0,
   };
   const report = formatExperienceReport(read, evaluation);
 
-  assert.match(report, /declarations: n=1, min=1, median=1, max=1/);
-  assert.match(report, /final-Policy declarations: n=1, min=1, median=1, max=1/);
+  assert.match(report, /declarations: n=1, min=2, median=2, max=2/);
+  assert.match(report, /final-Policy declarations: n=1, min=2, median=2, max=2/);
   assert.match(report, /first final-Policy declaration progress: n=1, min=20\.0%, median=20\.0%, max=20\.0%/);
   assert.match(report, /last activation progress: n=1, min=80\.0%, median=80\.0%, max=80\.0%/);
   assert.match(report, /continuous final-Policy exposure calls: n=1, min=2, median=2, max=2 · ratio: n=1, min=20\.0%, median=20\.0%, max=20\.0%/);
@@ -938,7 +945,7 @@ test("Experience report bounds profile provenance without changing derived profi
   const profile = evaluation.profiles[0]!;
   const read: RunExperienceReadResult = {
     records,
-    loadedSchemaV3: records.length,
+    loadedRecords: records.length,
     unsupportedSchema: 0,
     invalid: 0,
   };
@@ -971,7 +978,7 @@ test("Experience report bounds the number of rendered profiles while retaining a
   const evaluation = deriveExperienceEvaluation(records);
   const read: RunExperienceReadResult = {
     records,
-    loadedSchemaV3: records.length,
+    loadedRecords: records.length,
     unsupportedSchema: 0,
     invalid: 0,
   };
