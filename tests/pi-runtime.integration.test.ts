@@ -15,10 +15,16 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 
-import { createPindieHost, createPindieRuntimeFactory } from "../src/host.ts";
+import { createPindieHost, createPindieRuntimeFactory, getPindieResourcePaths } from "../src/host.ts";
 import { getCommittedRolloverPublisher } from "../src/long-task-control.ts";
 import { PINDIE_LONG_TASK_RESUME_TYPE, formatLongTaskResume } from "../src/long-task-resume.ts";
 import { PiRuntimeAdapter } from "../src/pi-runtime.ts";
+import { registerPindieExtension } from "../src/extension.ts";
+import {
+  PINDIE_CONTEXT_LIFECYCLE_START,
+  PINDIE_CONTEXT_LIFECYCLE_TYPE,
+} from "../src/context-governor.ts";
+import { PINDIE_RUN_BASELINE_START } from "../src/context.ts";
 import { FileStateStore } from "../src/store.ts";
 import { createTaskContinuity } from "../src/task-continuity.ts";
 
@@ -306,6 +312,141 @@ test("Host-owned hidden resume follows the normal Pindie Run-start contract", as
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("real Pi context projection carries one ephemeral Context Lifecycle guidance and preserves compaction checkpointing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pindie-context-governor-conformance-"));
+  const home = join(root, "home");
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+  const previousHome = process.env.HOME;
+  const faux = fauxProvider({ provider: `pindie-context-governor-${Date.now()}-${Math.random()}` });
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(agentDir, "auth.json"),
+    modelsPath: null,
+    refreshOnCreate: false,
+  });
+  modelRuntime.registerNativeProvider(faux.provider);
+  await modelRuntime.refresh({ allowNetwork: false });
+  let session: AgentSession | undefined;
+  let integration: ReturnType<typeof registerPindieExtension> | undefined;
+  const providerContexts: unknown[] = [];
+  const longResponse = "bounded history ".repeat(1_000);
+
+  try {
+    await mkdir(cwd);
+    await mkdir(agentDir, { recursive: true });
+    await mkdir(home, { recursive: true });
+    process.env.HOME = home;
+
+    const services = await createAgentSessionServices({
+      cwd,
+      agentDir,
+      modelRuntime,
+      resourceLoaderOptions: {
+        additionalSkillPaths: [getPindieResourcePaths().skillsPath],
+        extensionFactories: [{
+          name: "pindie-context-governor-conformance",
+          hidden: true,
+          factory: (pi) => {
+            integration = registerPindieExtension(pi, {
+              enableTaskHandoff: true,
+              contextGovernorTuning: {
+                elevatedPercent: 0.0000001,
+                highPercent: 99,
+                postCompactionRegrowthDelta: 25,
+              },
+            });
+          },
+        }],
+      },
+    });
+    const created = await createAgentSessionFromServices({
+      services,
+      sessionManager: SessionManager.inMemory(cwd),
+      model: faux.getModel(),
+    });
+    session = created.session;
+    await session.bindExtensions({});
+
+    const started = await executeExtensionTool(session, "pindie_task_start", {
+      goal: "Verify Context Lifecycle guidance stays ephemeral in a real Pi Session.",
+      successCriteria: ["Provider context receives bounded runtime guidance."],
+    });
+    assert.ok(started);
+
+    faux.setResponses([
+      (providerContext) => {
+        providerContexts.push(providerContext);
+        return fauxAssistantMessage("first deterministic response");
+      },
+      fauxAssistantMessage(longResponse),
+      fauxAssistantMessage(longResponse),
+      fauxAssistantMessage(longResponse),
+      fauxAssistantMessage(longResponse),
+      fauxAssistantMessage(longResponse),
+      fauxAssistantMessage(longResponse),
+      fauxAssistantMessage(longResponse),
+      fauxAssistantMessage(longResponse),
+      fauxAssistantMessage("deterministic compaction summary"),
+      fauxAssistantMessage("deterministic compaction summary"),
+      fauxAssistantMessage("deterministic compaction summary"),
+      fauxAssistantMessage("deterministic compaction summary"),
+      fauxAssistantMessage("deterministic compaction summary"),
+    ]);
+
+    await session.prompt("Continue the bounded verification work.");
+    assert.ok(integration);
+    assert.equal(providerContexts.length, 1);
+    const providerMessages = (providerContexts[0] as { messages?: readonly unknown[] }).messages ?? [];
+    const lifecycleMessages = providerMessages.filter((message) =>
+      messageText(message).includes(PINDIE_CONTEXT_LIFECYCLE_START),
+    );
+    const baselineMessages = providerMessages.filter((message) =>
+      messageText(message).includes(PINDIE_RUN_BASELINE_START),
+    );
+    assert.equal(baselineMessages.length, 1);
+    assert.equal(lifecycleMessages.length, 1);
+    assert.match(messageText(lifecycleMessages[0]), /Context Lifecycle Guidance: elevated/);
+    assert.match(messageText(lifecycleMessages[0]), /not new user intent/i);
+    assert.equal(
+      session.messages.some((message) => messageText(message).includes(PINDIE_CONTEXT_LIFECYCLE_START)),
+      false,
+    );
+    assert.equal(
+      session.sessionManager.getEntries().some((entry) =>
+        entry.type === "custom_message" && entry.customType === PINDIE_CONTEXT_LIFECYCLE_TYPE,
+      ),
+      false,
+    );
+
+    await session.prompt("Add enough bounded history for a compaction check.");
+    await session.prompt("Add one more bounded history check.");
+    await session.prompt("Finish the pre-compaction history check.");
+    const compaction = await session.compact();
+    assert.match(compaction.summary, /deterministic compaction summary/);
+    assert.equal(session.getContextUsage()?.percent, null);
+    assert.equal(integration.contextGovernor.snapshot.pressure, "normal");
+    assert.equal(integration.contextGovernor.snapshot.contextPercent, null);
+    assert.equal(integration.contextGovernor.snapshot.postCompactionBaselinePercent, null);
+    assert.equal(integration.contextGovernor.snapshot.successfulCompactions, 1);
+    assert.equal(integration.contextGovernor.snapshot.pressureCompactions, 0);
+
+    const entries = session.sessionManager.getEntries();
+    assert.equal(
+      entries.some((entry) => entry.type === "custom_message" && entry.customType === "pindie-state-checkpoint"),
+      true,
+    );
+    assert.equal(
+      entries.some((entry) => entry.type === "custom_message" && entry.customType === PINDIE_CONTEXT_LIFECYCLE_TYPE),
+      false,
+    );
+  } finally {
+    session?.dispose();
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
     await rm(root, { recursive: true, force: true });
   }
 });

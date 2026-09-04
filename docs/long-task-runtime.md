@@ -304,31 +304,35 @@ A checkpoint is consumed automatically only by the Host-owned rollover flow that
 
 ## 7. Context Governor and compaction
 
-Context Governor is advisory. It may observe:
+Context Governor is a Session-scoped, runtime-only advisory observer. Its only
+pressure vocabulary is:
 
 ```text
-current context usage
-successful compaction count in this Session
-context re-growth after compaction
-whether handoff is already pending
+normal → elevated → high
 ```
 
-It does not own Task status or Session replacement.
+It observes Pi's factual context usage and successful compaction lifecycle. Pi's
+`context` extension event is the ephemeral projection point: before each
+provider call, the Governor observes the current usage and, when the existing
+Long Task semantic gate allows it, appends one hidden custom message to that
+provider context. While pressure remains elevated or high, the current guidance
+is re-projected for every provider context. These messages are not sent through
+`pi.sendMessage()`, are not session entries, and do not accumulate in Session
+history.
 
-It emits bounded hidden guidance only when pressure changes meaningfully, for example:
+A successful compaction creates a new comparison epoch, resets pressure to
+`normal` until a known usage sample arrives, and makes the first later known
+percentage the post-compaction baseline. Threshold and overflow compactions are
+pressure-driven compactions; manual compaction creates the same baseline epoch
+but does not increase the pressure-driven count. Failed or aborted compactions
+do not create an epoch. The first successful compaction does not imply rollover.
 
-```text
-normal
-→ continue normally
-
-elevated
-→ look for a coherent handoff boundary; avoid unnecessary context-heavy work
-
-high / repeated post-compaction growth
-→ converge current work and commit a handoff instead of opening another major branch
-```
-
-Exact thresholds are injectable/testable tuning, not architecture constants. A semantic handoff may happen before compaction when the model reaches a clean boundary; the first successful compaction does not imply immediate rollover.
+The Governor never calls `pindie_task_handoff`, triggers Session replacement, or
+triggers compaction. It only advises Luna to continue bounded work at elevated
+pressure, or to converge and use the existing semantic handoff affordance once a
+stable frontier exists at high pressure. Exact percentage thresholds and
+regrowth delta remain injectable implementation tuning, not architecture
+constants.
 
 Pi compaction remains authoritative for in-Session history compression. Current-session continuity after compaction is supplied by Pi plus Pindie's existing authoritative State Checkpoint, not by re-injecting an old rollover checkpoint that may already be stale.
 
