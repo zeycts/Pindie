@@ -36,6 +36,12 @@ import {
   type StrategyRevisionCandidate,
 } from "../src/strategy-candidates.ts";
 import { getSeedStrategy } from "../src/strategies.ts";
+import {
+  createStrategyDerivationCandidate,
+  strategyDerivationCandidateSemanticFingerprint,
+  type StrategyDerivationCandidateV1,
+} from "../src/strategy-derivation-candidates.ts";
+import { createTrustedStrategyPortfolio } from "../src/strategy-portfolio.ts";
 import { RemoteCompanion, type RemoteSurface } from "../src/remote-companion.ts";
 import {
   EMPTY_STATE,
@@ -54,6 +60,7 @@ import type {
   RunExperienceStore,
 } from "../src/experience-store.ts";
 import {
+  createPromotedStrategyRevisionCatalog,
   createStrategyRevisionDecision,
   type StrategyRevisionDecision,
   type StrategyRevisionDecisionStore,
@@ -278,6 +285,31 @@ function trialCandidate(
       principles: ["name the boundary", "verify the smallest coherent change"],
       sourceRecordIds: ["record-one", "record-two"],
       hypothesis: "A narrower boundary check may reduce avoidable rework.",
+    },
+  });
+}
+
+function derivationTrialCandidate(
+  candidateId = "00000000-0000-4000-8000-000000000006",
+  basePortfolio = createTrustedStrategyPortfolio(
+    "/repo",
+    createPromotedStrategyRevisionCatalog([]),
+  ),
+): StrategyDerivationCandidateV1 {
+  return createStrategyDerivationCandidate({
+    projectId: basePortfolio.projectId,
+    basePortfolio,
+    candidateId,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    proposal: {
+      strategyId: "boundary-first",
+      kind: "approach",
+      summary: "Name the smallest boundary before choosing a broader change.",
+      useWhen: ["the requested change crosses a meaningful interface"],
+      avoidWhen: ["the correction is already local and clear"],
+      principles: ["make the boundary explicit", "verify the smallest coherent move"],
+      sourceRecordIds: ["derive-one", "derive-two", "derive-three"],
+      hypothesis: "Repeated trusted-policy Runs may expose a missing boundary-first abstraction.",
     },
   });
 }
@@ -4812,7 +4844,12 @@ test("SI v0.6 Slice B /trial arms the next real Run without manufacturing user i
   assert.equal(finalApproach?.revisionIdentity, candidate.candidateId);
   assert.equal(finalApproach?.revisionFingerprint, strategyCandidateSemanticFingerprint(candidate));
   assert.equal(finalApproach?.revisionStatusAtRun, "trial");
-  assert.deepEqual(finalApproach?.semantics, candidate.proposal);
+  assert.deepEqual(finalApproach?.semantics, {
+    summary: candidate.proposal.summary,
+    useWhen: candidate.proposal.useWhen,
+    avoidWhen: candidate.proposal.avoidWhen,
+    principles: candidate.proposal.principles,
+  });
   assert.equal(JSON.stringify(record).includes("trialActive"), false);
   assert.equal(JSON.stringify(record).includes("candidateId"), false);
 
@@ -4831,6 +4868,291 @@ test("SI v0.6 Slice B /trial arms the next real Run without manufacturing user i
     ),
     /without an active Candidate Trial/i,
   );
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("SI v0.7 /trial completions unify valid Revision and Derivation Candidates by exact ID", async () => {
+  const revision = trialCandidate("00000000-0000-4000-8000-000000000011");
+  const derivation = derivationTrialCandidate("00000000-0000-4000-8000-000000000012");
+  const revisions = new Map([[revision.candidateId, revision]]);
+  const derivations = new Map([[derivation.candidateId, derivation]]);
+  const revisionReader = {
+    readAll: async () => [...revisions.values()],
+    read: async (_root: string, candidateId: string) => revisions.get(candidateId) ?? null,
+  };
+  const derivationReader = {
+    readAll: async () => [...derivations.values()],
+    read: async (_root: string, candidateId: string) => derivations.get(candidateId) ?? null,
+  };
+  const decisions = testDecisionStore();
+  const reader = new ExtensionTestExperienceReader();
+  const harness = createHarness([ ["/repo", activeState()] ], {}, {
+    experienceReader: reader,
+    strategyCandidateReader: revisionReader,
+    strategyDerivationCandidateReader: derivationReader,
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+  });
+  await startSession(harness, "/repo");
+
+  const command = harness.api.commands.get("trial");
+  assert.ok(command);
+  const options = await command.getArgumentCompletions("");
+  assert.ok(options);
+  assert.deepEqual(new Set(options!.map((option: any) => option.value)), new Set([
+    revision.candidateId,
+    derivation.candidateId,
+  ]));
+  assert.match(options!.find((option: any) => option.value === revision.candidateId)!.label, /architecture-first · Use a bounded architectural check/);
+  assert.match(options!.find((option: any) => option.value === derivation.candidateId)!.label, /boundary-first.*derivation/);
+  assert.deepEqual(
+    await command.getArgumentCompletions(derivation.candidateId),
+    [options!.find((option: any) => option.value === derivation.candidateId)],
+  );
+  assert.deepEqual(harness.integration.runtime.state, activeState());
+  assert.deepEqual(harness.store.saves, []);
+});
+
+test("SI v0.7 Derivation /trial binds one exact Run, creates no packet attribution alone, and records schema-v4 trial identity", async () => {
+  const candidate = derivationTrialCandidate();
+  const derivationReader = {
+    readAll: async () => [candidate],
+    read: async (_root: string, candidateId: string) => candidateId === candidate.candidateId ? candidate : null,
+  };
+  const revisionReader = {
+    readAll: async () => [],
+    read: async () => null,
+  };
+  const decisions = testDecisionStore();
+  const harness = createHarness([ ["/repo", activeState("Derivation Trial task")] ], {}, {
+    experienceReader: new ExtensionTestExperienceReader(),
+    strategyCandidateReader: revisionReader,
+    strategyDerivationCandidateReader: derivationReader,
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+  });
+  await startSession(harness, "/repo");
+  const command = harness.api.commands.get("trial");
+  assert.ok(command);
+  const commandContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  };
+
+  await command.handler(candidate.candidateId, commandContext);
+  assert.equal(harness.integration.trial.hasPendingDerivationTrial, true);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+  const firstRun = await harnessBeforeAgentStart(harness);
+  assert.match(firstRun.systemPrompt, /<PINDIE_DERIVATION_TRIAL_PACKET>/);
+  assert.equal(harness.integration.trial.hasActiveDerivationTrial, true);
+  assert.equal(harness.integration.policySnapshot, null);
+  await captureObservationEvidence(harness, "derivation-trial-without-policy");
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+
+  assert.equal(harness.integration.trial.hasTrial, false);
+  assert.equal(harness.experienceStore.records.length, 1);
+  assert.equal(harness.experienceStore.records[0]!.experience.schemaVersion, 4);
+  assert.equal(harness.experienceStore.records[0]!.experience.policy.finalSnapshot, null);
+
+  // A second explicit command is required for a second Candidate Trial.
+  await command.handler(candidate.candidateId, commandContext);
+  const secondRun = await harnessBeforeAgentStart(harness);
+  assert.match(secondRun.systemPrompt, /<PINDIE_DERIVATION_TRIAL_PACKET>/);
+  const activeSelection = harness.integration.trial.activeDerivationTrial!.revisionSelection;
+  const selector = {
+    strategyId: activeSelection.strategyId,
+    revisionIdentity: activeSelection.revisionIdentity,
+    revisionFingerprint: activeSelection.revisionFingerprint,
+  };
+  await assert.rejects(
+    harness.api.tool("pindie_policy_set").execute(
+      "wrong-derived-role",
+      { approach: "direct-action", modifiers: [selector] },
+      undefined,
+      undefined,
+      context("/repo"),
+    ),
+    /wrong.*modifier|role/i,
+  );
+  await executeSemanticTool(harness, "pindie_policy_set", "derived-trial-policy", {
+    approach: selector,
+    modifiers: ["minimal-change"],
+  });
+  await captureObservationEvidence(harness, "derivation-trial-observation");
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+
+  assert.equal(harness.integration.trial.hasTrial, false);
+  assert.equal(harness.experienceStore.records.length, 2);
+  const trialRecord = harness.experienceStore.records[1]!.experience;
+  const finalApproach = trialRecord.policy.finalSnapshot?.approach;
+  assert.equal(finalApproach?.strategyId, candidate.proposal.strategyId);
+  assert.equal(finalApproach?.revisionIdentity, candidate.candidateId);
+  assert.equal(finalApproach?.revisionFingerprint, strategyDerivationCandidateSemanticFingerprint(candidate));
+  assert.equal(finalApproach?.revisionStatusAtRun, "trial");
+  assert.deepEqual(finalApproach?.semantics, {
+    summary: candidate.proposal.summary,
+    useWhen: candidate.proposal.useWhen,
+    avoidWhen: candidate.proposal.avoidWhen,
+    principles: candidate.proposal.principles,
+  });
+  assert.equal(trialRecord.execution.toolCalls, 1);
+  assert.equal(trialRecord.policy.finalPolicyDeclarationCount, 1);
+  assert.equal(JSON.stringify(trialRecord).includes("candidateId"), false);
+  assert.equal(JSON.stringify(trialRecord).includes("trialActive"), false);
+
+  await beginAgentRun(harness);
+  await assert.rejects(
+    harness.api.tool("pindie_policy_set").execute(
+      "after-derived-trial",
+      { approach: selector },
+      undefined,
+      undefined,
+      context("/repo"),
+    ),
+    /without an active Candidate Trial/i,
+  );
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("SI v0.7 Derivation /trial fails closed for stale Candidate bindings and cross-store UUID collisions", async () => {
+  const candidate = derivationTrialCandidate("00000000-0000-4000-8000-000000000013");
+  let currentCandidate: StrategyDerivationCandidateV1 = candidate;
+  const staleReader = {
+    readAll: async () => [currentCandidate],
+    read: async (_root: string, candidateId: string) => candidateId === candidate.candidateId ? currentCandidate : null,
+  };
+  const revisionReader = { readAll: async () => [], read: async () => null };
+  const decisions = testDecisionStore();
+  const staleHarness = createHarness([ ["/repo", activeState()] ], {}, {
+    strategyCandidateReader: revisionReader,
+    strategyDerivationCandidateReader: staleReader,
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+  });
+  await startSession(staleHarness, "/repo");
+  const staleNotices: Array<{ message: string; type: string }> = [];
+  const staleContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => staleNotices.push({ message, type }) },
+  };
+  await staleHarness.api.commands.get("trial").handler(candidate.candidateId, staleContext);
+  currentCandidate = {
+    ...candidate,
+    proposal: {
+      ...candidate.proposal,
+      summary: "The immutable proposal changed after arming.",
+    },
+  };
+  await assert.rejects(
+    harnessBeforeAgentStart(staleHarness),
+    /stale|changed|immutable Candidate/i,
+  );
+  assert.equal(staleHarness.integration.trial.hasTrial, false);
+  assert.equal(staleHarness.experienceStore.records.length, 0);
+
+  const collisionId = "00000000-0000-4000-8000-000000000014";
+  const revision = trialCandidate(collisionId);
+  const derivation = derivationTrialCandidate(collisionId);
+  const collisionHarness = createHarness([ ["/repo", activeState()] ], {}, {
+    strategyCandidateReader: {
+      readAll: async () => [revision],
+      read: async (_root: string, candidateId: string) => candidateId === collisionId ? revision : null,
+    },
+    strategyDerivationCandidateReader: {
+      readAll: async () => [derivation],
+      read: async (_root: string, candidateId: string) => candidateId === collisionId ? derivation : null,
+    },
+    strategyDecisionStore: testDecisionStore(),
+  });
+  await startSession(collisionHarness, "/repo");
+  assert.equal(await collisionHarness.api.commands.get("trial").getArgumentCompletions(""), null);
+  const collisionNotices: Array<{ message: string; type: string }> = [];
+  await collisionHarness.api.commands.get("trial").handler("", {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => collisionNotices.push({ message, type }) },
+  });
+  assert.match(collisionNotices.at(-1)?.message ?? "", /No Candidate selected|choose one/i);
+  assert.equal(collisionHarness.integration.trial.hasTrial, false);
+});
+
+test("SI v0.7 Derivation /trial rejects a changed trusted-portfolio base before Run binding", async () => {
+  const promotedCandidate = trialCandidate("00000000-0000-4000-8000-000000000021");
+  const promotedDecision = createStrategyRevisionDecision({
+    candidate: promotedCandidate,
+    decision: "promoted",
+    trialRecordIds: [],
+    decidedAt: "2026-02-01T00:00:00.000Z",
+  });
+  const basePortfolio = createTrustedStrategyPortfolio(
+    "/repo",
+    createPromotedStrategyRevisionCatalog([{
+      candidate: promotedCandidate,
+      decision: promotedDecision,
+      selection: strategyRevisionSelectionFromCandidate(promotedCandidate, "promoted"),
+    }]),
+  );
+  const candidate = derivationTrialCandidate(
+    "00000000-0000-4000-8000-000000000022",
+    basePortfolio,
+  );
+  const decisions = testDecisionStore([promotedDecision]);
+  const harness = createHarness([ ["/repo", activeState()] ], {}, {
+    strategyCandidateReader: {
+      read: async (_root: string, candidateId: string) => candidateId === promotedCandidate.candidateId ? promotedCandidate : null,
+      readAll: async () => [promotedCandidate],
+    },
+    strategyDerivationCandidateReader: {
+      read: async (_root: string, candidateId: string) => candidateId === candidate.candidateId ? candidate : null,
+      readAll: async () => [candidate],
+    },
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+  });
+  await startSession(harness, "/repo");
+  await harness.api.commands.get("trial").handler(candidate.candidateId, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  assert.equal(harness.integration.trial.hasPendingDerivationTrial, true);
+
+  decisions.decisions.clear();
+  await assert.rejects(
+    harnessBeforeAgentStart(harness),
+    /stale|trusted portfolio|binding/i,
+  );
+  assert.equal(harness.integration.trial.hasTrial, false);
+});
+
+test("SI v0.7 Derivation Trial lease clears across Session replacement and fresh Runs", async () => {
+  const candidate = derivationTrialCandidate("00000000-0000-4000-8000-000000000023");
+  const harness = createHarness([ ["/repo", activeState()] ], {}, {
+    strategyCandidateReader: { read: async () => null, readAll: async () => [] },
+    strategyDerivationCandidateReader: {
+      read: async (_root: string, candidateId: string) => candidateId === candidate.candidateId ? candidate : null,
+      readAll: async () => [candidate],
+    },
+  });
+  await startSession(harness, "/repo");
+  await harness.api.commands.get("trial").handler(candidate.candidateId, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  await beginAgentRun(harness);
+  assert.equal(harness.integration.trial.hasActiveDerivationTrial, true);
+
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "new" },
+    context("/repo"),
+  );
+  await startSession(harness, "/repo", "new");
+  assert.equal(harness.integration.trial.hasTrial, false);
+  const fresh = await harnessBeforeAgentStart(harness);
+  assert.doesNotMatch(fresh.systemPrompt, /<PINDIE_DERIVATION_TRIAL_PACKET>/);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 });
 

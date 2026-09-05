@@ -30,7 +30,9 @@ import {
 } from "./experience-evaluation.ts";
 import {
   buildCandidateCommandProjection,
+  buildTrialCommandProjection,
   filterCandidateCommandOptions,
+  filterTrialCommandOptions,
   type CandidateCommandName,
 } from "./strategy-candidate-commands.ts";
 import { ExecutionIntegration } from "./execution-integration.ts";
@@ -56,6 +58,7 @@ import {
 } from "./strategy-candidates.ts";
 import {
   FileStrategyDerivationCandidateStore,
+  validateStrategyDerivationCandidateBinding,
   type StrategyDerivationCandidateReader,
   type StrategyDerivationCandidateStore,
 } from "./strategy-derivation-candidates.ts";
@@ -71,7 +74,10 @@ import {
   type StrategyRevisionDecisionStore,
 } from "./strategy-decisions.ts";
 import { getSeedStrategy, SEED_STRATEGIES } from "./strategies.ts";
-import { loadTrustedStrategyPortfolio } from "./strategy-portfolio.ts";
+import {
+  loadTrustedStrategyPortfolio,
+  trustedLogicalStrategyIds,
+} from "./strategy-portfolio.ts";
 import {
   assembleRunExperience,
   isEligibleRunExperience,
@@ -130,7 +136,10 @@ import {
 } from "./task-handoff-runtime.ts";
 import {
   TrialRuntime,
+  type DerivationTrialLease,
+  type TrialLease,
 } from "./strategy-trial.ts";
+import { resolveTrialCandidate } from "./strategy-candidate-resolution.ts";
 import type { SubscriptionUsageProvider } from "./subscription-usage.ts";
 import {
   createPindieGateOpenTool,
@@ -512,10 +521,32 @@ export function registerPindieExtension(
     experienceReader,
   });
 
+  const trialCommandCompletions = async (prefix: string) => {
+    const projectRoot = runtime.projectRoot;
+    if (projectRoot === null) return null;
+    try {
+      const trustedPortfolio = await loadTrustedPortfolio(projectRoot);
+      const projection = await buildTrialCommandProjection({
+        projectRoot,
+        candidateReader: strategyCandidateReader,
+        derivationCandidateReader: strategyDerivationCandidateReader,
+        decisionReader: strategyDecisionReader,
+        experienceReader,
+        trustedPortfolio,
+      });
+      return filterTrialCommandOptions(projection, prefix);
+    } catch {
+      // Completion is advisory UI. Malformed or changing trust artifacts must
+      // not become options, and must never be treated as command authority.
+      return null;
+    }
+  };
+
   const candidateCommandCompletions = async (
     command: CandidateCommandName,
     prefix: string,
   ) => {
+    if (command === "trial") return trialCommandCompletions(prefix);
     const projectRoot = runtime.projectRoot;
     if (projectRoot === null) return null;
     try {
@@ -542,8 +573,10 @@ export function registerPindieExtension(
       return;
     }
     try {
-      const projection = await candidateCommandProjection(command, projectRoot);
-      if (projection.options.length === 0) {
+      const options = command === "trial"
+        ? await trialCommandCompletions("")
+        : (await candidateCommandProjection(command, projectRoot)).options;
+      if (options !== null && options.length === 0) {
         const message = command === "trial"
           ? "No Candidates are currently available for Trial."
           : command === "trial-review"
@@ -813,41 +846,59 @@ export function registerPindieExtension(
       return;
     }
 
-    let candidate;
+    let candidateRef;
     try {
-      candidate = await strategyCandidateReader.read(projectRoot, requestedId);
+      candidateRef = await resolveTrialCandidate({
+        projectRoot,
+        candidateId: requestedId,
+        revisionReader: strategyCandidateReader,
+        derivationReader: strategyDerivationCandidateReader,
+      });
     } catch (error) {
-      ctx.ui.notify(`Pindie could not arm /trial: Candidate read failed: ${errorMessage(error)}`, "warning");
+      ctx.ui.notify(`Pindie could not arm /trial: invalid Candidate: ${errorMessage(error)}`, "warning");
       return;
     }
-    if (candidate === null) {
+    if (candidateRef === null) {
       ctx.ui.notify(`Pindie could not arm /trial: Candidate '${requestedId}' was not found for this project.`, "warning");
       return;
     }
-    if (candidate.candidateId !== requestedId) {
-      ctx.ui.notify("Pindie could not arm /trial: invalid Candidate identity did not match the requested ID.", "warning");
-      return;
-    }
 
-    let existingDecision;
-    try {
-      existingDecision = await strategyDecisionReader.read(projectRoot, requestedId);
-    } catch (error) {
-      ctx.ui.notify(`Pindie could not arm /trial: Decision read failed: ${errorMessage(error)}`, "warning");
-      return;
-    }
-    if (existingDecision !== null) {
+    if (candidateRef.kind === "revision") {
+      let existingDecision;
       try {
-        validateStrategyRevisionDecisionBinding(existingDecision, candidate);
+        existingDecision = await strategyDecisionReader.read(projectRoot, requestedId);
       } catch (error) {
-        ctx.ui.notify(`Pindie could not arm /trial: existing Decision binding is invalid: ${errorMessage(error)}`, "warning");
+        ctx.ui.notify(`Pindie could not arm /trial: Decision read failed: ${errorMessage(error)}`, "warning");
         return;
       }
-      ctx.ui.notify(
-        "Pindie could not arm /trial: an immutable terminal Decision already exists for this Candidate.",
-        "warning",
-      );
-      return;
+      if (existingDecision !== null) {
+        try {
+          validateStrategyRevisionDecisionBinding(existingDecision, candidateRef.candidate);
+        } catch (error) {
+          ctx.ui.notify(`Pindie could not arm /trial: existing Decision binding is invalid: ${errorMessage(error)}`, "warning");
+          return;
+        }
+        ctx.ui.notify(
+          "Pindie could not arm /trial: an immutable terminal Decision already exists for this Candidate.",
+          "warning",
+        );
+        return;
+      }
+    } else {
+      try {
+        const portfolio = await loadTrustedPortfolio(projectRoot);
+        validateStrategyDerivationCandidateBinding(
+          candidateRef.candidate,
+          projectRoot,
+          portfolio,
+        );
+        if (trustedLogicalStrategyIds(portfolio).includes(candidateRef.candidate.proposal.strategyId)) {
+          throw new Error("the proposed logical Strategy ID is already trusted in the current portfolio");
+        }
+      } catch (error) {
+        ctx.ui.notify(`Pindie could not arm /trial: Derivation Candidate binding is stale or invalid: ${errorMessage(error)}`, "warning");
+        return;
+      }
     }
 
     let currentSessionId: string;
@@ -877,8 +928,44 @@ export function registerPindieExtension(
       ctx.ui.notify("Pindie could not arm /trial: a Strategy Derivation attempt is already pending or active.", "warning");
       return;
     }
+    if (candidateRef.kind === "derivation") {
+      // Reconstruct the artifact/store binding immediately before arming as
+      // well as during activation. A trust or cross-store change during the
+      // async command is fail-closed.
+      try {
+        const latestCandidateRef = await resolveTrialCandidate({
+          projectRoot,
+          candidateId: requestedId,
+          revisionReader: strategyCandidateReader,
+          derivationReader: strategyDerivationCandidateReader,
+        });
+        if (
+          latestCandidateRef === null ||
+          latestCandidateRef.kind !== "derivation" ||
+          !isDeepStrictEqual(latestCandidateRef.candidate, candidateRef.candidate)
+        ) {
+          throw new Error("the immutable Candidate artifact or its cross-store binding changed before arming");
+        }
+        candidateRef = latestCandidateRef;
+        const portfolio = await loadTrustedPortfolio(projectRoot);
+        validateStrategyDerivationCandidateBinding(
+          candidateRef.candidate,
+          projectRoot,
+          portfolio,
+        );
+        if (trustedLogicalStrategyIds(portfolio).includes(candidateRef.candidate.proposal.strategyId)) {
+          throw new Error("the proposed logical Strategy ID is already trusted in the current portfolio");
+        }
+      } catch (error) {
+        ctx.ui.notify(`Pindie could not arm /trial: Derivation Candidate binding changed before arming: ${errorMessage(error)}`, "warning");
+        return;
+      }
+    }
     try {
-      if (!trial.establish(sessionId, candidate)) {
+      const established = candidateRef.kind === "revision"
+        ? trial.establish(sessionId, candidateRef.candidate)
+        : trial.establishDerivation(sessionId, candidateRef.candidate);
+      if (!established) {
         ctx.ui.notify("Pindie could not arm /trial: another Candidate Trial is already pending or active.", "warning");
         return;
       }
@@ -887,7 +974,7 @@ export function registerPindieExtension(
       return;
     }
     ctx.ui.notify(
-      `Trial armed for the next Agent Run (Candidate ${candidate.candidateId}).`,
+      `Trial armed for the next Agent Run (Candidate ${candidateRef.candidate.candidateId}).`,
       "info",
     );
   };
@@ -1127,11 +1214,11 @@ export function registerPindieExtension(
   };
   pi.registerTool(createPindiePolicySetTool({
     onPolicySet: (snapshot) => run.setPolicySnapshot(snapshot),
-    resolveRevisionSelector: (
+    resolveRevisionSelector: async (
       selector: StrategyRevisionSelector,
       kind: "approach" | "modifier",
       ctx: ExtensionContext,
-    ): StrategyRevisionSelection => {
+    ): Promise<StrategyRevisionSelection> => {
       let sessionId: string;
       try {
         sessionId = ctx.sessionManager.getSessionId();
@@ -1145,6 +1232,51 @@ export function registerPindieExtension(
           selector,
           kind,
         );
+      }
+
+      const activeDerivationTrial = trial.activeDerivationFor(
+        sessionId,
+        run.activeAgentRunGeneration,
+      );
+      if (activeDerivationTrial !== null) {
+        const projectRoot = runtime.projectRoot;
+        if (projectRoot === null) {
+          throw new Error("Derivation Candidate selector is unavailable: no current project root is loaded.");
+        }
+        const currentCandidateRef = await resolveTrialCandidate({
+          projectRoot,
+          candidateId: activeDerivationTrial.candidate.candidateId,
+          revisionReader: strategyCandidateReader,
+          derivationReader: strategyDerivationCandidateReader,
+        });
+        if (
+          currentCandidateRef === null ||
+          currentCandidateRef.kind !== "derivation" ||
+          !isDeepStrictEqual(currentCandidateRef.candidate, activeDerivationTrial.candidate)
+        ) {
+          throw new Error("Derivation Candidate selector is unavailable: the immutable Candidate artifact or its cross-store binding changed after the Trial lease was activated.");
+        }
+        const currentCandidate = currentCandidateRef.candidate;
+        const currentPortfolio = await loadTrustedPortfolio(projectRoot);
+        validateStrategyDerivationCandidateBinding(
+          currentCandidate,
+          projectRoot,
+          currentPortfolio,
+        );
+        if (trustedLogicalStrategyIds(currentPortfolio).includes(currentCandidate.proposal.strategyId)) {
+          throw new Error("Derivation Candidate selector is unavailable: its logical Strategy ID is trusted in the current portfolio.");
+        }
+        if (selector.revisionIdentity === activeDerivationTrial.candidate.candidateId) {
+          return trial.resolveDerivationSelector(
+            sessionId,
+            run.activeAgentRunGeneration,
+            selector,
+            kind,
+            currentCandidate,
+          );
+        }
+        // A Derivation Trial may still use a normal trusted revision in a
+        // mixed Policy; only the exact derived selector is lease-controlled.
       }
       if (promotedStrategyRevisionCatalog.entries.length === 0) {
         throw new Error("Candidate revision selector is unavailable without an active Candidate Trial or a promoted revision in the current project catalog.");
@@ -1225,7 +1357,7 @@ export function registerPindieExtension(
   });
 
   pi.registerCommand("trial", {
-    description: "Arm one explicit Strategy Revision Candidate Trial for the next Agent Run",
+    description: "Arm one explicit Strategy Candidate Trial for the next Agent Run",
     getArgumentCompletions: (prefix) => candidateCommandCompletions("trial", prefix),
     handler: async (args, ctx) => handleTrialCommand(args, ctx),
   });
@@ -1464,7 +1596,7 @@ export function registerPindieExtension(
       } else {
         adaptationRunGeneration = null;
       }
-      let trialLease = null;
+      let trialLease: TrialLease | DerivationTrialLease | null = null;
       if (adaptationLease === null && trial.hasPendingTrial) {
         let sessionId: string;
         try {
@@ -1473,7 +1605,44 @@ export function registerPindieExtension(
           trial.clear();
           throw error;
         }
-        trialLease = trial.bind(sessionId, run.activeAgentRunGeneration!);
+        const pendingDerivationTrial = trial.pendingDerivationTrial;
+        if (pendingDerivationTrial !== null) {
+          const projectRoot = runtime.projectRoot;
+          try {
+            if (projectRoot === null) {
+              throw new Error("no current project root is loaded");
+            }
+            const currentCandidateRef = await resolveTrialCandidate({
+              projectRoot,
+              candidateId: pendingDerivationTrial.candidate.candidateId,
+              revisionReader: strategyCandidateReader,
+              derivationReader: strategyDerivationCandidateReader,
+            });
+            if (
+              currentCandidateRef === null ||
+              currentCandidateRef.kind !== "derivation" ||
+              !isDeepStrictEqual(currentCandidateRef.candidate, pendingDerivationTrial.candidate)
+            ) {
+              throw new Error("the immutable Candidate artifact or its cross-store binding changed after /trial was armed");
+            }
+            const currentCandidate = currentCandidateRef.candidate;
+            const currentPortfolio = await loadTrustedPortfolio(projectRoot);
+            validateStrategyDerivationCandidateBinding(
+              currentCandidate,
+              projectRoot,
+              currentPortfolio,
+            );
+            if (trustedLogicalStrategyIds(currentPortfolio).includes(currentCandidate.proposal.strategyId)) {
+              throw new Error("the proposed logical Strategy ID is already trusted in the current portfolio");
+            }
+          } catch (error) {
+            trial.clear();
+            throw new Error(`Pindie rejected this Agent Run: the pending Derivation Trial binding is stale or invalid: ${errorMessage(error)}`);
+          }
+          trialLease = trial.bindDerivation(sessionId, run.activeAgentRunGeneration!);
+        } else {
+          trialLease = trial.bind(sessionId, run.activeAgentRunGeneration!);
+        }
         if (trialLease === null) {
           // A pending lease is bound to exactly the Session that armed it.
           // A mismatch is a fail-closed stale lease, not a normal Run input.

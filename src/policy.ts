@@ -62,6 +62,8 @@ export interface PolicySnapshot {
 
 const CANONICAL_REVISION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REVISION_FINGERPRINT = /^sha256:[0-9a-f]{64}$/;
+const LOGICAL_STRATEGY_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const MAX_LOGICAL_STRATEGY_ID_LENGTH = 64;
 const REVISION_SELECTOR_FIELDS = [
   "strategyId",
   "revisionIdentity",
@@ -315,8 +317,13 @@ export function createStrategyRevisionSelection(
 
   const seed = SEED_STRATEGIES.find((candidate) =>
     candidate.id === strategyId && candidate.kind === kind);
-  if (seed === undefined) {
-    return invalid(`'${strategyId}' is not a canonical Seed ${kind} Strategy.`);
+  if (
+    seed === undefined &&
+    (strategyId.length > MAX_LOGICAL_STRATEGY_ID_LENGTH ||
+      strategyId.trim() !== strategyId ||
+      !LOGICAL_STRATEGY_ID.test(strategyId))
+  ) {
+    return invalid(`'${strategyId}' is not a valid logical Strategy ID.`);
   }
 
   const summary = semanticsValue.summary;
@@ -336,6 +343,7 @@ export function createStrategyRevisionSelection(
 
   if (revisionIdentity === "seed") {
     if (
+      seed === undefined ||
       revisionStatusAtRun !== "seed" ||
       revisionFingerprint !== seedStrategyFingerprint(seed) ||
       JSON.stringify({ summary, useWhen, avoidWhen, principles }) !==
@@ -502,12 +510,19 @@ export function createPolicySnapshot(input: unknown): PolicySnapshot {
  * resolved by the Harness against a currently legal Trial lease or promoted
  * project-local revision catalog.
  */
+export type StrategyRevisionResolver = (
+  selector: StrategyRevisionSelector,
+  kind: SeedStrategyKind,
+) => StrategyRevisionSelection;
+
+export type AsyncStrategyRevisionResolver = (
+  selector: StrategyRevisionSelector,
+  kind: SeedStrategyKind,
+) => StrategyRevisionSelection | Promise<StrategyRevisionSelection>;
+
 export function createPolicySnapshotForRun(
   input: unknown,
-  resolveRevisionSelector?: (
-    selector: StrategyRevisionSelector,
-    kind: SeedStrategyKind,
-  ) => StrategyRevisionSelection,
+  resolveRevisionSelector?: StrategyRevisionResolver,
 ): PolicySnapshot {
   // Preserve the pre-revision Seed-only behavior byte-for-byte for callers
   // that have no revision resolver (including ordinary legacy integrations).
@@ -537,6 +552,51 @@ export function createPolicySnapshotForRun(
   }
   const modifiers = (input.modifiers ?? []).map((modifier) =>
     select(modifier, "modifier"));
+  if (new Set(modifiers.map((modifier) => selectionId(modifier))).size !== modifiers.length) {
+    return invalidPolicyInput("modifiers must be unique by logical Strategy identity.");
+  }
+  return Object.freeze({
+    approach,
+    modifiers: Object.freeze(modifiers),
+  });
+}
+
+/**
+ * Async counterpart used by the model-facing tool when exact non-Seed
+ * selectors require fresh runtime artifact validation. The synchronous helper
+ * above remains available for pure callers and frozen integrations.
+ */
+export async function createPolicySnapshotForRunAsync(
+  input: unknown,
+  resolveRevisionSelector?: AsyncStrategyRevisionResolver,
+): Promise<PolicySnapshot> {
+  // Preserve ordinary Seed-only behavior when no resolver is supplied.
+  if (resolveRevisionSelector === undefined) return createPolicySnapshot(input);
+  if (!isRecord(input)) return invalidPolicyInput("an approach is required.");
+
+  const select = async (
+    value: unknown,
+    expectedKind: SeedStrategyKind,
+  ): Promise<StrategyRevisionSelection> => {
+    if (typeof value === "string") return seedStrategy(value, expectedKind);
+    if (!isStrategyRevisionSelector(value)) {
+      return invalidPolicyInput(
+        `${expectedKind} must be a Seed Strategy ID or an exact Trial/promoted revision selector.`,
+      );
+    }
+    const selection = await resolveRevisionSelector(value, expectedKind);
+    if (selection.kind !== expectedKind) {
+      return invalidPolicyInput(`${expectedKind} selection has the wrong Strategy kind.`);
+    }
+    return selection;
+  };
+
+  const approach = await select(input.approach, "approach");
+  if (input.modifiers !== undefined && !Array.isArray(input.modifiers)) {
+    return invalidPolicyInput("modifiers must be an array of Seed IDs or exact Trial/promoted revision selectors.");
+  }
+  const modifiers = await Promise.all((input.modifiers ?? []).map((modifier) =>
+    select(modifier, "modifier")));
   if (new Set(modifiers.map((modifier) => selectionId(modifier))).size !== modifiers.length) {
     return invalidPolicyInput("modifiers must be unique by logical Strategy identity.");
   }

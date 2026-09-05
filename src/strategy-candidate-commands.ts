@@ -19,6 +19,15 @@ import {
   type StrategyRevisionDecision,
   type StrategyRevisionDecisionReader,
 } from "./strategy-decisions.ts";
+import {
+  validateStrategyDerivationCandidateBinding,
+  type StrategyDerivationCandidateReader,
+  type StrategyDerivationCandidateV1,
+} from "./strategy-derivation-candidates.ts";
+import {
+  trustedLogicalStrategyIds,
+  type TrustedStrategyPortfolio,
+} from "./strategy-portfolio.ts";
 
 export type CandidateCommandName = "trial" | "trial-review" | "promote" | "reject";
 
@@ -42,6 +51,30 @@ export interface CandidateCommandProjectionEntry {
 export interface CandidateCommandProjection {
   readonly command: CandidateCommandName;
   readonly entries: readonly CandidateCommandProjectionEntry[];
+  readonly options: readonly AutocompleteItem[];
+}
+
+export interface TrialCommandProjectionInput {
+  readonly projectRoot: string;
+  readonly candidateReader: StrategyCandidateReader;
+  readonly derivationCandidateReader: StrategyDerivationCandidateReader;
+  readonly decisionReader: StrategyRevisionDecisionReader;
+  readonly experienceReader: RunExperienceReader;
+  /** Fresh current trust used to exclude stale or collided Derivation Candidates. */
+  readonly trustedPortfolio: TrustedStrategyPortfolio;
+}
+
+export type TrialCommandProjectionEntry =
+  | (CandidateCommandProjectionEntry & { readonly kind: "revision" })
+  | {
+      readonly kind: "derivation";
+      readonly candidate: StrategyDerivationCandidateV1;
+      readonly label: string;
+      readonly option: AutocompleteItem;
+    };
+
+export interface TrialCommandProjection {
+  readonly entries: readonly TrialCommandProjectionEntry[];
   readonly options: readonly AutocompleteItem[];
 }
 
@@ -81,6 +114,40 @@ async function readAllCandidates(
     candidateIds.add(candidate.candidateId);
     return candidate;
   });
+  return Object.freeze(candidates.sort((left, right) =>
+    compareText(left.candidateId, right.candidateId)));
+}
+
+async function readAllDerivationCandidates(
+  reader: StrategyDerivationCandidateReader,
+  projectRoot: string,
+  trustedPortfolio: TrustedStrategyPortfolio,
+): Promise<readonly StrategyDerivationCandidateV1[]> {
+  if (typeof reader.readAll !== "function") {
+    throw new Error("Strategy Derivation Candidate enumeration is unavailable for this project reader.");
+  }
+  const rawCandidates = await reader.readAll(projectRoot);
+  if (!Array.isArray(rawCandidates)) {
+    throw new Error("Strategy Derivation Candidate reader returned an invalid collection.");
+  }
+
+  const candidateIds = new Set<string>();
+  const candidates: StrategyDerivationCandidateV1[] = [];
+  for (const rawCandidate of rawCandidates) {
+    const candidate = validateStrategyDerivationCandidateBinding(
+      rawCandidate,
+      projectRoot,
+      trustedPortfolio,
+    );
+    if (candidateIds.has(candidate.candidateId)) {
+      throw new Error("Strategy Derivation Candidate reader returned duplicate Candidate IDs.");
+    }
+    candidateIds.add(candidate.candidateId);
+    // Keep every validated ID in this intermediate collection so a
+    // cross-store UUID collision is detected even when the proposed logical
+    // identity is no longer available for Trial options.
+    candidates.push(candidate);
+  }
   return Object.freeze(candidates.sort((left, right) =>
     compareText(left.candidateId, right.candidateId)));
 }
@@ -267,6 +334,103 @@ export async function buildCandidateCommandProjection(
     entries: Object.freeze(sorted),
     options: Object.freeze(sorted.map((entry) => entry.option)),
   });
+}
+
+/**
+ * Read one fresh unified `/trial` projection. Revision Candidates retain the
+ * frozen v0.6 projection and hints; Derivation Candidates are added only after
+ * exact project/portfolio validation. A UUID present in both stores is an
+ * ambiguity and invalidates the whole projection rather than being guessed.
+ */
+export async function buildTrialCommandProjection(
+  input: TrialCommandProjectionInput,
+): Promise<TrialCommandProjection> {
+  const revisionIds = await readAllCandidates(input.candidateReader, input.projectRoot);
+  const revisionIdSet = new Set(revisionIds.map((candidate) => candidate.candidateId));
+  const revisionProjection = await buildCandidateCommandProjection({
+    projectRoot: input.projectRoot,
+    command: "trial",
+    candidateReader: input.candidateReader,
+    decisionReader: input.decisionReader,
+    experienceReader: input.experienceReader,
+  });
+  const allDerivationCandidates = await readAllDerivationCandidates(
+    input.derivationCandidateReader,
+    input.projectRoot,
+    input.trustedPortfolio,
+  );
+  if (allDerivationCandidates.some((candidate) => revisionIdSet.has(candidate.candidateId))) {
+    throw new Error("Candidate ID is ambiguous: both Revision and Derivation Candidate stores contain it.");
+  }
+  const trustedIds = new Set(trustedLogicalStrategyIds(input.trustedPortfolio));
+  const derivationCandidates = allDerivationCandidates.filter((candidate) =>
+    !trustedIds.has(candidate.proposal.strategyId));
+
+  const entries: TrialCommandProjectionEntry[] = revisionProjection.entries.map((entry) => ({
+    ...entry,
+    kind: "revision" as const,
+  }));
+  entries.push(...derivationCandidates.map((candidate) => ({
+    kind: "derivation" as const,
+    candidate,
+    label: boundedLabel(`${candidate.proposal.strategyId} · ${candidate.proposal.summary.replace(/\s+/gu, " ").trim()} · derivation`),
+    option: { value: candidate.candidateId, label: "" },
+  })));
+
+  // Keep labels bounded and disambiguate only display collisions. Values are
+  // always the exact canonical UUID and never parsed from the label.
+  const labels = entries.map((entry) => entry.label);
+  const groups = new Map<string, number[]>();
+  labels.forEach((label, index) => {
+    const group = groups.get(label) ?? [];
+    group.push(index);
+    groups.set(label, group);
+  });
+  for (const indexes of groups.values()) {
+    if (indexes.length < 2) continue;
+    let suffixLength = 8;
+    while (true) {
+      const suffixes = new Set(indexes.map((index) =>
+        entries[index]!.candidate.candidateId.slice(0, suffixLength)));
+      if (suffixes.size === indexes.length || suffixLength >= 36) break;
+      suffixLength = Math.min(36, suffixLength + 4);
+    }
+    for (const index of indexes) {
+      const entry = entries[index]!;
+      const id = entry.candidate.candidateId.slice(0, suffixLength);
+      const base = entry.label.slice(
+        0,
+        Math.max(1, MAX_CANDIDATE_COMMAND_LABEL_LENGTH - 3 - suffixLength),
+      );
+      labels[index] = `${base} · ${id}`.slice(0, MAX_CANDIDATE_COMMAND_LABEL_LENGTH);
+    }
+  }
+  const labeled = entries.map((entry, index) => {
+    const label = labels[index]!;
+    return Object.freeze({
+      ...entry,
+      label,
+      option: Object.freeze({ value: entry.candidate.candidateId, label }),
+    });
+  });
+  labeled.sort((left, right) => {
+    const labelOrder = compareText(left.label, right.label);
+    return labelOrder !== 0
+      ? labelOrder
+      : compareText(left.candidate.candidateId, right.candidate.candidateId);
+  });
+  return Object.freeze({
+    entries: Object.freeze(labeled),
+    options: Object.freeze(labeled.map((entry) => entry.option)),
+  });
+}
+
+/** Resolve a unified `/trial` completion prefix without parsing labels. */
+export function filterTrialCommandOptions(
+  projection: TrialCommandProjection,
+  prefix: string,
+): AutocompleteItem[] {
+  return projection.options.filter((option) => option.value.startsWith(prefix));
 }
 
 /** Resolve a completion prefix without treating labels as parser-visible IDs. */

@@ -2,7 +2,7 @@ import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-age
 import { Type } from "typebox";
 
 import {
-  createPolicySnapshotForRun,
+  createPolicySnapshotForRunAsync,
   formatStrategySelectionLabel,
   type PolicySnapshot,
   type StrategyRevisionSelection,
@@ -49,7 +49,7 @@ export interface PindiePolicyToolOptions {
     selector: StrategyRevisionSelector,
     kind: "approach" | "modifier",
     ctx: ExtensionContext,
-  ) => StrategyRevisionSelection;
+  ) => StrategyRevisionSelection | Promise<StrategyRevisionSelection>;
 }
 
 function result(snapshot: PolicySnapshot) {
@@ -79,7 +79,7 @@ export function createPindiePolicySetTool(
     parameters: PolicySetParameters,
     executionMode: "sequential",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const snapshot = createPolicySnapshotForRun(
+      const snapshot = await createPolicySnapshotForRunAsync(
         params,
         options.resolveRevisionSelector === undefined
           ? undefined
