@@ -14,6 +14,7 @@ import {
   type SessionReplacementResult,
 } from "../src/pi-runtime.ts";
 import { createTaskContinuity } from "../src/task-continuity.ts";
+import { TaskMetricsTracker } from "../src/task-metrics.ts";
 
 class ManualScheduler {
   readonly callbacks: Array<() => void> = [];
@@ -215,6 +216,44 @@ test("an idle matching Session receives one native replacement with hidden resum
     /<PINDIE_LONG_TASK_RESUME>[\s\S]*Progress carried from the outgoing Session\.[\s\S]*Use Reality as the source of factual truth\./i,
   );
   assert.match(message.content, /This is not new user intent\./i);
+});
+
+test("Host arms Task metrics only across the exact automatic replacement transaction", async () => {
+  const control = fakeRuntime();
+  const scheduler = new ManualScheduler();
+  const taskMetrics = new TaskMetricsTracker();
+  const rolloverRequest = request("session-1");
+  taskMetrics.startRunForTask(
+    "/repo",
+    rolloverRequest.checkpoint.taskFingerprint,
+    { durationMs: 0, cost: 0 },
+  );
+  taskMetrics.settleRun({ durationMs: 12_000, cost: 0.11 });
+  let adopted = false;
+  control.setReplacement(async () => {
+    adopted = taskMetrics.enterSession(
+      "/repo",
+      rolloverRequest.checkpoint.taskFingerprint,
+    );
+    return { cancelled: false };
+  });
+  const supervisor = new LongTaskRolloverSupervisor(control.adapter, {
+    schedule: scheduler.schedule,
+    taskMetrics,
+  });
+
+  await attempt(supervisor, scheduler, rolloverRequest);
+
+  assert.equal(adopted, true);
+  taskMetrics.startRunForTask(
+    "/repo",
+    rolloverRequest.checkpoint.taskFingerprint,
+    { durationMs: 0, cost: 0 },
+  );
+  assert.deepEqual(
+    taskMetrics.snapshot({ durationMs: 17_000, cost: 0.21 }),
+    { durationMs: 29_000, cost: 0.32 },
+  );
 });
 
 test("automatic rollover names the fresh Session before hidden resume and continues the lineage", async () => {

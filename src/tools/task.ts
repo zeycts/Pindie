@@ -2,7 +2,9 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { formatRunCost } from "../run-cost.ts";
 import { formatDuration } from "../run-timer.ts";
+import type { ConsumptionMetrics } from "../task-metrics.ts";
 import {
   renderCurrentPindieTaskContract,
   renderCurrentPindieTaskProgress,
@@ -144,7 +146,13 @@ export interface PindieTaskToolDetails {
 }
 
 export interface PindieTaskToolOptions {
-  getRunDuration?: () => number | null;
+  captureTaskMetricsBaseline?: () => ConsumptionMetrics;
+  onTaskEpochStarted?: (
+    state: PindieState,
+    baseline: ConsumptionMetrics,
+  ) => void;
+  onTaskRefined?: (state: PindieState) => void;
+  onTaskCompleted?: (state: PindieState) => ConsumptionMetrics | null;
   onStateChange?: () => void;
 }
 
@@ -210,7 +218,7 @@ function result(
 function formatCompletionResult(
   state: PindieState,
   summary: string,
-  runDuration: number | null,
+  taskMetrics: ConsumptionMetrics | null,
 ): string {
   const checks = state.task?.verification.checks ?? [];
   return [
@@ -218,7 +226,13 @@ function formatCompletionResult(
     "",
     "Summary:",
     summary,
-    ...(runDuration === null ? [] : ["", `Duration: ${formatDuration(runDuration)}`]),
+    ...(taskMetrics === null
+      ? []
+      : [
+          "",
+          `Duration: ${formatDuration(taskMetrics.durationMs)}`,
+          `Cost: ${formatRunCost(taskMetrics.cost)}`,
+        ]),
     "",
     "Verification:",
     ...checks.map((check) => `- ${check.name}: ${check.evidence}`),
@@ -338,6 +352,7 @@ export function createPindieTaskStartTool(
     executionMode: "sequential",
     async execute(_toolCallId, params) {
       assertTaskDefinitionInput("pindie_task_start", params);
+      const metricsBaseline = options.captureTaskMetricsBaseline?.();
       const state = await dispatchOrThrow(runtime, {
         type: "start_task",
         goal: params.goal,
@@ -345,6 +360,7 @@ export function createPindieTaskStartTool(
         successCriteria: params.successCriteria,
         nextIntent: params.nextIntent ?? null,
       }, options.onStateChange);
+      if (metricsBaseline) options.onTaskEpochStarted?.(state, metricsBaseline);
       return result(
         "Current task started.",
         state,
@@ -366,6 +382,7 @@ export function createPindieTaskReplaceTool(
     executionMode: "sequential",
     async execute(_toolCallId, params) {
       assertTaskDefinitionInput("pindie_task_replace", params);
+      const metricsBaseline = options.captureTaskMetricsBaseline?.();
       const state = await dispatchOrThrow(runtime, {
         type: "replace_task",
         goal: params.goal,
@@ -373,6 +390,7 @@ export function createPindieTaskReplaceTool(
         successCriteria: params.successCriteria,
         nextIntent: params.nextIntent ?? null,
       }, options.onStateChange);
+      if (metricsBaseline) options.onTaskEpochStarted?.(state, metricsBaseline);
       return result(
         "Current unfinished task replaced.",
         state,
@@ -411,6 +429,7 @@ export function createPindieTaskRefineTool(
           : { successCriteria: params.successCriteria }),
       };
       const state = await dispatchOrThrow(runtime, event, options.onStateChange);
+      options.onTaskRefined?.(state);
       return result(
         "Task contract refined.",
         state,
@@ -542,11 +561,12 @@ export function createPindieTaskCompleteTool(
         { type: "complete_task" },
         options.onStateChange,
       );
+      const taskMetrics = options.onTaskCompleted?.(state) ?? null;
       return result(
         formatCompletionResult(
           state,
           params.summary,
-          options.getRunDuration?.() ?? null,
+          taskMetrics,
         ),
         state,
         null,

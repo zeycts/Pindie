@@ -113,7 +113,7 @@ async function harness(
     }),
     complete: createPindieTaskCompleteTool(runtime, {
       ...options,
-      getRunDuration: () => 522_000,
+      onTaskCompleted: () => ({ durationMs: 522_000, cost: 0.46 }),
     }),
     gateOpen: createPindieGateOpenTool(runtime, options),
     gateResolve: createPindieGateResolveTool(runtime, options),
@@ -425,6 +425,7 @@ test("complete dispatches complete_task, preserves result semantics, and require
   assert.equal(result.terminate, true);
   assert.match(textOf(result), /Summary:\s*\nImplemented M3\./);
   assert.match(textOf(result), /Duration: 8m 42s/);
+  assert.match(textOf(result), /Cost: \$0\.46/);
   assert.match(textOf(result), /Verification:\s*\n- tests: passed/);
 });
 

@@ -2,8 +2,8 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import type { RunActivity } from "./run-activity.ts";
-import { formatRunCost, type RunCost } from "./run-cost.ts";
-import { formatDuration, type RunTiming } from "./run-timer.ts";
+import { formatRunCost } from "./run-cost.ts";
+import { formatDuration } from "./run-timer.ts";
 import {
   getTaskStatus,
   getVerificationStatus,
@@ -38,9 +38,14 @@ export interface VerificationProgress {
   total: number;
 }
 
+export interface ConsumptionStatus {
+  scope: "task" | "run";
+  durationMs: number;
+  cost: number;
+}
+
 export interface PindieStatusSnapshot {
-  timing: RunTiming | null;
-  runCost?: RunCost | null;
+  consumption: ConsumptionStatus | null;
   reasoningMode?: "auto" | "manual" | null;
   activity?: RunActivity | null;
   state: PindieState | null;
@@ -124,16 +129,15 @@ export function deriveStatusSegments(
 ): StatusSegment[] {
   const segments: StatusSegment[] = [];
 
-  if (snapshot.timing) {
-    const prefix = snapshot.timing.active ? "⏱" : "last";
+  if (snapshot.consumption) {
     segments.push({
-      text: `${prefix} ${formatDuration(snapshot.timing.durationMs)}`,
+      text: `${snapshot.consumption.scope} ${formatDuration(snapshot.consumption.durationMs)}`,
       tone: "dim",
     });
-  }
-
-  if (snapshot.runCost) {
-    segments.push({ text: formatRunCost(snapshot.runCost.cost), tone: "dim" });
+    segments.push({
+      text: formatRunCost(snapshot.consumption.cost),
+      tone: "dim",
+    });
   }
 
   if (snapshot.reasoningMode) {
@@ -146,19 +150,21 @@ export function deriveStatusSegments(
 
   const state = snapshot.state;
   const task = state?.task;
-  if (state && snapshot.stateUnavailableReason === null) {
+  const showTaskSemantics = snapshot.consumption === null ||
+    snapshot.consumption.scope === "task";
+  if (showTaskSemantics && state && snapshot.stateUnavailableReason === null) {
     const lifecycle = taskLifecycleSegment(state);
     if (lifecycle) segments.push(lifecycle);
   }
-  if (task) segments.push(verificationSegment(task));
+  if (showTaskSemantics && task) segments.push(verificationSegment(task));
 
   if (snapshot.stateUnavailableReason !== null) {
     segments.push({ text: "⚠ state unavailable", tone: "error" });
-  } else if (task?.humanGate) {
+  } else if (showTaskSemantics && task?.humanGate) {
     segments.push({ text: `⚠ gate: ${task.humanGate.kind}`, tone: "warning" });
   } else if (snapshot.runStale) {
     segments.push({ text: "⚠ stale run", tone: "warning" });
-  } else if (task && task.openLoops.blockers.length > 0) {
+  } else if (showTaskSemantics && task && task.openLoops.blockers.length > 0) {
     segments.push({ text: "⚠ blocked", tone: "warning" });
   }
 

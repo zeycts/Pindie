@@ -18,6 +18,8 @@ import {
   registerPindieExtension,
   type PindieExtensionOptions,
 } from "../src/extension.ts";
+import { RunTimer, type RunTimerScheduler } from "../src/run-timer.ts";
+import { TaskMetricsTracker } from "../src/task-metrics.ts";
 import { PINDIE_CONTEXT_LIFECYCLE_TYPE } from "../src/context-governor.ts";
 import {
   installCommittedRolloverReceiver,
@@ -234,6 +236,17 @@ class ExtensionTestStore implements PindieStateStore {
   async withProjectLock<T>(_projectRoot: string, operation: () => Promise<T>): Promise<T> {
     return operation();
   }
+}
+
+class DeterministicRunClock {
+  now = 0;
+  readonly timer = new RunTimer({
+    now: () => this.now,
+    scheduler: {
+      schedule: () => 0 as unknown as ReturnType<typeof setInterval>,
+      cancel: () => undefined,
+    } satisfies RunTimerScheduler,
+  });
 }
 
 function activeState(goal = "Wire Pi extension"): PindieState {
@@ -2315,7 +2328,7 @@ test("Run Cost measures public session usage from the Run baseline and resets pe
     { type: "agent_settled" },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /last 0s • \$0.31 • manual • active • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /task 0s • \$0.31 • manual • active • verify 0\/1/);
   assert.deepEqual(harness.integration.runCost.snapshot(entries as any), {
     cost: 0.31,
     active: false,
@@ -2330,13 +2343,209 @@ test("Run Cost measures public session usage from the Run baseline and resets pe
     },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /⏱ 0s • \$0.000 • manual • thinking • active • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /task 0s • \$0.31 • manual • thinking • active • verify 0\/1/);
 
   await harness.api.handler("session_shutdown")(
     { type: "session_shutdown", reason: "new" },
     uiContext,
   );
   assert.equal(harness.integration.runCost.snapshot(entries as any), null);
+});
+
+test("no-Task Run status uses Run time/cost and suppresses a completed Task's done verification", async () => {
+  const clock = new DeterministicRunClock();
+  const entries: unknown[] = [];
+  const harness = createHarness([["/repo", completedState()]], {}, {
+    runTimer: clock.timer,
+  });
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses, false, entries);
+
+  await startSession(harness, "/repo", "startup", entries);
+  await harness.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "/derive", systemPrompt: "", systemPromptOptions: {} },
+    uiContext,
+  );
+  clock.now = 42_000;
+  entries.push({
+    type: "message",
+    message: { role: "assistant", usage: { cost: { total: 0.006 } } },
+  });
+  await harness.api.handler("tool_execution_start")(
+    toolExecution("tool_execution_start", "read", "read"),
+    uiContext,
+  );
+
+  const status = statuses.at(-1)?.text ?? "";
+  assert.match(status, /^run 42s • \$0\.006 • manual • reading$/);
+  assert.doesNotMatch(status, /\bdone\b|✓|verify|\blast\b/);
+  assert.equal(harness.integration.taskMetrics.currentRunBelongsToTask, false);
+});
+
+test("Task status uses only Task-owned mid-Run consumption and replacement resets its epoch", async () => {
+  const clock = new DeterministicRunClock();
+  const entries: unknown[] = [];
+  const harness = createHarness([], {}, { runTimer: clock.timer });
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses, false, entries);
+
+  await startSession(harness, "/repo", "startup", entries);
+  await harness.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "Prepare", systemPrompt: "", systemPromptOptions: {} },
+    uiContext,
+  );
+  clock.now = 5_000;
+  entries.push({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.03 } } } });
+  await harness.api.tool("pindie_task_start").execute("start", {
+    goal: "Task A",
+    successCriteria: ["A works"],
+  });
+  clock.now = 12_000;
+  entries.push({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.05 } } } });
+  await harness.api.handler("tool_execution_start")(
+    toolExecution("tool_execution_start", "read-a", "read"),
+    uiContext,
+  );
+  assert.match(statuses.at(-1)?.text ?? "", /^task 7s • \$0\.05/);
+
+  await harness.api.tool("pindie_task_replace").execute("replace", {
+    goal: "Task B",
+    successCriteria: ["B works"],
+  });
+  clock.now = 15_000;
+  entries.push({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.04 } } } });
+  await harness.api.handler("tool_execution_start")(
+    toolExecution("tool_execution_start", "read-b", "read"),
+    uiContext,
+  );
+  assert.match(statuses.at(-1)?.text ?? "", /^task 3s • \$0\.04/);
+});
+
+test("Task refinement preserves metrics and completion output freezes cumulative Task consumption", async () => {
+  const clock = new DeterministicRunClock();
+  const entries: unknown[] = [];
+  const harness = createHarness([["/repo", verifiedState()]], {}, {
+    runTimer: clock.timer,
+  });
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses, false, entries);
+
+  await startSession(harness, "/repo", "startup", entries);
+  await harness.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "Finish", systemPrompt: "", systemPromptOptions: {} },
+    uiContext,
+  );
+  clock.now = 5_000;
+  entries.push({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.08 } } } });
+  await harness.api.tool("pindie_task_refine").execute("refine", {
+    constraints: ["Remain focused"],
+  });
+  const { ref } = await captureObservationEvidence(harness, "refined-task-read");
+  await harness.api.tool("pindie_verification_record").execute("verify-refined", {
+    check: {
+      name: "tests",
+      status: "passed",
+      covers: ["c1"],
+      evidenceRefs: [ref],
+    },
+  });
+  clock.now = 8_000;
+  entries.push({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.06 } } } });
+  const result = await harness.api.tool("pindie_task_complete").execute("complete", {
+    summary: "Finished the Task.",
+  });
+
+  assert.match(textOf(result), /Duration: 8s/);
+  assert.match(textOf(result), /Cost: \$0\.14/);
+  assert.match(statuses.at(-1)?.text ?? "", /^task 8s • \$0\.14 • manual • thinking • done • ✓ 1\/1/);
+  clock.now = 20_000;
+  entries.push({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.5 } } } });
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    uiContext,
+  );
+  assert.match(statuses.at(-1)?.text ?? "", /^task 8s • \$0\.14 • manual • done • ✓ 1\/1/);
+});
+
+test("shared Host Task metrics survive automatic replacement while Run trackers restart", async () => {
+  const taskMetrics = new TaskMetricsTracker();
+  const firstClock = new DeterministicRunClock();
+  const firstEntries: unknown[] = [];
+  const first = createHarness([["/repo", activeState("Long Task")]], {}, {
+    runTimer: firstClock.timer,
+    taskMetrics,
+  });
+  await startSession(first, "/repo", "startup", firstEntries);
+  await beginAgentRun(first, "/repo", firstEntries);
+  firstClock.now = 12_000;
+  firstEntries.push({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.11 } } } });
+  await captureObservationEvidence(first, "first-run-read");
+  await first.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    context("/repo", firstEntries),
+  );
+  const binding = taskContractFingerprint(first.integration.runtime.state.task!);
+  assert.equal(taskMetrics.prepareAutomaticRollover("session-a", binding), true);
+  await first.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "new" },
+    context("/repo", firstEntries),
+  );
+  assert.equal(first.integration.runTimer.durationMs, null);
+  assert.equal(first.integration.runCost.snapshot(firstEntries as any), null);
+
+  const secondClock = new DeterministicRunClock();
+  const secondEntries: unknown[] = [];
+  const second = createHarness([["/repo", activeState("Long Task")]], {}, {
+    runTimer: secondClock.timer,
+    taskMetrics,
+  });
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = interactiveContext("/repo", statuses, false, secondEntries);
+  await second.api.handler("session_start")(
+    { type: "session_start", reason: "new" },
+    context("/repo", secondEntries, false, "session-b"),
+  );
+  await second.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "Resume", systemPrompt: "", systemPromptOptions: {} },
+    uiContext,
+  );
+  secondClock.now = 17_000;
+  secondEntries.push({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.21 } } } });
+  await second.api.handler("tool_execution_start")(
+    toolExecution("tool_execution_start", "second-read", "read"),
+    uiContext,
+  );
+
+  assert.equal(second.integration.runTimer.durationMs, 17_000);
+  assert.deepEqual(second.integration.runCost.snapshot(secondEntries as any), { cost: 0.21, active: true });
+  assert.match(statuses.at(-1)?.text ?? "", /^task 29s • \$0\.32/);
+
+  const { ref: secondRunRef } = await captureObservationEvidence(
+    second,
+    "second-run-observation",
+  );
+  await second.api.tool("pindie_verification_record").execute("verify-long-task", {
+    check: {
+      name: "long-task-check",
+      status: "passed",
+      covers: ["c1"],
+      evidenceRefs: [secondRunRef],
+    },
+  });
+  const completion = await second.api.tool("pindie_task_complete").execute(
+    "complete-long-task",
+    { summary: "Completed across automatic Session rollover." },
+  );
+  assert.match(textOf(completion), /Duration: 29s/);
+  assert.match(textOf(completion), /Cost: \$0\.32/);
+  await second.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    context("/repo", secondEntries),
+  );
+  const firstExperience = first.experienceStore.records[0]!.experience;
+  const secondExperience = second.experienceStore.records[0]!.experience;
+  assert.deepEqual(firstExperience.metrics, { durationMs: 12_000, cost: 0.11 });
+  assert.deepEqual(secondExperience.metrics, { durationMs: 17_000, cost: 0.21 });
 });
 
 test("agent_settled ignores only an obsolete stale ExtensionContext after replacement", async () => {
@@ -2581,7 +2790,7 @@ test("unified Pindie status publishes active and final timing, then clears on sh
   );
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • manual • thinking • active • verify 0/1",
+    text: "task 0s • $0.000 • manual • thinking • active • verify 0/1",
   });
 
   await harness.api.handler("agent_settled")(
@@ -2590,7 +2799,7 @@ test("unified Pindie status publishes active and final timing, then clears on sh
   );
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "last 0s • $0.000 • manual • active • verify 0/1",
+    text: "task 0s • $0.000 • manual • active • verify 0/1",
   });
 
   await harness.api.handler("session_shutdown")(
@@ -2630,7 +2839,7 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   });
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • manual • thinking • active • ✓ 1/1",
+    text: "task 0s • $0.000 • manual • thinking • active • ✓ 1/1",
   });
 
   await harness.api.tool("pindie_gate_open").execute("gate", {
@@ -2639,7 +2848,7 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   });
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "⏱ 0s • $0.000 • manual • thinking • ✓ 1/1 • ⚠ gate: approval",
+    text: "task 0s • $0.000 • manual • thinking • ✓ 1/1 • ⚠ gate: approval",
   });
 
   await harness.api.handler("agent_settled")(
@@ -2782,6 +2991,7 @@ test("T50 integrated completion terminates and terminal guard blocks mutation", 
 
   assert.equal(result.terminate, true);
   assert.match(textOf(result), /Duration: 0s/);
+  assert.match(textOf(result), /Cost: \$0\.000/);
   assert.equal(harness.integration.runTimer.active, true);
   assert.equal(harness.integration.runtime.state.task?.completed, true);
   assert.equal(harness.store.states.get("/repo")?.task?.completed, true);
@@ -4467,6 +4677,7 @@ test("SI v0.7 /derive is explicit, bounded, read-only, and consumes one Candidat
   assert.match(notices.at(-1)?.message ?? "", /derivation Run started/i);
 
   const baseline = await harnessBeforeAgentStart(harness);
+  assert.equal(harness.integration.taskMetrics.currentRunBelongsToTask, false);
   assert.match(baseline.systemPrompt, /<PINDIE_DERIVATION_PACKET>/);
   assert.match(baseline.systemPrompt, /3 distinct source records|Minimum gate satisfied/i);
   assert.doesNotMatch(baseline.message.content, /<PINDIE_DERIVATION_PACKET>/);

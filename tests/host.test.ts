@@ -111,10 +111,16 @@ test("runtime factory passes project cwd and package resources to Pi services", 
 
   assert.equal(servicesOptions?.cwd, projectCwd);
   assert.equal(servicesOptions?.agentDir, agentDir);
-  assert.deepEqual(servicesOptions?.resourceLoaderOptions, {
-    additionalExtensionPaths: [paths.extensionPath],
-    additionalSkillPaths: [paths.skillsPath],
-  });
+  assert.deepEqual(
+    servicesOptions?.resourceLoaderOptions?.additionalSkillPaths,
+    [paths.skillsPath],
+  );
+  const extensionFactories = servicesOptions?.resourceLoaderOptions?.extensionFactories;
+  assert.equal(extensionFactories?.length, 1);
+  assert.equal(
+    typeof (extensionFactories?.[0] as { factory?: unknown } | undefined)?.factory,
+    "function",
+  );
   assert.equal((sessionOptions as { services: AgentSessionServices }).services, services);
   assert.equal(runtimeResult.session, session);
   assert.equal(runtimeResult.services, services);

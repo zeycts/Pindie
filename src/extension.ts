@@ -93,16 +93,25 @@ import type {
 import type { ProjectFingerprint } from "./project-mutation.ts";
 import type { ReasoningController } from "./reasoning.ts";
 import type { RunActivityTracker } from "./run-activity.ts";
-import type { RunCostTracker } from "./run-cost.ts";
 import { RunIntegration } from "./run-integration.ts";
+import type { RunCostTracker } from "./run-cost.ts";
 import type { RunTimer } from "./run-timer.ts";
+import {
+  TaskMetricsTracker,
+  type ConsumptionMetrics,
+} from "./task-metrics.ts";
 import { PindieRuntime } from "./runtime.ts";
 import {
   deriveCapabilities,
   type PindieCapability,
   type SemanticSnapshot,
 } from "./semantics.ts";
-import { getTaskStatus, getVerificationStatus, validateState } from "./state.ts";
+import {
+  getTaskStatus,
+  getVerificationStatus,
+  validateState,
+  type PindieState,
+} from "./state.ts";
 import {
   FileStateStore,
   StateLockBusyError,
@@ -162,6 +171,10 @@ export interface PindieExtensionOptions {
   activityLingerMs?: number;
   scheduleActivityRefresh?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearActivityRefresh?: (timer: ReturnType<typeof setTimeout>) => void;
+  /** Runtime-only measurement/test seams; the Host supplies Task ownership in production. */
+  runTimer?: RunTimer;
+  runCost?: RunCostTracker;
+  taskMetrics?: TaskMetricsTracker;
   /** Explicit isolated-test seam; Host ownership is the production activation path. */
   enableTaskHandoff?: boolean;
   /** Isolated tuning seam for the session-scoped Context Lifecycle Governor. */
@@ -178,6 +191,7 @@ export interface PindieExtensionIntegration {
   readonly reasoning: ReasoningController;
   readonly runCost: RunCostTracker;
   readonly runTimer: RunTimer;
+  readonly taskMetrics: TaskMetricsTracker;
   readonly contextGovernor: ContextLifecycleGovernor;
   readonly trial: TrialRuntime;
   readonly derivation: DerivationRuntime;
@@ -324,6 +338,9 @@ export function registerPindieExtension(
     activityLingerMs: options.activityLingerMs,
     scheduleActivityRefresh: options.scheduleActivityRefresh,
     clearActivityRefresh: options.clearActivityRefresh,
+    runTimer: options.runTimer,
+    runCost: options.runCost,
+    taskMetrics: options.taskMetrics,
   });
   const resolveProjectRoot = options.resolveProjectRoot ??
     defaultResolveProjectRoot;
@@ -1080,7 +1097,32 @@ export function registerPindieExtension(
   };
 
   const taskToolOptions = {
-    getRunDuration: () => presentation.runTimer.durationMs,
+    captureTaskMetricsBaseline: (): ConsumptionMetrics =>
+      presentation.currentRunMetrics(),
+    onTaskEpochStarted: (state: PindieState, baseline: ConsumptionMetrics) => {
+      const task = state.task;
+      if (runtime.projectRoot === null || task === null) return;
+      presentation.startTask(
+        runtime.projectRoot,
+        taskContractFingerprint(task),
+        baseline,
+      );
+      presentation.refreshStatus();
+    },
+    onTaskRefined: (state: PindieState) => {
+      const task = state.task;
+      if (runtime.projectRoot === null || task === null) return;
+      presentation.refineTask(
+        runtime.projectRoot,
+        taskContractFingerprint(task),
+      );
+      presentation.refreshStatus();
+    },
+    onTaskCompleted: (_state: PindieState) => {
+      const metrics = presentation.completeTask();
+      presentation.refreshStatus();
+      return metrics;
+    },
     onStateChange: semanticStateChanged,
   };
   pi.registerTool(createPindiePolicySetTool({
@@ -1248,7 +1290,15 @@ export function registerPindieExtension(
     try {
       const projectRoot = await resolveProjectRoot(ctx.cwd);
       await run.loadProject(projectRoot);
+      const task = run.authoritativeState?.task ?? null;
+      presentation.enterSession(
+        projectRoot,
+        task !== null && !task.completed
+          ? taskContractFingerprint(task)
+          : null,
+      );
     } catch (error) {
+      presentation.taskMetrics.reset();
       markUnavailable(
         `Could not load Pindie State for '${ctx.cwd}': ${errorMessage(error)}`,
       );
@@ -1464,6 +1514,24 @@ export function registerPindieExtension(
       presentation.runActivity.start();
       presentation.startCost(ctx.sessionManager.getEntries());
       presentation.startTimer(ctx);
+      const taskAtRunStart = run.authoritativeState?.task ?? null;
+      if (
+        derivation.ok &&
+        derivation.snapshot.authority === "coherent" &&
+        adaptationLease === null &&
+        trialLease === null &&
+        derivationLease === null &&
+        runtime.projectRoot !== null &&
+        taskAtRunStart !== null &&
+        !taskAtRunStart.completed
+      ) {
+        presentation.startRunForTask(
+          runtime.projectRoot,
+          taskContractFingerprint(taskAtRunStart),
+        );
+      } else {
+        presentation.startRunWithoutTask();
+      }
       presentation.refreshStatus(ctx);
       void options.remoteCompanion?.companion.status(remoteStatusFacts());
 
@@ -2086,6 +2154,10 @@ export function registerPindieExtension(
     const policyFacts = run.policyAttribution;
     const durationMs = presentation.runTimer.finish();
     const settledCost = presentation.finishCost(entries);
+    presentation.settleTaskRun({
+      durationMs: durationMs ?? 0,
+      cost: settledCost?.cost ?? 0,
+    });
 
     if (
       !isAdaptationRun &&
@@ -2175,6 +2247,7 @@ export function registerPindieExtension(
     runActivity: presentation.runActivity,
     runCost: presentation.runCost,
     runTimer: presentation.runTimer,
+    taskMetrics: presentation.taskMetrics,
     contextGovernor,
     trial,
     derivation: derivationRuntime,
@@ -2190,19 +2263,27 @@ export function registerPindieExtension(
   };
 }
 
-export default function pindieExtension(pi: ExtensionAPI): void {
+export function registerConfiguredPindieExtension(
+  pi: ExtensionAPI,
+  options: PindieExtensionOptions = {},
+): void {
   const configured = discordRemoteConfig();
   if (!configured.enabled) {
     if (configured.warning) console.warn(configured.warning);
-    registerPindieExtension(pi);
+    registerPindieExtension(pi, options);
     return;
   }
   const discord = new DiscordRemote(configured.config);
   registerPindieExtension(pi, {
-    remoteCompanion: {
+    ...options,
+    remoteCompanion: options.remoteCompanion ?? {
       companion: new RemoteCompanion(discord),
       guildId: configured.config.guildId,
       discord,
     },
   });
+}
+
+export default function pindieExtension(pi: ExtensionAPI): void {
+  registerConfiguredPindieExtension(pi);
 }

@@ -12,6 +12,7 @@ import {
   type SessionReplacementOptions,
 } from "./pi-runtime.ts";
 import type { CommittedRolloverRequest } from "./long-task-control.ts";
+import type { TaskMetricsTracker } from "./task-metrics.ts";
 
 export type LongTaskRolloverScheduler = (callback: () => void) => void;
 
@@ -19,6 +20,7 @@ export interface LongTaskRolloverSupervisorOptions {
   readonly schedule?: LongTaskRolloverScheduler;
   readonly maxAutomaticRollovers?: number;
   readonly logger?: (message: string) => void;
+  readonly taskMetrics?: TaskMetricsTracker;
 }
 
 const DEFAULT_MAX_AUTOMATIC_ROLLOVERS = 8;
@@ -44,6 +46,7 @@ export class LongTaskRolloverSupervisor {
   private readonly schedule: LongTaskRolloverScheduler;
   private readonly maxAutomaticRollovers: number;
   private readonly logger: (message: string) => void;
+  private readonly taskMetrics: TaskMetricsTracker | null;
   private pendingRequest: CommittedRolloverRequest | null = null;
   private scheduled = false;
   private inProgress = false;
@@ -63,6 +66,7 @@ export class LongTaskRolloverSupervisor {
       throw new Error("maxAutomaticRollovers must be a positive integer.");
     }
     this.logger = options.logger ?? ((message) => console.warn(`[Pindie] ${message}`));
+    this.taskMetrics = options.taskMetrics ?? null;
   }
 
   request(request: CommittedRolloverRequest): void {
@@ -100,6 +104,7 @@ export class LongTaskRolloverSupervisor {
   async dispose(): Promise<void> {
     this.disposed = true;
     this.pendingRequest = null;
+    this.taskMetrics?.cancelAutomaticRollover();
     this.breakChain();
     await this.inProgressPromise;
   }
@@ -154,6 +159,11 @@ export class LongTaskRolloverSupervisor {
       continuationName = formatLongTaskContinuationSessionName(undefined);
     }
 
+    this.taskMetrics?.prepareAutomaticRollover(
+      request.sourceSessionId,
+      request.checkpoint.taskFingerprint,
+    );
+
     let replacementStarted = false;
     const options: SessionReplacementOptions = {
       withSession: async (replacementContext) => {
@@ -185,6 +195,7 @@ export class LongTaskRolloverSupervisor {
 
     try {
       const result = await this.runtime.replaceWithFreshSession(options);
+      this.taskMetrics?.cancelAutomaticRollover();
       if (result.cancelled) {
         this.breakChain();
         return;
@@ -192,6 +203,7 @@ export class LongTaskRolloverSupervisor {
       this.chainSessionId = this.runtime.activeSessionId;
       this.chainCount = nextChainCount;
     } catch (error) {
+      this.taskMetrics?.cancelAutomaticRollover();
       this.breakChain();
       this.report(
         replacementStarted

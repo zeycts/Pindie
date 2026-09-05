@@ -30,6 +30,10 @@ import { RunCostTracker, type RunCost } from "./run-cost.ts";
 import { RunTimer } from "./run-timer.ts";
 import type { PindieState } from "./state.ts";
 import {
+  TaskMetricsTracker,
+  type ConsumptionMetrics,
+} from "./task-metrics.ts";
+import {
   deriveStatusLayout,
   renderStatusLayout,
 } from "./status-line.ts";
@@ -59,6 +63,9 @@ export interface PresentationIntegrationOptions {
     delayMs: number,
   ) => ReturnType<typeof setTimeout>;
   clearActivityRefresh?: (timer: ReturnType<typeof setTimeout>) => void;
+  runTimer?: RunTimer;
+  runCost?: RunCostTracker;
+  taskMetrics?: TaskMetricsTracker;
 }
 
 /** Runtime-only reasoning, activity, efficiency, and status presentation ownership. */
@@ -66,8 +73,9 @@ export class PresentationIntegration {
   private readonly pi: ExtensionAPI;
   readonly reasoning = new ReasoningController();
   readonly runActivity: RunActivityTracker;
-  readonly runCost = new RunCostTracker();
-  readonly runTimer = new RunTimer();
+  readonly runCost: RunCostTracker;
+  readonly runTimer: RunTimer;
+  readonly taskMetrics: TaskMetricsTracker;
   private readonly getState: () => PindieState | null;
   private readonly getProjectRoot: () => string | null;
   private readonly experienceReader: RunExperienceReader;
@@ -107,6 +115,9 @@ export class PresentationIntegration {
     this.getStatusWidth = options.getStatusWidth ??
       (() => process.stdout.columns);
     this.now = options.now ?? Date.now;
+    this.runCost = options.runCost ?? new RunCostTracker();
+    this.runTimer = options.runTimer ?? new RunTimer();
+    this.taskMetrics = options.taskMetrics ?? new TaskMetricsTracker();
     this.runActivity = new RunActivityTracker({
       now: this.now,
       lingerMs: options.activityLingerMs,
@@ -143,16 +154,25 @@ export class PresentationIntegration {
 
   refreshStatus(ctx = this.statusContext): void {
     this.presentStatusBestEffort(ctx, (activeContext) => {
+      const runDurationMs = this.runTimer.durationMs;
+      const runCost = this.runCost.snapshot(
+        activeContext.sessionManager.getEntries(),
+      );
+      const runMetrics = runDurationMs === null
+        ? null
+        : {
+            durationMs: runDurationMs,
+            cost: runCost?.cost ?? 0,
+          };
+      const taskMetrics = runMetrics === null
+        ? null
+        : this.taskMetrics.snapshot(runMetrics);
       const layout = deriveStatusLayout({
-        timing: this.runTimer.durationMs === null
+        consumption: runMetrics === null
           ? null
-          : {
-              durationMs: this.runTimer.durationMs,
-              active: this.runTimer.active,
-            },
-        runCost: this.runCost.snapshot(
-          activeContext.sessionManager.getEntries(),
-        ),
+          : taskMetrics === null
+            ? { scope: "run", ...runMetrics }
+            : { scope: "task", ...taskMetrics },
         reasoningMode: this.reasoning.snapshot.mode,
         activity: this.runActivity.activity,
         state: this.getState(),
@@ -228,6 +248,52 @@ export class PresentationIntegration {
 
   startTimer(ctx: ExtensionContext): void {
     this.runTimer.start(ctx.hasUI ? () => this.refreshStatus(ctx) : undefined);
+  }
+
+  currentRunMetrics(): ConsumptionMetrics {
+    const durationMs = this.runTimer.durationMs ?? 0;
+    try {
+      const entries = this.statusContext?.sessionManager.getEntries() ?? [];
+      return {
+        durationMs,
+        cost: this.runCost.snapshot(entries)?.cost ?? 0,
+      };
+    } catch {
+      // Runtime presentation telemetry must never disrupt semantic Task tools.
+      return { durationMs, cost: 0 };
+    }
+  }
+
+  enterSession(projectRoot: string, taskBinding: string | null): boolean {
+    return this.taskMetrics.enterSession(projectRoot, taskBinding);
+  }
+
+  startRunForTask(projectRoot: string, taskBinding: string): void {
+    this.taskMetrics.startRunForTask(
+      projectRoot,
+      taskBinding,
+      this.currentRunMetrics(),
+    );
+  }
+
+  startRunWithoutTask(): void {
+    this.taskMetrics.startRunWithoutTask();
+  }
+
+  startTask(projectRoot: string, taskBinding: string, baseline: ConsumptionMetrics): void {
+    this.taskMetrics.startTask(projectRoot, taskBinding, baseline);
+  }
+
+  refineTask(projectRoot: string, taskBinding: string): void {
+    this.taskMetrics.refineTask(projectRoot, taskBinding);
+  }
+
+  completeTask(): ConsumptionMetrics | null {
+    return this.taskMetrics.completeTask(this.currentRunMetrics());
+  }
+
+  settleTaskRun(metrics: ConsumptionMetrics): ConsumptionMetrics | null {
+    return this.taskMetrics.settleRun(metrics);
   }
 
   handleEfficiencyCommand(

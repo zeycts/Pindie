@@ -359,7 +359,7 @@ Task → one Session → complete
 
 There is no `/long` command and no durable `longTask=true` Task type.
 
-Long Task Runtime v0.1 does not change Experience schema. A large Task naturally creates multiple ordinary Runs/Experiences across Sessions. Handoff and rollover are non-project-mutating runtime control and must not manufacture project execution evidence or false Policy declarations.
+Long Task Runtime v0.1 does not change Experience schema. A large Task naturally creates multiple ordinary Runs/Experiences across Sessions. Each Experience keeps that Run's own duration and cost. Human status and Task completion instead present cumulative Task-owned active Run time and model-equivalent cost; the process-local Host preserves that accumulator across automatic rollover without counting idle time between Runs. It is not stored in `PindieState` or `TaskContinuityV1` and does not survive process restart. Handoff and rollover are non-project-mutating runtime control and must not manufacture project execution evidence or false Policy declarations.
 
 Future Self-Improvement may learn when to hand off or which Policy works in long-horizon situations, but v0.1 contains no learned rollover policy.
 
