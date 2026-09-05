@@ -1,5 +1,10 @@
 # Pindie Long Task Runtime v0.1 — Architecture Contract
 
+Status: implemented, dogfooded, compatibility-closed, frozen.
+
+Frozen means the v0.1 architecture contract is closed, not that bugs can never
+be fixed.
+
 Long Task Runtime lets one durable Pindie Task survive as many finite Pi Context Windows as necessary without requiring the human to manage Sessions manually.
 
 ```text
@@ -380,7 +385,7 @@ Long Task Runtime v0.1 does not change Experience schema. A large Task naturally
 
 Each Experience keeps that Run's own duration and cost. Human status and Task completion instead present cumulative Task-owned active Run time and model-equivalent cost; the process-local Host preserves that accumulator across automatic rollover without counting idle time between Runs. Task cumulative metrics are never copied into schema-v4 `metrics`, are not stored in `PindieState` or `TaskContinuityV1`, and do not survive process restart.
 
-The outgoing Run's Experience is frozen before its continuity checkpoint is committed. A fresh automatic Session starts new Run-scoped Policy, attribution, timer, and cost bookkeeping; its hidden resume message is runtime metadata, not Human intent, and cannot create a record by itself. A Trial lease is also one-Run state and is cleared at settlement or Session replacement, while a deliberately selected promoted revision remains recorded with `revisionStatusAtRun = promoted`. Cancelled or failed replacement does not enter a continuation Run and does not fabricate Experience. Handoff and rollover are non-project-mutating runtime control and must not manufacture project execution evidence or false Policy declarations.
+The outgoing Run's Experience is frozen before its continuity checkpoint is committed. A fresh automatic Session starts new Run-scoped Policy, attribution, timer, and cost bookkeeping; its hidden resume message is runtime metadata, not Human intent, and cannot create a record by itself. Trial, Adaptation, and Derivation leases are all one-Run runtime state: they clear at their Run boundary or Session replacement and never carry across automatic rollover, while a deliberately selected promoted revision remains recorded with `revisionStatusAtRun = promoted`. Cancelled or failed replacement does not enter a continuation Run and does not fabricate Experience. Handoff and rollover are non-project-mutating runtime control and must not manufacture project execution evidence or false Policy declarations.
 
 Future Self-Improvement may learn when to hand off or which Policy works in long-horizon situations, but v0.1 contains no learned rollover policy.
 
@@ -397,9 +402,10 @@ Logical Lead
 
 v0.1 contains no subagent manager, worker pool, shared task list, worktree scheduler, or agent-team protocol.
 
-## 9. Implementation slices
+## 9. Implementation slices (complete)
 
-Implement v0.1 as small reviewable slices.
+v0.1 was implemented as small reviewable slices. The compatibility and dogfood
+closure is complete:
 
 ```text
 Slice A — Continuity + Handoff Substrate
@@ -432,11 +438,13 @@ Experience accounting
 behavior/docs synchronization
 ```
 
-Slices B–D should dogfood the capability as soon as the prior substrate is safe enough.
+All four slices are implemented and dogfooded. The v0.1 contract is
+compatibility-closed and frozen; this freezes the architecture contract, not
+bug fixing.
 
 ## 10. v0.1 success contract
 
-Long Task Runtime v0.1 is complete when one real implementation Task can:
+Long Task Runtime v0.1 is complete. Its closed success contract is:
 
 ```text
 receive one user request

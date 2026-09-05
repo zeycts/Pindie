@@ -466,13 +466,18 @@ Each slice must be independently reviewable. A slice must not opportunistically 
 
 ### What v0.1 unlocks
 
-Runtime Independence v0.1 does not itself implement Long Task Runtime. It establishes the missing ownership primitive:
+Runtime Independence v0.1 established the missing ownership primitive:
 
 ```text
 Pindie can own and replace the active Agent Session
 ```
 
-Long Task Runtime can then be designed above that boundary as a Pindie-owned lifecycle scheduler rather than as extension callback choreography. Self-Improvement can likewise create purpose-specific Agent executions later without pretending every execution must be initiated by an externally owned Session.
+Long Task Runtime v0.1 now uses that boundary as a Pindie-owned lifecycle
+scheduler rather than extension callback choreography. Its implemented,
+dogfooded, compatibility-closed, and frozen contract is documented in
+[`docs/long-task-runtime.md`](./long-task-runtime.md). Self-Improvement can
+likewise create purpose-specific Agent executions later without pretending
+every execution must be initiated by an externally owned Session.
 
 ## 14. Architectural invariants
 
