@@ -8,8 +8,10 @@ import type {
 import {
   deriveCandidateTrialReview,
   deriveExperienceEvaluation,
+  deriveStrategyDerivationTrialReview,
   formatCandidateTrialReview,
   formatExperienceReport,
+  formatStrategyDerivationTrialReview,
 } from "./experience-evaluation.ts";
 import type { RunExperienceReader } from "./experience-store.ts";
 import {
@@ -20,6 +22,9 @@ import {
   validateStrategyRevisionDecisionBinding,
   type StrategyRevisionDecisionReader,
 } from "./strategy-decisions.ts";
+import { resolveTrialCandidate } from "./strategy-candidate-resolution.ts";
+import type { StrategyDerivationCandidateReader } from "./strategy-derivation-candidates.ts";
+import type { TrustedStrategyPortfolio } from "./strategy-portfolio.ts";
 import {
   deriveEfficiencySnapshot,
   formatEfficiencyReport,
@@ -50,7 +55,9 @@ export interface PresentationIntegrationOptions {
   getProjectRoot: () => string | null;
   experienceReader: RunExperienceReader;
   strategyCandidateReader: StrategyCandidateReader;
+  strategyDerivationCandidateReader: StrategyDerivationCandidateReader;
   strategyDecisionReader?: StrategyRevisionDecisionReader;
+  loadTrustedPortfolio?: (projectRoot: string) => Promise<TrustedStrategyPortfolio>;
   getAuthoritativeState: () => PindieState | null;
   getStateUnavailableReason: () => string | null;
   getRunStale: () => boolean;
@@ -80,7 +87,9 @@ export class PresentationIntegration {
   private readonly getProjectRoot: () => string | null;
   private readonly experienceReader: RunExperienceReader;
   private readonly strategyCandidateReader: StrategyCandidateReader;
+  private readonly strategyDerivationCandidateReader: StrategyDerivationCandidateReader;
   private readonly strategyDecisionReader: StrategyRevisionDecisionReader | null;
+  private readonly loadTrustedPortfolio: ((projectRoot: string) => Promise<TrustedStrategyPortfolio>) | null;
   private readonly getAuthoritativeState: () => PindieState | null;
   private readonly getStateUnavailableReason: () => string | null;
   private readonly getRunStale: () => boolean;
@@ -106,7 +115,9 @@ export class PresentationIntegration {
     this.getProjectRoot = options.getProjectRoot;
     this.experienceReader = options.experienceReader;
     this.strategyCandidateReader = options.strategyCandidateReader;
+    this.strategyDerivationCandidateReader = options.strategyDerivationCandidateReader;
     this.strategyDecisionReader = options.strategyDecisionReader ?? null;
+    this.loadTrustedPortfolio = options.loadTrustedPortfolio ?? null;
     this.getAuthoritativeState = options.getAuthoritativeState;
     this.getStateUnavailableReason = options.getStateUnavailableReason;
     this.getRunStale = options.getRunStale;
@@ -361,24 +372,22 @@ export class PresentationIntegration {
       return;
     }
 
-    let candidate;
+    let candidateRef;
     try {
-      candidate = await this.strategyCandidateReader.read(projectRoot, requestedId);
+      candidateRef = await resolveTrialCandidate({
+        projectRoot,
+        candidateId: requestedId,
+        revisionReader: this.strategyCandidateReader,
+        derivationReader: this.strategyDerivationCandidateReader,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      ctx.ui.notify(`Pindie could not show Trial review: Candidate read failed: ${message}`, "warning");
+      ctx.ui.notify(`Pindie could not show Trial review: Candidate resolution failed: ${message}`, "warning");
       return;
     }
-    if (candidate === null) {
+    if (candidateRef === null) {
       ctx.ui.notify(
         `Pindie could not show Trial review: Candidate '${requestedId}' was not found for this project.`,
-        "warning",
-      );
-      return;
-    }
-    if (candidate.candidateId !== requestedId) {
-      ctx.ui.notify(
-        "Pindie could not show Trial review: Candidate identity did not match the requested ID.",
         "warning",
       );
       return;
@@ -399,26 +408,69 @@ export class PresentationIntegration {
       );
       return;
     }
-    let priorTerminalDecision = false;
-    if (this.strategyDecisionReader !== null) {
-      try {
-        const decision = await this.strategyDecisionReader.read(projectRoot, requestedId);
-        if (decision !== null) {
-          validateStrategyRevisionDecisionBinding(decision, candidate);
-          priorTerminalDecision = true;
+
+    if (candidateRef.kind === "revision") {
+      const candidate = candidateRef.candidate;
+      let priorTerminalDecision = false;
+      if (this.strategyDecisionReader !== null) {
+        try {
+          const decision = await this.strategyDecisionReader.read(projectRoot, requestedId);
+          if (decision !== null) {
+            validateStrategyRevisionDecisionBinding(decision, candidate);
+            priorTerminalDecision = true;
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          ctx.ui.notify(`Pindie could not show Trial review: Decision read/binding failed: ${message}`, "warning");
+          return;
         }
+      }
+      try {
+        const review = deriveCandidateTrialReview(candidate, read.records, {
+          currentProjectMatch: true,
+          priorTerminalDecision,
+        });
+        ctx.ui.notify(formatCandidateTrialReview(read, review), "info");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        ctx.ui.notify(`Pindie could not show Trial review: Decision read/binding failed: ${message}`, "warning");
-        return;
+        ctx.ui.notify(`Pindie could not show Trial review: evidence evaluation failed: ${message}`, "warning");
+      }
+      return;
+    }
+
+    // Slice D has not introduced a Derivation Decision store. The review
+    // therefore represents its prior-decision fact as absent, without
+    // fabricating or persisting a decision artifact.
+    let currentPortfolio: TrustedStrategyPortfolio | null = null;
+    if (this.loadTrustedPortfolio !== null) {
+      try {
+        currentPortfolio = await this.loadTrustedPortfolio(projectRoot);
+      } catch {
+        // Historical source provenance remains inspectable when current trust
+        // cannot be reconstructed; the current-portfolio gate stays false.
+        currentPortfolio = null;
       }
     }
+    if (this.getProjectRoot() !== projectRoot) {
+      ctx.ui.notify(
+        "Pindie could not show Trial review: the current project changed while reading trust artifacts.",
+        "warning",
+      );
+      return;
+    }
     try {
-      const review = deriveCandidateTrialReview(candidate, read.records, {
-        currentProjectMatch: true,
-        priorTerminalDecision,
-      });
-      ctx.ui.notify(formatCandidateTrialReview(read, review), "info");
+      const review = await deriveStrategyDerivationTrialReview(
+        candidateRef.candidate,
+        read.records,
+        {
+          projectRoot,
+          currentPortfolio,
+          revisionCandidateReader: this.strategyCandidateReader,
+          revisionDecisionReader: this.strategyDecisionReader ?? undefined,
+          priorTerminalDecision: false,
+        },
+      );
+      ctx.ui.notify(formatStrategyDerivationTrialReview(read, review), "info");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       ctx.ui.notify(`Pindie could not show Trial review: evidence evaluation failed: ${message}`, "warning");

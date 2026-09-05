@@ -542,6 +542,23 @@ export function formatDerivationPacket(packet: DerivationPacket): string {
 
 export const renderDerivationPacket = formatDerivationPacket;
 
+// Keep the Slice C review API discoverable from the Derivation domain module
+// while its shared RunEvaluation machinery remains in experience-evaluation.
+export {
+  deriveDerivationCandidateTrialReview,
+  deriveDerivationTrialReview,
+  deriveDerivationSourceEvidence,
+  deriveDerivationPromotionEligibility,
+  deriveDerivationComparableCohorts,
+  deriveStrategyDerivationTrialReview,
+  formatDerivationCandidateTrialReview,
+  formatDerivationTrialReview,
+  formatStrategyDerivationTrialReview,
+  selectDerivationCandidateTrialEvidence,
+  selectDerivationTrialEvidence,
+  revalidateDerivationBasePortfolio,
+} from "./experience-evaluation.ts";
+
 export interface DerivationLease {
   readonly attemptId: string;
   readonly sessionId: string;

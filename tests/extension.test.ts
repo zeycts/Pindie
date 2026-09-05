@@ -948,6 +948,75 @@ test("SI v0.6 /trial-review renders read-only Candidate and Seed evidence", asyn
   assert.match(notices.at(-1)?.message ?? "", /canonical lowercase UUID-v4/i);
 });
 
+test("SI v0.7 /trial-review dispatches Derivation Candidates with separate read-only evidence", async () => {
+  const candidate = derivationTrialCandidate("00000000-0000-4000-8000-000000000031");
+  const selection = {
+    strategyId: candidate.proposal.strategyId,
+    kind: candidate.proposal.kind,
+    revisionIdentity: candidate.candidateId,
+    revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(candidate),
+    revisionStatusAtRun: "trial" as const,
+    semantics: candidate.proposal,
+  };
+  const derivationPolicy = createPolicySnapshotFromRevisions({ approach: selection });
+  const reader = new ExtensionTestExperienceReader();
+  reader.result = {
+    records: [
+      { recordId: "derive-one", experience: commandExperience("source one", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "derive-two", experience: commandExperience("source one", createPolicySnapshot({ approach: "direct-action", modifiers: ["minimal-change"] })) },
+      { recordId: "derive-three", experience: commandExperience("source two", createPolicySnapshot({ approach: "explore-first" })) },
+      { recordId: "trial-one", experience: commandExperience("source one", derivationPolicy) },
+    ],
+    loadedRecords: 4,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    experienceReader: reader,
+    strategyCandidateReader: { read: async () => null, readAll: async () => [] },
+    strategyDerivationCandidateReader: {
+      read: async (_root: string, id: string) => id === candidate.candidateId ? candidate : null,
+      readAll: async () => [candidate],
+    },
+    strategyDecisionStore: testDecisionStore(),
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  const command = harness.api.commands.get("trial-review");
+  assert.ok(command);
+  const options = await command.getArgumentCompletions("");
+  assert.ok(options);
+  assert.match(options!.find((option: any) => option.value === candidate.candidateId)?.label ?? "", /boundary-first.*derivation.*1 eligible trial/);
+  await command.handler(candidate.candidateId, {
+    ...context("/wrong-cwd"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  assert.equal(notices.at(-1)?.type, "info");
+  assert.match(notices.at(-1)?.message ?? "", /Strategy Derivation Trial Review/);
+  assert.match(notices.at(-1)?.message ?? "", /Derivation Source Evidence/);
+  assert.match(notices.at(-1)?.message ?? "", /Candidate Trial Evidence/);
+  assert.doesNotMatch(notices.at(-1)?.message ?? "", /Seed Baseline Evidence/);
+  assert.match(notices.at(-1)?.message ?? "", /Eligible Trial Runs: 1 \/ 2 required/);
+  assert.equal(harness.store.saves.length, 0);
+});
+
+test("SI v0.7 unified /trial-review fails closed on a cross-store UUID collision", async () => {
+  const candidate = derivationTrialCandidate("00000000-0000-4000-8000-000000000032");
+  const revision = trialCandidate(candidate.candidateId);
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    strategyCandidateReader: { read: async () => revision, readAll: async () => [revision] },
+    strategyDerivationCandidateReader: { read: async () => candidate, readAll: async () => [candidate] },
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  await harness.api.commands.get("trial-review").handler(candidate.candidateId, {
+    ...context("/repo"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  assert.match(notices.at(-1)?.message ?? "", /ambiguous|both Revision and Derivation/i);
+  assert.equal(harness.store.saves.length, 0);
+});
+
 test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
   const { api } = createHarness();
 
