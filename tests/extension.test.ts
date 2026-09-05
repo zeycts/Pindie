@@ -912,6 +912,7 @@ test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
     "pindie_git_observe",
     "pindie_policy_set",
     "pindie_strategy_candidate_create",
+    "pindie_strategy_derivation_candidate_create",
     "pindie_task_complete",
     "pindie_task_progress",
     "pindie_task_refine",
@@ -944,7 +945,7 @@ test("Remote-enabled wiring observes public input without altering Pindie tools"
   const sent: string[] = [];
   const surface: RemoteSurface = { ensureProject: async () => ({ channelId: "channel" }), ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }), send: async (_thread, event) => { sent.push(event.text); }, updateSessionPresentation: async () => undefined };
   const { api } = createHarness([], {}, { remoteCompanion: { companion: new RemoteCompanion(surface), guildId: "guild" } });
-  assert.ok(api.handlers.has("input")); assert.ok(api.handlers.has("message_end")); assert.equal(api.tools.size, 11);
+  assert.ok(api.handlers.has("input")); assert.ok(api.handlers.has("message_end")); assert.equal(api.tools.size, 12);
   await api.handler("session_start")({ type: "session_start", reason: "startup" }, context("/repo", [{ id: "u", message: { role: "user", content: "hello" } }]));
   assert.ok(Array.isArray(sent));
 });
@@ -4428,6 +4429,120 @@ test("SI v0.5 /adapt rejects unknown, busy, missing-root, and insufficient evide
   await harness.api.commands.get("adapt").handler("direct-action", commandContext);
   assert.match(notices.at(-1)?.message ?? "", /only 1 eligible attributable Run/i);
   assert.equal(harness.api.sentUserMessages.length, 0);
+});
+
+test("SI v0.7 /derive is explicit, bounded, read-only, and consumes one Candidate lease", async () => {
+  const reader = new ExtensionTestExperienceReader();
+  reader.result = {
+    records: [
+      { recordId: "derive-one", experience: commandExperience("derive goal one", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "derive-two", experience: commandExperience("derive goal two", createPolicySnapshot({ approach: "explore-first" })) },
+      { recordId: "derive-three", experience: commandExperience("derive goal one", createPolicySnapshot({ approach: "direct-action", modifiers: ["minimal-change"] })) },
+    ],
+    loadedRecords: 3,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const saved: any[] = [];
+  const harness = createHarness([["/repo", activeState("Derivation task")]], {}, {
+    experienceReader: reader,
+    strategyDerivationCandidateStore: { save: async (_root, candidate) => { saved.push(candidate); } },
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  const commandContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+  const command = harness.api.commands.get("derive");
+  assert.ok(command);
+  await command.handler("unexpected", commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /Usage: \/derive/);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+
+  await command.handler("", commandContext);
+  assert.equal(harness.api.sentUserMessages.length, 1);
+  assert.equal(harness.integration.derivation.hasPendingDerivation, true);
+  assert.match(notices.at(-1)?.message ?? "", /derivation Run started/i);
+
+  const baseline = await harnessBeforeAgentStart(harness);
+  assert.match(baseline.systemPrompt, /<PINDIE_DERIVATION_PACKET>/);
+  assert.match(baseline.systemPrompt, /3 distinct source records|Minimum gate satisfied/i);
+  assert.doesNotMatch(baseline.message.content, /<PINDIE_DERIVATION_PACKET>/);
+  assert.equal(harness.integration.derivation.hasActiveDerivation, true);
+
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  assertBlocked(
+    await callGuard(harness, toolCall("edit", {}, "derive-edit")),
+    /Derivation Run is read-only/i,
+  );
+  const candidateInput = {
+    strategyId: "boundary-first",
+    kind: "approach",
+    summary: "Name the smallest boundary before choosing a broader change.",
+    useWhen: ["the requested change crosses a meaningful interface"],
+    avoidWhen: ["the correction is already local and clear"],
+    principles: ["make the boundary explicit", "verify the smallest coherent move"],
+    sourceRecordIds: ["derive-one", "derive-two", "derive-three"],
+    hypothesis: "Repeated trusted-policy Runs may expose a missing boundary-first abstraction.",
+  };
+  await executeSemanticTool(harness, "pindie_strategy_derivation_candidate_create", "derive-candidate", candidateInput);
+  assert.equal(saved.length, 1);
+  assert.equal(harness.integration.derivation.hasDerivation, false);
+  assertBlocked(
+    await callGuard(harness, toolCall("edit", {}, "derive-edit-after")),
+    /Derivation Run is read-only/i,
+  );
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.equal(harness.experienceStore.records.length, 0);
+  const followUpsBefore = harness.api.sentMessages.length;
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(harness.api.sentMessages.length, followUpsBefore);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+
+  await beginAgentRun(harness);
+  assertBlocked(
+    await callGuard(harness, toolCall("pindie_strategy_derivation_candidate_create", candidateInput, "ordinary-derive")),
+    /explicit \/derive|derive Run/i,
+  );
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("SI v0.7 /derive, /adapt, and /trial leases remain mutually exclusive", async () => {
+  const reader = new ExtensionTestExperienceReader();
+  reader.result = {
+    records: [
+      { recordId: "derive-one", experience: commandExperience("one", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "derive-two", experience: commandExperience("two", createPolicySnapshot({ approach: "explore-first" })) },
+      { recordId: "derive-three", experience: commandExperience("one", createPolicySnapshot({ approach: "direct-action", modifiers: ["minimal-change"] })) },
+    ],
+    loadedRecords: 3,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const candidate = trialCandidate();
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    experienceReader: reader,
+    strategyCandidateReader: { read: async () => candidate },
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  const commandContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+  await harness.api.commands.get("derive").handler("", commandContext);
+  await harness.api.commands.get("adapt").handler("direct-action", commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /Derivation attempt|derive.*pending or active/i);
+  await harness.api.handler("session_shutdown")({ type: "session_shutdown" }, context("/repo"));
+
+  const adapt = createHarness([["/repo", activeState()]], {}, { experienceReader: reader });
+  await startSession(adapt, "/repo");
+  await adapt.api.commands.get("adapt").handler("direct-action", commandContext);
+  await adapt.api.commands.get("derive").handler("", commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /adaptation attempt|adapt.*pending or active/i);
 });
 
 test("SI v0.6 Slice B /trial arms the next real Run without manufacturing user intent", async () => {

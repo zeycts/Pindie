@@ -77,6 +77,7 @@ export type PindieCapability =
   | "project.mutate"
   | "policy.declare"
   | "policy.adapt"
+  | "policy.derive"
   | "task.start"
   | "task.refine"
   | "task.replace"

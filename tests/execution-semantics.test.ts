@@ -37,6 +37,7 @@ const exactCases = [
   ["write", "project.mutate", "known"],
   ["bash", "project.mutate", "ambiguous"],
   ["pindie_policy_set", "policy.declare", "none"],
+  ["pindie_strategy_derivation_candidate_create", "policy.derive", "none"],
   ["pindie_task_start", "task.start", "none"],
   ["pindie_task_replace", "task.replace", "none"],
   ["pindie_task_refine", "task.refine", "none"],

@@ -138,7 +138,8 @@ export class RunExperienceTracker {
   /** Record a call admitted by the live Gateway without classifying prose. */
   recordAuthorizedCall(toolCallId: string, effect: ToolEffect): void {
     const isPolicy = effect.requiredCapability === "policy.declare";
-    const isSelfImprovement = effect.requiredCapability === "policy.adapt";
+    const isSelfImprovement = effect.requiredCapability === "policy.adapt" ||
+      effect.requiredCapability === "policy.derive";
     this.authorizedCalls.set(
       toolCallId,
       isPolicy ? "policy" : isSelfImprovement ? "self-improvement" : "execution",
@@ -169,7 +170,8 @@ export class RunExperienceTracker {
   recordDeniedCall(effect: ToolEffect): void {
     if (
       effect.requiredCapability === "policy.declare" ||
-      effect.requiredCapability === "policy.adapt"
+      effect.requiredCapability === "policy.adapt" ||
+      effect.requiredCapability === "policy.derive"
     ) return;
     this.counters = {
       ...this.counters,
