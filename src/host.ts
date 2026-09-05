@@ -17,6 +17,7 @@ import { TaskMetricsTracker } from "./task-metrics.ts";
 import {
   installCommittedRolloverReceiver,
   type CommittedRolloverRequest,
+  type SessionLifecycleBoundary,
 } from "./long-task-control.ts";
 import {
   LongTaskRolloverSupervisor,
@@ -118,13 +119,18 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   let runtime: PiRuntimeAdapter | undefined;
   let rolloverSupervisor: LongTaskRolloverSupervisor | undefined;
   let releaseControlBridge: (() => void) | undefined;
-  releaseControlBridge = installCommittedRolloverReceiver((request: CommittedRolloverRequest) => {
-    if (!rolloverSupervisor) {
-      console.warn("[Pindie] Ignored a committed rollover request while Host runtime was bootstrapping.");
-      return;
-    }
-    rolloverSupervisor.request(request);
-  });
+  releaseControlBridge = installCommittedRolloverReceiver(
+    (request: CommittedRolloverRequest) => {
+      if (!rolloverSupervisor) {
+        console.warn("[Pindie] Ignored a committed rollover request while Host runtime was bootstrapping.");
+        return;
+      }
+      rolloverSupervisor.request(request);
+    },
+    (boundary: SessionLifecycleBoundary) => {
+      rolloverSupervisor?.observeSessionLifecycle(boundary);
+    },
+  );
 
   const releaseHostControl = async (): Promise<void> => {
     releaseControlBridge?.();

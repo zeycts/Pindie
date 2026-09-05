@@ -378,6 +378,70 @@ test("replacement cancellation and failure do not retry", async () => {
   }
 });
 
+test("manual lifecycle boundaries cancel pending rollover state and reset a same-ID safety chain", async () => {
+  const control = fakeRuntime();
+  control.setReplacement(async () => ({ cancelled: false }));
+  const scheduler = new ManualScheduler();
+  const taskMetrics = new TaskMetricsTracker();
+  const binding = request("session-1").checkpoint.taskFingerprint;
+  taskMetrics.startRunForTask("/repo", binding, { durationMs: 0, cost: 0 });
+  taskMetrics.settleRun({ durationMs: 5_000, cost: 0.05 });
+  const supervisor = new LongTaskRolloverSupervisor(control.adapter, {
+    schedule: scheduler.schedule,
+    maxAutomaticRollovers: 1,
+    taskMetrics,
+  });
+
+  await attempt(supervisor, scheduler, request("session-1"));
+  assert.equal(control.nativeCallCount(), 1);
+
+  assert.equal(taskMetrics.prepareAutomaticRollover("session-1", binding), true);
+  supervisor.observeSessionLifecycle({ sessionId: "session-1", reason: "reload" });
+  assert.equal(taskMetrics.enterSession("/repo", binding), false);
+
+  // Reload preserves the native Session ID, so this would trip the one-rollover
+  // fuse without an explicit lifecycle boundary from the Host.
+  await attempt(supervisor, scheduler, request("session-1"));
+  assert.equal(control.nativeCallCount(), 2);
+
+  // A manual replacement that arrives before the scheduled callback consumes
+  // neither the committed request nor a later automatic lease.
+  supervisor.request(request("session-1"));
+  supervisor.observeSessionLifecycle({ sessionId: "session-1", reason: "new" });
+  await scheduler.runNext();
+  assert.equal(control.nativeCallCount(), 2);
+  await supervisor.dispose();
+});
+
+test("disposing during native replacement suppresses a post-disposal hidden resume", async () => {
+  const control = fakeRuntime();
+  const scheduler = new ManualScheduler();
+  let entered!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  let release!: () => void;
+  const replacement = new Promise<void>((resolve) => { release = resolve; });
+  control.setReplacement(async (options) => {
+    entered();
+    await replacement;
+    await options?.withSession?.({
+      sendMessage: async () => assert.fail("disposed supervisor must not start hidden resume"),
+    } as never);
+    return { cancelled: false };
+  });
+  const supervisor = new LongTaskRolloverSupervisor(control.adapter, { schedule: scheduler.schedule });
+
+  supervisor.request(request("session-1"));
+  const scheduled = scheduler.callbacks.shift();
+  assert.ok(scheduled);
+  scheduled();
+  await enteredPromise;
+
+  const disposing = supervisor.dispose();
+  release();
+  await disposing;
+  assert.equal(control.nativeCallCount(), 1);
+});
+
 test("failed or cancelled rollover abandons the Task metrics lease without entering a continuation Run", async () => {
   const binding = request("session-1").checkpoint.taskFingerprint;
   for (const handler of [

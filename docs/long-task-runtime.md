@@ -240,6 +240,16 @@ later rejection fail-closed.
 
 The Host already owns the active `AgentSessionRuntime`, so settlement, replacement, and the new active Session do not need to be mirrored back through another event platform.
 
+The extension also reports each native `session_shutdown` boundary to the
+Host control lease. The supervisor cancels pending rollover requests and
+TaskMetrics leases for manual `/new`, `/resume`, `/fork`, `/reload`, and quit
+boundaries, and resets its safety-chain counter even when `/reload` reuses the
+same native Session ID. The one exception is the `new` shutdown emitted by the
+Host's own in-flight automatic `newSession` transaction; that exact transaction
+keeps its lease until the fresh Session is installed. A released Host lease
+cannot receive late lifecycle notices, so shutdown and process restart leave no
+reusable automatic state.
+
 Conceptually:
 
 ```text

@@ -1018,6 +1018,24 @@ test("SI v0.7 unified /trial-review fails closed on a cross-store UUID collision
   assert.equal(harness.store.saves.length, 0);
 });
 
+test("Host lifecycle wiring receives the native Session shutdown boundary", async () => {
+  const boundaries: Array<{ sessionId: string; reason: string }> = [];
+  const release = installCommittedRolloverReceiver(
+    () => undefined,
+    (boundary) => boundaries.push(boundary),
+  );
+  try {
+    const harness = createHarness([ ["/repo", activeState("Lifecycle boundary")] ]);
+    await harness.api.handler("session_shutdown")(
+      { type: "session_shutdown", reason: "reload" },
+      context("/repo", [], false, "reload-session"),
+    );
+    assert.deepEqual(boundaries, [{ sessionId: "reload-session", reason: "reload" }]);
+  } finally {
+    release();
+  }
+});
+
 test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
   const { api } = createHarness();
 

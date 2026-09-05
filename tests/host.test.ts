@@ -18,7 +18,10 @@ import {
   getPindieResourcePaths,
   type PindieInteractiveMode,
 } from "../src/host.ts";
-import { getCommittedRolloverPublisher } from "../src/long-task-control.ts";
+import {
+  getCommittedRolloverPublisher,
+  getSessionLifecyclePublisher,
+} from "../src/long-task-control.ts";
 import { createTaskContinuity } from "../src/task-continuity.ts";
 
 class ManualScheduler {
@@ -279,6 +282,48 @@ test("Host control bridge rejects a second live Host and releases on disposal", 
     },
   });
   await afterRelease.dispose();
+});
+
+test("Host lifecycle boundaries reset rollover state even when native Session identity is reused", async () => {
+  const scheduler = new ManualScheduler();
+  const control = fakeRuntime();
+  const host = await createPindieHost({
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+    longTaskRollover: {
+      schedule: scheduler.schedule,
+      maxAutomaticRollovers: 1,
+    },
+    dependencies: {
+      createAgentSessionRuntime: async () => control.runtime,
+      createInteractiveMode: () => ({ run: async () => {} }),
+    },
+  });
+
+  try {
+    const publisher = getCommittedRolloverPublisher();
+    const lifecycle = getSessionLifecyclePublisher();
+    assert.ok(publisher);
+    assert.ok(lifecycle);
+
+    publisher(committedRequest("session-1"));
+    const first = scheduler.callbacks.shift();
+    assert.ok(first);
+    first();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(control.newSessionCalls(), 1);
+
+    // /reload keeps the native Session ID. The Host lifecycle signal must still
+    // break the old automatic chain before the next committed request.
+    lifecycle({ sessionId: "session-1", reason: "reload" });
+    publisher(committedRequest("session-1"));
+    const second = scheduler.callbacks.shift();
+    assert.ok(second);
+    second();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(control.newSessionCalls(), 2);
+  } finally {
+    await host.dispose();
+  }
 });
 
 test("Host disposal waits for an in-flight native replacement before disposing Pi", async () => {

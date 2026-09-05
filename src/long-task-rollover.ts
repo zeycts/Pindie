@@ -11,7 +11,10 @@ import {
   PiRuntimeAdapter,
   type SessionReplacementOptions,
 } from "./pi-runtime.ts";
-import type { CommittedRolloverRequest } from "./long-task-control.ts";
+import type {
+  CommittedRolloverRequest,
+  SessionLifecycleBoundary,
+} from "./long-task-control.ts";
 import type { TaskMetricsTracker } from "./task-metrics.ts";
 
 export type LongTaskRolloverScheduler = (callback: () => void) => void;
@@ -52,6 +55,8 @@ export class LongTaskRolloverSupervisor {
   private inProgress = false;
   private inProgressPromise: Promise<void> | undefined;
   private disposed = false;
+  private activeReplacementSourceSessionId: string | null = null;
+  private lifecycleInvalidated = false;
   private chainSessionId: string | null = null;
   private chainCount = 0;
 
@@ -81,6 +86,8 @@ export class LongTaskRolloverSupervisor {
         this.pendingRequest = null;
         if (pending === null || this.disposed) return;
         this.inProgress = true;
+        this.activeReplacementSourceSessionId = null;
+        this.lifecycleInvalidated = false;
         const attempt = this.attemptRollover(pending)
           .catch((error: unknown) => {
             this.breakChain();
@@ -88,6 +95,8 @@ export class LongTaskRolloverSupervisor {
           })
           .finally(() => {
             this.inProgress = false;
+            this.activeReplacementSourceSessionId = null;
+            this.lifecycleInvalidated = false;
             this.inProgressPromise = undefined;
           });
         this.inProgressPromise = attempt;
@@ -107,6 +116,25 @@ export class LongTaskRolloverSupervisor {
     this.taskMetrics?.cancelAutomaticRollover();
     this.breakChain();
     await this.inProgressPromise;
+  }
+
+  /**
+   * Invalidate pending automatic state when native Pi tears down a Session for
+   * any reason other than the replacement currently owned by this supervisor.
+   * Reload keeps the native Session ID, so the explicit lifecycle signal is
+   * required instead of relying on an ID change to reset the safety chain.
+   */
+  observeSessionLifecycle(boundary: SessionLifecycleBoundary): void {
+    if (this.disposed) return;
+    const isOwnedAutomaticReplacement = this.inProgress &&
+      this.activeReplacementSourceSessionId === boundary.sessionId &&
+      boundary.reason === "new";
+    if (isOwnedAutomaticReplacement) return;
+
+    this.pendingRequest = null;
+    this.taskMetrics?.cancelAutomaticRollover();
+    this.breakChain();
+    if (this.inProgress) this.lifecycleInvalidated = true;
   }
 
   private async attemptRollover(request: CommittedRolloverRequest): Promise<void> {
@@ -159,6 +187,8 @@ export class LongTaskRolloverSupervisor {
       continuationName = formatLongTaskContinuationSessionName(undefined);
     }
 
+    this.activeReplacementSourceSessionId = request.sourceSessionId;
+    this.lifecycleInvalidated = false;
     this.taskMetrics?.prepareAutomaticRollover(
       request.sourceSessionId,
       request.checkpoint.taskFingerprint,
@@ -169,6 +199,10 @@ export class LongTaskRolloverSupervisor {
     const options: SessionReplacementOptions = {
       withSession: async (replacementContext) => {
         replacementStarted = true;
+        if (this.disposed || this.lifecycleInvalidated) {
+          resumeSuppressed = true;
+          return;
+        }
         try {
           // withSession runs after Pi installs and rebinds the fresh Session.
           this.runtime.setActiveSessionName(continuationName);
@@ -193,14 +227,22 @@ export class LongTaskRolloverSupervisor {
         // Pi 0.84.4's sendMessage(triggerTurn: true) Promise covers the full
         // Agent Run. Do not hold replacement ownership for that lifetime: the
         // fresh Session must be able to commit and request the next rollover.
-        const resumePromise = replacementContext.sendMessage(
-          {
-            customType: PINDIE_LONG_TASK_RESUME_TYPE,
-            content: formatLongTaskResume(request.checkpoint),
-            display: false,
-          },
-          { triggerTurn: true },
-        );
+        let resumePromise: Promise<void>;
+        try {
+          resumePromise = replacementContext.sendMessage(
+            {
+              customType: PINDIE_LONG_TASK_RESUME_TYPE,
+              content: formatLongTaskResume(request.checkpoint),
+              display: false,
+            },
+            { triggerTurn: true },
+          );
+        } catch (error) {
+          resumeSuppressed = true;
+          this.breakChain();
+          this.report(`Automatic Long Task resume message failed after Pi installed the fresh Session: ${errorMessage(error)}`);
+          return;
+        }
         void resumePromise.catch((error: unknown) => {
           this.breakChain();
           this.report(`Automatic Long Task resume message failed after Pi installed the fresh Session: ${errorMessage(error)}`);
@@ -211,7 +253,7 @@ export class LongTaskRolloverSupervisor {
     try {
       const result = await this.runtime.replaceWithFreshSession(options);
       this.taskMetrics?.cancelAutomaticRollover();
-      if (result.cancelled || resumeSuppressed) {
+      if (result.cancelled || resumeSuppressed || this.disposed || this.lifecycleInvalidated) {
         this.breakChain();
         return;
       }

@@ -8,9 +8,21 @@ export interface CommittedRolloverRequest {
 export type CommittedRolloverReceiver = (request: CommittedRolloverRequest) => void;
 export type CommittedRolloverPublisher = (request: CommittedRolloverRequest) => void;
 
+export type SessionLifecycleReason = "quit" | "reload" | "new" | "resume" | "fork";
+
+/** Runtime-only notice for lifecycle boundaries outside the committed rollover transaction. */
+export interface SessionLifecycleBoundary {
+  readonly sessionId: string;
+  readonly reason: SessionLifecycleReason;
+}
+
+export type SessionLifecycleReceiver = (boundary: SessionLifecycleBoundary) => void;
+export type SessionLifecyclePublisher = (boundary: SessionLifecycleBoundary) => void;
+
 interface BridgeLease {
   readonly token: symbol;
   readonly receiver: CommittedRolloverReceiver;
+  readonly lifecycleReceiver?: SessionLifecycleReceiver;
 }
 
 interface BridgeState {
@@ -29,12 +41,17 @@ const bridgeState = processBridge[BRIDGE_STATE_KEY] ??= { activeLease: null };
 /** Install the one process-local receiver owned by the Pindie Host. */
 export function installCommittedRolloverReceiver(
   receiver: CommittedRolloverReceiver,
+  lifecycleReceiver?: SessionLifecycleReceiver,
 ): () => void {
   if (bridgeState.activeLease !== null) {
     throw new Error("A Pindie Host already owns the committed rollover control bridge.");
   }
 
-  const lease: BridgeLease = { token: Symbol("pindie-host-control"), receiver };
+  const lease: BridgeLease = {
+    token: Symbol("pindie-host-control"),
+    receiver,
+    lifecycleReceiver,
+  };
   bridgeState.activeLease = lease;
   let released = false;
   return () => {
@@ -53,5 +70,17 @@ export function getCommittedRolloverPublisher(): CommittedRolloverPublisher | nu
       throw new Error("Pindie Host committed rollover control bridge lease is no longer active.");
     }
     lease.receiver(request);
+  };
+}
+
+/** Return a publisher for native Session lifecycle boundaries owned by the Host. */
+export function getSessionLifecyclePublisher(): SessionLifecyclePublisher | null {
+  const lease = bridgeState.activeLease;
+  if (lease === null || lease.lifecycleReceiver === undefined) return null;
+  return (boundary) => {
+    if (bridgeState.activeLease?.token !== lease.token) {
+      throw new Error("Pindie Host Session lifecycle bridge lease is no longer active.");
+    }
+    lease.lifecycleReceiver!(boundary);
   };
 }

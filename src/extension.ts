@@ -148,7 +148,10 @@ import {
   createTaskContinuity,
   taskContractFingerprint,
 } from "./task-continuity.ts";
-import { getCommittedRolloverPublisher } from "./long-task-control.ts";
+import {
+  getCommittedRolloverPublisher,
+  getSessionLifecyclePublisher,
+} from "./long-task-control.ts";
 import {
   PINDIE_TASK_HANDOFF_TOOL,
   TaskHandoffRuntime,
@@ -301,6 +304,7 @@ export function registerPindieExtension(
   // Capture the Host lease at extension registration. A released extension
   // publisher must never be able to target a later Host in this process.
   const committedRolloverPublisher = getCommittedRolloverPublisher();
+  const sessionLifecyclePublisher = getSessionLifecyclePublisher();
   const taskHandoffEnabled = options.enableTaskHandoff === true || committedRolloverPublisher !== null;
   const stateStore = options.store ?? new FileStateStore();
   const experienceStorageBaseDir = stateStore instanceof FileStateStore
@@ -1750,7 +1754,21 @@ export function registerPindieExtension(
     pi.on("ui_prompt_end", () => options.remoteCompanion!.companion.setLocalUiPrompt(false));
   }
 
-  pi.on("session_shutdown", (_event, ctx) => {
+  pi.on("session_shutdown", (event, ctx) => {
+    let nativeSessionId: string | null = null;
+    try {
+      nativeSessionId = ctx.sessionManager.getSessionId();
+    } catch {
+      // A stale shutdown context cannot identify a lifecycle boundary.
+    }
+    if (nativeSessionId !== null && sessionLifecyclePublisher !== null) {
+      try {
+        sessionLifecyclePublisher({ sessionId: nativeSessionId, reason: event.reason });
+      } catch {
+        // Host lifecycle control is best effort during teardown; native cleanup continues.
+      }
+    }
+
     const remote = options.remoteCompanion;
     const sessionId = liveRemoteSession?.sessionId ?? remote?.companion.activeSessionId ?? null;
     liveRemoteSession = null;
