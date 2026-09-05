@@ -22,6 +22,11 @@ import {
   validateStrategyRevisionDecisionBinding,
   type StrategyRevisionDecisionReader,
 } from "./strategy-decisions.ts";
+import {
+  validateStrategyDerivationDecisionBinding,
+  validateStrategyDerivationDecisionProjectBinding,
+  type StrategyDerivationDecisionReader,
+} from "./strategy-derivation-decisions.ts";
 import { resolveTrialCandidate } from "./strategy-candidate-resolution.ts";
 import type { StrategyDerivationCandidateReader } from "./strategy-derivation-candidates.ts";
 import type { TrustedStrategyPortfolio } from "./strategy-portfolio.ts";
@@ -57,6 +62,7 @@ export interface PresentationIntegrationOptions {
   strategyCandidateReader: StrategyCandidateReader;
   strategyDerivationCandidateReader: StrategyDerivationCandidateReader;
   strategyDecisionReader?: StrategyRevisionDecisionReader;
+  strategyDerivationDecisionReader?: StrategyDerivationDecisionReader;
   loadTrustedPortfolio?: (projectRoot: string) => Promise<TrustedStrategyPortfolio>;
   getAuthoritativeState: () => PindieState | null;
   getStateUnavailableReason: () => string | null;
@@ -89,6 +95,7 @@ export class PresentationIntegration {
   private readonly strategyCandidateReader: StrategyCandidateReader;
   private readonly strategyDerivationCandidateReader: StrategyDerivationCandidateReader;
   private readonly strategyDecisionReader: StrategyRevisionDecisionReader | null;
+  private readonly strategyDerivationDecisionReader: StrategyDerivationDecisionReader | null;
   private readonly loadTrustedPortfolio: ((projectRoot: string) => Promise<TrustedStrategyPortfolio>) | null;
   private readonly getAuthoritativeState: () => PindieState | null;
   private readonly getStateUnavailableReason: () => string | null;
@@ -117,6 +124,7 @@ export class PresentationIntegration {
     this.strategyCandidateReader = options.strategyCandidateReader;
     this.strategyDerivationCandidateReader = options.strategyDerivationCandidateReader;
     this.strategyDecisionReader = options.strategyDecisionReader ?? null;
+    this.strategyDerivationDecisionReader = options.strategyDerivationDecisionReader ?? null;
     this.loadTrustedPortfolio = options.loadTrustedPortfolio ?? null;
     this.getAuthoritativeState = options.getAuthoritativeState;
     this.getStateUnavailableReason = options.getStateUnavailableReason;
@@ -438,9 +446,22 @@ export class PresentationIntegration {
       return;
     }
 
-    // Slice D has not introduced a Derivation Decision store. The review
-    // therefore represents its prior-decision fact as absent, without
-    // fabricating or persisting a decision artifact.
+    let priorTerminalDecision = false;
+    if (this.strategyDerivationDecisionReader !== null) {
+      try {
+        const decision = await this.strategyDerivationDecisionReader.read(projectRoot, requestedId);
+        if (decision !== null) {
+          validateStrategyDerivationDecisionProjectBinding(decision, projectRoot);
+          validateStrategyDerivationDecisionBinding(decision, candidateRef.candidate);
+          priorTerminalDecision = true;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Pindie could not show Trial review: Derivation Decision read/binding failed: ${message}`, "warning");
+        return;
+      }
+    }
+
     let currentPortfolio: TrustedStrategyPortfolio | null = null;
     if (this.loadTrustedPortfolio !== null) {
       try {
@@ -467,7 +488,9 @@ export class PresentationIntegration {
           currentPortfolio,
           revisionCandidateReader: this.strategyCandidateReader,
           revisionDecisionReader: this.strategyDecisionReader ?? undefined,
-          priorTerminalDecision: false,
+          derivationCandidateReader: this.strategyDerivationCandidateReader,
+          derivationDecisionReader: this.strategyDerivationDecisionReader ?? undefined,
+          priorTerminalDecision,
         },
       );
       ctx.ui.notify(formatStrategyDerivationTrialReview(read, review), "info");

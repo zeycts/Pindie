@@ -18,6 +18,7 @@ import {
 } from "./policy.ts";
 import { parseRunExperience } from "./run-experience.ts";
 import {
+  resolveTrustedPortfolioSelection,
   type TrustedPortfolioManifestEntry,
   type TrustedPortfolioResolvedEntry,
   type TrustedStrategyPortfolio,
@@ -239,29 +240,10 @@ function trustedSelectionIsExact(
   // The portfolio resolver checks origin/status, exact revision identity and
   // fingerprint, and the immutable source semantics. No display label or
   // logical Strategy ID alone can establish trust.
-  const resolved = portfolio.resolvedEntries.find((entry) => {
-    const manifest = entry.manifest;
-    const status = strategySelectionRevisionStatus(selection);
-    const expectedOrigin = status === "seed" ? "seed" : "promoted-seed-revision";
-    return manifest.origin === expectedOrigin &&
-      manifest.strategyId === strategySelectionId(selection) &&
-      manifest.kind === selection.kind &&
-      manifest.revisionIdentity === strategySelectionRevisionIdentity(selection) &&
-      manifest.revisionFingerprint === strategySelectionRevisionFingerprint(selection);
-  });
-  if (resolved === undefined) return false;
-  const semantics = serializeStrategyRevisionSelection(selection).semantics;
-  return JSON.stringify({
-    summary: semantics.summary,
-    useWhen: [...semantics.useWhen],
-    avoidWhen: [...semantics.avoidWhen],
-    principles: [...semantics.principles],
-  }) === JSON.stringify({
-    summary: resolved.semantics.summary,
-    useWhen: [...resolved.semantics.useWhen],
-    avoidWhen: [...resolved.semantics.avoidWhen],
-    principles: [...resolved.semantics.principles],
-  });
+  return resolveTrustedPortfolioSelection(
+    serializeStrategyRevisionSelection(selection),
+    portfolio,
+  ) !== null;
 }
 
 /** Select only valid current schema-v4 trusted-policy source Runs. */
