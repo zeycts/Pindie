@@ -31,8 +31,10 @@ import {
 import {
   buildCandidateCommandProjection,
   buildTrialCommandProjection,
+  buildTrialReviewCommandProjection,
   filterCandidateCommandOptions,
   filterTrialCommandOptions,
+  filterTrialReviewCommandOptions,
   type CandidateCommandName,
 } from "./strategy-candidate-commands.ts";
 import { ExecutionIntegration } from "./execution-integration.ts";
@@ -332,12 +334,22 @@ export function registerPindieExtension(
   const execution = new ExecutionIntegration({
     captureProjectFingerprint: options.captureProjectFingerprint,
   });
+  // Derivation review needs a fresh trusted portfolio but must tolerate a
+  // failed current trust read as a false Promotion Eligibility fact.
+  const loadTrustedPortfolio = (projectRoot: string) =>
+    loadTrustedStrategyPortfolio(
+      projectRoot,
+      strategyDecisionReader,
+      strategyCandidateReader,
+    );
   const presentation = new PresentationIntegration(pi, {
     getState: () => runtime.projectRoot === null ? null : runtime.state,
     getProjectRoot: () => runtime.projectRoot,
     experienceReader,
     strategyCandidateReader,
+    strategyDerivationCandidateReader,
     strategyDecisionReader,
+    loadTrustedPortfolio,
     getAuthoritativeState: () => run.authoritativeState,
     getStateUnavailableReason: () => run.stateUnavailableReason,
     getRunStale: () => run.agentRunIsStale,
@@ -376,15 +388,6 @@ export function registerPindieExtension(
       return emptyPromotedStrategyRevisionCatalog();
     }
   };
-  // Derivation is stricter than the normal Policy surface: trust-artifact
-  // failures propagate so an explicit /derive cannot receive an incomplete
-  // or guessed portfolio.
-  const loadTrustedPortfolio = (projectRoot: string) =>
-    loadTrustedStrategyPortfolio(
-      projectRoot,
-      strategyDecisionReader,
-      strategyCandidateReader,
-    );
   type LiveRemoteSession = { sessionId: string; ctx: ExtensionContext; generation: number };
   let liveRemoteSession: LiveRemoteSession | null = null;
   let nextRemoteLeaseGeneration = 0;
@@ -542,11 +545,38 @@ export function registerPindieExtension(
     }
   };
 
+  const trialReviewCommandCompletions = async (prefix: string) => {
+    const projectRoot = runtime.projectRoot;
+    if (projectRoot === null) return null;
+    let trustedPortfolio = null as Awaited<ReturnType<typeof loadTrustedPortfolio>> | null;
+    try {
+      trustedPortfolio = await loadTrustedPortfolio(projectRoot);
+    } catch {
+      // A stale or malformed current trust portfolio must not hide a valid
+      // historical Derivation Candidate from read-only review completion.
+    }
+    try {
+      const projection = await buildTrialReviewCommandProjection({
+        projectRoot,
+        candidateReader: strategyCandidateReader,
+        derivationCandidateReader: strategyDerivationCandidateReader,
+        decisionReader: strategyDecisionReader,
+        experienceReader,
+        trustedPortfolio,
+      });
+      return filterTrialReviewCommandOptions(projection, prefix);
+    } catch {
+      // Completion is advisory UI. Malformed artifacts never become options.
+      return null;
+    }
+  };
+
   const candidateCommandCompletions = async (
     command: CandidateCommandName,
     prefix: string,
   ) => {
     if (command === "trial") return trialCommandCompletions(prefix);
+    if (command === "trial-review") return trialReviewCommandCompletions(prefix);
     const projectRoot = runtime.projectRoot;
     if (projectRoot === null) return null;
     try {
@@ -575,7 +605,9 @@ export function registerPindieExtension(
     try {
       const options = command === "trial"
         ? await trialCommandCompletions("")
-        : (await candidateCommandProjection(command, projectRoot)).options;
+        : command === "trial-review"
+          ? await trialReviewCommandCompletions("")
+          : (await candidateCommandProjection(command, projectRoot)).options;
       if (options !== null && options.length === 0) {
         const message = command === "trial"
           ? "No Candidates are currently available for Trial."

@@ -24,7 +24,9 @@ import {
 import type { StrategyCandidateReader } from "./strategy-candidates.ts";
 
 export const TRUSTED_PORTFOLIO_FINGERPRINT_VERSION = 1 as const;
-/** 7 immutable Seeds + 7 frozen v0.6 promoted Seed revisions + future room. */
+/** SI v0.7 bounds promoted new logical Strategy identities per project. */
+export const MAX_PROMOTED_DERIVED_STRATEGIES = 8;
+/** 7 immutable Seeds + 7 frozen v0.6 promoted Seed revisions + 8 derived identities. */
 export const MAX_TRUSTED_PORTFOLIO_ENTRIES = 22;
 
 export type TrustedPortfolioOrigin =
@@ -254,11 +256,13 @@ export function resolveTrustedPortfolioSelection(
 ): TrustedPortfolioResolvedEntry | null {
   const status = strategySelectionRevisionStatus(selection);
   if (status !== "seed" && status !== "promoted") return null;
-  const origin = status === "seed" ? "seed" : undefined;
+  const origins = status === "seed"
+    ? ["seed"]
+    : ["promoted-seed-revision", "promoted-derived"];
   if (status === "seed" && strategySelectionRevisionIdentity(selection) !== "seed") return null;
   const found = portfolio.resolvedEntries.find((entry) => {
     const manifest = entry.manifest;
-    return (origin === undefined || manifest.origin === origin) &&
+    return origins.includes(manifest.origin) &&
       manifest.strategyId === strategySelectionId(selection) &&
       manifest.kind === selection.kind &&
       manifest.revisionIdentity === strategySelectionRevisionIdentity(selection) &&

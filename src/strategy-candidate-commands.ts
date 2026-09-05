@@ -2,7 +2,9 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 
 import {
   deriveCandidateTrialReview,
+  deriveStrategyDerivationTrialReview,
   type CandidateTrialReview,
+  type StrategyDerivationTrialReview,
 } from "./experience-evaluation.ts";
 import type { RunExperienceReader } from "./experience-store.ts";
 import {
@@ -64,6 +66,16 @@ export interface TrialCommandProjectionInput {
   readonly trustedPortfolio: TrustedStrategyPortfolio;
 }
 
+export interface TrialReviewCommandProjectionInput {
+  readonly projectRoot: string;
+  readonly candidateReader: StrategyCandidateReader;
+  readonly derivationCandidateReader: StrategyDerivationCandidateReader;
+  readonly decisionReader: StrategyRevisionDecisionReader;
+  readonly experienceReader: RunExperienceReader;
+  /** Fresh current trust; null keeps review options but makes the gate false. */
+  readonly trustedPortfolio: TrustedStrategyPortfolio | null;
+}
+
 export type TrialCommandProjectionEntry =
   | (CandidateCommandProjectionEntry & { readonly kind: "revision" })
   | {
@@ -72,6 +84,22 @@ export type TrialCommandProjectionEntry =
       readonly label: string;
       readonly option: AutocompleteItem;
     };
+
+export type TrialReviewCommandProjectionEntry =
+  | (CandidateCommandProjectionEntry & { readonly kind: "revision" })
+  | {
+      readonly kind: "derivation";
+      readonly candidate: StrategyDerivationCandidateV1;
+      readonly trialReview: StrategyDerivationTrialReview;
+      readonly promotionEligible: boolean;
+      readonly label: string;
+      readonly option: AutocompleteItem;
+    };
+
+export interface TrialReviewCommandProjection {
+  readonly entries: readonly TrialReviewCommandProjectionEntry[];
+  readonly options: readonly AutocompleteItem[];
+}
 
 export interface TrialCommandProjection {
   readonly entries: readonly TrialCommandProjectionEntry[];
@@ -146,6 +174,37 @@ async function readAllDerivationCandidates(
     // Keep every validated ID in this intermediate collection so a
     // cross-store UUID collision is detected even when the proposed logical
     // identity is no longer available for Trial options.
+    candidates.push(candidate);
+  }
+  return Object.freeze(candidates.sort((left, right) =>
+    compareText(left.candidateId, right.candidateId)));
+}
+
+async function readAllDerivationCandidatesForReview(
+  reader: StrategyDerivationCandidateReader,
+  projectRoot: string,
+): Promise<readonly StrategyDerivationCandidateV1[]> {
+  if (typeof reader.readAll !== "function") {
+    throw new Error("Strategy Derivation Candidate enumeration is unavailable for this project reader.");
+  }
+  const rawCandidates = await reader.readAll(projectRoot);
+  if (!Array.isArray(rawCandidates)) {
+    throw new Error("Strategy Derivation Candidate reader returned an invalid collection.");
+  }
+  const candidateIds = new Set<string>();
+  const candidates: StrategyDerivationCandidateV1[] = [];
+  for (const rawCandidate of rawCandidates) {
+    // Review intentionally does not compare with current trust here. A stale
+    // Candidate remains selectable for historical evidence inspection; its
+    // current-portfolio gate is derived by the review itself.
+    const candidate = validateStrategyDerivationCandidateBinding(
+      rawCandidate,
+      projectRoot,
+    );
+    if (candidateIds.has(candidate.candidateId)) {
+      throw new Error("Strategy Derivation Candidate reader returned duplicate Candidate IDs.");
+    }
+    candidateIds.add(candidate.candidateId);
     candidates.push(candidate);
   }
   return Object.freeze(candidates.sort((left, right) =>
@@ -423,6 +482,138 @@ export async function buildTrialCommandProjection(
     entries: Object.freeze(labeled),
     options: Object.freeze(labeled.map((entry) => entry.option)),
   });
+}
+
+function trialReviewEvidenceCount(entry: TrialReviewCommandProjectionEntry): number {
+  return entry.kind === "revision"
+    ? entry.trialReview.candidateProfile.runCount
+    : entry.trialReview.candidateTrialEvidence.profile.runCount;
+}
+
+function derivationReviewLabel(
+  candidate: StrategyDerivationCandidateV1,
+  review: StrategyDerivationTrialReview,
+): string {
+  const count = review.candidateTrialEvidence.profile.runCount;
+  const trialText = `${count} eligible trial${count === 1 ? "" : "s"}`;
+  const suffix = review.promotionEligibility.eligible
+    ? `${trialText} · promotion eligible`
+    : trialText;
+  return boundedLabel(
+    `${candidate.proposal.strategyId} · ${candidate.proposal.summary.replace(/\s+/gu, " ").trim()} · derivation · ${suffix}`,
+  );
+}
+
+/**
+ * Read one fresh unified `/trial-review` projection. Revision entries use the
+ * unchanged v0.6 review projection; Derivation entries use their separate
+ * source/Trial review and remain available when their portfolio is stale.
+ */
+export async function buildTrialReviewCommandProjection(
+  input: TrialReviewCommandProjectionInput,
+): Promise<TrialReviewCommandProjection> {
+  const revisionProjection = await buildCandidateCommandProjection({
+    projectRoot: input.projectRoot,
+    command: "trial-review",
+    candidateReader: input.candidateReader,
+    decisionReader: input.decisionReader,
+    experienceReader: input.experienceReader,
+  });
+  const derivationCandidates = await readAllDerivationCandidatesForReview(
+    input.derivationCandidateReader,
+    input.projectRoot,
+  );
+  const revisionIds = new Set(revisionProjection.entries.map((entry) =>
+    entry.candidate.candidateId));
+  if (derivationCandidates.some((candidate) => revisionIds.has(candidate.candidateId))) {
+    throw new Error("Candidate ID is ambiguous: both Revision and Derivation Candidate stores contain it.");
+  }
+  const experience = await input.experienceReader.read(input.projectRoot);
+  const derivationEntries: TrialReviewCommandProjectionEntry[] = [];
+  for (const candidate of derivationCandidates) {
+    const trialReview = await deriveStrategyDerivationTrialReview(
+      candidate,
+      experience.records,
+      {
+        projectRoot: input.projectRoot,
+        currentPortfolio: input.trustedPortfolio,
+        revisionCandidateReader: input.candidateReader,
+        revisionDecisionReader: input.decisionReader,
+        priorTerminalDecision: false,
+      },
+    );
+    derivationEntries.push({
+      kind: "derivation",
+      candidate,
+      trialReview,
+      promotionEligible: trialReview.promotionEligibility.eligible,
+      label: derivationReviewLabel(candidate, trialReview),
+      option: { value: candidate.candidateId, label: "" },
+    });
+  }
+
+  const entries: TrialReviewCommandProjectionEntry[] = [
+    ...revisionProjection.entries.map((entry) => ({
+      ...entry,
+      kind: "revision" as const,
+    })),
+    ...derivationEntries,
+  ];
+  const labels = entries.map((entry) => entry.label);
+  const groups = new Map<string, number[]>();
+  labels.forEach((label, index) => {
+    const group = groups.get(label) ?? [];
+    group.push(index);
+    groups.set(label, group);
+  });
+  for (const indexes of groups.values()) {
+    if (indexes.length < 2) continue;
+    let suffixLength = 8;
+    while (true) {
+      const suffixes = new Set(indexes.map((index) =>
+        entries[index]!.candidate.candidateId.slice(0, suffixLength)));
+      if (suffixes.size === indexes.length || suffixLength >= 36) break;
+      suffixLength = Math.min(36, suffixLength + 4);
+    }
+    for (const index of indexes) {
+      const entry = entries[index]!;
+      const id = entry.candidate.candidateId.slice(0, suffixLength);
+      const base = entry.label.slice(
+        0,
+        Math.max(1, MAX_CANDIDATE_COMMAND_LABEL_LENGTH - 3 - suffixLength),
+      );
+      labels[index] = `${base} · ${id}`.slice(0, MAX_CANDIDATE_COMMAND_LABEL_LENGTH);
+    }
+  }
+
+  const labeled = entries.map((entry, index) => {
+    const label = labels[index]!;
+    return Object.freeze({
+      ...entry,
+      label,
+      option: Object.freeze({ value: entry.candidate.candidateId, label }),
+    });
+  });
+  labeled.sort((left, right) => {
+    const evidenceOrder = trialReviewEvidenceCount(right) - trialReviewEvidenceCount(left);
+    if (evidenceOrder !== 0) return evidenceOrder;
+    const labelOrder = compareText(left.label, right.label);
+    return labelOrder !== 0
+      ? labelOrder
+      : compareText(left.candidate.candidateId, right.candidate.candidateId);
+  });
+  return Object.freeze({
+    entries: Object.freeze(labeled),
+    options: Object.freeze(labeled.map((entry) => entry.option)),
+  });
+}
+
+/** Resolve a unified `/trial-review` completion prefix without parsing labels. */
+export function filterTrialReviewCommandOptions(
+  projection: TrialReviewCommandProjection,
+  prefix: string,
+): AutocompleteItem[] {
+  return projection.options.filter((option) => option.value.startsWith(prefix));
 }
 
 /** Resolve a unified `/trial` completion prefix without parsing labels. */
