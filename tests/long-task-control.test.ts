@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   getCommittedRolloverPublisher,
+  getSessionLifecyclePublisher,
   installCommittedRolloverReceiver,
 } from "../src/long-task-control.ts";
 import { createTaskContinuity } from "../src/task-continuity.ts";
@@ -35,6 +36,23 @@ test("an installed Host receiver receives the exact committed request", () => {
   } finally {
     release();
   }
+});
+
+test("the Host lifecycle publisher is session-bound and released with the control bridge", () => {
+  const boundaries: unknown[] = [];
+  const release = installCommittedRolloverReceiver(
+    () => undefined,
+    (boundary) => boundaries.push(boundary),
+  );
+  const publisher = getSessionLifecyclePublisher();
+  assert.ok(publisher);
+  const boundary = { sessionId: "session-1", reason: "reload" as const };
+  publisher(boundary);
+  assert.equal(boundaries[0], boundary);
+  release();
+
+  assert.equal(getSessionLifecyclePublisher(), null);
+  assert.throws(() => publisher(boundary), /lease is no longer active/i);
 });
 
 test("releasing a Host lease removes the bridge", () => {
