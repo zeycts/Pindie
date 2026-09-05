@@ -6,12 +6,22 @@ import {
   type StrategyRevisionDecisionReader,
 } from "./strategy-decisions.ts";
 import {
+  loadPromotedDerivedStrategyCatalog,
+  emptyPromotedDerivedStrategyCatalog,
+  type PromotedDerivedStrategyCatalog,
+  type StrategyDerivationDecisionReader,
+} from "./strategy-derivation-decisions.ts";
+import {
+  createStrategyRevisionSelection,
+  isStrategyRevisionSelector,
   strategySelectionId,
   strategySelectionRevisionFingerprint,
   strategySelectionRevisionIdentity,
   strategySelectionRevisionStatus,
   type StrategyRevisionSelection,
+  type StrategyRevisionSelector,
 } from "./policy.ts";
+import type { StrategyDerivationCandidateReader } from "./strategy-derivation-candidates.ts";
 import {
   getSeedStrategy,
   SEED_STRATEGIES,
@@ -155,6 +165,36 @@ function promotedResolvedEntry(
   });
 }
 
+function promotedDerivedResolvedEntry(
+  entry: PromotedDerivedStrategyCatalog["entries"][number],
+): TrustedPortfolioResolvedEntry {
+  const selection = entry.selection;
+  if (
+    selection.revisionStatusAtRun !== "promoted" ||
+    getSeedStrategy(selection.strategyId) !== null ||
+    entry.candidate.proposal.strategyId !== selection.strategyId ||
+    entry.candidate.proposal.kind !== selection.kind ||
+    entry.candidate.candidateId !== selection.revisionIdentity
+  ) {
+    throw new Error("Promoted Derived Strategy cannot be resolved into the trusted portfolio.");
+  }
+  return Object.freeze({
+    manifest: Object.freeze({
+      origin: "promoted-derived" as const,
+      strategyId: selection.strategyId,
+      kind: selection.kind,
+      revisionIdentity: selection.revisionIdentity,
+      revisionFingerprint: selection.revisionFingerprint,
+    }),
+    semantics: copySemantics({
+      summary: selection.semantics.summary,
+      useWhen: selection.semantics.useWhen,
+      avoidWhen: selection.semantics.avoidWhen,
+      principles: selection.semantics.principles,
+    }),
+  });
+}
+
 /**
  * Hash the canonical project-local manifest projection. Sorting here as well
  * as in the portfolio constructor keeps the exported fingerprint helper
@@ -187,21 +227,31 @@ export const projectTrustedPortfolioFingerprint = trustedPortfolioFingerprint;
 export function createTrustedStrategyPortfolio(
   projectRoot: string,
   promotedCatalog: PromotedStrategyRevisionCatalog,
+  promotedDerivedCatalog: PromotedDerivedStrategyCatalog = emptyPromotedDerivedStrategyCatalog(),
 ): TrustedStrategyPortfolio {
   const projectId = getProjectId(projectRoot);
   const resolved = [
     ...SEED_STRATEGIES.map(seedResolvedEntry),
     ...promotedCatalog.entries.map(promotedResolvedEntry),
+    ...promotedDerivedCatalog.entries.map(promotedDerivedResolvedEntry),
   ].sort((left, right) => compareManifestEntries(left.manifest, right.manifest));
 
   if (resolved.length > MAX_TRUSTED_PORTFOLIO_ENTRIES) {
     throw new Error("Trusted Strategy portfolio exceeds its bounded manifest.");
   }
   const seen = new Set<string>();
+  const derivedLogicalIds = new Set<string>();
   for (const entry of resolved) {
     const key = manifestSortKey(entry.manifest);
     if (seen.has(key)) throw new Error("Trusted Strategy portfolio contains duplicate manifest entries.");
     seen.add(key);
+    if (entry.manifest.origin === "promoted-derived") {
+      if (derivedLogicalIds.has(entry.manifest.strategyId) ||
+        SEED_STRATEGIES.some((seed) => seed.id === entry.manifest.strategyId)) {
+        throw new Error("Trusted Strategy portfolio contains a duplicate Derived logical Strategy identity.");
+      }
+      derivedLogicalIds.add(entry.manifest.strategyId);
+    }
   }
 
   const entries = Object.freeze(resolved.map((entry) => entry.manifest));
@@ -223,13 +273,24 @@ export async function loadTrustedStrategyPortfolio(
   projectRoot: string,
   decisionReader: StrategyRevisionDecisionReader,
   candidateReader: StrategyCandidateReader,
+  derivationDecisionReader?: StrategyDerivationDecisionReader,
+  derivationCandidateReader?: StrategyDerivationCandidateReader,
 ): Promise<TrustedStrategyPortfolio> {
   const promotedCatalog = await loadPromotedStrategyRevisionCatalog(
     projectRoot,
     decisionReader,
     candidateReader,
   );
-  return createTrustedStrategyPortfolio(projectRoot, promotedCatalog);
+  const promotedDerivedCatalog = derivationDecisionReader !== undefined &&
+      derivationCandidateReader !== undefined
+    ? await loadPromotedDerivedStrategyCatalog(
+      projectRoot,
+      derivationDecisionReader,
+      derivationCandidateReader,
+      candidateReader,
+    )
+    : emptyPromotedDerivedStrategyCatalog();
+  return createTrustedStrategyPortfolio(projectRoot, promotedCatalog, promotedDerivedCatalog);
 }
 
 function semanticsEqual(
@@ -291,6 +352,85 @@ export function trustedPortfolioSemanticEntries(
 ): readonly TrustedPortfolioResolvedEntry[] {
   return portfolio.resolvedEntries;
 }
+
+/** Resolve an exact trusted selection with all semantics/status supplied by the Harness. */
+export function resolveTrustedPortfolioRevisionSelection(
+  selection: StrategyRevisionSelection | StrategyRevisionSelector,
+  portfolio: TrustedStrategyPortfolio,
+  expectedKind?: SeedStrategyKind,
+): StrategyRevisionSelection | null {
+  const resolved = isStrategyRevisionSelector(selection)
+    ? expectedKind === undefined
+      ? null
+      : (() => {
+          const selector = selection as StrategyRevisionSelector;
+          return portfolio.resolvedEntries.find((entry) =>
+            entry.manifest.origin !== "seed" &&
+            entry.manifest.kind === expectedKind &&
+            entry.manifest.strategyId === selector.strategyId &&
+            entry.manifest.revisionIdentity === selector.revisionIdentity &&
+            entry.manifest.revisionFingerprint === selector.revisionFingerprint) ?? null;
+        })()
+    : resolveTrustedPortfolioSelection(selection, portfolio);
+  if (resolved === null || (expectedKind !== undefined && resolved.manifest.kind !== expectedKind)) return null;
+  return createStrategyRevisionSelection({
+    strategyId: resolved.manifest.strategyId,
+    kind: resolved.manifest.kind,
+    revisionIdentity: resolved.manifest.revisionIdentity,
+    revisionFingerprint: resolved.manifest.revisionFingerprint,
+    revisionStatusAtRun: resolved.manifest.origin === "seed" ? "seed" : "promoted",
+    semantics: resolved.semantics,
+  });
+}
+
+/** Render the bounded promoted Seed-revision and Derived catalog for normal context. */
+export function formatPromotedTrustedStrategyPortfolio(
+  portfolio: TrustedStrategyPortfolio | null,
+): string {
+  if (portfolio === null) return "";
+  const promoted = portfolio.resolvedEntries.filter((entry) => entry.manifest.origin !== "seed");
+  if (promoted.length === 0) return "";
+  const lines = [
+    "<PINDIE_PROMOTED_STRATEGIES>",
+    "Project-local promoted Strategies available for explicit normal Policy declaration:",
+    "Promotion means only that the exact immutable revision is trusted enough to be selectable; it is not a default, recommendation, superiority claim, or causal finding.",
+    "Seed revisions remain selectable by their existing shorthand.",
+    "",
+  ];
+  for (const entry of promoted) {
+    const manifest = entry.manifest;
+    lines.push(
+      `- ${manifest.strategyId} (${manifest.kind}) · promoted ${manifest.revisionIdentity.slice(0, 8)}`,
+      `  Origin: ${manifest.origin}`,
+      `  Revision fingerprint: ${manifest.revisionFingerprint}`,
+      "  Revision status: promoted",
+      "  Exact selector:",
+      JSON.stringify({
+        strategyId: manifest.strategyId,
+        revisionIdentity: manifest.revisionIdentity,
+        revisionFingerprint: manifest.revisionFingerprint,
+      }, null, 2),
+      `  Summary: ${entry.semantics.summary}`,
+      "  Use when:",
+      ...entry.semantics.useWhen.map((value) => `  - ${value}`),
+      "  Avoid when:",
+      ...(entry.semantics.avoidWhen.length > 0
+        ? entry.semantics.avoidWhen.map((value) => `  - ${value}`)
+        : ["  - none"]),
+      "  Principles:",
+      ...entry.semantics.principles.map((value) => `  - ${value}`),
+      "",
+    );
+  }
+  lines.push(
+    "The Harness supplies validated kind, semantics, fingerprint, and revisionStatusAtRun = promoted from immutable trust artifacts.",
+    "Inactive and rejected Candidates are not included in normal context.",
+    "</PINDIE_PROMOTED_STRATEGIES>",
+  );
+  return lines.join("\n");
+}
+
+export const renderPromotedTrustedStrategyPortfolio = formatPromotedTrustedStrategyPortfolio;
 
 /** Compare only the canonical identity snapshot retained by a Candidate. */
 export function sameTrustedPortfolioSnapshot(

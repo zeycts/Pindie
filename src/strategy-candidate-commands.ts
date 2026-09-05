@@ -22,6 +22,13 @@ import {
   type StrategyRevisionDecisionReader,
 } from "./strategy-decisions.ts";
 import {
+  validateStrategyDerivationDecisionArtifact,
+  validateStrategyDerivationDecisionBinding,
+  validateStrategyDerivationDecisionProjectBinding,
+  type StrategyDerivationDecision,
+  type StrategyDerivationDecisionReader,
+} from "./strategy-derivation-decisions.ts";
+import {
   validateStrategyDerivationCandidateBinding,
   type StrategyDerivationCandidateReader,
   type StrategyDerivationCandidateV1,
@@ -62,6 +69,7 @@ export interface TrialCommandProjectionInput {
   readonly derivationCandidateReader: StrategyDerivationCandidateReader;
   readonly decisionReader: StrategyRevisionDecisionReader;
   readonly experienceReader: RunExperienceReader;
+  readonly derivationDecisionReader?: StrategyDerivationDecisionReader;
   /** Fresh current trust used to exclude stale or collided Derivation Candidates. */
   readonly trustedPortfolio: TrustedStrategyPortfolio;
 }
@@ -72,6 +80,7 @@ export interface TrialReviewCommandProjectionInput {
   readonly derivationCandidateReader: StrategyDerivationCandidateReader;
   readonly decisionReader: StrategyRevisionDecisionReader;
   readonly experienceReader: RunExperienceReader;
+  readonly derivationDecisionReader?: StrategyDerivationDecisionReader;
   /** Fresh current trust; null keeps review options but makes the gate false. */
   readonly trustedPortfolio: TrustedStrategyPortfolio | null;
 }
@@ -103,6 +112,38 @@ export interface TrialReviewCommandProjection {
 
 export interface TrialCommandProjection {
   readonly entries: readonly TrialCommandProjectionEntry[];
+  readonly options: readonly AutocompleteItem[];
+}
+
+export interface UnifiedCandidateCommandProjectionInput {
+  readonly projectRoot: string;
+  readonly command: "promote" | "reject";
+  readonly candidateReader: StrategyCandidateReader;
+  readonly derivationCandidateReader: StrategyDerivationCandidateReader;
+  readonly decisionReader: StrategyRevisionDecisionReader;
+  readonly derivationDecisionReader: StrategyDerivationDecisionReader;
+  readonly experienceReader: RunExperienceReader;
+  /** Fresh current trust; null makes Derivation promotion ineligible. */
+  readonly trustedPortfolio: TrustedStrategyPortfolio | null;
+}
+
+export interface DerivationCandidateCommandProjectionEntry {
+  readonly kind: "derivation";
+  readonly candidate: StrategyDerivationCandidateV1;
+  readonly decision: StrategyDerivationDecision | null;
+  readonly trialReview: StrategyDerivationTrialReview;
+  readonly promotionEligible: boolean;
+  readonly label: string;
+  readonly option: AutocompleteItem;
+}
+
+export type UnifiedCandidateCommandProjectionEntry =
+  | (CandidateCommandProjectionEntry & { readonly kind: "revision" })
+  | DerivationCandidateCommandProjectionEntry;
+
+export interface UnifiedCandidateCommandProjection {
+  readonly command: "promote" | "reject";
+  readonly entries: readonly UnifiedCandidateCommandProjectionEntry[];
   readonly options: readonly AutocompleteItem[];
 }
 
@@ -232,6 +273,29 @@ async function readDecisions(
       throw new Error(`Decision '${decision.candidateId}' is missing its immutable Candidate artifact.`);
     }
     const bound = validateStrategyRevisionDecisionBinding(decision, candidate);
+    decisions.set(bound.candidateId, bound);
+  }
+  return decisions;
+}
+
+async function readDerivationDecisions(
+  reader: StrategyDerivationDecisionReader,
+  projectRoot: string,
+  candidates: readonly StrategyDerivationCandidateV1[],
+): Promise<ReadonlyMap<string, StrategyDerivationDecision>> {
+  const rawDecisions = await reader.readAll(projectRoot);
+  if (!Array.isArray(rawDecisions)) throw new Error("Strategy Derivation Decision reader returned an invalid collection.");
+  const candidatesById = new Map(candidates.map((candidate) => [candidate.candidateId, candidate]));
+  const decisions = new Map<string, StrategyDerivationDecision>();
+  for (const rawDecision of rawDecisions) {
+    const decision = validateStrategyDerivationDecisionProjectBinding(
+      validateStrategyDerivationDecisionArtifact(rawDecision),
+      projectRoot,
+    );
+    if (decisions.has(decision.candidateId)) throw new Error("Duplicate or conflicting Derivation Decisions were found.");
+    const candidate = candidatesById.get(decision.candidateId);
+    if (candidate === undefined) throw new Error(`Decision '${decision.candidateId}' is missing its immutable Derivation Candidate artifact.`);
+    const bound = validateStrategyDerivationDecisionBinding(decision, candidate);
     decisions.set(bound.candidateId, bound);
   }
   return decisions;
@@ -421,8 +485,16 @@ export async function buildTrialCommandProjection(
   if (allDerivationCandidates.some((candidate) => revisionIdSet.has(candidate.candidateId))) {
     throw new Error("Candidate ID is ambiguous: both Revision and Derivation Candidate stores contain it.");
   }
+  const derivationDecisions = input.derivationDecisionReader === undefined
+    ? new Map<string, StrategyDerivationDecision>()
+    : await readDerivationDecisions(
+      input.derivationDecisionReader,
+      input.projectRoot,
+      allDerivationCandidates,
+    );
   const trustedIds = new Set(trustedLogicalStrategyIds(input.trustedPortfolio));
   const derivationCandidates = allDerivationCandidates.filter((candidate) =>
+    !derivationDecisions.has(candidate.candidateId) &&
     !trustedIds.has(candidate.proposal.strategyId));
 
   const entries: TrialCommandProjectionEntry[] = revisionProjection.entries.map((entry) => ({
@@ -505,6 +577,120 @@ function derivationReviewLabel(
 }
 
 /**
+ * Read fresh unified `/promote` or `/reject` completion options. Revision
+ * entries use the frozen v0.6 projection; Derivation entries use their
+ * distinct Candidate/Decision store and review semantics.
+ */
+export async function buildUnifiedCandidateCommandProjection(
+  input: UnifiedCandidateCommandProjectionInput,
+): Promise<UnifiedCandidateCommandProjection> {
+  const allRevisionCandidates = await readAllCandidates(
+    input.candidateReader,
+    input.projectRoot,
+  );
+  const revisionIds = new Set(allRevisionCandidates.map((candidate) =>
+    candidate.candidateId));
+  const revisionProjection = await buildCandidateCommandProjection({
+    projectRoot: input.projectRoot,
+    command: input.command,
+    candidateReader: input.candidateReader,
+    decisionReader: input.decisionReader,
+    experienceReader: input.experienceReader,
+  });
+  const derivationCandidates = await readAllDerivationCandidatesForReview(
+    input.derivationCandidateReader,
+    input.projectRoot,
+  );
+  const derivationDecisions = await readDerivationDecisions(
+    input.derivationDecisionReader,
+    input.projectRoot,
+    derivationCandidates,
+  );
+  if (derivationCandidates.some((candidate) => revisionIds.has(candidate.candidateId))) {
+    throw new Error("Candidate ID is ambiguous: both Revision and Derivation Candidate stores contain it.");
+  }
+  const experience = await input.experienceReader.read(input.projectRoot);
+  const derivationEntries: DerivationCandidateCommandProjectionEntry[] = [];
+  for (const candidate of derivationCandidates) {
+    const decision = derivationDecisions.get(candidate.candidateId) ?? null;
+    const review = await deriveStrategyDerivationTrialReview(
+      candidate,
+      experience.records,
+      {
+        projectRoot: input.projectRoot,
+        currentPortfolio: input.trustedPortfolio,
+        revisionCandidateReader: input.candidateReader,
+        revisionDecisionReader: input.decisionReader,
+        derivationCandidateReader: input.derivationCandidateReader,
+        derivationDecisionReader: input.derivationDecisionReader,
+        priorTerminalDecision: decision !== null,
+      },
+    );
+    derivationEntries.push({
+      kind: "derivation",
+      candidate,
+      decision,
+      trialReview: review,
+      promotionEligible: decision === null && review.promotionEligibility.eligible,
+      label: derivationReviewLabel(candidate, review),
+      option: { value: candidate.candidateId, label: "" },
+    });
+  }
+
+  const entries: UnifiedCandidateCommandProjectionEntry[] = [
+    ...revisionProjection.entries.map((entry) => ({
+      ...entry,
+      kind: "revision" as const,
+    })),
+    ...derivationEntries.filter((entry) => input.command === "promote"
+      ? entry.promotionEligible
+      : entry.decision === null),
+  ];
+  const labels = entries.map((entry) => entry.label);
+  const groups = new Map<string, number[]>();
+  labels.forEach((label, index) => {
+    const group = groups.get(label) ?? [];
+    group.push(index);
+    groups.set(label, group);
+  });
+  for (const indexes of groups.values()) {
+    if (indexes.length < 2) continue;
+    let suffixLength = 8;
+    while (true) {
+      const suffixes = new Set(indexes.map((index) =>
+        entries[index]!.candidate.candidateId.slice(0, suffixLength)));
+      if (suffixes.size === indexes.length || suffixLength >= 36) break;
+      suffixLength = Math.min(36, suffixLength + 4);
+    }
+    for (const index of indexes) {
+      const entry = entries[index]!;
+      const id = entry.candidate.candidateId.slice(0, suffixLength);
+      const base = entry.label.slice(
+        0,
+        Math.max(1, MAX_CANDIDATE_COMMAND_LABEL_LENGTH - 3 - suffixLength),
+      );
+      labels[index] = `${base} · ${id}`.slice(0, MAX_CANDIDATE_COMMAND_LABEL_LENGTH);
+    }
+  }
+  const labeled = entries.map((entry, index) => Object.freeze({
+    ...entry,
+    label: labels[index]!,
+    option: Object.freeze({ value: entry.candidate.candidateId, label: labels[index]! }),
+  }));
+  labeled.sort((left, right) => {
+    const labelOrder = compareText(left.label, right.label);
+    return labelOrder !== 0
+      ? labelOrder
+      : compareText(left.candidate.candidateId, right.candidate.candidateId);
+  });
+  return Object.freeze({
+    command: input.command,
+    entries: Object.freeze(labeled),
+    options: Object.freeze(labeled.map((entry) => entry.option)),
+  });
+}
+
+/**
  * Read one fresh unified `/trial-review` projection. Revision entries use the
  * unchanged v0.6 review projection; Derivation entries use their separate
  * source/Trial review and remain available when their portfolio is stale.
@@ -523,6 +709,13 @@ export async function buildTrialReviewCommandProjection(
     input.derivationCandidateReader,
     input.projectRoot,
   );
+  const derivationDecisions = input.derivationDecisionReader === undefined
+    ? new Map<string, StrategyDerivationDecision>()
+    : await readDerivationDecisions(
+      input.derivationDecisionReader,
+      input.projectRoot,
+      derivationCandidates,
+    );
   const revisionIds = new Set(revisionProjection.entries.map((entry) =>
     entry.candidate.candidateId));
   if (derivationCandidates.some((candidate) => revisionIds.has(candidate.candidateId))) {
@@ -539,7 +732,9 @@ export async function buildTrialReviewCommandProjection(
         currentPortfolio: input.trustedPortfolio,
         revisionCandidateReader: input.candidateReader,
         revisionDecisionReader: input.decisionReader,
-        priorTerminalDecision: false,
+        derivationCandidateReader: input.derivationCandidateReader,
+        derivationDecisionReader: input.derivationDecisionReader,
+        priorTerminalDecision: derivationDecisions.has(candidate.candidateId),
       },
     );
     derivationEntries.push({

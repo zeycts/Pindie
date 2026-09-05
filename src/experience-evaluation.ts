@@ -3,6 +3,7 @@ import type {
   RunExperienceSourceRecord,
 } from "./experience-store.ts";
 import {
+  createStrategyRevisionSelection,
   formatStrategySelectionLabel,
   isSeedStrategySelection,
   strategySelectionId,
@@ -42,8 +43,14 @@ import {
   isCanonicalStrategyDerivationCandidateId,
   strategyDerivationCandidateSemanticFingerprint,
   validateStrategyDerivationCandidateArtifact,
+  type StrategyDerivationCandidateReader,
   type StrategyDerivationCandidateV1,
 } from "./strategy-derivation-candidates.ts";
+import {
+  validateStrategyDerivationDecisionArtifact,
+  validateStrategyDerivationDecisionBinding,
+  type StrategyDerivationDecisionReader,
+} from "./strategy-derivation-decisions.ts";
 import {
   MAX_PROMOTED_DERIVED_STRATEGIES,
   MAX_TRUSTED_PORTFOLIO_ENTRIES,
@@ -1092,7 +1099,11 @@ export interface DerivationTrialReviewOptions {
   readonly revisionCandidateReader?: StrategyCandidateReader;
   /** Needed only to revalidate promoted Seed entries in the captured manifest. */
   readonly revisionDecisionReader?: StrategyRevisionDecisionReader;
-  /** Slice D has no Derivation Decision store yet; absence is represented here. */
+  /** Needed only to revalidate promoted Derived entries in the captured manifest. */
+  readonly derivationCandidateReader?: StrategyDerivationCandidateReader;
+  /** Needed only to revalidate promoted Derived entries in the captured manifest. */
+  readonly derivationDecisionReader?: StrategyDerivationDecisionReader;
+  /** A terminal Derivation Decision is read-only review input. */
   readonly priorTerminalDecision?: boolean;
 }
 
@@ -1342,6 +1353,9 @@ export async function revalidateDerivationBasePortfolio(
   projectRoot?: string,
   revisionCandidateReader?: StrategyCandidateReader,
   revisionDecisionReader?: StrategyRevisionDecisionReader,
+  derivationCandidateReader?: StrategyDerivationCandidateReader,
+  derivationDecisionReader?: StrategyDerivationDecisionReader,
+  seenDerivedCandidateIds: ReadonlySet<string> = new Set(),
 ): Promise<CapturedBasePortfolioResult> {
   const validated = validateStrategyDerivationCandidateArtifact(
     candidate,
@@ -1368,6 +1382,7 @@ export async function revalidateDerivationBasePortfolio(
   const resolvedEntries: TrustedPortfolioResolvedEntry[] = [];
   const promotedSeedRevisionIdentities = new Set<string>();
   const promotedSeedTargets = new Set<string>();
+  const promotedDerivedCandidateIdentities = new Set<string>();
   for (const entry of entries) {
     const manifest = Object.freeze({ ...entry });
     if (entry.origin === "seed") {
@@ -1389,9 +1404,93 @@ export async function revalidateDerivationBasePortfolio(
     }
 
     if (entry.origin === "promoted-derived") {
-      // Slice D's distinct Decision store does not exist yet. Never infer
-      // derived trust from a manifest or display identity alone.
-      reasons.push(`captured promoted-derived entry '${entry.strategyId}' has no Slice C trust artifact resolver`);
+      if (promotedSeedRevisionIdentities.has(entry.revisionIdentity) ||
+        promotedDerivedCandidateIdentities.has(entry.revisionIdentity)) {
+        reasons.push(`captured promoted-derived entry '${entry.strategyId}' reuses another Candidate identity`);
+        continue;
+      }
+      if (seenDerivedCandidateIds.has(entry.revisionIdentity)) {
+        reasons.push(`captured promoted-derived entry '${entry.strategyId}' contains a cyclic Candidate binding`);
+        continue;
+      }
+      promotedDerivedCandidateIdentities.add(entry.revisionIdentity);
+      if (projectRoot === undefined || derivationCandidateReader === undefined || derivationDecisionReader === undefined) {
+        reasons.push(`captured promoted-derived entry '${entry.strategyId}' cannot be revalidated without Derivation trust readers`);
+        continue;
+      }
+      let rawCandidate: unknown;
+      let rawDecision: unknown;
+      try {
+        rawCandidate = await derivationCandidateReader.read(projectRoot, entry.revisionIdentity);
+        rawDecision = await derivationDecisionReader.read(projectRoot, entry.revisionIdentity);
+      } catch (error) {
+        reasons.push(`captured promoted-derived entry '${entry.strategyId}' could not be read: ${errorMessage(error)}`);
+        continue;
+      }
+      if (rawCandidate === null) {
+        reasons.push(`captured promoted-derived entry '${entry.strategyId}' is missing its Candidate artifact`);
+        continue;
+      }
+      if (rawDecision === null) {
+        reasons.push(`captured promoted-derived entry '${entry.strategyId}' is missing its terminal Decision`);
+        continue;
+      }
+      try {
+        const promotedCandidate = validateStrategyDerivationCandidateArtifact(
+          rawCandidate,
+          entry.revisionIdentity,
+        );
+        if (promotedCandidate.projectId !== validated.projectId) {
+          throw new Error("Candidate project binding does not match the captured project");
+        }
+        const decision = validateStrategyDerivationDecisionArtifact(
+          rawDecision,
+          entry.revisionIdentity,
+        );
+        const boundDecision = validateStrategyDerivationDecisionBinding(decision, promotedCandidate);
+        if (boundDecision.decision !== "promoted") {
+          throw new Error("Candidate is not backed by a promoted Derivation Decision");
+        }
+        const selection = createStrategyRevisionSelection({
+          strategyId: promotedCandidate.proposal.strategyId,
+          kind: promotedCandidate.proposal.kind,
+          revisionIdentity: promotedCandidate.candidateId,
+          revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(promotedCandidate),
+          revisionStatusAtRun: "promoted",
+          semantics: {
+            summary: promotedCandidate.proposal.summary,
+            useWhen: [...promotedCandidate.proposal.useWhen],
+            avoidWhen: [...promotedCandidate.proposal.avoidWhen],
+            principles: [...promotedCandidate.proposal.principles],
+          },
+        });
+        if (!manifestMatchesSelection(manifest, selection)) {
+          throw new Error("manifest does not match the immutable promoted Candidate");
+        }
+        const nested = await revalidateDerivationBasePortfolio(
+          promotedCandidate,
+          projectRoot,
+          revisionCandidateReader,
+          revisionDecisionReader,
+          derivationCandidateReader,
+          derivationDecisionReader,
+          new Set([...seenDerivedCandidateIds, entry.revisionIdentity]),
+        );
+        if (!nested.valid) {
+          throw new Error(nested.reasons.join("; "));
+        }
+        resolvedEntries.push(Object.freeze({
+          manifest,
+          semantics: Object.freeze({
+            summary: promotedCandidate.proposal.summary,
+            useWhen: Object.freeze([...promotedCandidate.proposal.useWhen]),
+            avoidWhen: Object.freeze([...promotedCandidate.proposal.avoidWhen]),
+            principles: Object.freeze([...promotedCandidate.proposal.principles]),
+          }),
+        }));
+      } catch (error) {
+        reasons.push(`captured promoted-derived entry '${entry.strategyId}' has invalid trust binding: ${errorMessage(error)}`);
+      }
       continue;
     }
 
@@ -1513,7 +1612,7 @@ function makeEvidenceRecord(
 export async function deriveDerivationSourceEvidence(
   candidate: StrategyDerivationCandidateV1,
   records: readonly RunExperienceSourceRecord[],
-  options: Pick<DerivationTrialReviewOptions, "projectRoot" | "revisionCandidateReader" | "revisionDecisionReader"> = {},
+  options: Pick<DerivationTrialReviewOptions, "projectRoot" | "revisionCandidateReader" | "revisionDecisionReader" | "derivationCandidateReader" | "derivationDecisionReader"> = {},
 ): Promise<DerivationSourceEvidence> {
   const validated = validateStrategyDerivationCandidateArtifact(
     candidate,
@@ -1524,6 +1623,8 @@ export async function deriveDerivationSourceEvidence(
     options.projectRoot,
     options.revisionCandidateReader,
     options.revisionDecisionReader,
+    options.derivationCandidateReader,
+    options.derivationDecisionReader,
   );
   const indexed = indexReviewRecords(records);
   const citedSourceRecordIds = [...validated.evidence.sourceRecordIds].sort(compareText);
