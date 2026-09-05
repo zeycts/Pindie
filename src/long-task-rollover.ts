@@ -165,6 +165,7 @@ export class LongTaskRolloverSupervisor {
     );
 
     let replacementStarted = false;
+    let resumeSuppressed = false;
     const options: SessionReplacementOptions = {
       withSession: async (replacementContext) => {
         replacementStarted = true;
@@ -175,6 +176,20 @@ export class LongTaskRolloverSupervisor {
           // Display metadata is best effort; never block or roll back resume.
           this.report("Automatic Long Task Session lineage naming failed; continuing hidden resume.");
         }
+
+        // A real user message may be accepted while Pi is rebinding the fresh
+        // Session. Never place stale automatic continuation in front of that
+        // input: the fresh Session can continue its native user/run queue.
+        const freshFacts = this.runtime.getActiveSessionFacts();
+        if (
+          freshFacts.isStreaming ||
+          freshFacts.isCompacting ||
+          freshFacts.pendingMessageCount > 0
+        ) {
+          resumeSuppressed = true;
+          return;
+        }
+
         // Pi 0.84.4's sendMessage(triggerTurn: true) Promise covers the full
         // Agent Run. Do not hold replacement ownership for that lifetime: the
         // fresh Session must be able to commit and request the next rollover.
@@ -196,7 +211,7 @@ export class LongTaskRolloverSupervisor {
     try {
       const result = await this.runtime.replaceWithFreshSession(options);
       this.taskMetrics?.cancelAutomaticRollover();
-      if (result.cancelled) {
+      if (result.cancelled || resumeSuppressed) {
         this.breakChain();
         return;
       }

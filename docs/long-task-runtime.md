@@ -188,6 +188,11 @@ no real user input is already pending
 no Human Gate or true blocker owns control
 ```
 
+The pending-user check is a native Pi queue check and includes both `steer` and
+`followUp` messages. It is repeated by Host at the automatic replacement
+boundary; a Human message accepted before that boundary keeps the outgoing
+Session in control.
+
 Then:
 
 ```text
@@ -272,12 +277,14 @@ withSession receives ReplacedSessionContext for the NEW Session
         ↓
 Host sets the fresh Session's native display name
         ↓
-Host injects hidden runtime-resume custom message into that Session
+Host checks the fresh Session's native user/run queue
+        ↓
+Host injects hidden runtime-resume custom message only when no Human input won
 ```
 
 Host-owned automatic continuation Sessions receive a bounded native Pi lineage display name (`cont. N · base`) so the Session selector keeps them recognizable. This is presentation metadata only; it is not Task, continuity, Experience, or LLM context data.
 
-`withSession` runs after Pi applies/rebinds the replacement Session, so v0.1 does not need a reverse “new Session endpoint registered” channel.
+`withSession` runs after Pi applies/rebinds the replacement Session, so v0.1 does not need a reverse “new Session endpoint registered” channel. If Human input is accepted while that rebind is in progress, the fresh Session remains in control and stale hidden resume is suppressed; Pindie does not copy the input into another queue.
 
 Replacement cancellation/failure does not mutate Task truth. The Task remains active; there is no infinite automatic retry loop.
 
