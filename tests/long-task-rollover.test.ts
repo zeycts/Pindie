@@ -378,6 +378,31 @@ test("replacement cancellation and failure do not retry", async () => {
   }
 });
 
+test("failed or cancelled rollover abandons the Task metrics lease without entering a continuation Run", async () => {
+  const binding = request("session-1").checkpoint.taskFingerprint;
+  for (const handler of [
+    async () => ({ cancelled: true }),
+    async () => { throw new Error("replacement failed"); },
+  ] satisfies Array<(options?: SessionReplacementOptions) => Promise<SessionReplacementResult>>) {
+    const control = fakeRuntime();
+    control.setReplacement(handler);
+    const scheduler = new ManualScheduler();
+    const taskMetrics = new TaskMetricsTracker();
+    taskMetrics.startRunForTask("/repo", binding, { durationMs: 0, cost: 0 });
+    taskMetrics.settleRun({ durationMs: 12_000, cost: 0.11 });
+    const supervisor = new LongTaskRolloverSupervisor(control.adapter, {
+      schedule: scheduler.schedule,
+      taskMetrics,
+    });
+
+    await attempt(supervisor, scheduler, request("session-1"));
+
+    // Rollover control never starts a fresh Run or writes Experience itself;
+    // after failure/cancellation the lease cannot adopt a later Session.
+    assert.equal(taskMetrics.enterSession("/repo", binding), false);
+  }
+});
+
 test("resume-message failure leaves the fresh Session active without rollback or retry", async () => {
   const control = fakeRuntime();
   control.setReplacement(async (options) => {

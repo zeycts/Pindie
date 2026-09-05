@@ -286,7 +286,7 @@ Host-owned automatic continuation Sessions receive a bounded native Pi lineage d
 
 `withSession` runs after Pi applies/rebinds the replacement Session, so v0.1 does not need a reverse “new Session endpoint registered” channel. If Human input is accepted while that rebind is in progress, the fresh Session remains in control and stale hidden resume is suppressed; Pindie does not copy the input into another queue.
 
-Replacement cancellation/failure does not mutate Task truth. The Task remains active; there is no infinite automatic retry loop.
+Replacement cancellation/failure does not mutate Task truth. The Task remains active; there is no infinite automatic retry loop. Because Experience is settled before the committed replacement request, these outcomes add no replacement Run record.
 
 Automatic rollover has a finite runtime safety fuse. The exact default is tuning, not architecture.
 
@@ -366,7 +366,11 @@ Task → one Session → complete
 
 There is no `/long` command and no durable `longTask=true` Task type.
 
-Long Task Runtime v0.1 does not change Experience schema. A large Task naturally creates multiple ordinary Runs/Experiences across Sessions. Each Experience keeps that Run's own duration and cost. Human status and Task completion instead present cumulative Task-owned active Run time and model-equivalent cost; the process-local Host preserves that accumulator across automatic rollover without counting idle time between Runs. It is not stored in `PindieState` or `TaskContinuityV1` and does not survive process restart. Handoff and rollover are non-project-mutating runtime control and must not manufacture project execution evidence or false Policy declarations.
+Long Task Runtime v0.1 does not change Experience schema. A large Task naturally creates multiple ordinary Runs/Experiences across Sessions. At settlement, an eligible ordinary Run freezes its own Run timer, Run cost, Policy/attribution, execution, and outcome and attempts one immutable schema-v4 record; repeated settlement notifications cannot add another record. A Run with no Task or non-policy execution remains ineligible rather than receiving a fabricated record.
+
+Each Experience keeps that Run's own duration and cost. Human status and Task completion instead present cumulative Task-owned active Run time and model-equivalent cost; the process-local Host preserves that accumulator across automatic rollover without counting idle time between Runs. Task cumulative metrics are never copied into schema-v4 `metrics`, are not stored in `PindieState` or `TaskContinuityV1`, and do not survive process restart.
+
+The outgoing Run's Experience is frozen before its continuity checkpoint is committed. A fresh automatic Session starts new Run-scoped Policy, attribution, timer, and cost bookkeeping; its hidden resume message is runtime metadata, not Human intent, and cannot create a record by itself. A Trial lease is also one-Run state and is cleared at settlement or Session replacement, while a deliberately selected promoted revision remains recorded with `revisionStatusAtRun = promoted`. Cancelled or failed replacement does not enter a continuation Run and does not fabricate Experience. Handoff and rollover are non-project-mutating runtime control and must not manufacture project execution evidence or false Policy declarations.
 
 Future Self-Improvement may learn when to hand off or which Policy works in long-horizon situations, but v0.1 contains no learned rollover policy.
 

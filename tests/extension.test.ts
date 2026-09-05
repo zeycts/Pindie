@@ -49,6 +49,7 @@ import {
   getVerificationStatus,
   type PindieState,
 } from "../src/state.ts";
+import { evaluateRunExperience } from "../src/experience-evaluation.ts";
 import {
   assembleRunExperience,
   type RunExperience,
@@ -2647,6 +2648,248 @@ test("shared Host Task metrics survive automatic replacement while Run trackers 
   const secondExperience = second.experienceStore.records[0]!.experience;
   assert.deepEqual(firstExperience.metrics, { durationMs: 12_000, cost: 0.11 });
   assert.deepEqual(secondExperience.metrics, { durationMs: 17_000, cost: 0.21 });
+});
+
+test("automatic rollover keeps one independent schema-v4 Experience per Run", async () => {
+  const experienceStore = new ExtensionTestExperienceStore();
+  const continuityStore = new ExtensionTestContinuityStore();
+  const taskMetrics = new TaskMetricsTracker();
+  const promotedCandidate = trialCandidate("00000000-0000-4000-8000-000000000031");
+  const promotedDecision = createStrategyRevisionDecision({
+    candidate: promotedCandidate,
+    decision: "promoted",
+    trialRecordIds: [],
+    decidedAt: "2026-09-04T00:00:00.000Z",
+  });
+  const decisions = testDecisionStore([promotedDecision]);
+  const candidateReader = {
+    read: async (_root: string, candidateId: string) =>
+      candidateId === promotedCandidate.candidateId ? promotedCandidate : null,
+    readAll: async () => [promotedCandidate],
+  };
+  const sharedOptions = {
+    enableTaskHandoff: true,
+    experienceStore,
+    continuityStore,
+    taskMetrics,
+    strategyCandidateReader: candidateReader,
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+  };
+  const firstClock = new DeterministicRunClock();
+  const firstEntries: unknown[] = [];
+  const first = createHarness([ ["/repo", activeState("Long Task accounting")] ], {}, {
+    ...sharedOptions,
+    runTimer: firstClock.timer,
+  });
+
+  await startSession(first, "/repo", "startup", firstEntries);
+  await beginAgentRun(first, "/repo", firstEntries);
+  await executeSemanticTool(first, "pindie_policy_set", "run-a-policy", {
+    approach: "architecture-first",
+  });
+  firstClock.now = 12_000;
+  firstEntries.push({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.11 } } } });
+  await captureObservationEvidence(first, "run-a-observation");
+  await executeSemanticTool(first, "pindie_task_handoff", "run-a-handoff", handoffInput());
+  await first.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", firstEntries));
+
+  assert.equal(experienceStore.records.length, 1);
+  assert.equal(continuityStore.records.length, 1);
+  const firstExperience = experienceStore.records[0]!.experience;
+  const firstBeforeContinuation = structuredClone(firstExperience);
+  assert.equal(firstExperience.policy.finalSnapshot?.approach.revisionStatusAtRun, "seed");
+  assert.equal(firstExperience.policy.finalPolicyDeclarationCount, 1);
+  assert.equal(firstExperience.metrics.durationMs, 12_000);
+  assert.equal(firstExperience.metrics.cost, 0.11);
+  const firstEvaluation = evaluateRunExperience({ recordId: "run-a.json", experience: firstExperience });
+  assert.equal(firstEvaluation.attributionEligible, true);
+  assert.equal(firstEvaluation.policy.finalPolicyExposureCalls, firstExperience.execution.toolCalls);
+
+  // A duplicate settlement notification cannot create a second record.
+  await first.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", firstEntries));
+  assert.equal(experienceStore.records.length, 1);
+
+  const binding = taskContractFingerprint(first.integration.runtime.state.task!);
+  assert.equal(taskMetrics.prepareAutomaticRollover("remote-session", binding), true);
+  taskMetrics.cancelAutomaticRollover();
+  // A cancelled replacement has no fresh Run to settle and cannot add a record.
+  assert.equal(experienceStore.records.length, 1);
+  assert.equal(taskMetrics.prepareAutomaticRollover("remote-session", binding), true);
+  await first.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "new" },
+    context("/repo", firstEntries),
+  );
+
+  const secondClock = new DeterministicRunClock();
+  const secondEntries: unknown[] = [];
+  const second = createHarness([ ["/repo", activeState("Long Task accounting")] ], {}, {
+    ...sharedOptions,
+    runTimer: secondClock.timer,
+  });
+  await second.api.handler("session_start")(
+    { type: "session_start", reason: "new" },
+    context("/repo", secondEntries, false, "session-b"),
+  );
+  assert.equal(taskMetrics.currentRunBelongsToTask, false);
+
+  // The Host's hidden resume starts a fresh Run, but the runtime message alone
+  // has no execution and therefore cannot fabricate another Experience record.
+  await second.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "<PINDIE_LONG_TASK_RESUME>not user intent</PINDIE_LONG_TASK_RESUME>", systemPrompt: "", systemPromptOptions: {} },
+    context("/repo", secondEntries, false, "session-b"),
+  );
+  await second.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    context("/repo", secondEntries, false, "session-b"),
+  );
+  assert.equal(experienceStore.records.length, 1);
+
+  await second.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "Continue the actual Task work.", systemPrompt: "", systemPromptOptions: {} },
+    context("/repo", secondEntries, false, "session-b"),
+  );
+  const promotedSelector = {
+    strategyId: promotedCandidate.target.strategyId,
+    revisionIdentity: promotedCandidate.candidateId,
+    revisionFingerprint: strategyCandidateSemanticFingerprint(promotedCandidate),
+  };
+  await executeSemanticTool(second, "pindie_policy_set", "run-b-policy", {
+    approach: promotedSelector,
+  });
+  secondClock.now = 17_000;
+  secondEntries.push({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.21 } } } });
+  const secondObservation = await captureObservationEvidence(second, "run-b-observation");
+  await executeSemanticTool(second, "pindie_verification_record", "run-b-verification", {
+    check: {
+      name: "continuation accounting",
+      status: "passed",
+      covers: ["c1"],
+      evidenceRefs: [secondObservation.ref],
+    },
+  });
+  const completion = await executeSemanticTool(second, "pindie_task_complete", "run-b-complete", {
+    summary: "Completed in the continuation Run.",
+  });
+  assert.match(textOf(completion.executionResult), /Duration: 29s/);
+  assert.match(textOf(completion.executionResult), /Cost: \$0\.32/);
+  assert.deepEqual(taskMetrics.snapshot({ durationMs: 99_000, cost: 9 }), {
+    durationMs: 29_000,
+    cost: 0.32,
+  });
+  await second.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    context("/repo", secondEntries, false, "session-b"),
+  );
+
+  assert.equal(experienceStore.records.length, 2);
+  assert.deepEqual(firstExperience, firstBeforeContinuation);
+  const secondExperience = experienceStore.records[1]!.experience;
+  assert.deepEqual(secondExperience.metrics, { durationMs: 17_000, cost: 0.21 });
+  assert.equal(secondExperience.policy.finalSnapshot?.approach.revisionIdentity, promotedCandidate.candidateId);
+  assert.equal(secondExperience.policy.finalSnapshot?.approach.revisionStatusAtRun, "promoted");
+  assert.equal(secondExperience.policy.finalPolicyDeclarationCount, 1);
+  assert.equal(secondExperience.policy.finalPolicyLastDeclaredAfter?.toolCalls, 0);
+  const secondEvaluation = evaluateRunExperience({ recordId: "run-b.json", experience: secondExperience });
+  assert.equal(secondEvaluation.attributionEligible, true);
+  assert.equal(secondEvaluation.policy.finalPolicyExposureCalls, secondExperience.execution.toolCalls);
+  assert.equal(secondExperience.outcome.completionRelation, "completed_during_run");
+  assert.equal(firstExperience.outcome.taskStatus, "active");
+});
+
+test("Trial attribution ends at the outgoing Run and is not inherited by a fresh Session", async () => {
+  const candidate = trialCandidate("00000000-0000-4000-8000-000000000032");
+  const experienceStore = new ExtensionTestExperienceStore();
+  const taskMetrics = new TaskMetricsTracker();
+  const candidateReader = {
+    read: async (_root: string, candidateId: string) =>
+      candidateId === candidate.candidateId ? candidate : null,
+  };
+  const firstClock = new DeterministicRunClock();
+  const firstEntries: unknown[] = [];
+  const first = createHarness([ ["/repo", activeState("Trial rollover accounting")] ], {}, {
+    experienceStore,
+    taskMetrics,
+    strategyCandidateReader: candidateReader,
+    runTimer: firstClock.timer,
+  });
+  await startSession(first, "/repo", "startup", firstEntries);
+  await first.api.commands.get("trial").handler(candidate.candidateId, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  await beginAgentRun(first, "/repo", firstEntries);
+  assert.equal(first.integration.trial.hasActiveTrial, true);
+  assert.equal(taskMetrics.currentRunBelongsToTask, false);
+  const trialSelection = first.integration.trial.activeTrial!.revisionSelection;
+  await executeSemanticTool(first, "pindie_policy_set", "trial-policy", {
+    approach: {
+      strategyId: trialSelection.strategyId,
+      revisionIdentity: trialSelection.revisionIdentity,
+      revisionFingerprint: trialSelection.revisionFingerprint,
+    },
+  });
+  firstClock.now = 12_000;
+  firstEntries.push({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.11 } } } });
+  await captureObservationEvidence(first, "trial-observation");
+  await first.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", firstEntries));
+
+  assert.equal(first.integration.trial.hasTrial, false);
+  assert.equal(experienceStore.records.length, 1);
+  const trialExperience = experienceStore.records[0]!.experience;
+  assert.equal(trialExperience.policy.finalSnapshot?.approach.revisionStatusAtRun, "trial");
+  assert.equal(taskMetrics.prepareAutomaticRollover("remote-session", taskContractFingerprint(first.integration.runtime.state.task!)), false);
+  const trialBeforeReplacement = structuredClone(trialExperience);
+  await first.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "new" },
+    context("/repo", firstEntries),
+  );
+
+  const secondClock = new DeterministicRunClock();
+  const secondEntries: unknown[] = [];
+  const second = createHarness([ ["/repo", activeState("Trial rollover accounting")] ], {}, {
+    experienceStore,
+    taskMetrics,
+    strategyCandidateReader: candidateReader,
+    runTimer: secondClock.timer,
+  });
+  await second.api.handler("session_start")(
+    { type: "session_start", reason: "new" },
+    context("/repo", secondEntries, false, "session-b"),
+  );
+  assert.equal(second.integration.trial.hasTrial, false);
+  await second.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "Fresh automatic Session Run", systemPrompt: "", systemPromptOptions: {} },
+    context("/repo", secondEntries, false, "session-b"),
+  );
+  assert.equal(taskMetrics.currentRunBelongsToTask, true);
+  await assert.rejects(
+    second.api.tool("pindie_policy_set").execute(
+      "inherited-trial-policy",
+      {
+        approach: {
+          strategyId: trialSelection.strategyId,
+          revisionIdentity: trialSelection.revisionIdentity,
+          revisionFingerprint: trialSelection.revisionFingerprint,
+        },
+      },
+      undefined,
+      undefined,
+      context("/repo", secondEntries, false, "session-b"),
+    ),
+    /without an active Candidate Trial/i,
+  );
+  await captureObservationEvidence(second, "fresh-session-observation");
+  await second.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    context("/repo", secondEntries, false, "session-b"),
+  );
+
+  assert.equal(experienceStore.records.length, 2);
+  assert.deepEqual(trialExperience, trialBeforeReplacement);
+  assert.equal(experienceStore.records[1]!.experience.policy.finalSnapshot, null);
+  assert.equal(second.integration.trial.hasTrial, false);
 });
 
 test("agent_settled ignores only an obsolete stale ExtensionContext after replacement", async () => {

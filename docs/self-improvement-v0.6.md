@@ -198,6 +198,8 @@ metrics       # same
 
 No transcript, reasoning, quality score, task taxonomy, or arbitrary Trial log enters v4.
 
+The Experience unit remains one settled Agent Run, not one durable Task. Across automatic Session rollover, the outgoing eligible Run freezes and attempts at most one immutable record before continuity commit; the fresh Session receives a new Run-scoped Policy/attribution, execution, duration, and cost boundary. Human-facing cumulative Task Time/Cost is runtime presentation outside schema-v4 `metrics` and never replaces those per-Run values. Hidden automatic resume is not Human intent and does not fabricate a record without non-policy execution.
+
 ### Historical records outside live evidence
 
 Pre-v4 records are not part of the live Experience evidence set. They may be
