@@ -19,11 +19,24 @@ import {
   type StrategyRevisionSelector,
 } from "../src/policy.ts";
 import { getSeedStrategy, seedStrategyFingerprint } from "../src/strategies.ts";
+import { createPromotedStrategyRevisionCatalog } from "../src/strategy-decisions.ts";
 import {
+  createTrustedStrategyPortfolio,
+} from "../src/strategy-portfolio.ts";
+import {
+  createStrategyDerivationCandidate,
+  strategyDerivationCandidateSemanticFingerprint,
+  type StrategyDerivationCandidateV1,
+} from "../src/strategy-derivation-candidates.ts";
+import {
+  buildDerivationTrialPacket,
   buildTrialPacket,
+  formatDerivationTrialPacket,
   formatTrialPacket,
+  strategyRevisionSelectionFromDerivationCandidate,
   TrialRuntime,
 } from "../src/strategy-trial.ts";
+import { resolveTrialCandidate } from "../src/strategy-candidate-resolution.ts";
 
 const CANDIDATE_ID = "00000000-0000-4000-8000-000000000001";
 const OTHER_CANDIDATE_ID = "00000000-0000-4000-8000-000000000002";
@@ -44,6 +57,31 @@ function candidate(
       principles: ["name the boundary", "verify the smallest coherent change"],
       sourceRecordIds: ["record-one", "record-two"],
       hypothesis: "A narrower boundary check may reduce avoidable rework.",
+    },
+  });
+}
+
+function derivationCandidate(
+  id = CANDIDATE_ID,
+): StrategyDerivationCandidateV1 {
+  const portfolio = createTrustedStrategyPortfolio(
+    "/project",
+    createPromotedStrategyRevisionCatalog([]),
+  );
+  return createStrategyDerivationCandidate({
+    projectId: portfolio.projectId,
+    basePortfolio: portfolio,
+    candidateId: id,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    proposal: {
+      strategyId: "boundary-first",
+      kind: "approach",
+      summary: "Name the smallest boundary before choosing a broader change.",
+      useWhen: ["the requested change crosses a meaningful interface"],
+      avoidWhen: ["the correction is already local and clear"],
+      principles: ["make the boundary explicit", "verify the smallest coherent move"],
+      sourceRecordIds: ["source-one", "source-two", "source-three"],
+      hypothesis: "Repeated trusted-policy Runs may expose a missing boundary-first abstraction.",
     },
   });
 }
@@ -347,4 +385,89 @@ test("exact Candidate selectors are resolved by the Harness and preserve logical
     /unique by logical Strategy identity/i,
   );
   assert.equal(createPolicySnapshot({ approach: "direct-action" }).approach.revisionIdentity, "seed");
+});
+
+test("Derivation Trial uses the shared lease, bounded packet, and exact selector", () => {
+  const selected = derivationCandidate();
+  const packet = buildDerivationTrialPacket(selected);
+  const rendered = formatDerivationTrialPacket(packet);
+
+  assert.equal(packet.candidateType, "strategy-derivation");
+  assert.equal(packet.candidateFingerprint, strategyDerivationCandidateSemanticFingerprint(selected));
+  assert.equal(packet.provenance.sourceRecordCount, 3);
+  assert.equal(packet.selector.strategyId, selected.proposal.strategyId);
+  assert.equal(packet.selector.revisionIdentity, selected.candidateId);
+  assert.doesNotMatch(rendered, /sourceRecordIds|source-one|source-two|source-three|portfolio entries/i);
+  assert.match(rendered, /Strategy Derivation Candidate Trial/);
+  assert.match(rendered, /one Agent Run only/);
+
+  const runtime = new TrialRuntime();
+  assert.equal(runtime.establishDerivation("session", selected), true);
+  assert.equal(runtime.pendingDerivationTrial?.candidate.candidateId, selected.candidateId);
+  assert.equal(runtime.pendingTrial, null);
+  const active = runtime.bindDerivation("session", 9);
+  assert.ok(active);
+  assert.equal(runtime.activeDerivationTrial?.agentRunGeneration, 9);
+  const selector = active!.revisionSelection;
+  const resolved = runtime.resolveDerivationSelector(
+    "session",
+    9,
+    {
+      strategyId: selector.strategyId,
+      revisionIdentity: selector.revisionIdentity,
+      revisionFingerprint: selector.revisionFingerprint,
+    },
+    "approach",
+    selected,
+  );
+  assert.equal(resolved.strategyId, selected.proposal.strategyId);
+  assert.equal(resolved.revisionStatusAtRun, "trial");
+  assert.deepEqual(resolved.semantics, {
+    summary: selected.proposal.summary,
+    useWhen: selected.proposal.useWhen,
+    avoidWhen: selected.proposal.avoidWhen,
+    principles: selected.proposal.principles,
+  });
+  assert.throws(
+    () => runtime.resolveDerivationSelector("session", 10, selector, "approach", selected),
+    /without its active Derivation Trial/i,
+  );
+});
+
+test("Unified Trial candidate resolution checks both immutable stores and rejects UUID ambiguity", async () => {
+  const revision = candidate(CANDIDATE_ID);
+  const derivation = derivationCandidate(OTHER_CANDIDATE_ID);
+  const revisionReader = {
+    read: async (_root: string, id: string) => id === revision.candidateId ? revision : null,
+  };
+  const derivationReader = {
+    read: async (_root: string, id: string) => id === derivation.candidateId ? derivation : null,
+  };
+
+  const revisionRef = await resolveTrialCandidate({
+    projectRoot: "/project",
+    candidateId: revision.candidateId,
+    revisionReader,
+    derivationReader,
+  });
+  assert.equal(revisionRef?.kind, "revision");
+  const derivationRef = await resolveTrialCandidate({
+    projectRoot: "/project",
+    candidateId: derivation.candidateId,
+    revisionReader,
+    derivationReader,
+  });
+  assert.equal(derivationRef?.kind, "derivation");
+
+  await assert.rejects(
+    resolveTrialCandidate({
+      projectRoot: "/project",
+      candidateId: revision.candidateId,
+      revisionReader,
+      derivationReader: {
+        read: async () => revision as unknown as StrategyDerivationCandidateV1,
+      },
+    }),
+    /ambiguous|invalid/i,
+  );
 });
