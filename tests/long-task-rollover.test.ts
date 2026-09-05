@@ -50,6 +50,8 @@ interface FakeRuntimeControl {
   setNextSessionNameError(error: Error): void;
   activeSessionName(): string | undefined;
   setFacts(facts: Partial<FakeRuntimeControl["facts"]>): void;
+  setPendingUserMessage(kind: "steer" | "followUp"): void;
+  pendingUserMessageKind(): "steer" | "followUp" | null;
 }
 
 function fakeSession(
@@ -82,6 +84,7 @@ function fakeRuntime(): FakeRuntimeControl {
   const calls: SessionReplacementOptions[] = [];
   const messages: Array<{ message: unknown; options: unknown }> = [];
   const events: string[] = [];
+  let pendingUserMessageKind: "steer" | "followUp" | null = null;
   let activeSessionPresentation: FakeSessionPresentation = {};
   let activeSession = fakeSession("session-1", facts, activeSessionPresentation, events);
   let nextSessionNumber = 2;
@@ -130,6 +133,11 @@ function fakeRuntime(): FakeRuntimeControl {
     setNextSessionNameError: (error) => { nextSessionNameError = error; },
     activeSessionName: () => activeSession.sessionManager.getSessionName(),
     setFacts: (next) => Object.assign(facts, next),
+    setPendingUserMessage: (kind) => {
+      pendingUserMessageKind = kind;
+      facts.pendingMessageCount = 1;
+    },
+    pendingUserMessageKind: () => pendingUserMessageKind,
   };
   return control;
 }
@@ -216,6 +224,48 @@ test("an idle matching Session receives one native replacement with hidden resum
     /<PINDIE_LONG_TASK_RESUME>[\s\S]*Progress carried from the outgoing Session\.[\s\S]*Use Reality as the source of factual truth\./i,
   );
   assert.match(message.content, /This is not new user intent\./i);
+});
+
+test("a user steer or follow-up queued after commit cancels the pending rollover", async () => {
+  for (const delivery of ["steer", "followUp"] as const) {
+    const control = fakeRuntime();
+    const scheduler = new ManualScheduler();
+    const supervisor = new LongTaskRolloverSupervisor(control.adapter, { schedule: scheduler.schedule });
+
+    supervisor.request(request("session-1"));
+    // Pi exposes both native user queues through the same pending-message
+    // count; either queue must win over a committed automatic request.
+    control.setPendingUserMessage(delivery);
+    assert.equal(control.pendingUserMessageKind(), delivery);
+    await scheduler.runNext();
+
+    assert.equal(control.calls.length, 0);
+  }
+});
+
+test("Human input accepted by the fresh Session suppresses stale hidden resume", async () => {
+  for (const freshFacts of [
+    { pendingMessageCount: 1 },
+    { isStreaming: true },
+  ]) {
+    const control = fakeRuntime();
+    control.setReplacement(async (options) => {
+      control.setSessionId("session-2");
+      control.setFacts(freshFacts);
+      await options?.withSession?.({
+        sendMessage: async () => assert.fail("stale hidden resume must not be sent"),
+      } as never);
+      return { cancelled: false };
+    });
+    const scheduler = new ManualScheduler();
+    const supervisor = new LongTaskRolloverSupervisor(control.adapter, { schedule: scheduler.schedule });
+
+    await attempt(supervisor, scheduler, request("session-1"));
+
+    assert.equal(control.nativeCallCount(), 1);
+    assert.equal(control.adapter.activeSessionId, "session-2");
+    assert.equal(control.messages.length, 0);
+  }
 });
 
 test("Host arms Task metrics only across the exact automatic replacement transaction", async () => {
@@ -386,7 +436,6 @@ test("releases replacement ownership before the resumed Agent Run settles", asyn
     replacementNumber += 1;
     control.setSessionId(`session-${replacementNumber + 1}`);
     if (replacementNumber === 1) {
-      control.setFacts({ isStreaming: true });
       await options?.withSession?.({
         sendMessage: async () => {
           resumeStarted();
