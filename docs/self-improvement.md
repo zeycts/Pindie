@@ -1032,25 +1032,13 @@ The output of SI v0.5 is an auditable set of evidence-backed Strategy Revision C
 
 ### SI v0.6 — Candidate Trial & Promotion
 
-The authoritative SI v0.6 contract is maintained in [`docs/self-improvement-v0.6.md`](./self-improvement-v0.6.md). Its directional goal is to allow an explicitly chosen Candidate revision to enter controlled Agent Runs, record revision-aware Experience, compare its evidence against the Seed baseline where defensible, and support an auditable promote/reject decision without silently replacing policy. Slice C now adds read-only Trial evidence review and deterministic Promotion Eligibility; promotion/rejection remains a later slice.
+The authoritative SI v0.6 contract is maintained in [`docs/self-improvement-v0.6.md`](./self-improvement-v0.6.md). SI v0.6 is implemented and frozen across its four slices: revision-aware Policy and schema-v4 Experience; explicit one-Run Candidate Trial; read-only Trial Review and deterministic Promotion Eligibility; explicit Human `/promote` and `/reject`; and exact promoted-revision selection in normal Runs without making any revision the default.
 
-SI v0.6 is implemented in explicit slices. The current Slice A substrate provides:
-
-- deterministic derived semantic fingerprints for immutable schema-v1 Candidate artifacts;
-- revision-aware Policy identity and canonical schema-v4 Policy serialization;
-- backward-compatible Seed-only `pindie_policy_set` declarations;
-- schema-v4-only Experience reading and writing with deterministic revision-aware Evaluation; and
-- Seed-only `/adapt` evidence selection from current schema-v4 records, excluding non-Seed revision attribution.
-
-Slice B now additionally provides a strict project-local Candidate read by ID, a runtime-only one-Run Trial lease, a bounded Trial Packet, and exact Candidate revision selection only under the active lease. Trial Runs remain ordinary schema-v4 Experience Runs and require explicit Candidate Policy declaration for attribution.
-
-Slices A-C intentionally do not implement promotion/rejection, automatic Policy selection, or other later slices. Pre-v4 Experience records remain outside the live evidence set; Candidate artifacts remain immutable.
+Real dogfood completed the Candidate → two Trials → Trial Review → explicit Human trust → normal promoted-policy use loop, including promoted revision attribution in schema-v4 Experience. Pre-v4 Experience remains outside the live evidence set.
 
 ### SI v0.7 — Strategy Derivation
 
-Directional goal: allow a genuinely new Strategy identity to emerge from repeated useful patterns when evidence shows that revising an existing Seed Strategy is no longer the right abstraction.
-
-A derived Strategy must enter the same candidate/trial/evaluation path before becoming trusted policy. Detailed derivation semantics remain intentionally unspecified until Candidate Trial produces real revision evidence.
+The authoritative SI v0.7 architecture contract is maintained in [`docs/self-improvement-v0.7.md`](./self-improvement-v0.7.md). Its directional goal is an explicit Human-owned slow path from repeated eligible real Experience to an optional new logical Strategy hypothesis, one-Run Candidate Trials, separate source/Trial evidence review, and immutable Human trust artifacts. It preserves schema-v4 Experience and the existing candidate-command UX without automatic learning, novelty claims, Derived-Strategy adaptation, or changes to State, authority, Task, Long Task Runtime, or Pi's Agent Loop.
 
 ### Later direction — Strategy Portfolio Evolution
 
