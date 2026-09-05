@@ -2,12 +2,14 @@ import { createHash } from "node:crypto";
 
 import {
   loadPromotedStrategyRevisionCatalog,
+  MAX_PROMOTED_STRATEGY_REVISIONS,
   type PromotedStrategyRevisionCatalog,
   type StrategyRevisionDecisionReader,
 } from "./strategy-decisions.ts";
 import {
   loadPromotedDerivedStrategyCatalog,
   emptyPromotedDerivedStrategyCatalog,
+  MAX_PROMOTED_DERIVED_STRATEGIES,
   type PromotedDerivedStrategyCatalog,
   type StrategyDerivationDecisionReader,
 } from "./strategy-derivation-decisions.ts";
@@ -34,10 +36,11 @@ import {
 import type { StrategyCandidateReader } from "./strategy-candidates.ts";
 
 export const TRUSTED_PORTFOLIO_FINGERPRINT_VERSION = 1 as const;
-/** SI v0.7 bounds promoted new logical Strategy identities per project. */
-export const MAX_PROMOTED_DERIVED_STRATEGIES = 8;
-/** 7 immutable Seeds + 7 frozen v0.6 promoted Seed revisions + 8 derived identities. */
-export const MAX_TRUSTED_PORTFOLIO_ENTRIES = 22;
+/** Keep the portfolio-facing import compatible with the catalog's SSOT bound. */
+export { MAX_PROMOTED_DERIVED_STRATEGIES };
+/** Immutable Seeds + maximum promoted Seed revisions + promoted Derived identities. */
+export const MAX_TRUSTED_PORTFOLIO_ENTRIES =
+  SEED_STRATEGIES.length + MAX_PROMOTED_STRATEGY_REVISIONS + MAX_PROMOTED_DERIVED_STRATEGIES;
 
 export type TrustedPortfolioOrigin =
   | "seed"
