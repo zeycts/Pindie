@@ -308,6 +308,8 @@ Activity, Run Timer, Run Cost, status presentation, subscription usage observati
 
 Run Activity follows actual Pi tool lifecycle rather than model-authored status. Status presentation consumes authoritative/derived runtime facts rather than becoming an independent source of truth.
 
+Run Timer and Run Cost remain one-Run telemetry for Experience, evaluation, and diagnostics. For Task-owned execution, a process-local Host-owned Task metrics accumulator presents cumulative active Run time and model-equivalent cost across legitimate automatic Session rollover; no-Task execution presents only current/latest Run consumption. Task metrics are not persisted and restart from zero after a process restart.
+
 Remote Companion is an optional external projection/control surface over the same live Pi Session and existing Pindie facts. It must not create another Agent, Session, message queue, or semantic truth. The canonical Project maps to a Discord channel for navigation, and the native Pi Session ID maps to a Discord thread for readable Session history and remote input. Discord is a replica/control surface; Pi Session history remains conversation truth and `PindieState` remains semantic truth.
 
 The only durable Remote data is external routing/delivery metadata (for example Project→channel, Pi Session→thread, and a delivery cursor) stored outside `PindieState`. Remote input uses Pi-native user-message, steer, follow-up, and current-context abort boundaries. Historical Discord threads never implicitly switch the active local Pi Session. See `docs/remote-companion.md` for the authoritative Remote Companion contract.

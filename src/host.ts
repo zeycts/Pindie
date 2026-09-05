@@ -12,6 +12,8 @@ import {
   type InteractiveModeOptions,
 } from "@earendil-works/pi-coding-agent";
 import { PiRuntimeAdapter } from "./pi-runtime.ts";
+import { registerConfiguredPindieExtension } from "./extension.ts";
+import { TaskMetricsTracker } from "./task-metrics.ts";
 import {
   installCommittedRolloverReceiver,
   type CommittedRolloverRequest,
@@ -68,6 +70,7 @@ export function createPindieRuntimeFactory(
     PindieHostDependencies,
     "createAgentSessionServices" | "createAgentSessionFromServices"
   > = {},
+  taskMetrics = new TaskMetricsTracker(),
 ): CreateAgentSessionRuntimeFactory {
   const createServices = dependencies.createAgentSessionServices ?? createAgentSessionServices;
   const createSession = dependencies.createAgentSessionFromServices ?? createAgentSessionFromServices;
@@ -78,8 +81,11 @@ export function createPindieRuntimeFactory(
       cwd,
       agentDir,
       resourceLoaderOptions: {
-        additionalExtensionPaths: [resources.extensionPath],
         additionalSkillPaths: [resources.skillsPath],
+        extensionFactories: [{
+          name: "pindie",
+          factory: (pi) => registerConfiguredPindieExtension(pi, { taskMetrics }),
+        }],
       },
     });
     const created = await createSession({
@@ -107,6 +113,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     ((runtime: AgentSessionRuntime, modeOptions: InteractiveModeOptions) =>
       new InteractiveMode(runtime, modeOptions));
 
+  const taskMetrics = new TaskMetricsTracker();
   let nativeRuntime: AgentSessionRuntime | undefined;
   let runtime: PiRuntimeAdapter | undefined;
   let rolloverSupervisor: LongTaskRolloverSupervisor | undefined;
@@ -126,13 +133,16 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   };
 
   try {
-    nativeRuntime = await createRuntime(createPindieRuntimeFactory(dependencies), {
+    nativeRuntime = await createRuntime(createPindieRuntimeFactory(dependencies, taskMetrics), {
       cwd,
       agentDir,
       sessionManager,
     });
     runtime = new PiRuntimeAdapter(nativeRuntime);
-    rolloverSupervisor = new LongTaskRolloverSupervisor(runtime, options.longTaskRollover);
+    rolloverSupervisor = new LongTaskRolloverSupervisor(runtime, {
+      ...options.longTaskRollover,
+      taskMetrics,
+    });
 
     const modeOptions: InteractiveModeOptions = {
       startupDiagnostics: [...nativeRuntime.diagnostics],

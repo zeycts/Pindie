@@ -33,7 +33,7 @@ function task(overrides: Partial<PindieTask> = {}): PindieTask {
 
 function snapshot(overrides: Partial<Parameters<typeof deriveStatusSegments>[0]> = {}) {
   return {
-    timing: { durationMs: 134_000, active: true },
+    consumption: { scope: "task" as const, durationMs: 134_000, cost: 0 },
     state: { task: task() } satisfies PindieState,
     stateUnavailableReason: null,
     ...overrides,
@@ -50,7 +50,8 @@ const countdownReset = now + 6 * day + 23 * 60 * 60 * 1_000 + 59 * 60 * 1_000;
 
 test("SSA-S02 active unfinished Task renders lifecycle before pending verification", () => {
   assert.deepEqual(segments(), [
-    { text: "⏱ 2m 14s", tone: "dim" },
+    { text: "task 2m 14s", tone: "dim" },
+    { text: "$0.000", tone: "dim" },
     { text: "active", tone: "text" },
     { text: "verify 0/4", tone: "text" },
   ]);
@@ -58,7 +59,8 @@ test("SSA-S02 active unfinished Task renders lifecycle before pending verificati
 
 test("AR36-AR38 status reports the reasoning authority before activity", () => {
   assert.deepEqual(segments({ reasoningMode: "auto", activity: "running" }), [
-    { text: "⏱ 2m 14s", tone: "dim" },
+    { text: "task 2m 14s", tone: "dim" },
+    { text: "$0.000", tone: "dim" },
     { text: "auto", tone: "dim" },
     { text: "running", tone: "accent" },
     { text: "active", tone: "text" },
@@ -69,7 +71,7 @@ test("AR36-AR38 status reports the reasoning authority before activity", () => {
 
 test("Run Cost and accent Activity follow the timer before verification and attention", () => {
   assert.deepEqual(segments({
-    runCost: { cost: 0.14, active: true },
+    consumption: { scope: "task", durationMs: 134_000, cost: 0.14 },
     activity: "editing",
     state: {
       task: task({
@@ -77,7 +79,7 @@ test("Run Cost and accent Activity follow the timer before verification and atte
       }),
     },
   }), [
-    { text: "⏱ 2m 14s", tone: "dim" },
+    { text: "task 2m 14s", tone: "dim" },
     { text: "$0.14", tone: "dim" },
     { text: "editing", tone: "accent" },
     { text: "verify 0/4", tone: "text" },
@@ -87,8 +89,7 @@ test("Run Cost and accent Activity follow the timer before verification and atte
 
 test("settled Run omits cleared Activity and presents final duration and passed verification", () => {
   const result = segments({
-    timing: { durationMs: 291_000, active: false },
-    runCost: { cost: 0.41, active: false },
+    consumption: { scope: "task", durationMs: 291_000, cost: 0.41 },
     activity: null,
     state: {
       task: task({
@@ -103,7 +104,7 @@ test("settled Run omits cleared Activity and presents final duration and passed 
   });
 
   assert.deepEqual(result, [
-    { text: "last 4m 51s", tone: "dim" },
+    { text: "task 4m 51s", tone: "dim" },
     { text: "$0.41", tone: "dim" },
     { text: "active", tone: "text" },
     { text: "✓ 4/4", tone: "success" },
@@ -115,7 +116,7 @@ test("partial passed criterion coverage remains normal verification progress", (
     state: { task: task({ verification: { stale: false, checks: [
       { name: "partial", status: "passed", covers: ["c1", "c2"], evidence: "passed" },
     ] } }) },
-  }).at(2), { text: "verify 2/4", tone: "text" });
+  }).at(3), { text: "verify 2/4", tone: "text" });
 });
 
 test("verification progress counts distinct criteria covered by passed checks", () => {
@@ -137,13 +138,13 @@ test("verification progress counts distinct criteria covered by passed checks", 
       { name: "overlap", status: "passed", covers: ["c2", "c3"], evidence: "passed" },
       { name: "failure", status: "failed", covers: ["c4"], evidence: "failed" },
     ] } }) },
-  }).at(2), { text: "verify failed 3/4", tone: "error" });
+  }).at(3), { text: "verify failed 3/4", tone: "error" });
 });
 
 test("stale verification suppresses historical progress and uses warning", () => {
   assert.deepEqual(segments({
     state: { task: task({ verification: { stale: true, checks: [] } }) },
-  }).at(2), { text: "verify stale", tone: "warning" });
+  }).at(3), { text: "verify stale", tone: "warning" });
 });
 
 test("Human Gate takes precedence over blocked attention and uses warning", () => {
@@ -172,33 +173,54 @@ test("SSA-S03 through SSA-S11 lifecycle and attention preserve independent seman
   const passed = { stale: false, checks: [
     { name: "all", status: "passed" as const, covers: ["c1", "c2", "c3", "c4"], evidence: "passed" },
   ] };
-  assert.deepEqual(segments({ state: { task: task({ verification: passed }) } }).slice(1), [
+  assert.deepEqual(segments({ state: { task: task({ verification: passed }) } }).slice(2), [
     { text: "active", tone: "text" }, { text: "✓ 4/4", tone: "success" },
   ]);
-  assert.deepEqual(segments({ state: { task: task({ completed: true, verification: passed, openLoops: { blockers: [], questions: [], nextIntent: null } }) } }).slice(1), [
+  assert.deepEqual(segments({ state: { task: task({ completed: true, verification: passed, openLoops: { blockers: [], questions: [], nextIntent: null } }) } }).slice(2), [
     { text: "done", tone: "success" }, { text: "✓ 4/4", tone: "success" },
   ]);
-  assert.deepEqual(segments({ state: { task: task({ openLoops: { blockers: ["blocked"], questions: [], nextIntent: null } }) } }).slice(1), [
+  assert.deepEqual(segments({ state: { task: task({ openLoops: { blockers: ["blocked"], questions: [], nextIntent: null } }) } }).slice(2), [
     { text: "verify 0/4", tone: "text" }, { text: "⚠ blocked", tone: "warning" },
   ]);
-  assert.deepEqual(segments({ state: { task: task({ humanGate: { kind: "approval", question: "Approve?" } }) } }).slice(1), [
+  assert.deepEqual(segments({ state: { task: task({ humanGate: { kind: "approval", question: "Approve?" } }) } }).slice(2), [
     { text: "verify 0/4", tone: "text" }, { text: "⚠ gate: approval", tone: "warning" },
   ]);
-  assert.deepEqual(segments({ runStale: true }).slice(1), [
+  assert.deepEqual(segments({ runStale: true }).slice(2), [
     { text: "active", tone: "text" }, { text: "verify 0/4", tone: "text" }, { text: "⚠ stale run", tone: "warning" },
   ]);
   assert.equal(segments({ runStale: true, state: { task: task({ humanGate: { kind: "input", question: "Input?" } }) } }).some(({ text }) => text === "⚠ stale run"), false);
   assert.deepEqual(segments({ runStale: true, state: { task: task({ openLoops: { blockers: ["blocked"], questions: [], nextIntent: null } }) } }).at(-1), { text: "⚠ stale run", tone: "warning" });
-  assert.deepEqual(segments({ runStale: true, state: null, stateUnavailableReason: "missing" }).slice(1), [
+  assert.deepEqual(segments({ runStale: true, state: null, stateUnavailableReason: "missing" }).slice(2), [
     { text: "⚠ state unavailable", tone: "error" },
   ]);
 });
 
-test("SSA-S01 loaded idle State renders idle and omits verification", () => {
-  assert.deepEqual(segments({ state: { task: null } }), [
-    { text: "⏱ 2m 14s", tone: "dim" },
-    { text: "idle", tone: "dim" },
+test("no-Task Run uses run consumption scope and omits idle verification", () => {
+  assert.deepEqual(segments({
+    consumption: { scope: "run", durationMs: 134_000, cost: 0 },
+    state: { task: null },
+  }), [
+    { text: "run 2m 14s", tone: "dim" },
+    { text: "$0.000", tone: "dim" },
   ]);
+});
+
+test("no-Task Run suppresses stale completed-Task lifecycle and verification", () => {
+  const passed = { stale: false, checks: [
+    { name: "all", status: "passed" as const, covers: ["c1", "c2", "c3", "c4"], evidence: "passed" },
+  ] };
+  const result = segments({
+    consumption: { scope: "run", durationMs: 42_000, cost: 0.006 },
+    reasoningMode: "manual",
+    state: { task: task({ completed: true, verification: passed }) },
+  });
+
+  assert.deepEqual(result, [
+    { text: "run 42s", tone: "dim" },
+    { text: "$0.006", tone: "dim" },
+    { text: "manual", tone: "dim" },
+  ]);
+  assert.equal(result.some(({ text }) => text.startsWith("last ")), false);
 });
 
 test("SIR-M01 through SIR-M10 representative status matrix locks semantic boundaries", () => {
@@ -223,7 +245,7 @@ test("SIR-M01 through SIR-M10 representative status matrix locks semantic bounda
   ];
 
   for (const scenario of cases) {
-    const texts = deriveStatusSegments(snapshot({ timing: null, ...scenario.input })).map(({ text }) => text);
+    const texts = deriveStatusSegments(snapshot({ consumption: null, ...scenario.input })).map(({ text }) => text);
     for (const expected of scenario.expected) assert.ok(texts.includes(expected), scenario.name);
     for (const absent of scenario.absent ?? []) assert.equal(texts.includes(absent), false, scenario.name);
   }
@@ -249,7 +271,7 @@ test("SIR-M09 attention precedence shows exactly one primary condition", () => {
   ];
 
   for (const scenario of cases) {
-    const texts = deriveStatusSegments(snapshot({ timing: null, ...scenario.input })).map(({ text }) => text);
+    const texts = deriveStatusSegments(snapshot({ consumption: null, ...scenario.input })).map(({ text }) => text);
     assert.deepEqual(texts.filter((text) => attention.includes(text)), [scenario.expected], scenario.name);
   }
 });
@@ -343,7 +365,10 @@ test("Current Activity preserves right-aligned weekly usage", () => {
 });
 
 test("AR39 narrow-width rendering remains bounded with Auto", () => {
-  const layout = deriveStatusLayout({ ...snapshot({ reasoningMode: "auto", activity: "editing" }), runCost: { cost: 0.14, active: true } });
+  const layout = deriveStatusLayout({
+    ...snapshot({ reasoningMode: "auto", activity: "editing" }),
+    consumption: { scope: "task", durationMs: 134_000, cost: 0.14 },
+  });
   const rendered = renderStatusLayout({ fg: (_tone, text) => text }, layout, 18)!;
   assert.match(rendered, /auto|verify|\$0.14/);
 });
@@ -351,7 +376,7 @@ test("AR39 narrow-width rendering remains bounded with Auto", () => {
 test("ANSI-aware layout aligns right usage, degrades narrowly, and falls back without width", () => {
   const theme = { fg: (tone: string, text: string) => `\u001b[${tone}m${text}\u001b[0m` } as any;
   const layout = {
-    left: [{ text: "⏱ 4m 27s", tone: "dim" as const }, { text: "verify 3/4", tone: "text" as const }],
+    left: [{ text: "task 4m 27s", tone: "dim" as const }, { text: "verify 3/4", tone: "text" as const }],
     right: [{ text: "◉ 52%", tone: "dim" as const }, { text: "↻ 6d23h", tone: "dim" as const }],
   };
   const wide = renderStatusLayout(theme, layout, 50)!;
@@ -370,14 +395,14 @@ test("theme rendering styles individual segments and dim separators without ANSI
       return `[${tone}:${text}]`;
     },
   }, [
-    { text: "⏱ 42s", tone: "dim" },
+    { text: "run 42s", tone: "dim" },
     { text: "verify 2/4", tone: "text" },
     { text: "⚠ blocked", tone: "warning" },
   ]);
 
-  assert.equal(rendered, "[dim:⏱ 42s][dim: • ][text:verify 2/4][dim: • ][warning:⚠ blocked]");
+  assert.equal(rendered, "[dim:run 42s][dim: • ][text:verify 2/4][dim: • ][warning:⚠ blocked]");
   assert.deepEqual(calls, [
-    { tone: "dim", text: "⏱ 42s" },
+    { tone: "dim", text: "run 42s" },
     { tone: "text", text: "verify 2/4" },
     { tone: "warning", text: "⚠ blocked" },
     { tone: "dim", text: " • " },
