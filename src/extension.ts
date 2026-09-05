@@ -45,11 +45,20 @@ import {
   buildAdaptationPacket,
 } from "./strategy-adaptation.ts";
 import {
+  DerivationRuntime,
+  buildDerivationPacket,
+} from "./strategy-derivation.ts";
+import {
   FileStrategyCandidateStore,
   isCanonicalStrategyCandidateId,
   type StrategyCandidateReader,
   type StrategyCandidateStore,
 } from "./strategy-candidates.ts";
+import {
+  FileStrategyDerivationCandidateStore,
+  type StrategyDerivationCandidateReader,
+  type StrategyDerivationCandidateStore,
+} from "./strategy-derivation-candidates.ts";
 import {
   createStrategyRevisionDecision,
   emptyPromotedStrategyRevisionCatalog,
@@ -62,6 +71,7 @@ import {
   type StrategyRevisionDecisionStore,
 } from "./strategy-decisions.ts";
 import { getSeedStrategy, SEED_STRATEGIES } from "./strategies.ts";
+import { loadTrustedStrategyPortfolio } from "./strategy-portfolio.ts";
 import {
   assembleRunExperience,
   isEligibleRunExperience,
@@ -119,6 +129,7 @@ import {
 } from "./tools/gate.ts";
 import { createPindiePolicySetTool } from "./tools/policy.ts";
 import { createPindieStrategyCandidateTool } from "./tools/strategy-candidate.ts";
+import { createPindieStrategyDerivationCandidateTool } from "./tools/strategy-derivation-candidate.ts";
 import { createPindieGitObserveTool } from "./tools/git-observe.ts";
 import {
   createPindieTaskCompleteTool,
@@ -139,6 +150,8 @@ export interface PindieExtensionOptions {
   experienceReader?: RunExperienceReader;
   strategyCandidateStore?: StrategyCandidateStore;
   strategyCandidateReader?: StrategyCandidateReader;
+  strategyDerivationCandidateStore?: StrategyDerivationCandidateStore;
+  strategyDerivationCandidateReader?: StrategyDerivationCandidateReader;
   strategyDecisionStore?: StrategyRevisionDecisionStore;
   strategyDecisionReader?: StrategyRevisionDecisionReader;
   resolveProjectRoot?: ProjectRootResolver;
@@ -167,6 +180,7 @@ export interface PindieExtensionIntegration {
   readonly runTimer: RunTimer;
   readonly contextGovernor: ContextLifecycleGovernor;
   readonly trial: TrialRuntime;
+  readonly derivation: DerivationRuntime;
   readonly promotedStrategyRevisionCatalog: PromotedStrategyRevisionCatalog;
   readonly policySnapshot: PolicySnapshot | null;
   readonly stateUnavailableReason: string | null;
@@ -212,6 +226,9 @@ function gatewayDenialReason(
 ): string {
   if (requiredCapability === "policy.adapt") {
     return "Pindie blocked this call: Strategy Candidate creation requires a live explicit adaptation attempt. Use /adapt <strategy-id> while the Agent is idle.";
+  }
+  if (requiredCapability === "policy.derive") {
+    return "Pindie blocked this call: Strategy Derivation Candidate creation requires a live explicit /derive Run. Use /derive while the Agent is idle.";
   }
   if (snapshot.authority === "coherent" && requiredCapability === "task.replace") {
     if (snapshot.taskStatus === "done") {
@@ -260,18 +277,31 @@ export function registerPindieExtension(
       ? strategyCandidateStore as unknown as StrategyCandidateReader
       : new FileStrategyCandidateStore({ baseDir: experienceStorageBaseDir })
   );
+  const strategyDerivationCandidateStore = options.strategyDerivationCandidateStore ?? new FileStrategyDerivationCandidateStore({
+    baseDir: experienceStorageBaseDir,
+  });
+  const strategyDerivationCandidateReader = options.strategyDerivationCandidateReader ?? (
+    typeof (strategyDerivationCandidateStore as Partial<StrategyDerivationCandidateReader>).read === "function"
+      ? strategyDerivationCandidateStore as unknown as StrategyDerivationCandidateReader
+      : new FileStrategyDerivationCandidateStore({ baseDir: experienceStorageBaseDir })
+  );
   const strategyDecisionStore = options.strategyDecisionStore ?? new FileStrategyDecisionStore({
     baseDir: experienceStorageBaseDir,
   });
   const strategyDecisionReader = options.strategyDecisionReader ?? strategyDecisionStore;
   const adaptation = new AdaptationRuntime();
   const trial = new TrialRuntime();
+  const derivationRuntime = new DerivationRuntime();
   let promotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
   const continuityNow = options.now ?? Date.now;
   // A successful Candidate consumes the lease before settlement, so retain only
   // this generation marker long enough to exclude the adaptation Run from
   // ordinary coding Experience accounting.
   let adaptationRunGeneration: number | null = null;
+  // Retain the generation marker after a successful Derivation Candidate
+  // creation consumes its active lease, so settlement still excludes this
+  // Self-Improvement Run from ordinary Experience and continuation.
+  let derivationRunGeneration: number | null = null;
   const runtime = new PindieRuntime(stateStore);
   const run = new RunIntegration(runtime);
   const handoff = new TaskHandoffRuntime();
@@ -320,6 +350,15 @@ export function registerPindieExtension(
       return emptyPromotedStrategyRevisionCatalog();
     }
   };
+  // Derivation is stricter than the normal Policy surface: trust-artifact
+  // failures propagate so an explicit /derive cannot receive an incomplete
+  // or guessed portfolio.
+  const loadTrustedPortfolio = (projectRoot: string) =>
+    loadTrustedStrategyPortfolio(
+      projectRoot,
+      strategyDecisionReader,
+      strategyCandidateReader,
+    );
   type LiveRemoteSession = { sessionId: string; ctx: ExtensionContext; generation: number };
   let liveRemoteSession: LiveRemoteSession | null = null;
   let nextRemoteLeaseGeneration = 0;
@@ -531,6 +570,10 @@ export function registerPindieExtension(
       ctx.ui.notify("Pindie could not start /adapt: a Candidate Trial is already pending or active.", "warning");
       return;
     }
+    if (derivationRuntime.hasDerivation) {
+      ctx.ui.notify("Pindie could not start /adapt: a Strategy Derivation attempt is already pending or active.", "warning");
+      return;
+    }
     const target = getSeedStrategy(requestedId);
     if (target === null) {
       ctx.ui.notify(`Pindie could not start /adapt: '${requestedId}' is not a valid Seed Strategy ID.`, "warning");
@@ -577,6 +620,10 @@ export function registerPindieExtension(
       ctx.ui.notify("Pindie could not start /adapt: a Candidate Trial is already pending or active.", "warning");
       return;
     }
+    if (derivationRuntime.hasDerivation) {
+      ctx.ui.notify("Pindie could not start /adapt: a Strategy Derivation attempt is already pending or active.", "warning");
+      return;
+    }
     if (!adaptation.establish(sessionId, target, packet)) {
       ctx.ui.notify("Pindie could not start /adapt: another adaptation attempt is already active.", "warning");
       return;
@@ -593,6 +640,107 @@ export function registerPindieExtension(
     }
     ctx.ui.notify(
       `Self-Improvement adaptation Run started for '${target.id}' with ${packet.evidence.eligibleRunCount} eligible attributable Runs. Candidate generation is optional.`,
+      "info",
+    );
+  };
+
+  const handleDerivationCommand = async (
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> => {
+    if (args.trim() !== "") {
+      ctx.ui.notify("Usage: /derive", "warning");
+      return;
+    }
+    const projectRoot = runtime.projectRoot;
+    if (projectRoot === null) {
+      ctx.ui.notify("Pindie could not start /derive: no current project root is loaded.", "warning");
+      return;
+    }
+    if (!ctx.isIdle()) {
+      ctx.ui.notify("Pindie could not start /derive: the Agent is busy.", "warning");
+      return;
+    }
+    if (adaptation.hasAttempt) {
+      ctx.ui.notify("Pindie could not start /derive: an adaptation attempt is already pending or active.", "warning");
+      return;
+    }
+    if (trial.hasTrial) {
+      ctx.ui.notify("Pindie could not start /derive: a Candidate Trial is already pending or active.", "warning");
+      return;
+    }
+    if (derivationRuntime.hasDerivation) {
+      ctx.ui.notify("Pindie could not start /derive: another derivation attempt is already pending or active.", "warning");
+      return;
+    }
+
+    let sessionId: string;
+    try {
+      sessionId = ctx.sessionManager.getSessionId();
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not start /derive: ${errorMessage(error)}`, "warning");
+      return;
+    }
+
+    let portfolio;
+    try {
+      portfolio = await loadTrustedPortfolio(projectRoot);
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not start /derive: trusted Strategy portfolio validation failed: ${errorMessage(error)}`, "warning");
+      return;
+    }
+
+    let read;
+    try {
+      read = await experienceReader.read(projectRoot);
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not start /derive: Experience reading failed: ${errorMessage(error)}`, "warning");
+      return;
+    }
+
+    let packet;
+    try {
+      packet = buildDerivationPacket(projectRoot, portfolio, read.records);
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not start /derive: evidence evaluation failed: ${errorMessage(error)}`, "warning");
+      return;
+    }
+
+    let currentSessionId: string;
+    try {
+      currentSessionId = ctx.sessionManager.getSessionId();
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not start /derive: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    if (
+      currentSessionId !== sessionId ||
+      runtime.projectRoot !== projectRoot ||
+      !ctx.isIdle()
+    ) {
+      ctx.ui.notify("Pindie could not start /derive: the current Session, project, or Agent state changed while reading evidence.", "warning");
+      return;
+    }
+    if (adaptation.hasAttempt || trial.hasTrial || derivationRuntime.hasDerivation) {
+      ctx.ui.notify("Pindie could not start /derive: another Self-Improvement attempt became active while reading evidence.", "warning");
+      return;
+    }
+    if (!derivationRuntime.establish(sessionId, portfolio, packet)) {
+      ctx.ui.notify("Pindie could not start /derive: another derivation attempt is already pending or active.", "warning");
+      return;
+    }
+    try {
+      pi.sendUserMessage(
+        "Begin the explicitly requested Self-Improvement Strategy Derivation. Use the bounded Derivation Packet supplied for this Run. This is optional missing-abstraction hypothesis generation, not project implementation work.",
+      );
+    } catch (error) {
+      derivationRuntime.clear();
+      derivationRunGeneration = null;
+      ctx.ui.notify(`Pindie could not launch the /derive Agent Run: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    ctx.ui.notify(
+      `Self-Improvement derivation Run started with ${packet.evidence.eligibleRunCount} eligible trusted-policy source Runs. Candidate creation is optional.`,
       "info",
     );
   };
@@ -633,6 +781,10 @@ export function registerPindieExtension(
     }
     if (adaptation.hasAttempt) {
       ctx.ui.notify("Pindie could not arm /trial: an adaptation attempt is already pending or active.", "warning");
+      return;
+    }
+    if (derivationRuntime.hasDerivation) {
+      ctx.ui.notify("Pindie could not arm /trial: a Strategy Derivation attempt is already pending or active.", "warning");
       return;
     }
 
@@ -702,6 +854,10 @@ export function registerPindieExtension(
     }
     if (adaptation.hasAttempt) {
       ctx.ui.notify("Pindie could not arm /trial: an adaptation attempt is already pending or active.", "warning");
+      return;
+    }
+    if (derivationRuntime.hasDerivation) {
+      ctx.ui.notify("Pindie could not arm /trial: a Strategy Derivation attempt is already pending or active.", "warning");
       return;
     }
     try {
@@ -961,6 +1117,14 @@ export function registerPindieExtension(
     getProjectRoot: () => runtime.projectRoot,
     getAgentRunGeneration: () => run.activeAgentRunGeneration,
   }));
+  pi.registerTool(createPindieStrategyDerivationCandidateTool({
+    derivation: derivationRuntime,
+    experienceReader,
+    candidateStore: strategyDerivationCandidateStore,
+    getProjectRoot: () => runtime.projectRoot,
+    getAgentRunGeneration: () => run.activeAgentRunGeneration,
+    loadPortfolio: (projectRoot) => loadTrustedPortfolio(projectRoot),
+  }));
   pi.registerTool(createPindieTaskStartTool(runtime, taskToolOptions));
   pi.registerTool(createPindieTaskReplaceTool(runtime, taskToolOptions));
   pi.registerTool(createPindieTaskRefineTool(runtime, taskToolOptions));
@@ -1011,6 +1175,11 @@ export function registerPindieExtension(
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({ value, label: value })),
     handler: async (args, ctx) => handleAdaptationCommand(args, ctx),
+  });
+
+  pi.registerCommand("derive", {
+    description: "Start explicit Strategy Derivation from bounded trusted-policy Experience",
+    handler: async (args, ctx) => handleDerivationCommand(args, ctx),
   });
 
   pi.registerCommand("trial", {
@@ -1065,8 +1234,10 @@ export function registerPindieExtension(
     presentation.resetSubscriptionUsage();
     adaptation.clear();
     trial.clear();
+    derivationRuntime.clear();
     promotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
     adaptationRunGeneration = null;
+    derivationRunGeneration = null;
     run.resetStateAuthority();
     run.resetAgentRun();
     if (nativeSessionId !== null) handoff.startSession(nativeSessionId);
@@ -1159,8 +1330,10 @@ export function registerPindieExtension(
     presentation.clearStatus(ctx);
     adaptation.clear();
     trial.clear();
+    derivationRuntime.clear();
     promotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
     adaptationRunGeneration = null;
+    derivationRunGeneration = null;
     run.resetStateAuthority();
     run.resetAgentRun();
     handoff.shutdownSession();
@@ -1172,10 +1345,17 @@ export function registerPindieExtension(
 
   pi.on("before_agent_start", async (event, ctx) => {
     const trialWasArmed = trial.hasTrial;
+    const derivationWasArmed = derivationRuntime.hasDerivation;
     let trialBound = false;
+    let derivationBound = false;
     try {
       presentation.setStatusContext(ctx);
       if (trial.hasActiveTrial) trial.clear();
+      // A new before_agent_start is a fresh native Run boundary. A Derivation
+      // lease from an obsolete Run must not be reused, while a pending lease
+      // remains eligible for this exact Session and next Run.
+      if (derivationRuntime.hasActiveDerivation) derivationRuntime.clear();
+      derivationRunGeneration = null;
       run.resetAgentRun();
       execution.discardRuntime();
       if (run.authoritativeState !== null) {
@@ -1200,8 +1380,23 @@ export function registerPindieExtension(
       if (adaptation.hasAttempt && trial.hasTrial) {
         adaptation.clear();
         trial.clear();
+        derivationRuntime.clear();
         adaptationRunGeneration = null;
+        derivationRunGeneration = null;
         throw new Error("Pindie rejected this Agent Run: an Adaptation Packet and Trial Packet cannot coexist.");
+      }
+      if (adaptation.hasAttempt && derivationRuntime.hasDerivation) {
+        adaptation.clear();
+        derivationRuntime.clear();
+        adaptationRunGeneration = null;
+        derivationRunGeneration = null;
+        throw new Error("Pindie rejected this Agent Run: an Adaptation Packet and Derivation Packet cannot coexist.");
+      }
+      if (trial.hasTrial && derivationRuntime.hasDerivation) {
+        trial.clear();
+        derivationRuntime.clear();
+        derivationRunGeneration = null;
+        throw new Error("Pindie rejected this Agent Run: a Trial Packet and Derivation Packet cannot coexist.");
       }
       let adaptationLease = null;
       if (adaptation.hasAttempt) {
@@ -1237,6 +1432,27 @@ export function registerPindieExtension(
           trialBound = true;
         }
       }
+      let derivationLease = null;
+      if (adaptationLease === null && trialLease === null && derivationRuntime.hasPendingDerivation) {
+        let sessionId: string;
+        try {
+          sessionId = ctx.sessionManager.getSessionId();
+        } catch (error) {
+          derivationRuntime.clear();
+          derivationRunGeneration = null;
+          throw error;
+        }
+        derivationLease = derivationRuntime.bind(sessionId, run.activeAgentRunGeneration!);
+        if (derivationLease === null) {
+          // A pending lease is bound to exactly the Session that armed it.
+          // A mismatch is a fail-closed stale lease, not a normal Run input.
+          derivationRuntime.clear();
+          derivationRunGeneration = null;
+          throw new Error("Pindie rejected this Agent Run: the pending Derivation lease could not bind to the current Session.");
+        }
+        derivationBound = true;
+        derivationRunGeneration = derivationLease.agentRunGeneration;
+      }
       let derivation = run.deriveSnapshot();
       if (!derivation.ok) {
         markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
@@ -1254,14 +1470,16 @@ export function registerPindieExtension(
       if (!derivation.ok) {
         adaptation.clear();
         trial.clear();
+        derivationRuntime.clear();
         adaptationRunGeneration = null;
+        derivationRunGeneration = null;
         throw new Error(
           `Pindie unavailable semantic derivation failed: ${derivation.error}`,
         );
       }
       promotedStrategyRevisionCatalog = await loadPromotedCatalog(runtime.projectRoot);
       const state = run.authoritativeState;
-      const packetLease = adaptationLease ?? trialLease;
+      const packetLease = adaptationLease ?? trialLease ?? derivationLease;
       const staticContract = appendPindieSystemContract(event.systemPrompt);
       const promotedContext = packetLease === null
         ? formatPromotedStrategyRevisionCatalog(promotedStrategyRevisionCatalog)
@@ -1283,6 +1501,10 @@ export function registerPindieExtension(
       };
     } catch (error) {
       if (trialWasArmed || trialBound) trial.clear();
+      if (derivationWasArmed || derivationBound) {
+        derivationRuntime.clear();
+        derivationRunGeneration = null;
+      }
       throw error;
     }
   });
@@ -1347,7 +1569,10 @@ export function registerPindieExtension(
     }
     if (!run.isAgentRunCurrent(agentRunGeneration)) return;
     if (handoff.isPendingFor(sessionId, agentRunGeneration)) return;
-    if (adaptation.isActiveForGeneration(agentRunGeneration)) return;
+    if (
+      adaptation.isActiveForGeneration(agentRunGeneration) ||
+      derivationRuntime.isActiveForGeneration(agentRunGeneration)
+    ) return;
 
     const derivation = run.deriveSnapshot();
     const state = run.authoritativeState;
@@ -1492,8 +1717,10 @@ export function registerPindieExtension(
 
   pi.on("agent_end", (event, ctx) => {
     if (
-      adaptationRunGeneration !== null &&
-      adaptationRunGeneration === run.activeAgentRunGeneration
+      (adaptationRunGeneration !== null &&
+        adaptationRunGeneration === run.activeAgentRunGeneration) ||
+      (derivationRunGeneration !== null &&
+        derivationRunGeneration === run.activeAgentRunGeneration)
     ) return;
     if (taskHandoffEnabled) {
       try {
@@ -1575,15 +1802,23 @@ export function registerPindieExtension(
     };
     const adaptationRunActive = adaptationRunGeneration !== null &&
       adaptationRunGeneration === run.activeAgentRunGeneration;
-    if (adaptationRunActive &&
+    const derivationRunActive = derivationRunGeneration !== null &&
+      derivationRunGeneration === run.activeAgentRunGeneration;
+    const selfImprovementRunActive = adaptationRunActive || derivationRunActive;
+    const selfImprovementCapability = derivationRunActive
+      ? "policy.derive"
+      : "policy.adapt";
+    if (selfImprovementRunActive &&
       effect.requiredCapability !== "observe.project" &&
       effect.requiredCapability !== "observe.git" &&
-      effect.requiredCapability !== "policy.adapt") {
+      effect.requiredCapability !== selfImprovementCapability) {
       cancelToolAdmission();
       run.recordDeniedCall(effect);
       return {
         block: true,
-        reason: "Pindie blocked this call: an adaptation Run is read-only and only permits observation or the active Candidate tool.",
+        reason: derivationRunActive
+          ? "Pindie blocked this call: a Derivation Run is read-only and only permits observation or the active Derivation Candidate tool."
+          : "Pindie blocked this call: an adaptation Run is read-only and only permits observation or the active Candidate tool.",
       };
     }
     if (
@@ -1624,9 +1859,13 @@ export function registerPindieExtension(
 
     const snapshot = derivation.snapshot;
     const adaptationActive = adaptation.isActiveForGeneration(run.activeAgentRunGeneration);
+    const derivationActive = derivationRuntime.isActiveForGeneration(run.activeAgentRunGeneration);
     const capabilities = new Set<PindieCapability>(deriveCapabilities(snapshot));
     if (effect.requiredCapability === "policy.adapt" && adaptationActive) {
       capabilities.add("policy.adapt");
+    }
+    if (effect.requiredCapability === "policy.derive" && derivationActive) {
+      capabilities.add("policy.derive");
     }
     const authorization = authorizeToolEffect(capabilities, effect);
     if (!authorization.allowed) {
@@ -1805,10 +2044,14 @@ export function registerPindieExtension(
     const settlementGeneration = run.activeAgentRunGeneration;
     const isAdaptationRun = settlementGeneration !== null &&
       adaptationRunGeneration === settlementGeneration;
+    const isDerivationRun = settlementGeneration !== null &&
+      derivationRunGeneration === settlementGeneration;
     const isTrialRun = settlementGeneration !== null &&
       trial.isActiveForGeneration(settlementGeneration);
     adaptation.clear();
+    derivationRuntime.clear();
     adaptationRunGeneration = null;
+    derivationRunGeneration = null;
 
     presentation.setStatusContext(ctx);
 
@@ -1846,6 +2089,7 @@ export function registerPindieExtension(
 
     if (
       !isAdaptationRun &&
+      !isDerivationRun &&
       experienceStore !== null &&
       settlementGeneration !== null &&
       run.isAgentRunCurrent(settlementGeneration) &&
@@ -1933,6 +2177,7 @@ export function registerPindieExtension(
     runTimer: presentation.runTimer,
     contextGovernor,
     trial,
+    derivation: derivationRuntime,
     get promotedStrategyRevisionCatalog() {
       return promotedStrategyRevisionCatalog;
     },

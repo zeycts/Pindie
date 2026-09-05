@@ -97,6 +97,7 @@ export function renderPindieSystemContract(): string {
     "- Strategies never override actual user intent, project constraints, State or semantic authority, capabilities or Execution Gateway decisions, verification reality, or Human Gates.",
     "- Policy declaration is optional and is not required ceremony.",
     "- Strategy Revision Candidates are inactive hypotheses; creation is valid only during explicitly entered /adapt <strategy-id> work.",
+    "- Strategy Derivation Candidates are inactive new-logical-Strategy hypotheses; creation is valid only during explicitly entered /derive work and is optional.",
     "- Candidate revisions remain unavailable to normal Policy declarations; only an explicitly armed /trial <candidate-id> Run may select its exact Candidate revision.",
     "- Project-local promoted revisions may be listed in a bounded normal Run catalog and are selectable only by their exact selector; promotion never changes the default Policy or replaces the Seed.",
     "- Candidates never override State, the Execution Gateway, Verification, or Task authority; receiving a Trial Packet does not create Policy attribution.",
