@@ -127,23 +127,69 @@ test("SO-T17-T19 bounded collector retains no more than fixed bytes or lines", (
   assert.equal(lineBound.retainedLines, GIT_OBSERVE_MAX_OUTPUT_LINES);
 });
 
-test("SO-T20-T21 timeout and AbortSignal terminate and settle a Git child", async () => {
-  const invocation = {
-    executable: "git" as const, argv: ["status"], cwd: process.cwd(), env: safeGitEnvironment(), shell: false as const,
-    timeoutMs: 5, maxOutputBytes: 64, maxOutputLines: 10,
-  };
-  for (const mode of ["timeout", "abort"] as const) {
+test("SO-T20-T21 timeout and AbortSignal terminate and settle a Git child", async (t) => {
+  const start = (timeoutMs: number, abortBeforeStart = false) => {
     const child = new EventEmitter() as any;
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
-    let kills = 0;
-    child.kill = () => { kills += 1; setImmediate(() => child.emit("close", null)); return true; };
+    const killSignals: string[] = [];
+    child.kill = (signal: string) => { killSignals.push(signal); return true; };
     const controller = new AbortController();
-    const promise = runGitObservation({ ...invocation, signal: controller.signal }, (() => child) as any);
-    if (mode === "abort") controller.abort();
-    await assert.rejects(promise, mode === "timeout" ? /timed out/ : /cancelled/);
-    assert.ok(kills >= 1);
-  }
+    if (abortBeforeStart) controller.abort();
+    const promise = runGitObservation({
+      executable: "git", argv: ["status"], cwd: process.cwd(), env: safeGitEnvironment(), shell: false,
+      signal: controller.signal, timeoutMs, maxOutputBytes: 64, maxOutputLines: 10,
+    }, (() => child) as any);
+    return { child, controller, killSignals, promise };
+  };
+
+  await t.test("timeout independently controls the result", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const observation = start(5);
+    t.mock.timers.tick(5);
+    observation.child.emit("close", null);
+    await assert.rejects(observation.promise, /timed out/);
+    assert.deepEqual(observation.killSignals, ["SIGTERM"]);
+  });
+
+  await t.test("AbortSignal independently controls the result", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const observation = start(1_000);
+    observation.controller.abort();
+    observation.child.emit("close", null);
+    await assert.rejects(observation.promise, /cancelled/);
+    assert.deepEqual(observation.killSignals, ["SIGTERM"]);
+  });
+
+  await t.test("an already-aborted signal controls the result", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const observation = start(1_000, true);
+    observation.child.emit("close", null);
+    await assert.rejects(observation.promise, /cancelled/);
+    assert.deepEqual(observation.killSignals, ["SIGTERM"]);
+  });
+
+  await t.test("abort remains authoritative when timeout fires before close", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const observation = start(5);
+    observation.controller.abort();
+    t.mock.timers.tick(5);
+    observation.child.emit("close", null);
+    await assert.rejects(observation.promise, /cancelled/);
+    t.mock.timers.tick(250);
+    assert.deepEqual(observation.killSignals, ["SIGTERM"]);
+  });
+
+  await t.test("timeout remains authoritative when abort fires before close", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const observation = start(5);
+    t.mock.timers.tick(5);
+    observation.controller.abort();
+    observation.child.emit("close", null);
+    await assert.rejects(observation.promise, /timed out/);
+    t.mock.timers.tick(250);
+    assert.deepEqual(observation.killSignals, ["SIGTERM"]);
+  });
 });
 
 test("SO-I01-SO-I04 real isolated Git repository observes status, diffs, branch, root, and log", async () => {
