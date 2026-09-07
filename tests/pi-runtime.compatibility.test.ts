@@ -11,6 +11,7 @@ import {
   SessionManager,
   SettingsManager,
   type AgentSession,
+  type BeforeAgentStartEventResult,
   type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
@@ -21,8 +22,10 @@ interface RealPiHarness {
   readonly root: string;
 }
 
+type BeforeAgentStartHook = () => BeforeAgentStartEventResult | undefined;
+
 async function createRealPiHarness(
-  beforeAgentStart?: () => void,
+  beforeAgentStart?: BeforeAgentStartHook,
 ): Promise<RealPiHarness> {
   const root = await mkdtemp(join(tmpdir(), "pindie-pi-compatibility-"));
   const cwd = join(root, "project");
@@ -39,9 +42,7 @@ async function createRealPiHarness(
   const extensionFactories: InlineExtension[] = beforeAgentStart
     ? [
         (pi) => {
-          pi.on("before_agent_start", () => {
-            beforeAgentStart();
-          });
+          pi.on("before_agent_start", () => beforeAgentStart());
         },
       ]
     : [];
@@ -80,30 +81,56 @@ function nextTurn(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-test("Pi 0.84.4 compatibility: idle custom trigger runs before_agent_start preflight", async () => {
+// Temporary downstream compatibility contract for the idle custom-triggered
+// turn path. It protects behavior Pindie needs until earendil-works/pi#8262
+// lands in a pinned Pi release. When it does: remove the downstream patch, then
+// keep/adapt this contract test against Pi's native behavior.
+test("Pi 0.85.1 compatibility: idle custom trigger runs before_agent_start preflight and applies its result", async () => {
   let beforeAgentStartCalls = 0;
+  let providerContext: { systemPrompt?: string; messages?: readonly unknown[] } | undefined;
   const harness = await createRealPiHarness(() => {
     beforeAgentStartCalls += 1;
+    return {
+      systemPrompt: "downstream compatibility system prompt",
+      message: {
+        customType: "compatibility-injected",
+        content: [{ type: "text", text: "injected custom message" }],
+        display: false,
+      },
+    };
   });
 
   try {
-    harness.faux.setResponses([fauxAssistantMessage("done")]);
+    harness.faux.setResponses([(context) => {
+      providerContext = context;
+      return fauxAssistantMessage("done");
+    }]);
     await harness.session.createReplacedSessionContext().sendMessage(
       { customType: "runtime-trigger", content: "wake up", display: false },
       { triggerTurn: true },
     );
 
-    // The unpatched 0.84.4 package produced 0 here: its native
-    // sendCustomMessage() entered _runAgentPrompt() directly. This real Pi
-    // characterization is why the old fake ReplacedSessionContext tests were
-    // insufficient; those fakes never exercised the native AgentSession path.
+    // Without the downstream 0.85.1 patch, the native idle path enters
+    // _runAgentPrompt() directly and skips this hook and its result.
     assert.equal(beforeAgentStartCalls, 1);
+    assert.equal(providerContext?.systemPrompt, "downstream compatibility system prompt");
+    assert.ok(providerContext?.messages?.some((message) => {
+      if (typeof message !== "object" || message === null) return false;
+      const candidate = message as { content?: unknown };
+      return Array.isArray(candidate.content)
+        && candidate.content.some((part) =>
+          typeof part === "object"
+          && part !== null
+          && "text" in part
+          && part.text === "injected custom message",
+        );
+    }));
   } finally {
     await disposeHarness(harness);
   }
 });
 
-test("characterizes Pi 0.84.4: custom trigger Promise covers the full Agent Run", async () => {
+test("characterizes Pi 0.85.1: custom trigger Promise covers the full Agent Run", async () => {
   let resolveResponse: ((message: ReturnType<typeof fauxAssistantMessage>) => void) | undefined;
   const responseSettled = new Promise<ReturnType<typeof fauxAssistantMessage>>((resolve) => {
     resolveResponse = resolve;
