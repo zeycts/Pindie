@@ -147,8 +147,7 @@ export async function runGitObservation(
   return new Promise((resolve, reject) => {
     const collector = new BoundedOutput(invocation.maxOutputBytes, invocation.maxOutputLines);
     let settled = false;
-    let timedOut = false;
-    let aborted = false;
+    let terminationCause: "timeout" | "abort" | undefined;
     let killEscalation: ReturnType<typeof setTimeout> | undefined;
     const settle = (callback: () => void) => {
       if (settled) return;
@@ -165,20 +164,22 @@ export async function runGitObservation(
       detached: false,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const terminate = () => {
+    const terminate = (cause: "timeout" | "abort") => {
+      if (terminationCause !== undefined) return;
+      terminationCause = cause;
       child.kill("SIGTERM");
       killEscalation = setTimeout(() => child.kill("SIGKILL"), 250);
     };
-    const abort = () => { aborted = true; terminate(); };
-    const timeout = setTimeout(() => { timedOut = true; terminate(); }, invocation.timeoutMs);
+    const abort = () => terminate("abort");
+    const timeout = setTimeout(() => terminate("timeout"), invocation.timeoutMs);
     if (invocation.signal?.aborted) abort();
     else invocation.signal?.addEventListener("abort", abort, { once: true });
     child.stdout?.on("data", (chunk: Buffer) => collector.push("stdout", chunk));
     child.stderr?.on("data", (chunk: Buffer) => collector.push("stderr", chunk));
     child.on("error", (error) => settle(() => reject(new Error(`Git observation failed to start: ${error.message}`))));
     child.on("close", (code) => settle(() => {
-      if (timedOut) return reject(new Error(`Git observation timed out after ${invocation.timeoutMs / 1000}s.`));
-      if (aborted) return reject(new Error("Git observation was cancelled."));
+      if (terminationCause === "timeout") return reject(new Error(`Git observation timed out after ${invocation.timeoutMs / 1000}s.`));
+      if (terminationCause === "abort") return reject(new Error("Git observation was cancelled."));
       if (code !== 0) return reject(new GitObservationExitError(code, collector.text("stdout"), collector.text("stderr"), collector.truncated));
       resolve({ stdout: collector.text("stdout"), stderr: collector.text("stderr"), truncated: collector.truncated });
     }));
