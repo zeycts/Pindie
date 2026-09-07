@@ -27,6 +27,7 @@ import {
 } from "../src/strategies.ts";
 import {
   createTrustedStrategyPortfolio,
+  formatTrustedStrategyPortfolio,
   trustedPortfolioFingerprint,
   type TrustedStrategyPortfolio,
 } from "../src/strategy-portfolio.ts";
@@ -200,6 +201,57 @@ test("a valid promoted Seed revision enters the trusted portfolio while rejected
   assert.equal(promoted?.strategyId, seed.id);
   assert.equal(promoted?.revisionIdentity, candidate.candidateId);
   assert.equal(current.entries.length, SEED_STRATEGIES.length + 1);
+});
+
+test("trusted portfolio Human formatter groups entries and keeps the default view bounded", () => {
+  const seed = getSeedStrategy("architecture-first")!;
+  const candidate = createStrategyRevisionCandidate({
+    target: seed,
+    candidateId: "00000000-0000-4000-8000-000000000007",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    proposal: {
+      summary: "Use a bounded ownership check before a cross-cutting change.",
+      useWhen: ["the change spans more than one owner"],
+      avoidWhen: ["the correction is local"],
+      principles: ["name the owners", "verify the handoff"],
+      sourceRecordIds: ["one", "two"],
+      hypothesis: "A sharper ownership check may reduce rework.",
+    },
+  });
+  const decision = createStrategyRevisionDecision({
+    candidate,
+    decision: "promoted",
+    trialRecordIds: ["trial-one", "trial-two"],
+    decidedAt: "2026-02-01T00:00:00.000Z",
+  });
+  const portfolioWithRevision = createTrustedStrategyPortfolio(
+    "/repo",
+    createPromotedStrategyRevisionCatalog([{
+      candidate,
+      decision,
+      selection: strategyRevisionSelectionFromCandidate(candidate, "promoted"),
+    }]),
+  );
+
+  const list = formatTrustedStrategyPortfolio(portfolioWithRevision);
+  assert.ok(list.indexOf("Approaches") < list.indexOf("Modifiers"));
+  assert.match(list, /architecture-first/);
+  assert.match(list, /promoted Seed revision/);
+  assert.match(list, /Trusted entries: 8/);
+  assert.match(list, /Logical Strategy identities: 7/);
+  assert.doesNotMatch(list, new RegExp(candidate.candidateId));
+  assert.doesNotMatch(list, /sha256:/);
+  assert.doesNotMatch(list, /sourceRecordIds|candidateId|trialRecordIds|hypothesis:/);
+
+  const detail = formatTrustedStrategyPortfolio(portfolioWithRevision, "architecture-first");
+  assert.match(detail, /Trusted entries: 2/);
+  assert.match(detail, /Origin: seed/);
+  assert.match(detail, /Origin: promoted Seed revision/);
+  assert.ok(detail.includes(`Revision identity: ${candidate.candidateId}`));
+  assert.match(detail, /Revision status: promoted/);
+  assert.match(detail, /Use when:/);
+  assert.match(detail, /Avoid when:/);
+  assert.match(detail, /Principles:/);
 });
 
 test("Derivation source selection requires trusted final Policy, exposure, attribution, and excludes Trial", () => {

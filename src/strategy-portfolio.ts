@@ -356,6 +356,125 @@ export function trustedPortfolioSemanticEntries(
   return portfolio.resolvedEntries;
 }
 
+const TRUSTED_PORTFOLIO_ORIGIN_LABELS: Record<TrustedPortfolioOrigin, string> = {
+  seed: "seed",
+  "promoted-seed-revision": "promoted Seed revision",
+  "promoted-derived": "promoted Derived Strategy",
+};
+
+const TRUSTED_PORTFOLIO_ORIGIN_ORDER: Record<TrustedPortfolioOrigin, number> = {
+  seed: 0,
+  "promoted-seed-revision": 1,
+  "promoted-derived": 2,
+};
+
+function compareHumanPortfolioEntries(
+  left: TrustedPortfolioResolvedEntry,
+  right: TrustedPortfolioResolvedEntry,
+): number {
+  const leftManifest = left.manifest;
+  const rightManifest = right.manifest;
+  const leftKey = [
+    leftManifest.strategyId,
+    TRUSTED_PORTFOLIO_ORIGIN_ORDER[leftManifest.origin],
+    leftManifest.revisionIdentity,
+    leftManifest.revisionFingerprint,
+  ].join("\0");
+  const rightKey = [
+    rightManifest.strategyId,
+    TRUSTED_PORTFOLIO_ORIGIN_ORDER[rightManifest.origin],
+    rightManifest.revisionIdentity,
+    rightManifest.revisionFingerprint,
+  ].join("\0");
+  return compareText(leftKey, rightKey);
+}
+
+function formatTrustedStrategyList(
+  portfolio: TrustedStrategyPortfolio,
+): string {
+  const lines = [
+    "Trusted Strategy Portfolio",
+    "",
+  ];
+  const entries = [...portfolio.resolvedEntries].sort(compareHumanPortfolioEntries);
+  for (const [kind, heading] of [
+    ["approach", "Approaches"],
+    ["modifier", "Modifiers"],
+  ] as const) {
+    lines.push(heading, "");
+    const grouped = entries.filter((entry) => entry.manifest.kind === kind);
+    if (grouped.length === 0) {
+      lines.push("  (none)", "");
+      continue;
+    }
+    for (const entry of grouped) {
+      const manifest = entry.manifest;
+      const identity = manifest.origin === "seed"
+        ? manifest.strategyId
+        : `${manifest.strategyId} · promoted ${manifest.revisionIdentity.slice(0, 8)}`;
+      lines.push(
+        `  ${identity}`,
+        `    ${TRUSTED_PORTFOLIO_ORIGIN_LABELS[manifest.origin]}`,
+        `    ${entry.semantics.summary}`,
+        "",
+      );
+    }
+  }
+  lines.push(
+    `Trusted entries: ${portfolio.entries.length}`,
+    `Logical Strategy identities: ${trustedLogicalStrategyIds(portfolio).length}`,
+  );
+  return lines.join("\n");
+}
+
+function formatTrustedStrategyDetails(
+  portfolio: TrustedStrategyPortfolio,
+  strategyId: string,
+): string {
+  const entries = [...portfolio.resolvedEntries]
+    .filter((entry) => entry.manifest.strategyId === strategyId)
+    .sort(compareHumanPortfolioEntries);
+  const lines = [
+    `Trusted Strategy: ${strategyId}`,
+    `Trusted entries: ${entries.length}`,
+    "",
+  ];
+  for (const [index, entry] of entries.entries()) {
+    const manifest = entry.manifest;
+    const semantics = entry.semantics;
+    if (entries.length > 1) lines.push(`Entry ${index + 1}`, "");
+    lines.push(
+      `Logical Strategy ID: ${manifest.strategyId}`,
+      `Kind: ${manifest.kind}`,
+      `Origin: ${TRUSTED_PORTFOLIO_ORIGIN_LABELS[manifest.origin]}`,
+      `Revision identity: ${manifest.revisionIdentity}`,
+      `Revision status: ${manifest.origin === "seed" ? "seed" : "promoted"}`,
+      `Revision fingerprint: ${manifest.revisionFingerprint}`,
+      `Summary: ${semantics.summary}`,
+      "Use when:",
+      ...semantics.useWhen.map((value) => `  - ${value}`),
+      "Avoid when:",
+      ...(semantics.avoidWhen.length > 0
+        ? semantics.avoidWhen.map((value) => `  - ${value}`)
+        : ["  - none"]),
+      "Principles:",
+      ...semantics.principles.map((value) => `  - ${value}`),
+      "",
+    );
+  }
+  return lines.join("\n").trimEnd();
+}
+
+/** Render the complete trusted portfolio or one trusted logical identity for Humans. */
+export function formatTrustedStrategyPortfolio(
+  portfolio: TrustedStrategyPortfolio,
+  strategyId?: string,
+): string {
+  return strategyId === undefined
+    ? formatTrustedStrategyList(portfolio)
+    : formatTrustedStrategyDetails(portfolio, strategyId);
+}
+
 /** Resolve an exact trusted selection with all semantics/status supplied by the Harness. */
 export function resolveTrustedPortfolioRevisionSelection(
   selection: StrategyRevisionSelection | StrategyRevisionSelector,
