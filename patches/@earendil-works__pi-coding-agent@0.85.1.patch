@@ -1,5 +1,5 @@
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index fd82b71cf332715f185d07459429f04ed7491ce9..08a5bcb33adcf827ea25a1c6d3bb013095998d55 100644
+index 66e874efd252470d00d3cdaad2e2b4b6121de15b..2192e7472fa572ef6953bce3cc57bd1c362695b9 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
 @@ -1118,7 +1118,36 @@ export class AgentSession {
@@ -7,7 +7,7 @@ index fd82b71cf332715f185d07459429f04ed7491ce9..08a5bcb33adcf827ea25a1c6d3bb0130
          }
          else if (options?.triggerTurn) {
 -            await this._runAgentPrompt(appMessage);
-+            // Compatibility patch for Pi 0.84.4: idle custom-triggered turns
++            // Compatibility patch for Pi 0.85.1: idle custom-triggered turns
 +            // entered _runAgentPrompt() directly and skipped the normal
 +            // before_agent_start preflight. Keep this narrow until Pi's shared
 +            // turn preflight (upstream #8262) is available in the pinned release.

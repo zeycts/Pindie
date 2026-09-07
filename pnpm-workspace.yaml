@@ -1,13 +1,14 @@
 allowBuilds:
   '@google/genai': true
+  esbuild: false
   protobufjs: true
 minimumReleaseAgeExclude:
-  - '@earendil-works/pi-agent-core@0.84.4'
-  - '@earendil-works/pi-ai@0.84.4'
-  - '@earendil-works/pi-client@0.84.4'
-  - '@earendil-works/pi-coding-agent@0.84.4'
-  - '@earendil-works/pi-protocol@0.84.4'
-  - '@earendil-works/pi-telemetry@0.84.4'
-  - '@earendil-works/pi-tui@0.84.4'
+  - '@earendil-works/pi-agent-core@0.85.1'
+  - '@earendil-works/pi-ai@0.85.1'
+  - '@earendil-works/pi-client@0.85.1'
+  - '@earendil-works/pi-coding-agent@0.85.1'
+  - '@earendil-works/pi-protocol@0.85.1'
+  - '@earendil-works/pi-telemetry@0.85.1'
+  - '@earendil-works/pi-tui@0.85.1'
 patchedDependencies:
-  '@earendil-works/pi-coding-agent@0.84.4': patches/@earendil-works__pi-coding-agent@0.84.4.patch
+  '@earendil-works/pi-coding-agent@0.85.1': patches/@earendil-works__pi-coding-agent@0.85.1.patch
