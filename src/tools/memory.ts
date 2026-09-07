@@ -120,8 +120,8 @@ function formatLocalDate(date: Date): string | null {
   ].join("-");
 }
 
-function boundedTaskGoal(state: PindieState | null): string | null {
-  const goal = state?.task?.goal;
+function boundedTaskGoal(state: PindieState): string | null {
+  const goal = state.task?.goal;
   if (typeof goal !== "string" || goal.trim() === "") return null;
   const normalized = goal.trim().replace(/\s+/g, " ");
   return normalized.length <= MAX_TASK_GOAL_LENGTH
@@ -129,7 +129,7 @@ function boundedTaskGoal(state: PindieState | null): string | null {
     : `${normalized.slice(0, MAX_TASK_GOAL_LENGTH - 1)}…`;
 }
 
-function evidence(scope: string, state: PindieState | null): string {
+function evidence(scope: string, state: PindieState): string {
   const taskGoal = boundedTaskGoal(state);
   return taskGoal === null
     ? `Pindie · project=${scope}`
@@ -160,6 +160,9 @@ export function createPindieMemoryCaptureTool(
       try {
         state = options.getState();
       } catch {
+        return failure("authoritative State is unavailable.");
+      }
+      if (state === null) {
         return failure("authoritative State is unavailable.");
       }
 

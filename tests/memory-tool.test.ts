@@ -127,7 +127,10 @@ test("all four semantic memory types are accepted and reach the sink", async () 
 test("Harness assembles Scope, Source, local Date, Status, and no-Task Evidence", async () => {
   const sink = new FakeMemorySink();
   const clock = new Date(2026, 8, 5, 0, 30, 0);
-  const tool = createTool(sink, { now: () => clock });
+  const tool = createTool(sink, {
+    now: () => clock,
+    state: taskState(null),
+  });
 
   await tool.execute("capture", semanticParams({
     consequence: "Adapters remain outside the domain.",
@@ -147,6 +150,36 @@ test("Harness assembles Scope, Source, local Date, Status, and no-Task Evidence"
     status: "Active",
     evidence: "Pindie · project=Pindie",
   });
+});
+
+test("null authoritative State fails closed before the sink is called", async () => {
+  const sink = new FakeMemorySink();
+  const result = await createTool(sink, { state: null }).execute(
+    "capture",
+    semanticParams(),
+  );
+
+  assert.match(textOf(result), /Work Memory capture failed: authoritative State is unavailable\./);
+  assert.equal(sink.captures.length, 0);
+});
+
+test("a throwing authoritative State getter remains bounded and non-blocking", async () => {
+  const sink = new FakeMemorySink();
+  const tool = createPindieMemoryCaptureTool({
+    sink,
+    getProjectRoot: () => "/home/zey/dev/Pindie",
+    getState: () => {
+      throw new Error("secret State details");
+    },
+    now: () => new Date(2026, 8, 5),
+  });
+
+  const result = await tool.execute("capture", semanticParams());
+  const text = textOf(result);
+  assert.match(text, /Work Memory capture failed: authoritative State is unavailable\./);
+  assert.doesNotMatch(text, /secret State details/);
+  assert.match(text, /Continue the primary work; do not retry automatically\./);
+  assert.equal(sink.captures.length, 0);
 });
 
 test("Harness Evidence includes the current Task goal and remains bounded", async () => {
