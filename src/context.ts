@@ -18,6 +18,8 @@ import { SEED_STRATEGIES } from "./strategies.ts";
 
 export const PINDIE_SYSTEM_CONTRACT_START = "<PINDIE_SYSTEM_CONTRACT>";
 export const PINDIE_SYSTEM_CONTRACT_END = "</PINDIE_SYSTEM_CONTRACT>";
+export const PINDIE_WORK_MEMORY_CONTRACT_START = "<PINDIE_WORK_MEMORY_CONTRACT>";
+export const PINDIE_WORK_MEMORY_CONTRACT_END = "</PINDIE_WORK_MEMORY_CONTRACT>";
 export const PINDIE_RUN_BASELINE_START = "<PINDIE_RUN_BASELINE>";
 export const PINDIE_RUN_BASELINE_END = "</PINDIE_RUN_BASELINE>";
 export const PINDIE_RUN_BASELINE_TYPE = "pindie-run-baseline";
@@ -112,6 +114,54 @@ export function appendPindieSystemContract(systemPrompt: string): string {
   const contract = renderPindieSystemContract();
   if (systemPrompt.includes(contract)) return systemPrompt;
   return `${systemPrompt}${systemPrompt.length === 0 ? "" : "\n\n"}${contract}`;
+}
+
+const PINDIE_WORK_MEMORY_CONTRACT = [
+  PINDIE_WORK_MEMORY_CONTRACT_START,
+  "Project Memory",
+  "",
+  "When pindie_memory_capture is available and work establishes",
+  "a durable project state change, proactively capture it.",
+  "",
+  "Eligible:",
+  "- settled decisions, architecture, technical direction, or implementation roadmap",
+  "- meaningful capability milestones",
+  "- confirmed important root causes or constraints",
+  "- genuinely reusable insights",
+  "",
+  "Use a high threshold and the three-week test:",
+  "capture only when losing the information would create meaningful",
+  "reconstruction cost when returning to the project later.",
+  "",
+  "Do not capture:",
+  "- routine execution",
+  "- temporary hypotheses",
+  "- ordinary failures",
+  "- trivial implementation details",
+  "- test/build/commit completion by itself",
+  "- facts cheaply reconstructable from the repository",
+  "- conversation or activity summaries",
+  "",
+  "Memory must express the resulting conclusion/state, not the activity.",
+  "",
+  "Task completion is not itself a Milestone.",
+  "If completing the current Task establishes a meaningful durable milestone,",
+  "capture it before pindie_task_complete.",
+  "",
+  "Write Memory titles and body content in the user's current working language.",
+  "Keep code, API names, identifiers, and necessary technical terms in their",
+  "natural form.",
+  "",
+  "Successful capture should remain low-noise.",
+  "Do not interrupt the user merely to announce that memory was saved.",
+  "If capture fails, continue the primary work and do not retry automatically.",
+  PINDIE_WORK_MEMORY_CONTRACT_END,
+].join("\n");
+
+/** Append the conditional Work Memory policy without duplicating it. */
+export function appendPindieWorkMemoryContract(systemPrompt: string): string {
+  if (systemPrompt.includes(PINDIE_WORK_MEMORY_CONTRACT_START)) return systemPrompt;
+  return `${systemPrompt}${systemPrompt.length === 0 ? "" : "\n\n"}${PINDIE_WORK_MEMORY_CONTRACT}`;
 }
 
 /** Render the current model-facing affordance from the Gateway capability source. */

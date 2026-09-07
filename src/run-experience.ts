@@ -83,7 +83,7 @@ const ZERO_EXECUTION: RunExperienceExecution = Object.freeze({
   deniedCalls: 0,
 });
 
-type AuthorizedCallKind = "execution" | "policy" | "self-improvement";
+type AuthorizedCallKind = "execution" | "policy" | "self-improvement" | "memory";
 
 function copyExecution(
   counters: RunExperienceExecution,
@@ -140,11 +140,18 @@ export class RunExperienceTracker {
     const isPolicy = effect.requiredCapability === "policy.declare";
     const isSelfImprovement = effect.requiredCapability === "policy.adapt" ||
       effect.requiredCapability === "policy.derive";
+    const isMemory = effect.requiredCapability === "memory.capture";
     this.authorizedCalls.set(
       toolCallId,
-      isPolicy ? "policy" : isSelfImprovement ? "self-improvement" : "execution",
+      isPolicy
+        ? "policy"
+        : isSelfImprovement
+          ? "self-improvement"
+          : isMemory
+            ? "memory"
+            : "execution",
     );
-    if (isPolicy || isSelfImprovement) return;
+    if (isPolicy || isSelfImprovement || isMemory) return;
 
     this.counters = {
       ...this.counters,
@@ -171,7 +178,8 @@ export class RunExperienceTracker {
     if (
       effect.requiredCapability === "policy.declare" ||
       effect.requiredCapability === "policy.adapt" ||
-      effect.requiredCapability === "policy.derive"
+      effect.requiredCapability === "policy.derive" ||
+      effect.requiredCapability === "memory.capture"
     ) return;
     this.counters = {
       ...this.counters,
@@ -183,7 +191,7 @@ export class RunExperienceTracker {
   recordToolResult(
     toolCallId: string,
     isError: boolean,
-  ): "execution" | "policy" | "self-improvement" | null {
+  ): "execution" | "policy" | "self-improvement" | "memory" | null {
     const kind = this.authorizedCalls.get(toolCallId) ?? null;
     if (kind === null) return null;
     this.authorizedCalls.delete(toolCallId);

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   appendPindieSystemContract,
+  appendPindieWorkMemoryContract,
   createPindieStateCheckpointMessage,
   createPindieRunBaselineMessage,
   isPindieStateCheckpointMessage,
@@ -15,6 +16,7 @@ import {
   PINDIE_RUN_BASELINE_TYPE,
   PINDIE_SYSTEM_CONTRACT_END,
   PINDIE_SYSTEM_CONTRACT_START,
+  PINDIE_WORK_MEMORY_CONTRACT_START,
   renderCurrentPindieActionEligibility,
   renderCurrentPindieTaskState,
   renderPindieRunBaseline,
@@ -96,6 +98,19 @@ test("Pindie appends the stable contract to Pi's prompt idempotently", () => {
   assert.ok(appended.startsWith(base));
   assert.equal(appendPindieSystemContract(appended), appended);
   assert.equal((appended.match(/<PINDIE_SYSTEM_CONTRACT>/g) ?? []).length, 1);
+});
+
+test("Work Memory policy is conditional and idempotent", () => {
+  const base = "Pi system contract";
+  const appended = appendPindieWorkMemoryContract(base);
+
+  assert.match(appended, new RegExp(`${PINDIE_WORK_MEMORY_CONTRACT_START}`));
+  assert.match(appended, /Project Memory/);
+  assert.match(appended, /high threshold and the three-week test/);
+  assert.match(appended, /Task completion is not itself a Milestone/);
+  assert.equal(appendPindieWorkMemoryContract(appended), appended);
+  assert.equal((appended.match(/<PINDIE_WORK_MEMORY_CONTRACT>/g) ?? []).length, 1);
+  assert.doesNotMatch(appendPindieSystemContract(base), /<PINDIE_WORK_MEMORY_CONTRACT>/);
 });
 
 test("Run Baseline preserves all useful Runtime Context facts as hidden metadata", () => {

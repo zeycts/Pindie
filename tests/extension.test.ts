@@ -15,6 +15,7 @@ import {
   isPindieContinuationProbeMessage,
 } from "../src/continuation.ts";
 import {
+  registerConfiguredPindieExtension,
   registerPindieExtension,
   type PindieExtensionOptions,
 } from "../src/extension.ts";
@@ -49,6 +50,11 @@ import {
   getVerificationStatus,
   type PindieState,
 } from "../src/state.ts";
+import type {
+  ProjectMemoryCapture,
+  ProjectMemoryCaptureResult,
+  ProjectMemorySink,
+} from "../src/project-memory.ts";
 import { evaluateRunExperience } from "../src/experience-evaluation.ts";
 import {
   assembleRunExperience,
@@ -195,6 +201,15 @@ class ExtensionTestExperienceReader implements RunExperienceReader {
     this.roots.push(projectRoot);
     if (this.error) throw this.error;
     return this.result;
+  }
+}
+
+class ExtensionTestMemorySink implements ProjectMemorySink {
+  readonly captures: ProjectMemoryCapture[] = [];
+
+  async capture(memory: ProjectMemoryCapture): Promise<ProjectMemoryCaptureResult> {
+    this.captures.push(memory);
+    return { ok: true, outcome: "created" };
   }
 }
 
@@ -611,6 +626,103 @@ test("Extension registration does not call Pi runtime action methods before runt
   assert.deepEqual(api.appliedThinkingLevels, []);
   await api.commands.get("reasoning").handler("manual", context("/repo"));
   assert.deepEqual(api.appliedThinkingLevels, []);
+});
+
+test("Work Memory registration is conditional on an injected ProjectMemorySink", () => {
+  const withoutMemory = createHarness([["/repo", activeState()]]);
+  assert.equal(withoutMemory.api.tools.has("pindie_memory_capture"), false);
+
+  const withMemory = createHarness(
+    [["/repo", activeState()]],
+    {},
+    { projectMemorySink: new ExtensionTestMemorySink() },
+  );
+  assert.equal(withMemory.api.tools.has("pindie_memory_capture"), true);
+  assert.equal(withMemory.api.tools.size, withoutMemory.api.tools.size + 1);
+  assert.equal(
+    [...withMemory.api.tools.keys()].filter((name) => name === "pindie_memory_capture").length,
+    1,
+  );
+});
+
+test("configured extension composes Memory and Discord options in one registration", () => {
+  const memory = {
+    PINDIE_NOTION_TOKEN: "test-notion-token",
+    PINDIE_WORK_MEMORY_DATA_SOURCE_ID: "test-data-source",
+  };
+  const discord = {
+    PINDIE_DISCORD_TOKEN: "test-discord-token",
+    PINDIE_DISCORD_USER_ID: "12345678901234567",
+    PINDIE_DISCORD_GUILD_ID: "98765432109876543",
+  };
+  const cases = [
+    { env: {}, memoryEnabled: false },
+    { env: memory, memoryEnabled: true },
+    { env: discord, memoryEnabled: false },
+    { env: { ...memory, ...discord }, memoryEnabled: true },
+  ];
+
+  for (const { env, memoryEnabled } of cases) {
+    const api = new CapturedExtensionAPI();
+    assert.doesNotThrow(() => registerConfiguredPindieExtension(
+      api as unknown as ExtensionAPI,
+      {},
+      env,
+    ));
+    assert.equal(api.tools.has("pindie_memory_capture"), memoryEnabled);
+    assert.equal(api.handlers.size > 0, true);
+  }
+
+  const explicitSink = new ExtensionTestMemorySink();
+  const explicitApi = new CapturedExtensionAPI();
+  assert.doesNotThrow(() => registerConfiguredPindieExtension(
+    explicitApi as unknown as ExtensionAPI,
+    { projectMemorySink: explicitSink },
+    memory,
+  ));
+  assert.equal(explicitApi.tools.has("pindie_memory_capture"), true);
+});
+
+test("registered Work Memory capture uses the runtime root, authoritative State, and Harness clock", async () => {
+  const sink = new ExtensionTestMemorySink();
+  const captureDate = new Date(2026, 8, 5, 12, 0, 0);
+  const harness = createHarness(
+    [["/workspace/Pindie", activeState("Authoritative Task goal")]],
+    { "/repo": "/workspace/Pindie" },
+    { projectMemorySink: sink, now: () => captureDate.getTime() },
+  );
+  await startSession(harness, "/repo");
+  const before = await harnessBeforeAgentStart(harness, "/repo");
+  assert.equal((before.systemPrompt.match(/<PINDIE_WORK_MEMORY_CONTRACT>/g) ?? []).length, 1);
+
+  const input = {
+    type: "decision",
+    memory: "Keep Work Memory outside Pindie State",
+    summary: "External Work Memory remains behind a narrow sink.",
+    whyItMatters: "Pindie State stays limited to current semantic work.",
+  };
+  assert.equal(
+    await callGuard(harness, toolCall("pindie_memory_capture", input)),
+    undefined,
+  );
+  const result = await harness.api.tool("pindie_memory_capture").execute("capture", input);
+  assert.match(textOf(result), /^Work Memory: created\.$/);
+  assert.deepEqual(sink.captures, [{
+    ...input,
+    scope: "Pindie",
+    source: "Pindie",
+    date: "2026-09-05",
+    status: "Active",
+    evidence: "Pindie · project=Pindie · task=Authoritative Task goal",
+  }]);
+});
+
+test("Work Memory policy is absent when no sink is configured", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  const before = await harnessBeforeAgentStart(harness, "/repo");
+  assert.doesNotMatch(before.systemPrompt, /<PINDIE_WORK_MEMORY_CONTRACT>/);
+  assert.doesNotMatch(before.systemPrompt, /Task completion is not itself a Milestone/);
 });
 
 async function startSession(

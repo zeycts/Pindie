@@ -74,6 +74,7 @@ export type SemanticDerivationResult =
 export type PindieCapability =
   | "observe.project"
   | "observe.git"
+  | "memory.capture"
   | "project.mutate"
   | "policy.declare"
   | "policy.adapt"
@@ -243,6 +244,8 @@ export function deriveCapabilities(
   if (snapshot.authority !== "coherent") {
     return capabilities;
   }
+
+  capabilities.add("memory.capture");
 
   switch (snapshot.taskStatus) {
     case "idle":

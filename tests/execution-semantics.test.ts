@@ -37,6 +37,7 @@ const exactCases = [
   ["write", "project.mutate", "known"],
   ["bash", "project.mutate", "ambiguous"],
   ["pindie_policy_set", "policy.declare", "none"],
+  ["pindie_memory_capture", "memory.capture", "none"],
   ["pindie_strategy_derivation_candidate_create", "policy.derive", "none"],
   ["pindie_task_start", "task.start", "none"],
   ["pindie_task_replace", "task.replace", "none"],
@@ -68,6 +69,7 @@ test("authorization allowed is exactly required-capability membership", () => {
     { requiredCapability: "project.mutate", projectMutation: "ambiguous" },
     { requiredCapability: "task.complete", projectMutation: "none" },
     { requiredCapability: "gate.resolve", projectMutation: "none" },
+    { requiredCapability: "memory.capture", projectMutation: "none" },
   ];
   const capabilitySets: ReadonlyArray<ReadonlySet<PindieCapability>> = [
     new Set(),

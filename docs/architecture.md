@@ -479,7 +479,184 @@ dogfooded, compatibility-closed, and frozen contract is documented in
 likewise create purpose-specific Agent executions later without pretending
 every execution must be initiated by an externally owned Session.
 
-## 14. Architectural invariants
+## 14. Work Memory v0.1 — approved architecture
+
+Work Memory is an external durable work-memory projection shared with other AI work surfaces. It preserves only high-value durable state changes that would otherwise be costly to reconstruct later. It is not `PindieState`, Task continuity, Run Experience, Session history, a second memory database, or another workflow engine.
+
+The v0.1 ownership boundary is:
+
+```text
+Model   → decides whether a durable semantic change is worth preserving
+          and supplies its semantic meaning
+Harness → supplies factual project/source/time/provenance metadata,
+          validates the narrow action, and keeps capture non-critical
+Notion  → stores the external Work Memory record for later retrieval/review
+```
+
+This follows the existing rule: Harness owns facts; model owns meaning.
+
+### Capture path
+
+Pindie exposes exactly one model-facing semantic action:
+
+```text
+normal project work
+        ↓
+model recognizes a durable state change
+        ↓
+pindie_memory_capture
+        ↓
+ProjectMemorySink
+        ↓
+NotionProjectMemorySink
+        ↓
+external Work Memory database
+```
+
+The model supplies only semantic fields:
+
+```text
+type: decision | milestone | discovery | insight
+memory
+summary
+whyItMatters
+consequence? 
+supersedes?
+```
+
+The Harness supplies factual fields and must not ask the model to fabricate them:
+
+```text
+Scope    ← canonical project root identity; v0.1 uses basename(projectRoot)
+Source   ← Pindie
+Date     ← capture time / state-establishment time
+Status   ← Active
+Evidence ← bounded Pindie provenance, not raw logs
+```
+
+Memory title and body content follow the user's current working language while code, APIs, identifiers, and technical terms may retain their original form.
+
+### Capture semantics
+
+Capture is model judgment, not lifecycle automation. Pindie must not introduce deterministic pseudo-events such as `on_root_cause_confirmed` or `on_design_committed`, and must not auto-capture every completed Task, successful verification, commit, or Agent Run.
+
+The model applies a high threshold and the three-week test: capture only when losing the information would create meaningful reconstruction, understanding, or decision cost when returning later.
+
+Eligible durable states are:
+
+- settled decisions, architecture, technical direction, implementation order, or phase plans that constrain future work;
+- meaningful capability milestones;
+- confirmed important root causes, constraints, or discoveries that change the project mental model;
+- genuinely reusable insights.
+
+Routine execution, temporary hypotheses, ordinary failures, trivial implementation detail, and facts cheaply reconstructable from the repository are not Work Memory.
+
+Task lifecycle and Work Memory are orthogonal. A Memory may be captured while the current Task is idle, active, blocked, waiting on a human, or already done, provided project authority is coherent and the semantic threshold is met. Task completion is not itself a Milestone. Because `pindie_task_complete` terminates the current Run, a meaningful completion Milestone must be captured before `pindie_task_complete`.
+
+### Capability, Tool Effect, and Experience
+
+v0.1 adds a semantic capability:
+
+```text
+memory.capture
+```
+
+It is legal whenever project authority is coherent, independent of Task status. It is never persisted in `PindieState`.
+
+The concrete Tool Effect is:
+
+```text
+pindie_memory_capture → memory.capture / project mutation none
+```
+
+Writing external Work Memory is an external side effect, not project Reality mutation. It must not invalidate project Verification or participate in Project Mutation Freshness.
+
+Work Memory capture is also not ordinary coding execution telemetry. Run Experience must classify successful/failed capture separately from execution and exclude it from existing execution counters (`toolCalls`, `consequentialCalls`, `projectMutationEffectCalls`, `verificationCalls`, `toolErrors`, and `deniedCalls`). v0.1 does not add new durable Experience counters for Work Memory.
+
+### External persistence boundary
+
+The core domain depends on a narrow port rather than Notion directly:
+
+```text
+ProjectMemorySink
+└── capture(memory) → capture result
+```
+
+The v0.1 adapter is `NotionProjectMemorySink` implemented with the official Notion API/client. Pindie does not introduce a general MCP client or expose generic Notion tools to the model. Transport asymmetry with ChatGPT is intentional: both surfaces share the same Work Memory database while using the narrowest practical transport for their runtime.
+
+The local integration is enabled only when its configuration is complete, for example:
+
+```text
+PINDIE_NOTION_TOKEN
+PINDIE_WORK_MEMORY_DATA_SOURCE_ID
+```
+
+The Notion integration should be scoped only to the Work Memory database with minimum read/insert/update permissions. Secrets never enter the repository or `PindieState`.
+
+### Create, update, duplicate, and supersede behavior
+
+v0.1 intentionally avoids embeddings or semantic vector search.
+
+For the current `Scope`, the adapter uses Active records and normalized exact Memory-title matching:
+
+```text
+no matching Active title
+→ create new Active record
+
+same Active title + stronger settled content
+→ update existing record; preserve its original Date
+
+same Active title + no meaningful change
+→ duplicate/no-op
+
+explicit supersedes title
+→ create/update new Active record first
+→ only after that succeeds, mark the old matching record Superseded
+```
+
+Creating the replacement before superseding the prior state avoids a transient state with no Active truth if the write fails. Near-semantic duplicates are deliberately not solved in v0.1; capture precision is preferred over adding a memory-search subsystem.
+
+### Failure semantics
+
+Work Memory is never on the critical path of coding work.
+
+```text
+capture succeeds
+→ continue normally
+
+Notion unavailable / timeout / permission / rate-limit / write failure
+→ return a bounded non-fatal capture failure
+→ continue the main Task
+```
+
+v0.1 must not add a local durable retry queue, background daemon, pending JSONL store, hidden Task, or mandatory later replay. Ordinary successful capture should remain quiet and should not create presentation noise.
+
+### Prompt ownership
+
+The existing static Pindie System Contract carries only a compact capture policy. It should tell the model to proactively use `pindie_memory_capture` when a durable state change passes the high threshold, explicitly state that Task completion is not automatically a Milestone, and require meaningful milestones to be captured before `pindie_task_complete`.
+
+It must not instruct the model to check memory after every turn/tool call or introduce a procedural memory lifecycle. Capture remains a sparse semantic side effect of normal work.
+
+### v0.1 implementation boundary
+
+The intended implementation surface is deliberately small:
+
+```text
+src/project-memory.ts          → domain types + ProjectMemorySink
+src/notion-project-memory.ts   → Notion adapter
+src/tools/memory.ts            → pindie_memory_capture
+src/semantics.ts               → memory.capture
+src/execution-semantics.ts     → memory.capture / mutation none
+src/run-experience.ts          → exclude capture from coding telemetry
+src/context.ts                 → compact capture policy
+src/extension.ts               → optional configuration + wiring
+package.json                   → Notion client dependency
+focused tests                  → domain/adapter/gateway/tool contracts
+```
+
+No `memory-store`, `memory-runtime`, `memory-manager`, memory queue, memory State, autonomous memory Agent, or second persistence subsystem is part of v0.1.
+
+## 15. Architectural invariants
 
 1. Reality determines reconstructable facts.
 2. State stores only durable semantic current-work facts.
@@ -504,3 +681,7 @@ every execution must be initiated by an externally owned Session.
 21. Remote/Discord failure must not alter local Pindie correctness or stop the local Agent.
 22. Strategy Revision Candidates are inactive hypotheses only; SI v0.5 Candidate creation is explicit `/adapt <strategy-id>` work and never activates or overrides Policy.
 23. Runtime Independence is an ownership inversion, not a second Agent Loop: Pindie may own Agent/Session lifecycle while Pi remains the low-level execution runtime.
+24. Work Memory is an external projection and never becomes `PindieState`, Task continuity, Run Experience, Session truth, or a second memory database.
+25. Work Memory meaning and capture worthiness belong to the model; project identity, source, date, provenance, legality, and external-write mechanics belong to the Harness.
+26. Work Memory capture never counts as project mutation, never invalidates Verification, and never blocks the primary Task when external persistence fails.
+27. Task completion is not automatically a Work Memory Milestone; meaningful completion memory is captured before the terminating completion action.
