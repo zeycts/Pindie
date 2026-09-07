@@ -104,3 +104,12 @@ pi -e ./src/extension.ts
 ```
 
 The package scripts are package-manager agnostic; pnpm is the recommended package manager for Pindie.
+
+Optional Work Memory uses Notion when both environment variables are configured:
+
+```text
+PINDIE_NOTION_TOKEN
+PINDIE_WORK_MEMORY_DATA_SOURCE_ID
+```
+
+Both must be configured to enable Work Memory.

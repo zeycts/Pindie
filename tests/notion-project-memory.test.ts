@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   NOTION_PROJECT_MEMORY_API_VERSION,
   NotionProjectMemorySink,
+  notionProjectMemoryConfig,
   type NotionProjectMemoryClient,
 } from "../src/notion-project-memory.ts";
 import {
@@ -177,6 +178,38 @@ function call(fake: FakeNotionClient, method: string): FakeCall {
   assert.ok(found, `Expected ${method} call`);
   return found;
 }
+
+test("Work Memory configuration is disabled without either environment variable", () => {
+  assert.deepEqual(notionProjectMemoryConfig({}), { enabled: false });
+});
+
+test("incomplete Work Memory configuration is disabled with a bounded warning", () => {
+  const token = "notion-token-secret";
+  for (const env of [
+    { PINDIE_NOTION_TOKEN: token },
+    { PINDIE_WORK_MEMORY_DATA_SOURCE_ID: "data-source-1" },
+    { PINDIE_NOTION_TOKEN: "  ", PINDIE_WORK_MEMORY_DATA_SOURCE_ID: "data-source-1" },
+    { PINDIE_NOTION_TOKEN: token, PINDIE_WORK_MEMORY_DATA_SOURCE_ID: "  " },
+  ]) {
+    const result = notionProjectMemoryConfig(env);
+    assert.equal(result.enabled, false);
+    assert.equal(result.warning, "Pindie Work Memory is disabled: Notion configuration is incomplete.");
+    assert.doesNotMatch(JSON.stringify(result), /notion-token-secret|data-source-1/);
+  }
+});
+
+test("complete Work Memory configuration is enabled with trimmed values", () => {
+  assert.deepEqual(
+    notionProjectMemoryConfig({
+      PINDIE_NOTION_TOKEN: "  notion-token-secret  ",
+      PINDIE_WORK_MEMORY_DATA_SOURCE_ID: "  data-source-1  ",
+    }),
+    {
+      enabled: true,
+      config: { token: "notion-token-secret", dataSourceId: "data-source-1" },
+    },
+  );
+});
 
 test("no match creates one Active page in the data source", async () => {
   const fake = new FakeNotionClient();

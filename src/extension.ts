@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
+import { Client } from "@notionhq/client";
 import {
   type ExtensionAPI,
   type ExtensionCommandContext,
@@ -10,6 +11,7 @@ import {
 import {
   createPindieStateCheckpointMessage,
   appendPindieSystemContract,
+  appendPindieWorkMemoryContract,
   createPindieRunBaselineMessage,
   renderCurrentPindieActionEligibility,
   renderPindieProjectMutationUpdate,
@@ -109,6 +111,12 @@ import {
 import { PresentationIntegration } from "./presentation-integration.ts";
 import { RemoteCompanion, type RemotePi, type RemoteStatusFacts } from "./remote-companion.ts";
 import { DiscordRemote, discordRemoteConfig } from "./discord-remote.ts";
+import {
+  NOTION_PROJECT_MEMORY_API_VERSION,
+  NotionProjectMemorySink,
+  notionProjectMemoryConfig,
+} from "./notion-project-memory.ts";
+import type { ProjectMemorySink } from "./project-memory.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
 import type {
   PolicySnapshot,
@@ -171,6 +179,7 @@ import { createPindiePolicySetTool } from "./tools/policy.ts";
 import { createPindieStrategyCandidateTool } from "./tools/strategy-candidate.ts";
 import { createPindieStrategyDerivationCandidateTool } from "./tools/strategy-derivation-candidate.ts";
 import { createPindieGitObserveTool } from "./tools/git-observe.ts";
+import { createPindieMemoryCaptureTool } from "./tools/memory.ts";
 import {
   createPindieTaskCompleteTool,
   createPindieTaskHandoffTool,
@@ -214,6 +223,8 @@ export interface PindieExtensionOptions {
   contextGovernorTuning?: ContextGovernorTuning;
   /** Internal test seam for runtime-only project mutation observation. */
   captureProjectFingerprint?: (projectRoot: string) => Promise<ProjectFingerprint>;
+  /** Optional transport-independent Work Memory sink; production may provide Notion. */
+  projectMemorySink?: ProjectMemorySink;
   /** Optional transport-independent Remote core; omitted keeps the existing extension unchanged. */
   remoteCompanion?: { companion: RemoteCompanion; guildId: string; discord?: DiscordRemote };
 }
@@ -1581,6 +1592,14 @@ export function registerPindieExtension(
   pi.registerTool(createPindieGateResolveTool(runtime, {
     onStateChange: semanticStateChanged,
   }));
+  if (options.projectMemorySink !== undefined) {
+    pi.registerTool(createPindieMemoryCaptureTool({
+      sink: options.projectMemorySink,
+      getProjectRoot: () => runtime.projectRoot,
+      getState: () => run.authoritativeState,
+      now: () => new Date(continuityNow()),
+    }));
+  }
   pi.registerTool(createPindieGitObserveTool());
 
   pi.registerCommand("efficiency", {
@@ -1994,12 +2013,15 @@ export function registerPindieExtension(
       const state = run.authoritativeState;
       const packetLease = adaptationLease ?? trialLease ?? derivationLease;
       const staticContract = appendPindieSystemContract(event.systemPrompt);
+      const configuredContract = options.projectMemorySink === undefined
+        ? staticContract
+        : appendPindieWorkMemoryContract(staticContract);
       const promotedContext = packetLease === null
         ? formatPromotedTrustedStrategyPortfolio(trustedStrategyPortfolio)
         : "";
       const systemPrompt = packetLease === null
-        ? `${staticContract}${promotedContext === "" ? "" : `\n\n${promotedContext}`}`
-        : `${staticContract}\n\n${packetLease.renderedPacket}`;
+        ? `${configuredContract}${promotedContext === "" ? "" : `\n\n${promotedContext}`}`
+        : `${configuredContract}\n\n${packetLease.renderedPacket}`;
       const unavailableReason = run.stateUnavailableReason ??
         (state === null
           ? "No project State has been loaded for this session."
@@ -2715,16 +2737,37 @@ export function registerPindieExtension(
 export function registerConfiguredPindieExtension(
   pi: ExtensionAPI,
   options: PindieExtensionOptions = {},
+  env: Record<string, string | undefined> = process.env,
 ): void {
-  const configured = discordRemoteConfig();
+  let projectMemorySink = options.projectMemorySink;
+  if (projectMemorySink === undefined) {
+    const configuredMemory = notionProjectMemoryConfig(env);
+    if (!configuredMemory.enabled) {
+      if (configuredMemory.warning) console.warn(configuredMemory.warning);
+    } else {
+      const client = new Client({
+        auth: configuredMemory.config.token,
+        notionVersion: NOTION_PROJECT_MEMORY_API_VERSION,
+      });
+      projectMemorySink = new NotionProjectMemorySink({
+        client,
+        dataSourceId: configuredMemory.config.dataSourceId,
+      });
+    }
+  }
+
+  const finalOptions = projectMemorySink === options.projectMemorySink
+    ? options
+    : { ...options, projectMemorySink };
+  const configured = discordRemoteConfig(env);
   if (!configured.enabled) {
     if (configured.warning) console.warn(configured.warning);
-    registerPindieExtension(pi, options);
+    registerPindieExtension(pi, finalOptions);
     return;
   }
   const discord = new DiscordRemote(configured.config);
   registerPindieExtension(pi, {
-    ...options,
+    ...finalOptions,
     remoteCompanion: options.remoteCompanion ?? {
       companion: new RemoteCompanion(discord),
       guildId: configured.config.guildId,
