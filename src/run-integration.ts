@@ -172,7 +172,7 @@ export class RunIntegration {
   recordToolResult(
     toolCallId: string,
     isError: boolean,
-  ): "execution" | "policy" | "self-improvement" | null {
+  ): "execution" | "policy" | "self-improvement" | "memory" | null {
     return this.experience.recordToolResult(toolCallId, isError);
   }
 

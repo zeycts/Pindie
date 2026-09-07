@@ -47,6 +47,8 @@ export function classifyToolEffect(toolName: string): ToolEffect {
 
     case "pindie_policy_set":
       return classified("policy.declare", "none");
+    case "pindie_memory_capture":
+      return classified("memory.capture", "none");
     case "pindie_strategy_candidate_create":
       return classified("policy.adapt", "none");
     case "pindie_strategy_derivation_candidate_create":

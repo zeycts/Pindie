@@ -11,8 +11,12 @@ import {
 import { EMPTY_STATE, type PindieState, type PindieTask } from "../src/state.ts";
 
 const AUTHORITY_BASE_CAPABILITIES: PindieCapability[] = ["observe.project", "observe.git", "policy.declare"];
-const ACTIVE_BASE: PindieCapability[] = [
+const COHERENT_BASE: PindieCapability[] = [
   ...AUTHORITY_BASE_CAPABILITIES,
+  "memory.capture",
+];
+const ACTIVE_BASE: PindieCapability[] = [
+  ...COHERENT_BASE,
   "project.mutate",
   "task.refine",
   "task.progress",
@@ -20,7 +24,7 @@ const ACTIVE_BASE: PindieCapability[] = [
   "gate.open",
 ];
 const BLOCKED_BASE: PindieCapability[] = [
-  ...AUTHORITY_BASE_CAPABILITIES,
+  ...COHERENT_BASE,
   "project.mutate",
   "task.refine",
   "task.progress",
@@ -164,7 +168,7 @@ test("S03 coherent idle exposes start, observation, and policy declaration", () 
   assert.equal(snapshot.completionReady, false);
   assertCapabilities(
     deriveCapabilities(snapshot),
-    [...AUTHORITY_BASE_CAPABILITIES, "task.start"],
+    [...COHERENT_BASE, "task.start"],
   );
 });
 
@@ -174,7 +178,7 @@ test("S04 a Task completed before the Run exposes start, observation, and policy
       stateWith(completedTask()),
       coherentFacts({ completionRelation: "completed_before_run" }),
     ),
-    [...AUTHORITY_BASE_CAPABILITIES, "task.start"],
+    [...COHERENT_BASE, "task.start"],
   );
 });
 
@@ -187,7 +191,7 @@ test("S05 a Task completed during the Run exposes observation plus policy declar
         completionRelation: "completed_during_run",
       }),
     ),
-    AUTHORITY_BASE_CAPABILITIES,
+    COHERENT_BASE,
   );
 });
 
@@ -371,7 +375,7 @@ test("S17 a Gate opened during the current Run exposes observation plus policy d
         gateRelation: "opened_during_run",
       }),
     ),
-    AUTHORITY_BASE_CAPABILITIES,
+    COHERENT_BASE,
   );
 });
 
@@ -381,7 +385,7 @@ test("S18 a preexisting Gate and untouched Task expose the exact resolvable set"
       stateWith(gatedTask()),
       coherentFacts({ gateRelation: "existed_before_run" }),
     ),
-    [...AUTHORITY_BASE_CAPABILITIES, "task.refine", "task.replace", "gate.resolve"],
+    [...COHERENT_BASE, "task.refine", "task.replace", "gate.resolve"],
   );
 });
 
@@ -394,7 +398,7 @@ test("S19 a preexisting Gate and changed Task do not permit replacement", () => 
         gateRelation: "existed_before_run",
       }),
     ),
-    [...AUTHORITY_BASE_CAPABILITIES, "task.refine", "gate.resolve"],
+    [...COHERENT_BASE, "task.refine", "gate.resolve"],
   );
 });
 

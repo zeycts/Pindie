@@ -2475,7 +2475,7 @@ export function registerPindieExtension(
       else run.recordSuccessfulPolicyDeclaration();
       return;
     }
-    if (telemetryKind === "self-improvement") return;
+    if (telemetryKind === "self-improvement" || telemetryKind === "memory") return;
     if (!authorizedExecution) return;
     const { effect } = authorizedExecution;
 

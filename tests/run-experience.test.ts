@@ -4,6 +4,7 @@ import test from "node:test";
 import { classifyToolEffect } from "../src/execution-semantics.ts";
 import {
   assembleRunExperience,
+  isEligibleRunExperience,
   RunExperienceTracker,
   type RunExperienceExecution,
 } from "../src/run-experience.ts";
@@ -116,6 +117,29 @@ test("Run Experience telemetry derives bounded counters from Tool Effects", () =
     toolErrors: 1,
     deniedCalls: 1,
   });
+});
+
+test("Work Memory calls stay outside ordinary Run Experience telemetry", () => {
+  const tracker = new RunExperienceTracker();
+  const memory = classifyToolEffect("pindie_memory_capture");
+  const before = tracker.execution;
+
+  tracker.recordAuthorizedCall("memory-success", memory);
+  assert.deepEqual(tracker.execution, before);
+  assert.equal(tracker.recordToolResult("memory-success", false), "memory");
+  assert.deepEqual(tracker.execution, before);
+
+  tracker.recordAuthorizedCall("memory-error", memory);
+  assert.deepEqual(tracker.execution, before);
+  assert.equal(tracker.recordToolResult("memory-error", true), "memory");
+  assert.deepEqual(tracker.execution, before);
+
+  tracker.recordDeniedCall(memory);
+  assert.deepEqual(tracker.execution, before);
+  assert.equal(
+    isEligibleRunExperience("/project", snapshot(), task(), tracker.execution),
+    false,
+  );
 });
 
 test("one successful Policy declaration has identical final-Policy positions", () => {
