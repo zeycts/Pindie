@@ -50,6 +50,7 @@ const TYPE_NAMES: Readonly<Record<ProjectMemoryType, string>> = {
   discovery: "Discovery",
   insight: "Insight",
 };
+const EVIDENCE_SEPARATOR = "\n\n---\n\n";
 
 function failure(error: string): SinkFailure {
   return { ok: false, error };
@@ -174,33 +175,60 @@ function parseControlledBody(markdown: string): ControlledBody | null {
     });
   }
 
-  const controlled = new Map<string, string>();
-  for (let index = 0; index < headings.length; index += 1) {
-    const heading = headings[index]!;
-    if (!["Summary", "Why it matters", "Consequence"].includes(heading.name)) continue;
-    if (controlled.has(heading.name)) return null;
-    const end = headings[index + 1]?.start ?? normalized.length;
-    controlled.set(heading.name, normalized.slice(heading.contentStart, end).trim());
+  const names = headings.map(({ name }) => name);
+  const hasControlledShape =
+    (names.length === 2 && names[0] === "Summary" && names[1] === "Why it matters") ||
+    (names.length === 3 &&
+      names[0] === "Summary" &&
+      names[1] === "Why it matters" &&
+      names[2] === "Consequence");
+  if (!hasControlledShape || normalized.slice(0, headings[0]!.start).trim() !== "") {
+    return null;
   }
 
-  if (!controlled.has("Summary") || !controlled.has("Why it matters")) return null;
-  const consequence = controlled.get("Consequence");
+  const contents = headings.map((heading, index) => {
+    const end = headings[index + 1]?.start ?? normalized.length;
+    return normalized.slice(heading.contentStart, end).trim();
+  });
   return {
-    summary: controlled.get("Summary")!,
-    whyItMatters: controlled.get("Why it matters")!,
-    ...(consequence === undefined ? {} : { consequence }),
+    summary: contents[0]!,
+    whyItMatters: contents[1]!,
+    ...(contents[2] === undefined ? {} : { consequence: contents[2] }),
   };
 }
 
-function memoryProperties(memory: ProjectMemoryCapture, date: string): PageProperties {
+function mergeSources(existing: readonly string[]): readonly string[] {
+  return [...new Set([...existing, "Pindie"])];
+}
+
+function mergeEvidence(existing: string, incoming: string): string {
+  if (existing === "") return incoming;
+  if (existing === incoming || existing.split(EVIDENCE_SEPARATOR).includes(incoming)) {
+    return existing;
+  }
+  return `${existing}${EVIDENCE_SEPARATOR}${incoming}`;
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function memoryProperties(
+  memory: ProjectMemoryCapture,
+  date: string,
+  provenance: {
+    readonly source: readonly string[];
+    readonly evidence: string;
+  } = { source: ["Pindie"], evidence: memory.evidence },
+): PageProperties {
   return {
     Memory: { title: [{ type: "text", text: { content: memory.memory } }] },
     Scope: { rich_text: [{ type: "text", text: { content: memory.scope } }] },
     Type: { select: { name: TYPE_NAMES[memory.type] } },
     Status: { select: { name: "Active" } },
     Date: { date: { start: date } },
-    Source: { multi_select: [{ name: "Pindie" }] },
-    Evidence: { rich_text: [{ type: "text", text: { content: memory.evidence } }] },
+    Source: { multi_select: provenance.source.map((name) => ({ name })) },
+    Evidence: { rich_text: [{ type: "text", text: { content: provenance.evidence } }] },
   };
 }
 
@@ -363,13 +391,14 @@ export class NotionProjectMemorySink implements ProjectMemorySink {
       return failure("Notion page Markdown does not contain the controlled Work Memory sections.");
     }
 
+    const mergedSource = mergeSources(existing.source);
+    const mergedEvidence = mergeEvidence(existing.evidence, memory.evidence);
     const propertiesMatch =
       existing.type === TYPE_NAMES[memory.type] &&
       existing.scope === memory.scope &&
       existing.memory.trim() === memory.memory.trim() &&
-      existing.evidence === memory.evidence &&
-      existing.source.length === 1 &&
-      existing.source[0] === "Pindie" &&
+      existing.evidence === mergedEvidence &&
+      sameStrings(existing.source, mergedSource) &&
       existing.status === "Active";
     const bodyMatches =
       existingBody.summary === memory.summary &&
@@ -382,24 +411,26 @@ export class NotionProjectMemorySink implements ProjectMemorySink {
 
     const updated = await callNotion("page property update", () => this.#client.pages.update({
       page_id: existing.id,
-      properties: memoryProperties(memory, existing.date),
+      properties: memoryProperties(memory, existing.date, {
+        source: mergedSource,
+        evidence: mergedEvidence,
+      }),
     }));
     if (!updated.ok) return updated;
     if (!pageResponseHasId(updated.value, existing.id)) {
       return failure("Notion page property update returned a malformed response.");
     }
 
-    const bodyUpdated = await callNotion("page Markdown update", () => this.#client.pages.updateMarkdown({
-      page_id: existing.id,
-      type: "replace_content",
-      replace_content: {
-        new_str: buildBody(memory),
-        allow_deleting_content: true,
-      },
-    }));
-    if (!bodyUpdated.ok) return bodyUpdated;
-    if (!markdownResponseIsComplete(bodyUpdated.value, existing.id)) {
-      return failure("Notion page Markdown update returned a malformed or truncated response.");
+    if (!bodyMatches) {
+      const bodyUpdated = await callNotion("page Markdown update", () => this.#client.pages.updateMarkdown({
+        page_id: existing.id,
+        type: "replace_content",
+        replace_content: { new_str: buildBody(memory) },
+      }));
+      if (!bodyUpdated.ok) return bodyUpdated;
+      if (!markdownResponseIsComplete(bodyUpdated.value, existing.id)) {
+        return failure("Notion page Markdown update returned a malformed or truncated response.");
+      }
     }
     return { ok: true, outcome: "updated" };
   }

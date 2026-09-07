@@ -149,6 +149,7 @@ function controlledBody(options: {
 
 function capture(
   overrides: Partial<ProjectMemorySemanticInput> = {},
+  evidence = "Architecture approval",
 ): ProjectMemoryCapture {
   return createProjectMemoryCapture({
     type: "decision",
@@ -160,7 +161,7 @@ function capture(
     scope: "Pindie",
     source: "Pindie",
     date: "2026-09-05",
-    evidence: "Architecture approval",
+    evidence,
   });
 }
 
@@ -204,6 +205,61 @@ test("exact match with identical controlled content is a no-write duplicate", as
   assert.deepEqual(fake.calls.map(({ method }) => method), ["query", "retrieveMarkdown"]);
 });
 
+test("provenance-only updates preserve shared Sources and identical Evidence", async () => {
+  const fake = new FakeNotionClient();
+  fake.addPage({ source: ["ChatGPT"] });
+
+  assert.deepEqual(await sink(fake).capture(capture()), { ok: true, outcome: "updated" });
+  assert.deepEqual(
+    call(fake, "updateProperties").args.properties.Source.multi_select,
+    [{ name: "ChatGPT" }, { name: "Pindie" }],
+  );
+  assert.equal(
+    call(fake, "updateProperties").args.properties.Evidence.rich_text[0].text.content,
+    "Architecture approval",
+  );
+  assert.equal(fake.calls.some(({ method }) => method === "updateMarkdown"), false);
+});
+
+test("provenance merge preserves and deduplicates every existing Source", async () => {
+  const fake = new FakeNotionClient();
+  fake.addPage({ source: ["Manual", "ChatGPT", "Manual"] });
+
+  assert.deepEqual(await sink(fake).capture(capture()), { ok: true, outcome: "updated" });
+  assert.deepEqual(
+    call(fake, "updateProperties").args.properties.Source.multi_select,
+    [{ name: "Manual" }, { name: "ChatGPT" }, { name: "Pindie" }],
+  );
+});
+
+test("different Evidence appends provenance while an existing merged entry stays duplicate", async () => {
+  const changed = new FakeNotionClient();
+  changed.addPage({ source: ["Pindie"], evidence: "ChatGPT design record" });
+
+  assert.deepEqual(
+    await sink(changed).capture(capture({}, "Pindie verification")),
+    { ok: true, outcome: "updated" },
+  );
+  assert.equal(
+    call(changed, "updateProperties").args.properties.Evidence.rich_text[0].text.content,
+    "ChatGPT design record\n\n---\n\nPindie verification",
+  );
+
+  const alreadyMerged = new FakeNotionClient();
+  alreadyMerged.addPage({
+    source: ["Pindie"],
+    evidence: "ChatGPT design record\n\n---\n\nPindie verification",
+  });
+  assert.deepEqual(
+    await sink(alreadyMerged).capture(capture({}, "Pindie verification")),
+    { ok: true, outcome: "duplicate" },
+  );
+  assert.deepEqual(
+    alreadyMerged.calls.map(({ method }) => method),
+    ["query", "retrieveMarkdown"],
+  );
+});
+
 test("changed settled content updates the same page and preserves its original Date", async () => {
   const fake = new FakeNotionClient();
   fake.addPage({ id: "existing-page", date: "2026-07-10" });
@@ -223,13 +279,26 @@ test("changed settled content updates the same page and preserves its original D
   assert.equal(properties.page_id, "existing-page");
   assert.equal(properties.properties.Date.date.start, "2026-07-10");
   assert.equal(call(fake, "updateMarkdown").args.page_id, "existing-page");
+  const markdownUpdate = call(fake, "updateMarkdown").args;
   assert.equal(
-    call(fake, "updateMarkdown").args.replace_content.new_str,
+    markdownUpdate.replace_content.new_str,
     controlledBody({
       summary: "The adapter contract is now settled.",
       consequence: "Use the official Data Source API.",
     }),
   );
+  assert.equal("allow_deleting_content" in markdownUpdate.replace_content, false);
+});
+
+test("unknown H2 content fails safely before either update", async () => {
+  const fake = new FakeNotionClient();
+  fake.addPage({ body: `${controlledBody()}\n\n## Notes\nManual context` });
+
+  assert.deepEqual(await sink(fake).capture(capture()), {
+    ok: false,
+    error: "Notion page Markdown does not contain the controlled Work Memory sections.",
+  });
+  assert.deepEqual(fake.calls.map(({ method }) => method), ["query", "retrieveMarkdown"]);
 });
 
 test("all domain Type values map to the fixed Notion Select names", async () => {
