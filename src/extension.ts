@@ -1612,6 +1612,12 @@ export function registerPindieExtension(
     handler: async (args, ctx) => presentation.handleExperienceCommand(args, ctx),
   });
 
+  pi.registerCommand("strategies", {
+    description: "Show the read-only trusted Strategy portfolio",
+    getArgumentCompletions: (prefix) => presentation.getStrategyArgumentCompletions(prefix),
+    handler: async (args, ctx) => presentation.handleStrategiesCommand(args, ctx),
+  });
+
   pi.registerCommand("adapt", {
     description: "Start explicit Strategy Revision Candidate adaptation for a Seed Strategy",
     getArgumentCompletions: (prefix) => SEED_STRATEGIES

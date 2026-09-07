@@ -36,7 +36,7 @@ import {
   strategyRevisionSelectionFromCandidate,
   type StrategyRevisionCandidate,
 } from "../src/strategy-candidates.ts";
-import { getSeedStrategy } from "../src/strategies.ts";
+import { getSeedStrategy, SEED_STRATEGIES } from "../src/strategies.ts";
 import {
   createStrategyDerivationCandidate,
   strategyDerivationCandidateSemanticFingerprint,
@@ -72,6 +72,11 @@ import {
   type StrategyRevisionDecision,
   type StrategyRevisionDecisionStore,
 } from "../src/strategy-decisions.ts";
+import {
+  createStrategyDerivationDecision,
+  type StrategyDerivationDecision,
+  type StrategyDerivationDecisionReader,
+} from "../src/strategy-derivation-decisions.ts";
 import type { PindieStateStore, TaskContinuityStore } from "../src/store.ts";
 import type { TaskContinuityV1 } from "../src/task-continuity.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
@@ -351,6 +356,64 @@ function testDecisionStore(
       if (decisions.has(decision.candidateId)) throw new Error("terminal Decision already exists");
       decisions.set(decision.candidateId, decision);
     },
+  };
+}
+
+function testDerivationDecisionReader(
+  initial: readonly StrategyDerivationDecision[] = [],
+): StrategyDerivationDecisionReader & { readonly decisions: Map<string, StrategyDerivationDecision> } {
+  const decisions = new Map(initial.map((decision) => [decision.candidateId, decision]));
+  return {
+    decisions,
+    read: async (_root, candidateId) => decisions.get(candidateId) ?? null,
+    readAll: async () => [...decisions.values()],
+  };
+}
+
+function trustedStrategyCommandArtifacts() {
+  const promotedSeedCandidate = trialCandidate(
+    "11111111-0000-4000-8000-000000000101",
+    "architecture-first",
+  );
+  const promotedSeedDecision = createStrategyRevisionDecision({
+    candidate: promotedSeedCandidate,
+    decision: "promoted",
+    trialRecordIds: ["seed-trial-one", "seed-trial-two"],
+    decidedAt: "2026-02-01T00:00:00.000Z",
+  });
+  const promotedSeedCatalog = createPromotedStrategyRevisionCatalog([{
+    candidate: promotedSeedCandidate,
+    decision: promotedSeedDecision,
+    selection: strategyRevisionSelectionFromCandidate(promotedSeedCandidate, "promoted"),
+  }]);
+  const basePortfolio = createTrustedStrategyPortfolio("/repo", promotedSeedCatalog);
+  const promotedDerivedCandidate = createStrategyDerivationCandidate({
+    projectId: basePortfolio.projectId,
+    basePortfolio,
+    candidateId: "22222222-0000-4000-8000-000000000102",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    proposal: {
+      strategyId: "delivery-checkpoints",
+      kind: "modifier",
+      summary: "Make implementation and delivery progress explicit through bounded checkpoints.",
+      useWhen: ["the task has several independent deliverables to close"],
+      avoidWhen: ["the work is only exploratory discussion"],
+      principles: ["separate implementation, verification, and delivery checks", "keep checkpoints bounded"],
+      sourceRecordIds: ["derived-source-one", "derived-source-two", "derived-source-three"],
+      hypothesis: "Repeated delivery work may benefit from explicit bounded checkpoints.",
+    },
+  });
+  const promotedDerivedDecision = createStrategyDerivationDecision({
+    candidate: promotedDerivedCandidate,
+    decision: "promoted",
+    trialRecordIds: ["derived-trial-one", "derived-trial-two"],
+    decidedAt: "2026-02-02T00:00:00.000Z",
+  });
+  return {
+    promotedSeedCandidate,
+    promotedSeedDecision,
+    promotedDerivedCandidate,
+    promotedDerivedDecision,
   };
 }
 
@@ -1017,6 +1080,207 @@ test("SI v0.4 /experience renders empty and mixed evidence read-only", async () 
     type: "warning",
   });
   assert.deepEqual(noRootReader.roots, []);
+});
+
+test("SI v0.7 /strategies lists the complete Seed portfolio and stays read-only", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  const command = harness.api.commands.get("strategies");
+  assert.ok(command);
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  const savesBefore = structuredClone(harness.store.saves);
+  const commandContext = {
+    ...context("/wrong-cwd"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+
+  await command.handler("", commandContext);
+  const report = notices.at(-1)?.message ?? "";
+  assert.equal(notices.at(-1)?.type, "info");
+  assert.match(report, /^Trusted Strategy Portfolio/);
+  assert.match(report, /Approaches/);
+  assert.match(report, /Modifiers/);
+  for (const strategy of SEED_STRATEGIES) assert.ok(report.includes(strategy.id));
+  assert.match(report, /Trusted entries: 7/);
+  assert.match(report, /Logical Strategy identities: 7/);
+  assert.doesNotMatch(report, /sha256:/);
+  assert.doesNotMatch(report, /sourceRecordIds|candidateId|trialRecordIds|hypothesis:/);
+
+  const completions = await command.getArgumentCompletions("");
+  assert.ok(completions);
+  assert.deepEqual(
+    completions!.map((option: any) => option.value),
+    [...SEED_STRATEGIES].map((strategy) => strategy.id).sort(),
+  );
+  await command.handler("architecture-first", commandContext);
+  const detail = notices.at(-1)?.message ?? "";
+  assert.match(detail, /Trusted Strategy: architecture-first/);
+  assert.match(detail, /Logical Strategy ID: architecture-first/);
+  assert.match(detail, /Kind: approach/);
+  assert.match(detail, /Origin: seed/);
+  assert.match(detail, /Revision identity: seed/);
+  assert.match(detail, /Revision status: seed/);
+  assert.match(detail, /Use when:/);
+  assert.match(detail, /Principles:/);
+
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.deepEqual(harness.store.saves, savesBefore);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+});
+
+test("SI v0.7 /strategies groups trusted Seed revisions and Derived identities", async () => {
+  const artifacts = trustedStrategyCommandArtifacts();
+  const revisionCandidates = {
+    read: async (_root: string, candidateId: string) =>
+      candidateId === artifacts.promotedSeedCandidate.candidateId
+        ? artifacts.promotedSeedCandidate
+        : null,
+  };
+  const derivationCandidates = {
+    read: async (_root: string, candidateId: string) =>
+      candidateId === artifacts.promotedDerivedCandidate.candidateId
+        ? artifacts.promotedDerivedCandidate
+        : null,
+  };
+  const revisionDecisions = testDecisionStore([artifacts.promotedSeedDecision]);
+  const derivationDecisions = testDerivationDecisionReader([artifacts.promotedDerivedDecision]);
+  const candidateSaves: unknown[] = [];
+  const derivationCandidateSaves: unknown[] = [];
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    strategyCandidateReader: revisionCandidates,
+    strategyCandidateStore: { save: async (_root, candidate) => { candidateSaves.push(candidate); } },
+    strategyDecisionReader: revisionDecisions,
+    strategyDecisionStore: revisionDecisions,
+    strategyDerivationCandidateReader: derivationCandidates,
+    strategyDerivationCandidateStore: {
+      save: async (_root, candidate) => { derivationCandidateSaves.push(candidate); },
+    },
+    strategyDerivationDecisionReader: derivationDecisions,
+  });
+  await startSession(harness, "/repo");
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  const savesBefore = structuredClone(harness.store.saves);
+  const revisionDecisionsBefore = [...revisionDecisions.decisions.entries()];
+  const derivationDecisionsBefore = [...derivationDecisions.decisions.entries()];
+  const notices: Array<{ message: string; type: string }> = [];
+  const command = harness.api.commands.get("strategies");
+  assert.ok(command);
+  const commandContext = {
+    ...context("/wrong-cwd"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+
+  await command.handler("", commandContext);
+  const report = notices.at(-1)?.message ?? "";
+  assert.equal(notices.at(-1)?.type, "info");
+  assert.ok(report.indexOf("Approaches") < report.indexOf("Modifiers"));
+  assert.ok(report.indexOf("architecture-first") < report.indexOf("Modifiers"));
+  assert.ok(report.indexOf("delivery-checkpoints") > report.indexOf("Modifiers"));
+  assert.match(report, /architecture-first · promoted 11111111/);
+  assert.match(report, /promoted Seed revision/);
+  assert.match(report, /delivery-checkpoints · promoted 22222222/);
+  assert.match(report, /promoted Derived Strategy/);
+  assert.match(report, /Trusted entries: 9/);
+  assert.match(report, /Logical Strategy identities: 8/);
+  assert.doesNotMatch(report, new RegExp(artifacts.promotedSeedCandidate.candidateId));
+  assert.doesNotMatch(report, new RegExp(artifacts.promotedDerivedCandidate.candidateId));
+  assert.doesNotMatch(report, /sha256:/);
+  assert.doesNotMatch(report, /sourceRecordIds|candidateId|trialRecordIds|hypothesis:/);
+
+  const completions = await command.getArgumentCompletions("");
+  assert.ok(completions);
+  const completionIds = completions!.map((option: any) => option.value);
+  assert.equal(completionIds.length, new Set(completionIds).size);
+  assert.equal(completionIds.length, 8);
+  assert.ok(completionIds.includes("architecture-first"));
+  assert.ok(completionIds.includes("delivery-checkpoints"));
+  assert.deepEqual(
+    await command.getArgumentCompletions("delivery"),
+    [{ value: "delivery-checkpoints", label: "delivery-checkpoints" }],
+  );
+
+  await command.handler("architecture-first", commandContext);
+  const architectureDetail = notices.at(-1)?.message ?? "";
+  assert.match(architectureDetail, /Trusted Strategy: architecture-first/);
+  assert.match(architectureDetail, /Trusted entries: 2/);
+  assert.equal(
+    (architectureDetail.match(/Logical Strategy ID: architecture-first/g) ?? []).length,
+    2,
+  );
+  assert.match(architectureDetail, /Origin: seed/);
+  assert.match(architectureDetail, /Origin: promoted Seed revision/);
+  assert.ok(architectureDetail.includes(`Revision identity: ${artifacts.promotedSeedCandidate.candidateId}`));
+  assert.ok(architectureDetail.includes(`Revision status: promoted`));
+  assert.ok(architectureDetail.includes(
+    `Revision fingerprint: ${strategyCandidateSemanticFingerprint(artifacts.promotedSeedCandidate)}`,
+  ));
+  assert.match(architectureDetail, /Use when:/);
+  assert.match(architectureDetail, /Avoid when:/);
+  assert.match(architectureDetail, /Principles:/);
+
+  await command.handler("delivery-checkpoints", commandContext);
+  const derivedDetail = notices.at(-1)?.message ?? "";
+  assert.match(derivedDetail, /Trusted Strategy: delivery-checkpoints/);
+  assert.match(derivedDetail, /Logical Strategy ID: delivery-checkpoints/);
+  assert.match(derivedDetail, /Kind: modifier/);
+  assert.match(derivedDetail, /Origin: promoted Derived Strategy/);
+  assert.ok(derivedDetail.includes(`Revision identity: ${artifacts.promotedDerivedCandidate.candidateId}`));
+  assert.ok(derivedDetail.includes(
+    `Revision fingerprint: ${strategyDerivationCandidateSemanticFingerprint(artifacts.promotedDerivedCandidate)}`,
+  ));
+  assert.match(derivedDetail, /bounded checkpoints/);
+  assert.match(derivedDetail, /Use when:/);
+  assert.match(derivedDetail, /Avoid when:/);
+  assert.match(derivedDetail, /Principles:/);
+
+  await command.handler("not-trusted", commandContext);
+  assert.equal(notices.at(-1)?.type, "warning");
+  assert.match(notices.at(-1)?.message ?? "", /not a currently trusted logical Strategy ID/);
+
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.deepEqual(harness.store.saves, savesBefore);
+  assert.deepEqual([...revisionDecisions.decisions.entries()], revisionDecisionsBefore);
+  assert.deepEqual([...derivationDecisions.decisions.entries()], derivationDecisionsBefore);
+  assert.deepEqual(candidateSaves, []);
+  assert.deepEqual(derivationCandidateSaves, []);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+});
+
+test("SI v0.7 /strategies fails closed when trusted portfolio reconstruction fails", async () => {
+  const failingDecisionReader = {
+    read: async () => null,
+    readAll: async () => { throw new Error("trust artifacts unavailable"); },
+  };
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    strategyDecisionReader: failingDecisionReader,
+  });
+  await startSession(harness, "/repo");
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  const savesBefore = structuredClone(harness.store.saves);
+  const notices: Array<{ message: string; type: string }> = [];
+  const command = harness.api.commands.get("strategies");
+  assert.ok(command);
+
+  assert.equal(await command.getArgumentCompletions(""), null);
+  await command.handler("", {
+    ...context("/wrong-cwd"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  assert.equal(notices.at(-1)?.type, "warning");
+  assert.match(notices.at(-1)?.message ?? "", /trusted Strategy portfolio could not be reconstructed completely/);
+  assert.doesNotMatch(notices.at(-1)?.message ?? "", /Trusted Strategy Portfolio/);
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.deepEqual(harness.store.saves, savesBefore);
+
+  const noRoot = createHarness();
+  const noRootNotices: Array<{ message: string; type: string }> = [];
+  await noRoot.api.commands.get("strategies").handler("", {
+    ...context("/repo"),
+    ui: { notify: (message: string, type: string) => noRootNotices.push({ message, type }) },
+  });
+  assert.match(noRootNotices.at(-1)?.message ?? "", /no current project root.*no complete portfolio/i);
+  assert.equal(await noRoot.api.commands.get("strategies").getArgumentCompletions(""), null);
 });
 
 test("SI v0.6 /trial-review renders read-only Candidate and Seed evidence", async () => {

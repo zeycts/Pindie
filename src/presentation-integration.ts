@@ -29,7 +29,11 @@ import {
 } from "./strategy-derivation-decisions.ts";
 import { resolveTrialCandidate } from "./strategy-candidate-resolution.ts";
 import type { StrategyDerivationCandidateReader } from "./strategy-derivation-candidates.ts";
-import type { TrustedStrategyPortfolio } from "./strategy-portfolio.ts";
+import {
+  formatTrustedStrategyPortfolio,
+  trustedLogicalStrategyIds,
+  type TrustedStrategyPortfolio,
+} from "./strategy-portfolio.ts";
 import {
   deriveEfficiencySnapshot,
   formatEfficiencyReport,
@@ -356,6 +360,89 @@ export class PresentationIntegration {
       const message = error instanceof Error ? error.message : String(error);
       ctx.ui.notify(`Could not read Pindie Experience: ${message}`, "warning");
     }
+  }
+
+  async getStrategyArgumentCompletions(
+    prefix: string,
+  ): Promise<Array<{ value: string; label: string }> | null> {
+    const projectRoot = this.getProjectRoot();
+    const loadTrustedPortfolio = this.loadTrustedPortfolio;
+    if (projectRoot === null || loadTrustedPortfolio === null) return null;
+    let portfolio: TrustedStrategyPortfolio;
+    try {
+      portfolio = await loadTrustedPortfolio(projectRoot);
+    } catch {
+      // Completion must not expose a partial or untrusted Strategy set.
+      return null;
+    }
+    if (this.getProjectRoot() !== projectRoot) return null;
+    return trustedLogicalStrategyIds(portfolio)
+      .filter((strategyId) => strategyId.startsWith(prefix))
+      .map((strategyId) => ({ value: strategyId, label: strategyId }));
+  }
+
+  async handleStrategiesCommand(
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> {
+    const requestedId = args.trim();
+    if (requestedId !== "" && /\s/.test(requestedId)) {
+      ctx.ui.notify("Usage: /strategies [strategy-id]", "warning");
+      return;
+    }
+    const projectRoot = this.getProjectRoot();
+    if (projectRoot === null) {
+      ctx.ui.notify(
+        "Pindie could not show /strategies: no current project root is loaded; no complete portfolio can be shown.",
+        "warning",
+      );
+      return;
+    }
+    const loadTrustedPortfolio = this.loadTrustedPortfolio;
+    if (loadTrustedPortfolio === null) {
+      ctx.ui.notify(
+        "Pindie could not show /strategies: the trusted Strategy portfolio loader is unavailable; no complete portfolio can be shown.",
+        "warning",
+      );
+      return;
+    }
+
+    let portfolio: TrustedStrategyPortfolio;
+    try {
+      portfolio = await loadTrustedPortfolio(projectRoot);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(
+        `Pindie could not show /strategies: trusted Strategy portfolio could not be reconstructed completely: ${message}`,
+        "warning",
+      );
+      return;
+    }
+    if (this.getProjectRoot() !== projectRoot) {
+      ctx.ui.notify(
+        "Pindie could not show /strategies: the current project changed while reading the trusted Strategy portfolio; no complete portfolio can be shown.",
+        "warning",
+      );
+      return;
+    }
+
+    if (
+      requestedId !== "" &&
+      !trustedLogicalStrategyIds(portfolio).includes(requestedId)
+    ) {
+      ctx.ui.notify(
+        `Pindie could not show /strategies: '${requestedId}' is not a currently trusted logical Strategy ID.`,
+        "warning",
+      );
+      return;
+    }
+    ctx.ui.notify(
+      formatTrustedStrategyPortfolio(
+        portfolio,
+        requestedId === "" ? undefined : requestedId,
+      ),
+      "info",
+    );
   }
 
   async handleTrialReviewCommand(
