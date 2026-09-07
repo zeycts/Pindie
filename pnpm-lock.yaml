@@ -14,6 +14,9 @@ importers:
       '@earendil-works/pi-tui':
         specifier: 0.84.4
         version: 0.84.4
+      '@notionhq/client':
+        specifier: 5.26.0
+        version: 5.26.0
       discord.js:
         specifier: 14.27.0
         version: 14.27.0
@@ -292,6 +295,10 @@ packages:
   '@mariozechner/clipboard@0.3.9':
     resolution: {integrity: sha512-ABnA53mdfkGZwOFUdZNv2S0CWGO/EIuPj8Vv9xmBFmSYg/qFc7ihO6q5FcQjvoE67kZpWkEc4AhD6B/os04yuA==}
     engines: {node: '>= 10'}
+
+  '@notionhq/client@5.26.0':
+    resolution: {integrity: sha512-Oc3438nQ5YmZkVO7YJG8fcTYl0V46CirdCvO33azZ9f7ZfD2rsHE4fUVANJiBB9Xf1sqpCs82nd8oKPxeXLmMg==}
+    engines: {node: '>=18'}
 
   '@protobufjs/aspromise@1.1.2':
     resolution: {integrity: sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==}
@@ -1103,6 +1110,8 @@ snapshots:
       '@mariozechner/clipboard-win32-arm64-msvc': 0.3.9
       '@mariozechner/clipboard-win32-x64-msvc': 0.3.9
     optional: true
+
+  '@notionhq/client@5.26.0': {}
 
   '@protobufjs/aspromise@1.1.2': {}
 
