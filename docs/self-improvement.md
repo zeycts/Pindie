@@ -151,7 +151,7 @@ This allows Pindie to specialize toward the actual user, repositories, tools, an
 
 These milestones are implementation checkpoints inside the Pindie v0.3 direction. They are not additional Agent Loops or persisted workflow phases.
 
-### SI v0.1 — Seed Strategy Runtime
+### SI v0.1 — Seed Strategy Runtime ✅
 
 Goal: establish `Policy₀`.
 
@@ -192,7 +192,7 @@ principles[]
 
 It must not contain a mandatory `steps[]`, transition graph, phase machine, or hidden workflow engine.
 
-### SI v0.2 — Explicit Policy Snapshot
+### SI v0.2 — Explicit Policy Snapshot ✅
 
 Goal: make model-owned cognitive policy observable during an Agent Run without making strategy choice mandatory ceremony.
 
@@ -297,7 +297,7 @@ Do not implement:
 
 The output of SI v0.2 is simply an optional, structured, Run-scoped cognitive-policy observation that later milestones can associate with execution outcomes.
 
-### SI v0.3 — Strategy-aware Run Experience
+### SI v0.3 — Strategy-aware Run Experience ✅
 
 Goal: create the first durable learning dataset from bounded, factual Agent Run records without evaluating or adapting policy yet.
 
@@ -539,7 +539,7 @@ Do not implement:
 
 The output of SI v0.3 is a durable factual Run Experience dataset of `Run → final-Policy attribution facts → Execution facts → Outcome`, including runs with no declared Policy.
 
-### SI v0.4 — Experience Evaluation
+### SI v0.4 — Experience Evaluation ✅
 
 Goal: turn immutable schema-v4 Run Experience into reproducible derived evidence without scoring, judging, adapting, or feeding Evaluation back into the Agent.
 
@@ -772,7 +772,7 @@ Do not implement:
 
 The output of SI v0.4 is reproducible schema-v4 derived evidence that makes future Strategy adaptation more defensible without yet changing how the Agent acts.
 
-### SI v0.5 — Strategy Adaptation Candidate
+### SI v0.5 — Strategy Adaptation Candidate ✅
 
 Goal: let Pindie use trustworthy, attributable SI v0.4 evidence to propose project-local revisions of existing Seed Strategies without changing the active policy.
 
@@ -1030,15 +1030,15 @@ Do not implement:
 
 The output of SI v0.5 is an auditable set of evidence-backed Strategy Revision Candidates that can be inspected before any revision is allowed to influence execution.
 
-### SI v0.6 — Candidate Trial & Promotion
+### SI v0.6 — Candidate Trial & Promotion ✅ Frozen
 
 The authoritative SI v0.6 contract is maintained in [`docs/self-improvement-v0.6.md`](./self-improvement-v0.6.md). SI v0.6 is implemented and frozen across its four slices: revision-aware Policy and schema-v4 Experience; explicit one-Run Candidate Trial; read-only Trial Review and deterministic Promotion Eligibility; explicit Human `/promote` and `/reject`; and exact promoted-revision selection in normal Runs without making any revision the default.
 
 Real dogfood completed the Candidate → two Trials → Trial Review → explicit Human trust → normal promoted-policy use loop, including promoted revision attribution in schema-v4 Experience. Pre-v4 Experience remains outside the live evidence set.
 
-### SI v0.7 — Strategy Derivation
+### SI v0.7 — Strategy Derivation ✅ Frozen
 
-The authoritative SI v0.7 architecture contract is maintained in [`docs/self-improvement-v0.7.md`](./self-improvement-v0.7.md). Its directional goal is an explicit Human-owned slow path from repeated eligible real Experience to an optional new logical Strategy hypothesis, one-Run Candidate Trials, separate source/Trial evidence review, and immutable Human trust artifacts. It preserves schema-v4 Experience and the existing candidate-command UX without automatic learning, novelty claims, Derived-Strategy adaptation, or changes to State, authority, Task, Long Task Runtime, or Pi's Agent Loop.
+The authoritative SI v0.7 architecture contract is maintained in [`docs/self-improvement-v0.7.md`](./self-improvement-v0.7.md). SI v0.7 is implemented, dogfooded, trust-closed, normal-use validated, and frozen: its explicit Human-owned slow path runs from eligible trusted-policy Experience through an optional new logical Strategy hypothesis, bounded Candidate Trials, separate source/Trial review, and immutable Human trust. The first real Derived logical Strategy was `delivery-checkpoints` (`modifier`); later ordinary non-Trial Runs naturally selected it and recorded promoted schema-v4 Experience. This closes lifecycle and normal usability, not causal effectiveness. The contract preserves schema-v4 Experience and the existing candidate-command UX without automatic learning, novelty claims, Derived-Strategy adaptation, or changes to State, authority, Task, Long Task Runtime, or Pi's Agent Loop. Future new capabilities require a new scoped version/problem statement.
 
 ### Later direction — Strategy Portfolio Evolution
 

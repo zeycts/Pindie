@@ -1,8 +1,55 @@
 # Pindie Self-Improvement v0.7 — Strategy Derivation
 
-Status: authoritative architecture contract for SI v0.7. All four implementation slices are unimplemented by this document.
+Status: implemented, dogfooded, trust-closed, normal-use validated, frozen.
 
-This document refines the SI v0.7 direction in `docs/self-improvement.md`. It starts from the frozen SI v0.6 contract in `docs/self-improvement-v0.6.md` and the completed v0.6 dogfood loop. It does not reopen or migrate SI v0.6 artifacts.
+This document is the authoritative SI v0.7 architecture contract. It refines the SI v0.7 direction in `docs/self-improvement.md`. It starts from the frozen SI v0.6 contract in `docs/self-improvement-v0.6.md` and the completed v0.6 dogfood loop. It does not reopen or migrate SI v0.6 artifacts.
+
+The status terms are narrow:
+
+- **implemented** — all four v0.7 slices exist.
+- **dogfooded** — the real Derivation → Trial → Review → Human trust lifecycle ran on Pindie's own development work.
+- **trust-closed** — the Human `/promote`/`/reject` boundary and immutable trust projection are complete.
+- **normal-use validated** — a promoted Derived Strategy was later naturally selected in ordinary non-Trial Runs and recorded as promoted schema-v4 Experience.
+- **frozen** — the v0.7 architecture contract is closed; future new capabilities require a new scoped version/problem statement. Frozen does not mean bugs can never be fixed.
+
+Completed real dogfood used the first Derived logical Strategy:
+
+```text
+delivery-checkpoints
+kind: modifier
+```
+
+The bounded lifecycle closed as:
+
+```text
+real trusted schema-v4 Experience
+        ↓
+explicit /derive
+        ↓
+inactive immutable StrategyDerivationCandidateV1
+        ↓
+explicit Trial #1
+        ↓
+explicit Trial #2
+        ↓
+deterministic /trial-review
+        ↓
+2 / 2 eligible Candidate Trial Runs
+        ↓
+Promotion Eligibility: eligible for human review
+        ↓
+explicit Human /promote
+        ↓
+immutable promoted StrategyDerivationDecisionV1
+        ↓
+promoted Derived Strategy enters the trusted portfolio
+        ↓
+later ordinary non-Trial Runs naturally select delivery-checkpoints
+        ↓
+normal schema-v4 Experience records promoted status
+```
+
+At least three later ordinary promoted-policy Runs had real post-declaration execution exposure. Selection was not immediate in every Run; later ordinary Tasks selected the promoted Strategy when the model judged it appropriate. The same Candidate identity/fingerprint is retained, while Trial and promoted remain distinct status-at-Run identities, and historical Trial Experience was not rewritten after promotion. This demonstrates lifecycle closure and normal usability, not objective superiority, causal improvement, or statistical validation. The durable evidence remains in Experience, Candidate, and Decision artifacts; this record is documentation, not a lifecycle store.
 
 ## 1. Goal
 
@@ -680,9 +727,9 @@ SI v0.7 does not design or implement:
 - another inference-time loop; or
 - Experience schema-v5.
 
-## 20. Implementation slices
+## 20. Implemented slices
 
-This architecture must be implemented later as four explicit, independently reviewable slices. A slice may add focused contract tests and only the runtime behavior named for that slice.
+This architecture was implemented as four explicit, independently reviewable slices. The acceptance criteria below are the closed conformance record, not a plan for additional v0.7 capability. Each slice added focused contract tests and only the runtime behavior named for that slice.
 
 ### Slice A — Derivation Evidence + Candidate substrate
 
@@ -819,9 +866,9 @@ Premature portfolio machinery?
     retirement, ranking, or mutable active portfolio exists.
 ```
 
-## 22. v0.7 completion criterion
+## 22. Closed v0.7 success contract
 
-SI v0.7 is complete only after all four slices and real dogfood demonstrate:
+SI v0.7 closed with all four slices and real dogfood demonstrating:
 
 ```text
 3+ eligible trusted-policy source Runs
@@ -845,4 +892,4 @@ normal Run explicitly selects the Derived Strategy
 schema-v4 Experience records the same identity/fingerprint as promoted
 ```
 
-This document designs that path only. It does not implement Slice A or any later slice.
+This document is the closed architecture contract for that implemented path. It does not authorize capabilities outside SI v0.7.
