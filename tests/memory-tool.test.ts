@@ -24,7 +24,7 @@ class FakeMemorySink implements ProjectMemorySink {
   }
 }
 
-function taskState(goal: string | null): PindieState {
+function taskState(goal: string | null, completed = false): PindieState {
   return {
     task: goal === null
       ? null
@@ -35,7 +35,7 @@ function taskState(goal: string | null): PindieState {
           openLoops: { blockers: [], questions: [], nextIntent: null },
           verification: { stale: false, checks: [] },
           humanGate: null,
-          completed: false,
+          completed,
         },
   };
 }
@@ -203,6 +203,17 @@ test("Harness Evidence includes the current Task goal and remains bounded", asyn
   assert.equal(longEvidence.startsWith("Pindie · project=Pindie · task="), true);
   assert.equal(longEvidence.length <= "Pindie · project=Pindie · task=".length + 160, true);
   assert.match(longEvidence, /…$/);
+});
+
+test("completed Task is excluded from Harness Evidence", async () => {
+  const sink = new FakeMemorySink();
+  const tool = createTool(sink, {
+    state: taskState("Completed task goal", true),
+  });
+
+  await tool.execute("capture", semanticParams());
+
+  assert.equal(sink.captures[0]?.evidence, "Pindie · project=Pindie");
 });
 
 test("model parameters cannot override Harness facts", async () => {

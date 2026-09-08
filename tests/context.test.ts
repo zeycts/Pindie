@@ -107,7 +107,13 @@ test("Work Memory policy is conditional and idempotent", () => {
   assert.match(appended, new RegExp(`${PINDIE_WORK_MEMORY_CONTRACT_START}`));
   assert.match(appended, /Project Memory/);
   assert.match(appended, /high threshold and the three-week test/);
+  assert.match(appended, /Write Memory titles and body prose in Chinese by default/);
+  assert.match(appended, /unless the user explicitly requests another language/);
+  assert.match(appended, /one compressed durable conclusion/);
+  assert.match(appended, /Feature completion is not automatically a Milestone/);
+  assert.match(appended, /Prefer capturing the durable meaning behind a feature/);
   assert.match(appended, /Task completion is not itself a Milestone/);
+  assert.doesNotMatch(appended, /user's current working language/);
   assert.equal(appendPindieWorkMemoryContract(appended), appended);
   assert.equal((appended.match(/<PINDIE_WORK_MEMORY_CONTRACT>/g) ?? []).length, 1);
   assert.doesNotMatch(appendPindieSystemContract(base), /<PINDIE_WORK_MEMORY_CONTRACT>/);
