@@ -1,6 +1,6 @@
 # Pindie Cross-Project Learning v0.1 — Strategy Trust Transfer
 
-Status: authoritative architecture contract; Slice A implemented. Slices B–D are not implemented.
+Status: authoritative architecture contract; Slices A–B implemented. Slices C–D are not implemented.
 
 This contract starts from the frozen Self-Improvement (SI) v0.6 and v0.7 contracts. It designs one personal-user capability only: expanding trust for one exact already-promoted project-local Derived Strategy from its source project to the user's projects generally. It does not design Cross-Project Strategy Derivation.
 
@@ -928,7 +928,7 @@ The contract is personal-user only.
 
 ## 22. Implementation slices
 
-Slice A is implemented by the runtime substrate in this branch; Slices B–D remain future work. Each future Slice must use focused contract tests and preserve the earlier slices' boundaries.
+Slices A–B are implemented by the runtime substrate in this branch; Slices C–D remain future work. Each future Slice must use focused contract tests and preserve the earlier slices' boundaries.
 
 ### Slice A — Trust Scope substrate
 

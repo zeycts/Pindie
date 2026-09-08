@@ -24,10 +24,12 @@ import { TaskMetricsTracker } from "../src/task-metrics.ts";
 import { PINDIE_CONTEXT_LIFECYCLE_TYPE } from "../src/context-governor.ts";
 import {
   installCommittedRolloverReceiver,
+  type CommittedRolloverRequest,
 } from "../src/long-task-control.ts";
 import {
   createPolicySnapshot,
   createPolicySnapshotFromRevisions,
+  createStrategyRevisionSelection,
   type PolicySnapshot,
 } from "../src/policy.ts";
 import {
@@ -73,13 +75,21 @@ import {
   type StrategyRevisionDecisionStore,
 } from "../src/strategy-decisions.ts";
 import {
+  createPromotedDerivedStrategyCatalog,
   createStrategyDerivationDecision,
   type StrategyDerivationDecision,
   type StrategyDerivationDecisionReader,
 } from "../src/strategy-derivation-decisions.ts";
+import { getProjectId } from "../src/store.ts";
 import type { PindieStateStore, TaskContinuityStore } from "../src/store.ts";
 import type { TaskContinuityV1 } from "../src/task-continuity.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
+import {
+  createStrategyTrustScopeCandidate,
+  type StrategyTrustScopeCandidateStore,
+} from "../src/strategy-trust-scope-candidates.ts";
+import type { StrategyTrustScopeDecisionStore } from "../src/strategy-trust-scope-decisions.ts";
+import type { StrategyTrustScopeSourceResolver } from "../src/strategy-trust-scope-resolution.ts";
 
 type CapturedHandler = (
   event: Record<string, unknown>,
@@ -368,6 +378,68 @@ function testDerivationDecisionReader(
     read: async (_root, candidateId) => decisions.get(candidateId) ?? null,
     readAll: async () => [...decisions.values()],
   };
+}
+
+function scopeTrialTestDependencies() {
+  const sourcePortfolio = createTrustedStrategyPortfolio(
+    "/source",
+    createPromotedStrategyRevisionCatalog([]),
+  );
+  const sourceCandidate = derivationTrialCandidate(
+    "33333333-0000-4000-8000-000000000071",
+    sourcePortfolio,
+  );
+  const sourceDecision = createStrategyDerivationDecision({
+    candidate: sourceCandidate,
+    decision: "promoted",
+    trialRecordIds: ["scope-source-trial-one", "scope-source-trial-two"],
+    decidedAt: "2026-03-01T00:00:00.000Z",
+  });
+  const sourceSelection = createStrategyRevisionSelection({
+    strategyId: sourceCandidate.proposal.strategyId,
+    kind: sourceCandidate.proposal.kind,
+    revisionIdentity: sourceCandidate.candidateId,
+    revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(sourceCandidate),
+    revisionStatusAtRun: "promoted",
+    semantics: sourceCandidate.proposal,
+  });
+  const sourceCatalog = createPromotedDerivedStrategyCatalog([{
+    candidate: sourceCandidate,
+    decision: sourceDecision,
+    selection: sourceSelection,
+  }]);
+  const scopeCandidate = createStrategyTrustScopeCandidate({
+    candidateId: "44444444-0000-4000-8000-000000000072",
+    sourceStrategy: {
+      sourceProjectId: sourceCandidate.projectId,
+      strategyId: sourceCandidate.proposal.strategyId,
+      kind: sourceCandidate.proposal.kind,
+      revisionIdentity: sourceCandidate.candidateId,
+      revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(sourceCandidate),
+    },
+    createdAt: "2026-03-02T00:00:00.000Z",
+  });
+  const globalCandidates = [scopeCandidate];
+  const globalCandidateStore: StrategyTrustScopeCandidateStore = {
+    read: async (candidateId) => globalCandidates.find((candidate) => candidate.candidateId === candidateId) ?? null,
+    readAll: async () => [...globalCandidates],
+    save: async (candidate) => { globalCandidates.push(candidate); },
+  };
+  const globalDecisionStore: StrategyTrustScopeDecisionStore = {
+    read: async () => null,
+    readAll: async () => [],
+    save: async () => undefined,
+  };
+  const sourceResolver: StrategyTrustScopeSourceResolver = {
+    resolve: async (sourceStrategy) => ({
+      sourceStrategy,
+      candidate: sourceCandidate,
+      decision: sourceDecision,
+      selection: sourceSelection,
+      promotedDerivedCatalog: sourceCatalog,
+    }),
+  };
+  return { scopeCandidate, globalCandidateStore, globalDecisionStore, sourceResolver };
 }
 
 function trustedStrategyCommandArtifacts() {
@@ -5541,6 +5613,9 @@ test("SI v0.6 Slice B /trial arms the next real Run without manufacturing user i
     modifiers: ["minimal-change"],
   });
   await captureObservationEvidence(harness, "trial-observation");
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(harness.api.sentMessages.length, 1);
+  assert.equal((harness.api.sentMessages[0] as { message: { customType: string } }).message.customType, PINDIE_CONTINUATION_PROBE_TYPE);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 
   assert.equal(harness.integration.trial.hasTrial, false);
@@ -5686,6 +5761,9 @@ test("SI v0.7 Derivation /trial binds one exact Run, creates no packet attributi
     modifiers: ["minimal-change"],
   });
   await captureObservationEvidence(harness, "derivation-trial-observation");
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(harness.api.sentMessages.length, 1);
+  assert.equal((harness.api.sentMessages[0] as { message: { customType: string } }).message.customType, PINDIE_CONTINUATION_PROBE_TYPE);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 
   assert.equal(harness.integration.trial.hasTrial, false);
@@ -6705,4 +6783,304 @@ test("Slice A /trust-transfer is meaning-first, source-bound, and does not start
   assert.deepEqual(harness.integration.runtime.state, stateBefore);
   assert.equal(harness.integration.policySnapshot, null);
   assert.match(notices.at(-1)?.message ?? "", /delivery-checkpoints.*modifier.*revision.*22222222.*project-local trusted Derived Strategy.*user-global trust/i);
+});
+
+test("Scope Trial global projection failure preserves project-local Trial completion", async () => {
+  const candidate = trialCandidate("00000000-0000-4000-8000-000000000061");
+  const revisions = {
+    read: async (_root: string, candidateId: string) => candidateId === candidate.candidateId ? candidate : null,
+    readAll: async () => [candidate],
+  };
+  const emptyDerivations = { read: async () => null, readAll: async () => [] };
+  const decisions = testDecisionStore();
+  const brokenScopeCandidates: StrategyTrustScopeCandidateStore = {
+    read: async () => null,
+    readAll: async () => { throw new Error("global Scope namespace unavailable"); },
+    save: async () => undefined,
+  };
+  const brokenScopeDecisions: StrategyTrustScopeDecisionStore = {
+    read: async () => null,
+    readAll: async () => { throw new Error("global Scope namespace unavailable"); },
+    save: async () => undefined,
+  };
+  const harness = createHarness([["/target", activeState("Scope completion isolation")]], {}, {
+    strategyCandidateReader: revisions,
+    strategyDerivationCandidateReader: emptyDerivations,
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+    strategyDerivationDecisionReader: testDerivationDecisionReader(),
+    strategyTrustScopeCandidateStore: brokenScopeCandidates,
+    strategyTrustScopeDecisionStore: brokenScopeDecisions,
+    strategyTrustScopeSourceResolver: {
+      resolve: async () => { throw new Error("unavailable"); },
+    },
+  });
+  await startSession(harness, "/target");
+
+  const options = await harness.api.commands.get("trial").getArgumentCompletions("");
+  assert.ok(options);
+  assert.equal(options!.some((option: any) => option.value === candidate.candidateId), true);
+  assert.equal(options!.some((option: any) => String(option.value).startsWith("scope:")), false);
+});
+
+test("Slice B Scope Trial dispatches through the shared lease and preserves source revision attribution", async () => {
+  const sourcePortfolio = createTrustedStrategyPortfolio(
+    "/source",
+    createPromotedStrategyRevisionCatalog([]),
+  );
+  const sourceCandidate = derivationTrialCandidate(
+    "33333333-0000-4000-8000-000000000051",
+    sourcePortfolio,
+  );
+  const sourceDecision = createStrategyDerivationDecision({
+    candidate: sourceCandidate,
+    decision: "promoted",
+    trialRecordIds: ["source-trial-one", "source-trial-two"],
+    decidedAt: "2026-03-01T00:00:00.000Z",
+  });
+  const sourceSelection = createStrategyRevisionSelection({
+    strategyId: sourceCandidate.proposal.strategyId,
+    kind: sourceCandidate.proposal.kind,
+    revisionIdentity: sourceCandidate.candidateId,
+    revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(sourceCandidate),
+    revisionStatusAtRun: "promoted",
+    semantics: sourceCandidate.proposal,
+  });
+  const sourceCatalog = createPromotedDerivedStrategyCatalog([{
+    candidate: sourceCandidate,
+    decision: sourceDecision,
+    selection: sourceSelection,
+  }]);
+  const scopeCandidate = createStrategyTrustScopeCandidate({
+    candidateId: "44444444-0000-4000-8000-000000000052",
+    sourceStrategy: {
+      sourceProjectId: sourceCandidate.projectId,
+      strategyId: sourceCandidate.proposal.strategyId,
+      kind: sourceCandidate.proposal.kind,
+      revisionIdentity: sourceCandidate.candidateId,
+      revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(sourceCandidate),
+    },
+    createdAt: "2026-03-02T00:00:00.000Z",
+  });
+  const globalCandidates = [scopeCandidate];
+  const globalCandidateStore: StrategyTrustScopeCandidateStore = {
+    read: async (candidateId) => globalCandidates.find((candidate) => candidate.candidateId === candidateId) ?? null,
+    readAll: async () => [...globalCandidates],
+    save: async (candidate) => { globalCandidates.push(candidate); },
+  };
+  const globalDecisionStore: StrategyTrustScopeDecisionStore = {
+    read: async () => null,
+    readAll: async () => [],
+    save: async () => undefined,
+  };
+  const sourceResolver: StrategyTrustScopeSourceResolver = {
+    resolve: async (sourceStrategy) => ({
+      sourceStrategy,
+      candidate: sourceCandidate,
+      decision: sourceDecision,
+      selection: sourceSelection,
+      promotedDerivedCatalog: sourceCatalog,
+    }),
+  };
+  const emptyRevisionReader = { read: async () => null, readAll: async () => [] };
+  const emptyDerivationReader = { read: async () => null, readAll: async () => [] };
+  const harness = createHarness([["/target", activeState("Scope Trial task")]], {}, {
+    strategyCandidateReader: emptyRevisionReader,
+    strategyDerivationCandidateReader: emptyDerivationReader,
+    strategyDecisionStore: testDecisionStore(),
+    strategyTrustScopeCandidateStore: globalCandidateStore,
+    strategyTrustScopeDecisionStore: globalDecisionStore,
+    strategyTrustScopeSourceResolver: sourceResolver,
+  });
+  await startSession(harness, "/target");
+
+  const command = harness.api.commands.get("trial");
+  const options = await command.getArgumentCompletions("");
+  const scopeValue = `scope:${scopeCandidate.candidateId}`;
+  assert.equal(options?.some((option: any) => option.value === scopeValue), true);
+  assert.match(options?.find((option: any) => option.value === scopeValue)?.label ?? "", /boundary-first.*source.*promoted.*Scope Trial/i);
+
+  const notices: Array<{ message: string; type: string }> = [];
+  await command.handler(scopeValue, {
+    ...context("/target"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  assert.equal(harness.integration.trial.hasPendingScopeTrial, true);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+  assert.match(notices.at(-1)?.message ?? "", /Scope Trial armed/i);
+
+  const runStart = await harnessBeforeAgentStart(harness);
+  assert.match(runStart.systemPrompt, /<PINDIE_SCOPE_TRIAL_PACKET>/);
+  assert.match(runStart.systemPrompt, /current trust scope: project/i);
+  assert.match(runStart.systemPrompt, /proposed trust scope: user-global/i);
+  assert.doesNotMatch(runStart.systemPrompt, /sourceRecordIds|source-trial-one/);
+  assert.equal(harness.integration.trial.hasActiveScopeTrial, true);
+  const selection = harness.integration.trial.activeScopeTrial!.revisionSelection;
+  assert.equal(selection.revisionStatusAtRun, "trial");
+  await executeSemanticTool(harness, "pindie_policy_set", "scope-trial-policy", {
+    approach: {
+      strategyId: selection.strategyId,
+      revisionIdentity: selection.revisionIdentity,
+      revisionFingerprint: selection.revisionFingerprint,
+    },
+  });
+  await captureObservationEvidence(harness, "scope-trial-observation");
+  await harness.api.handler("agent_end")(agentEnd(), context("/target"));
+  assert.equal(harness.api.sentMessages.length, 1);
+  const continuationMessage = harness.api.sentMessages[0] as {
+    message: { customType: string; content: string; display: boolean };
+    options: unknown;
+  };
+  assert.equal(continuationMessage.message.customType, PINDIE_CONTINUATION_PROBE_TYPE);
+  assert.equal(continuationMessage.message.content, PINDIE_CONTINUATION_PROBE_MESSAGE);
+  assert.equal(continuationMessage.message.display, false);
+  assert.deepEqual(continuationMessage.options, { deliverAs: "followUp" });
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/target"));
+
+  assert.equal(harness.integration.trial.hasTrial, false);
+  const record = (harness.experienceStore as ExtensionTestExperienceStore).records[0]!.experience;
+  const final = record.policy.finalSnapshot!.approach;
+  assert.equal(final.strategyId, sourceCandidate.proposal.strategyId);
+  assert.equal(final.revisionIdentity, sourceCandidate.candidateId);
+  assert.equal(final.revisionFingerprint, strategyDerivationCandidateSemanticFingerprint(sourceCandidate));
+  assert.equal(final.revisionStatusAtRun, "trial");
+  assert.deepEqual(final.semantics, {
+    summary: sourceCandidate.proposal.summary,
+    useWhen: sourceCandidate.proposal.useWhen,
+    avoidWhen: sourceCandidate.proposal.avoidWhen,
+    principles: sourceCandidate.proposal.principles,
+  });
+  assert.doesNotMatch(JSON.stringify(record), /scopeCandidate|sourceProjectId|trustScope/);
+
+  const subsequentRun = await harnessBeforeAgentStart(harness, "/target");
+  assert.doesNotMatch(subsequentRun.systemPrompt, /<PINDIE_SCOPE_TRIAL_PACKET>/);
+  assert.equal(harness.integration.trial.hasActiveScopeTrial, false);
+  await assert.rejects(
+    harness.api.tool("pindie_policy_set").execute(
+      "scope-after-settlement",
+      { approach: {
+        strategyId: selection.strategyId,
+        revisionIdentity: selection.revisionIdentity,
+        revisionFingerprint: selection.revisionFingerprint,
+      } },
+      undefined,
+      undefined,
+      context("/target"),
+    ),
+    /without an active Candidate Trial/i,
+  );
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/target"));
+
+  await command.handler(scopeValue, {
+    ...context("/target"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  await beginAgentRun(harness, "/target");
+  assert.equal(harness.integration.trial.hasActiveScopeTrial, true);
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "new" },
+    context("/target"),
+  );
+  await startSession(harness, "/target", "new");
+  assert.equal(harness.integration.trial.hasTrial, false);
+  const postReplacementRun = await harnessBeforeAgentStart(harness, "/target");
+  assert.doesNotMatch(postReplacementRun.systemPrompt, /<PINDIE_SCOPE_TRIAL_PACKET>/);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/target"));
+});
+
+test("Scope Trial handoff commits normally and automatic rollover does not inherit it", async () => {
+  let published: CommittedRolloverRequest | null = null;
+  const release = installCommittedRolloverReceiver((request) => {
+    published = request;
+  });
+  try {
+    const dependencies = scopeTrialTestDependencies();
+    const experienceStore = new ExtensionTestExperienceStore();
+    const continuityStore = new ExtensionTestContinuityStore();
+    const harness = createHarness([["/target", activeState("Scope rollover task")]], {}, {
+      experienceStore,
+      continuityStore,
+      strategyCandidateReader: { read: async () => null, readAll: async () => [] },
+      strategyDerivationCandidateReader: { read: async () => null, readAll: async () => [] },
+      strategyDecisionStore: testDecisionStore(),
+      strategyTrustScopeCandidateStore: dependencies.globalCandidateStore,
+      strategyTrustScopeDecisionStore: dependencies.globalDecisionStore,
+      strategyTrustScopeSourceResolver: dependencies.sourceResolver,
+    });
+    await startSession(harness, "/target");
+
+    const scopeValue = `scope:${dependencies.scopeCandidate.candidateId}`;
+    await harness.api.commands.get("trial").handler(scopeValue, {
+      ...context("/target"),
+      isIdle: () => true,
+      ui: { notify: () => undefined },
+    });
+    const firstRun = await harnessBeforeAgentStart(harness, "/target");
+    assert.match(firstRun.systemPrompt, /<PINDIE_SCOPE_TRIAL_PACKET>/);
+    const selection = harness.integration.trial.activeScopeTrial!.revisionSelection;
+
+    const input = handoffInput("Continue this Scope Trial Task after rollover");
+    assert.equal(await callGuard(harness, toolCall("pindie_task_handoff", input, "scope-rollover-handoff")), undefined);
+    const handoffResult = await harness.api.tool("pindie_task_handoff").execute(
+      "scope-rollover-handoff",
+      input,
+    );
+    assert.equal(handoffResult.terminate, true);
+    await harness.api.handler("tool_result")(
+      toolResult("pindie_task_handoff", false, "scope-rollover-handoff"),
+      context("/target"),
+    );
+    await harness.api.handler("agent_end")(agentEnd(), context("/target"));
+    assert.deepEqual(harness.api.sentMessages, []);
+    await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/target"));
+
+    assert.equal(harness.integration.trial.hasTrial, false);
+    assert.ok(published);
+    assert.equal(published.sourceSessionId, "remote-session");
+    assert.equal(continuityStore.records.length, 1);
+    assert.equal(published.checkpoint, continuityStore.records[0]!.checkpoint);
+
+    const secondEntries: unknown[] = [];
+    await harness.api.handler("session_shutdown")(
+      { type: "session_shutdown", reason: "new" },
+      context("/target", [], false, "remote-session"),
+    );
+    await harness.api.handler("session_start")(
+      { type: "session_start", reason: "new" },
+      context("/target", secondEntries, false, "session-b"),
+    );
+    const automaticRun = await harness.api.handler("before_agent_start")(
+      {
+        type: "before_agent_start",
+        prompt: "<PINDIE_LONG_TASK_RESUME>Continue the unfinished Task.</PINDIE_LONG_TASK_RESUME>",
+        systemPrompt: "",
+        systemPromptOptions: {},
+      },
+      context("/target", secondEntries, false, "session-b"),
+    ) as { systemPrompt: string };
+    assert.doesNotMatch(automaticRun.systemPrompt, /<PINDIE_SCOPE_TRIAL_PACKET>/);
+    assert.equal(harness.integration.trial.hasTrial, false);
+    await assert.rejects(
+      harness.api.tool("pindie_policy_set").execute(
+        "inherited-scope-policy",
+        { approach: {
+          strategyId: selection.strategyId,
+          revisionIdentity: selection.revisionIdentity,
+          revisionFingerprint: selection.revisionFingerprint,
+        } },
+        undefined,
+        undefined,
+        context("/target", secondEntries, false, "session-b"),
+      ),
+      /without an active Candidate Trial/i,
+    );
+    await harness.api.handler("agent_settled")(
+      { type: "agent_settled" },
+      context("/target", secondEntries, false, "session-b"),
+    );
+  } finally {
+    release();
+  }
 });
