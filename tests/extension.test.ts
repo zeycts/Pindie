@@ -6641,3 +6641,68 @@ test("SI v0.6 trust read/write failures fall back to Seeds and never alter Task 
   assert.equal(harness.integration.stateUnavailableReason, null);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 });
+
+test("Slice A /trust-transfer is meaning-first, source-bound, and does not start a Run or mutate local State", async () => {
+  const artifacts = trustedStrategyCommandArtifacts();
+  const revisionReader = { read: async () => null, readAll: async () => [] };
+  const derivationReader = {
+    read: async (_root: string, id: string) => id === artifacts.promotedDerivedCandidate.candidateId
+      ? artifacts.promotedDerivedCandidate
+      : null,
+    readAll: async () => [artifacts.promotedDerivedCandidate],
+  };
+  const revisionDecisions = testDecisionStore();
+  const derivationDecisions = testDerivationDecisionReader([artifacts.promotedDerivedDecision]);
+  const globalCandidates: any[] = [];
+  const globalCandidateStore = {
+    read: async (_id: string) => null,
+    readAll: async () => globalCandidates,
+    save: async (candidate: any) => { globalCandidates.push(candidate); },
+  };
+  const globalDecisionStore = { read: async () => null, readAll: async () => [] };
+  let lockCalls = 0;
+  const sourceResolver = {
+    resolve: async (source: any) => ({
+      sourceStrategy: source,
+      candidate: artifacts.promotedDerivedCandidate,
+      decision: artifacts.promotedDerivedDecision,
+      selection: {} as any,
+      promotedDerivedCatalog: {} as any,
+    }),
+  };
+  const harness = createHarness([["/repo", activeState("Trust transfer")]], {}, {
+    strategyCandidateReader: revisionReader,
+    strategyDerivationCandidateReader: derivationReader,
+    strategyDecisionStore: revisionDecisions,
+    strategyDecisionReader: revisionDecisions,
+    strategyDerivationDecisionReader: derivationDecisions,
+    strategyTrustScopeCandidateStore: globalCandidateStore,
+    strategyTrustScopeDecisionStore: globalDecisionStore,
+    strategyTrustScopeSourceResolver: sourceResolver,
+    strategyTrustScopeWriterLock: { withLock: async (operation: any) => { lockCalls += 1; return operation(); } },
+  });
+  await startSession(harness, "/repo");
+  const command = harness.api.commands.get("trust-transfer");
+  assert.ok(command);
+  const options = await command.getArgumentCompletions("");
+  assert.equal(options?.length, 1);
+  assert.equal(options?.[0]?.value, "delivery-checkpoints");
+  assert.match(options?.[0]?.label ?? "", /modifier.*promoted.*project-local trusted Derived Strategy/i);
+  assert.doesNotMatch(options?.[0]?.label ?? "", new RegExp(artifacts.promotedDerivedCandidate.candidateId));
+
+  const notices: Array<{ message: string; type: string }> = [];
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  await command.handler("delivery-checkpoints", {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  assert.equal(globalCandidates.length, 1);
+  assert.equal(lockCalls, 1);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+  assert.equal(harness.experienceStore.records.length, 0);
+  assert.deepEqual(harness.store.saves, []);
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.equal(harness.integration.policySnapshot, null);
+  assert.match(notices.at(-1)?.message ?? "", /delivery-checkpoints.*modifier.*revision.*22222222.*project-local trusted Derived Strategy.*user-global trust/i);
+});

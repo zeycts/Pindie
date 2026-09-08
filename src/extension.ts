@@ -70,6 +70,24 @@ import {
   type StrategyDerivationCandidateV1,
 } from "./strategy-derivation-candidates.ts";
 import {
+  FileStrategyTrustScopeCandidateStore,
+  type StrategyTrustScopeCandidateStore,
+} from "./strategy-trust-scope-candidates.ts";
+import {
+  FileStrategyTrustScopeDecisionStore,
+  type StrategyTrustScopeDecisionStore,
+} from "./strategy-trust-scope-decisions.ts";
+import {
+  createStrategyTrustScopeCandidateForProject,
+  filterTrustTransferCommandOptions,
+  listTransferableDerivedStrategies,
+  type StrategyTrustScopeCandidateCreationDependencies,
+} from "./strategy-trust-scope.ts";
+import {
+  FileStrategyTrustScopeSourceResolver,
+  type StrategyTrustScopeSourceResolver,
+} from "./strategy-trust-scope-resolution.ts";
+import {
   createStrategyRevisionDecision,
   emptyPromotedStrategyRevisionCatalog,
   FileStrategyDecisionStore,
@@ -147,8 +165,10 @@ import {
 } from "./state.ts";
 import {
   FileStateStore,
+  FileGlobalWriterLock,
   StateLockBusyError,
   FileTaskContinuityStore,
+  type GlobalWriterLock,
   type TaskContinuityStore,
   type PindieStateStore,
 } from "./store.ts";
@@ -205,6 +225,10 @@ export interface PindieExtensionOptions {
   strategyDecisionReader?: StrategyRevisionDecisionReader;
   strategyDerivationDecisionStore?: StrategyDerivationDecisionStore;
   strategyDerivationDecisionReader?: StrategyDerivationDecisionReader;
+  strategyTrustScopeCandidateStore?: StrategyTrustScopeCandidateStore;
+  strategyTrustScopeDecisionStore?: StrategyTrustScopeDecisionStore;
+  strategyTrustScopeSourceResolver?: StrategyTrustScopeSourceResolver;
+  strategyTrustScopeWriterLock?: GlobalWriterLock;
   resolveProjectRoot?: ProjectRootResolver;
   subscriptionUsageProvider?: SubscriptionUsageProvider;
   getStatusWidth?: () => number | undefined;
@@ -354,6 +378,18 @@ export function registerPindieExtension(
     baseDir: experienceStorageBaseDir,
   });
   const strategyDerivationDecisionReader = options.strategyDerivationDecisionReader ?? strategyDerivationDecisionStore;
+  const strategyTrustScopeCandidateStore = options.strategyTrustScopeCandidateStore ?? new FileStrategyTrustScopeCandidateStore();
+  const strategyTrustScopeDecisionStore = options.strategyTrustScopeDecisionStore ?? new FileStrategyTrustScopeDecisionStore();
+  const strategyTrustScopeSourceResolver = options.strategyTrustScopeSourceResolver ?? new FileStrategyTrustScopeSourceResolver({
+    projectsBaseDir: experienceStorageBaseDir,
+  });
+  const strategyTrustScopeWriterLock = options.strategyTrustScopeWriterLock ?? new FileGlobalWriterLock();
+  const strategyTrustScopeCandidateCreationDependencies: StrategyTrustScopeCandidateCreationDependencies = {
+    candidateStore: strategyTrustScopeCandidateStore,
+    decisionReader: strategyTrustScopeDecisionStore,
+    sourceResolver: strategyTrustScopeSourceResolver,
+    writerLock: strategyTrustScopeWriterLock,
+  };
   const adaptation = new AdaptationRuntime();
   const trial = new TrialRuntime();
   const derivationRuntime = new DerivationRuntime();
@@ -713,6 +749,110 @@ export function registerPindieExtension(
       // Completion is advisory UI. Malformed or changing trust artifacts must
       // not become options, and must never be treated as command authority.
       return null;
+    }
+  };
+
+  const trustTransferCommandProjection = async (
+    projectRoot: string,
+  ) => {
+    const portfolio = await loadTrustedPortfolio(projectRoot);
+    return listTransferableDerivedStrategies(
+      projectRoot,
+      portfolio,
+      strategyTrustScopeSourceResolver,
+    );
+  };
+
+  const trustTransferCommandCompletions = async (prefix: string) => {
+    const projectRoot = runtime.projectRoot;
+    if (projectRoot === null) return null;
+    try {
+      const projection = await trustTransferCommandProjection(projectRoot);
+      return filterTrustTransferCommandOptions(projection, prefix);
+    } catch {
+      // Completion is advisory. The command repeats all source/global gates.
+      return null;
+    }
+  };
+
+  const handleTrustTransferCommand = async (
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> => {
+    const requestedId = args.trim();
+    if (!requestedId) {
+      const options = await trustTransferCommandCompletions("");
+      if (options !== null && options.length === 0) {
+        ctx.ui.notify(
+          "No project-local promoted Derived Strategy is currently transferable to a user-global trust hypothesis.",
+          "info",
+        );
+      } else {
+        ctx.ui.notify(
+          "No Strategy selected. Use /trust-transfer completion to choose a project-local promoted Derived Strategy.",
+          "warning",
+        );
+      }
+      return;
+    }
+    if (/\s/.test(requestedId)) {
+      ctx.ui.notify("Usage: /trust-transfer <local-promoted-derived-strategy>", "warning");
+      return;
+    }
+    const projectRoot = runtime.projectRoot;
+    if (projectRoot === null) {
+      ctx.ui.notify("Pindie could not create a trust-transfer hypothesis: no current project root is loaded.", "warning");
+      return;
+    }
+    if (!ctx.isIdle()) {
+      ctx.ui.notify("Pindie could not create a trust-transfer hypothesis: the Agent is busy.", "warning");
+      return;
+    }
+
+    let projection;
+    try {
+      projection = await trustTransferCommandProjection(projectRoot);
+    } catch (error) {
+      ctx.ui.notify(
+        `Pindie could not create a trust-transfer hypothesis: transferable Derived Strategies could not be resolved: ${errorMessage(error)}`,
+        "warning",
+      );
+      return;
+    }
+    const selected = projection.entries.find((entry) => entry.option.value === requestedId);
+    if (selected === undefined) {
+      ctx.ui.notify(
+        `Pindie could not create a trust-transfer hypothesis: '${requestedId}' is not a currently transferable promoted Derived Strategy. Use completion to choose one exact revision.`,
+        "warning",
+      );
+      return;
+    }
+    if (runtime.projectRoot !== projectRoot || !ctx.isIdle()) {
+      ctx.ui.notify(
+        "Pindie could not create a trust-transfer hypothesis: the current project or Agent state changed while reading trust.",
+        "warning",
+      );
+      return;
+    }
+
+    try {
+      const candidate = await createStrategyTrustScopeCandidateForProject(
+        {
+          projectRoot,
+          sourceStrategy: selected.sourceStrategy,
+          createdAt: new Date(continuityNow()).toISOString(),
+        },
+        strategyTrustScopeCandidateCreationDependencies,
+      );
+      ctx.ui.notify(
+        `Trust-transfer hypothesis created for '${candidate.sourceStrategy.strategyId}' (${candidate.sourceStrategy.kind}), revision ${candidate.sourceStrategy.revisionIdentity.slice(0, 8)}: project-local trusted Derived Strategy proposed for user-global trust.`,
+        "info",
+      );
+    } catch (error) {
+      ctx.ui.notify(
+        `Pindie could not create a trust-transfer hypothesis: ${errorMessage(error)}`,
+        "warning",
+      );
     }
   };
 
@@ -1616,6 +1756,12 @@ export function registerPindieExtension(
     description: "Show the read-only trusted Strategy portfolio",
     getArgumentCompletions: (prefix) => presentation.getStrategyArgumentCompletions(prefix),
     handler: async (args, ctx) => presentation.handleStrategiesCommand(args, ctx),
+  });
+
+  pi.registerCommand("trust-transfer", {
+    description: "Propose one project-local promoted Derived Strategy for user-global trust",
+    getArgumentCompletions: (prefix) => trustTransferCommandCompletions(prefix),
+    handler: async (args, ctx) => handleTrustTransferCommand(args, ctx),
   });
 
   pi.registerCommand("adapt", {
