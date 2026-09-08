@@ -121,6 +121,8 @@ function formatLocalDate(date: Date): string | null {
 }
 
 function boundedTaskGoal(state: PindieState): string | null {
+  if (state.task?.completed === true) return null;
+
   const goal = state.task?.goal;
   if (typeof goal !== "string" || goal.trim() === "") return null;
   const normalized = goal.trim().replace(/\s+/g, " ");
