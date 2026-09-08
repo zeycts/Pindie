@@ -84,6 +84,13 @@ import {
   type StrategyTrustScopeCandidateCreationDependencies,
 } from "./strategy-trust-scope.ts";
 import {
+  parseScopeTrialCommandValue,
+  resolveScopeTrialBinding,
+  revalidateScopeTrialBinding,
+  sameScopeTrialBinding,
+  type ScopeTrialBinding,
+} from "./strategy-trust-scope-trial.ts";
+import {
   FileStrategyTrustScopeSourceResolver,
   type StrategyTrustScopeSourceResolver,
 } from "./strategy-trust-scope-resolution.ts";
@@ -187,6 +194,7 @@ import {
 import {
   TrialRuntime,
   type DerivationTrialLease,
+  type ScopeTrialLease,
   type TrialLease,
 } from "./strategy-trial.ts";
 import { resolveTrialCandidate } from "./strategy-candidate-resolution.ts";
@@ -698,6 +706,9 @@ export function registerPindieExtension(
         experienceReader,
         derivationDecisionReader: strategyDerivationDecisionReader,
         trustedPortfolio,
+        scopeCandidateReader: strategyTrustScopeCandidateStore,
+        scopeDecisionReader: strategyTrustScopeDecisionStore,
+        scopeSourceResolver: strategyTrustScopeSourceResolver,
       });
       return filterTrialCommandOptions(projection, prefix);
     } catch {
@@ -1104,11 +1115,22 @@ export function registerPindieExtension(
       return;
     }
     if (/\s/.test(requestedId)) {
-      ctx.ui.notify("Usage: /trial <candidate-id>", "warning");
+      ctx.ui.notify("Usage: /trial <candidate-id> (or scope:candidate-id)", "warning");
       return;
     }
-    // Reject before any Candidate path construction or reader call.
-    if (!isCanonicalStrategyCandidateId(requestedId)) {
+    let scopeCandidateId: string | null = null;
+    if (requestedId.startsWith("scope:")) {
+      try {
+        scopeCandidateId = parseScopeTrialCommandValue(requestedId);
+      } catch (error) {
+        ctx.ui.notify(`Pindie could not arm /trial: ${errorMessage(error)}`, "warning");
+        return;
+      }
+    } else if (requestedId.includes(":")) {
+      ctx.ui.notify("Pindie could not arm /trial: unknown Candidate subject namespace.", "warning");
+      return;
+    } else if (!isCanonicalStrategyCandidateId(requestedId)) {
+      // Reject before any project-local Candidate path construction or reader call.
       ctx.ui.notify(
         "Pindie could not arm /trial: candidate-id must be a canonical lowercase UUID-v4.",
         "warning",
@@ -1134,6 +1156,97 @@ export function registerPindieExtension(
     }
     if (derivationRuntime.hasDerivation) {
       ctx.ui.notify("Pindie could not arm /trial: a Strategy Derivation attempt is already pending or active.", "warning");
+      return;
+    }
+
+    if (scopeCandidateId !== null) {
+      let sessionId: string;
+      try {
+        sessionId = ctx.sessionManager.getSessionId();
+      } catch (error) {
+        ctx.ui.notify(`Pindie could not arm /trial: ${errorMessage(error)}`, "warning");
+        return;
+      }
+
+      let targetPortfolio: TrustedStrategyPortfolio;
+      try {
+        targetPortfolio = await loadTrustedPortfolio(projectRoot);
+      } catch (error) {
+        ctx.ui.notify(`Pindie could not arm /trial Scope Candidate: target trusted portfolio is unavailable: ${errorMessage(error)}`, "warning");
+        return;
+      }
+      let binding: ScopeTrialBinding;
+      try {
+        binding = await resolveScopeTrialBinding({
+          candidateId: scopeCandidateId,
+          targetProjectRoot: projectRoot,
+          targetPortfolio,
+          candidateReader: strategyTrustScopeCandidateStore,
+          decisionReader: strategyTrustScopeDecisionStore,
+          sourceResolver: strategyTrustScopeSourceResolver,
+        });
+      } catch (error) {
+        ctx.ui.notify(`Pindie could not arm /trial Scope Candidate: ${errorMessage(error)}`, "warning");
+        return;
+      }
+
+      let currentSessionId: string;
+      try {
+        currentSessionId = ctx.sessionManager.getSessionId();
+      } catch (error) {
+        ctx.ui.notify(`Pindie could not arm /trial: ${errorMessage(error)}`, "warning");
+        return;
+      }
+      if (
+        currentSessionId !== sessionId ||
+        runtime.projectRoot !== projectRoot ||
+        !ctx.isIdle()
+      ) {
+        ctx.ui.notify("Pindie could not arm /trial Scope Candidate: the current Session, project, or Agent state changed while reading the binding.", "warning");
+        return;
+      }
+
+      // Repeat the complete source/global/target gate immediately before the
+      // shared runtime lease is established.
+      try {
+        const latestPortfolio = await loadTrustedPortfolio(projectRoot);
+        const latestBinding = await resolveScopeTrialBinding({
+          candidateId: scopeCandidateId,
+          targetProjectRoot: projectRoot,
+          targetPortfolio: latestPortfolio,
+          candidateReader: strategyTrustScopeCandidateStore,
+          decisionReader: strategyTrustScopeDecisionStore,
+          sourceResolver: strategyTrustScopeSourceResolver,
+        });
+        if (!sameScopeTrialBinding(binding, latestBinding)) {
+          throw new Error("the Scope Candidate, source binding, or target trust changed before arming");
+        }
+        binding = latestBinding;
+      } catch (error) {
+        ctx.ui.notify(`Pindie could not arm /trial Scope Candidate: fresh binding validation failed: ${errorMessage(error)}`, "warning");
+        return;
+      }
+      if (runtime.projectRoot !== projectRoot || !ctx.isIdle()) {
+        ctx.ui.notify("Pindie could not arm /trial Scope Candidate: the current project or Agent state changed before arming.", "warning");
+        return;
+      }
+      if (trial.hasTrial || adaptation.hasAttempt || derivationRuntime.hasDerivation) {
+        ctx.ui.notify("Pindie could not arm /trial Scope Candidate: another Self-Improvement attempt or Candidate Trial is already pending or active.", "warning");
+        return;
+      }
+      try {
+        if (!trial.establishScope(sessionId, binding)) {
+          ctx.ui.notify("Pindie could not arm /trial Scope Candidate: another Candidate Trial is already pending or active.", "warning");
+          return;
+        }
+      } catch (error) {
+        ctx.ui.notify(`Pindie could not arm /trial Scope Candidate: invalid binding: ${errorMessage(error)}`, "warning");
+        return;
+      }
+      ctx.ui.notify(
+        `Scope Trial armed for the next Agent Run (Scope Candidate ${scopeCandidateId}).`,
+        "info",
+      );
       return;
     }
 
@@ -1622,6 +1735,47 @@ export function registerPindieExtension(
       } catch (error) {
         throw new Error(`Candidate revision selector could not resolve the current Session: ${errorMessage(error)}`);
       }
+      let scopeTargetPortfolio: TrustedStrategyPortfolio | null = null;
+      const activeScopeTrial = trial.activeScopeFor(
+        sessionId,
+        run.activeAgentRunGeneration,
+      );
+      if (activeScopeTrial !== null) {
+        const projectRoot = runtime.projectRoot;
+        if (projectRoot === null) {
+          throw new Error("Scope Candidate selector is unavailable: no current target project root is loaded.");
+        }
+        if (projectRoot !== activeScopeTrial.targetProjectRoot) {
+          throw new Error("Scope Candidate selector is unavailable: the target project changed while the Scope Trial was active.");
+        }
+        const currentPortfolio = await loadTrustedPortfolio(projectRoot);
+        const currentBinding = await revalidateScopeTrialBinding(
+          activeScopeTrial,
+          currentPortfolio,
+          {
+            candidateReader: strategyTrustScopeCandidateStore,
+            decisionReader: strategyTrustScopeDecisionStore,
+            sourceResolver: strategyTrustScopeSourceResolver,
+          },
+        );
+        if (!sameScopeTrialBinding(activeScopeTrial, currentBinding)) {
+          throw new Error("Scope Candidate selector is unavailable: the source/global binding or target trust changed while the Scope Trial was active.");
+        }
+        scopeTargetPortfolio = currentPortfolio;
+        if (selector.revisionIdentity === activeScopeTrial.sourceStrategy.revisionIdentity) {
+          return trial.resolveScopeSelector(
+            sessionId,
+            run.activeAgentRunGeneration,
+            selector,
+            kind,
+            currentBinding.sourceCandidate,
+          );
+        }
+        // A Scope Trial may still use a normal target-project trusted
+        // revision in a mixed Policy; only the exact transferred revision is
+        // lease-controlled.
+      }
+
       if (trial.activeFor(sessionId, run.activeAgentRunGeneration) !== null) {
         return trial.resolveRevisionSelector(
           sessionId,
@@ -1675,7 +1829,7 @@ export function registerPindieExtension(
         // A Derivation Trial may still use a normal trusted revision in a
         // mixed Policy; only the exact derived selector is lease-controlled.
       }
-      const portfolio = trustedStrategyPortfolio;
+      const portfolio = scopeTargetPortfolio ?? trustedStrategyPortfolio;
       if (portfolio === null || runtime.projectRoot === null) {
         throw new Error("Candidate revision selector is unavailable without a captured trusted Strategy portfolio for this Agent Run.");
       }
@@ -2034,7 +2188,7 @@ export function registerPindieExtension(
       } else {
         adaptationRunGeneration = null;
       }
-      let trialLease: TrialLease | DerivationTrialLease | null = null;
+      let trialLease: TrialLease | DerivationTrialLease | ScopeTrialLease | null = null;
       if (adaptationLease === null && trial.hasPendingTrial) {
         let sessionId: string;
         try {
@@ -2043,8 +2197,36 @@ export function registerPindieExtension(
           trial.clear();
           throw error;
         }
+        const pendingScopeTrial = trial.pendingScopeTrial;
         const pendingDerivationTrial = trial.pendingDerivationTrial;
-        if (pendingDerivationTrial !== null) {
+        if (pendingScopeTrial !== null) {
+          const projectRoot = runtime.projectRoot;
+          try {
+            if (projectRoot === null) {
+              throw new Error("no current project root is loaded");
+            }
+            if (projectRoot !== pendingScopeTrial.targetProjectRoot) {
+              throw new Error("the target project changed after the Scope Trial was armed");
+            }
+            const currentPortfolio = await loadTrustedPortfolio(projectRoot);
+            const currentBinding = await revalidateScopeTrialBinding(
+              pendingScopeTrial,
+              currentPortfolio,
+              {
+                candidateReader: strategyTrustScopeCandidateStore,
+                decisionReader: strategyTrustScopeDecisionStore,
+                sourceResolver: strategyTrustScopeSourceResolver,
+              },
+            );
+            if (!sameScopeTrialBinding(pendingScopeTrial, currentBinding)) {
+              throw new Error("the Scope Candidate, source binding, or target trust changed after /trial was armed");
+            }
+          } catch (error) {
+            trial.clear();
+            throw new Error(`Pindie rejected this Agent Run: the pending Scope Trial binding is stale or invalid: ${errorMessage(error)}`);
+          }
+          trialLease = trial.bindScope(sessionId, run.activeAgentRunGeneration!);
+        } else if (pendingDerivationTrial !== null) {
           const projectRoot = runtime.projectRoot;
           try {
             if (projectRoot === null) {
@@ -2403,6 +2585,9 @@ export function registerPindieExtension(
   };
 
   pi.on("agent_end", (event, ctx) => {
+    // A Scope Trial is exactly one explicit Agent Run; unlike ordinary Task
+    // Runs it must not trigger Pindie continuation into another Run.
+    if (trial.hasActiveScopeTrial) return;
     if (
       (adaptationRunGeneration !== null &&
         adaptationRunGeneration === run.activeAgentRunGeneration) ||

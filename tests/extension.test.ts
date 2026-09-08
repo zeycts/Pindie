@@ -28,6 +28,7 @@ import {
 import {
   createPolicySnapshot,
   createPolicySnapshotFromRevisions,
+  createStrategyRevisionSelection,
   type PolicySnapshot,
 } from "../src/policy.ts";
 import {
@@ -73,13 +74,21 @@ import {
   type StrategyRevisionDecisionStore,
 } from "../src/strategy-decisions.ts";
 import {
+  createPromotedDerivedStrategyCatalog,
   createStrategyDerivationDecision,
   type StrategyDerivationDecision,
   type StrategyDerivationDecisionReader,
 } from "../src/strategy-derivation-decisions.ts";
+import { getProjectId } from "../src/store.ts";
 import type { PindieStateStore, TaskContinuityStore } from "../src/store.ts";
 import type { TaskContinuityV1 } from "../src/task-continuity.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
+import {
+  createStrategyTrustScopeCandidate,
+  type StrategyTrustScopeCandidateStore,
+} from "../src/strategy-trust-scope-candidates.ts";
+import type { StrategyTrustScopeDecisionStore } from "../src/strategy-trust-scope-decisions.ts";
+import type { StrategyTrustScopeSourceResolver } from "../src/strategy-trust-scope-resolution.ts";
 
 type CapturedHandler = (
   event: Record<string, unknown>,
@@ -6705,4 +6714,197 @@ test("Slice A /trust-transfer is meaning-first, source-bound, and does not start
   assert.deepEqual(harness.integration.runtime.state, stateBefore);
   assert.equal(harness.integration.policySnapshot, null);
   assert.match(notices.at(-1)?.message ?? "", /delivery-checkpoints.*modifier.*revision.*22222222.*project-local trusted Derived Strategy.*user-global trust/i);
+});
+
+test("Scope Trial global projection failure preserves project-local Trial completion", async () => {
+  const candidate = trialCandidate("00000000-0000-4000-8000-000000000061");
+  const revisions = {
+    read: async (_root: string, candidateId: string) => candidateId === candidate.candidateId ? candidate : null,
+    readAll: async () => [candidate],
+  };
+  const emptyDerivations = { read: async () => null, readAll: async () => [] };
+  const decisions = testDecisionStore();
+  const brokenScopeCandidates: StrategyTrustScopeCandidateStore = {
+    read: async () => null,
+    readAll: async () => { throw new Error("global Scope namespace unavailable"); },
+    save: async () => undefined,
+  };
+  const brokenScopeDecisions: StrategyTrustScopeDecisionStore = {
+    read: async () => null,
+    readAll: async () => { throw new Error("global Scope namespace unavailable"); },
+    save: async () => undefined,
+  };
+  const harness = createHarness([["/target", activeState("Scope completion isolation")]], {}, {
+    strategyCandidateReader: revisions,
+    strategyDerivationCandidateReader: emptyDerivations,
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+    strategyDerivationDecisionReader: testDerivationDecisionReader(),
+    strategyTrustScopeCandidateStore: brokenScopeCandidates,
+    strategyTrustScopeDecisionStore: brokenScopeDecisions,
+    strategyTrustScopeSourceResolver: {
+      resolve: async () => { throw new Error("unavailable"); },
+    },
+  });
+  await startSession(harness, "/target");
+
+  const options = await harness.api.commands.get("trial").getArgumentCompletions("");
+  assert.ok(options);
+  assert.equal(options!.some((option: any) => option.value === candidate.candidateId), true);
+  assert.equal(options!.some((option: any) => String(option.value).startsWith("scope:")), false);
+});
+
+test("Slice B Scope Trial dispatches through the shared lease and preserves source revision attribution", async () => {
+  const sourcePortfolio = createTrustedStrategyPortfolio(
+    "/source",
+    createPromotedStrategyRevisionCatalog([]),
+  );
+  const sourceCandidate = derivationTrialCandidate(
+    "33333333-0000-4000-8000-000000000051",
+    sourcePortfolio,
+  );
+  const sourceDecision = createStrategyDerivationDecision({
+    candidate: sourceCandidate,
+    decision: "promoted",
+    trialRecordIds: ["source-trial-one", "source-trial-two"],
+    decidedAt: "2026-03-01T00:00:00.000Z",
+  });
+  const sourceSelection = createStrategyRevisionSelection({
+    strategyId: sourceCandidate.proposal.strategyId,
+    kind: sourceCandidate.proposal.kind,
+    revisionIdentity: sourceCandidate.candidateId,
+    revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(sourceCandidate),
+    revisionStatusAtRun: "promoted",
+    semantics: sourceCandidate.proposal,
+  });
+  const sourceCatalog = createPromotedDerivedStrategyCatalog([{
+    candidate: sourceCandidate,
+    decision: sourceDecision,
+    selection: sourceSelection,
+  }]);
+  const scopeCandidate = createStrategyTrustScopeCandidate({
+    candidateId: "44444444-0000-4000-8000-000000000052",
+    sourceStrategy: {
+      sourceProjectId: sourceCandidate.projectId,
+      strategyId: sourceCandidate.proposal.strategyId,
+      kind: sourceCandidate.proposal.kind,
+      revisionIdentity: sourceCandidate.candidateId,
+      revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(sourceCandidate),
+    },
+    createdAt: "2026-03-02T00:00:00.000Z",
+  });
+  const globalCandidates = [scopeCandidate];
+  const globalCandidateStore: StrategyTrustScopeCandidateStore = {
+    read: async (candidateId) => globalCandidates.find((candidate) => candidate.candidateId === candidateId) ?? null,
+    readAll: async () => [...globalCandidates],
+    save: async (candidate) => { globalCandidates.push(candidate); },
+  };
+  const globalDecisionStore: StrategyTrustScopeDecisionStore = {
+    read: async () => null,
+    readAll: async () => [],
+    save: async () => undefined,
+  };
+  const sourceResolver: StrategyTrustScopeSourceResolver = {
+    resolve: async (sourceStrategy) => ({
+      sourceStrategy,
+      candidate: sourceCandidate,
+      decision: sourceDecision,
+      selection: sourceSelection,
+      promotedDerivedCatalog: sourceCatalog,
+    }),
+  };
+  const emptyRevisionReader = { read: async () => null, readAll: async () => [] };
+  const emptyDerivationReader = { read: async () => null, readAll: async () => [] };
+  const harness = createHarness([["/target", activeState("Scope Trial task")]], {}, {
+    strategyCandidateReader: emptyRevisionReader,
+    strategyDerivationCandidateReader: emptyDerivationReader,
+    strategyDecisionStore: testDecisionStore(),
+    strategyTrustScopeCandidateStore: globalCandidateStore,
+    strategyTrustScopeDecisionStore: globalDecisionStore,
+    strategyTrustScopeSourceResolver: sourceResolver,
+  });
+  await startSession(harness, "/target");
+
+  const command = harness.api.commands.get("trial");
+  const options = await command.getArgumentCompletions("");
+  const scopeValue = `scope:${scopeCandidate.candidateId}`;
+  assert.equal(options?.some((option: any) => option.value === scopeValue), true);
+  assert.match(options?.find((option: any) => option.value === scopeValue)?.label ?? "", /boundary-first.*source.*promoted.*Scope Trial/i);
+
+  const notices: Array<{ message: string; type: string }> = [];
+  await command.handler(scopeValue, {
+    ...context("/target"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  assert.equal(harness.integration.trial.hasPendingScopeTrial, true);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+  assert.match(notices.at(-1)?.message ?? "", /Scope Trial armed/i);
+
+  const runStart = await harnessBeforeAgentStart(harness);
+  assert.match(runStart.systemPrompt, /<PINDIE_SCOPE_TRIAL_PACKET>/);
+  assert.match(runStart.systemPrompt, /current trust scope: project/i);
+  assert.match(runStart.systemPrompt, /proposed trust scope: user-global/i);
+  assert.doesNotMatch(runStart.systemPrompt, /sourceRecordIds|source-trial-one/);
+  assert.equal(harness.integration.trial.hasActiveScopeTrial, true);
+  const selection = harness.integration.trial.activeScopeTrial!.revisionSelection;
+  assert.equal(selection.revisionStatusAtRun, "trial");
+  await executeSemanticTool(harness, "pindie_policy_set", "scope-trial-policy", {
+    approach: {
+      strategyId: selection.strategyId,
+      revisionIdentity: selection.revisionIdentity,
+      revisionFingerprint: selection.revisionFingerprint,
+    },
+  });
+  await captureObservationEvidence(harness, "scope-trial-observation");
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/target"));
+
+  assert.equal(harness.integration.trial.hasTrial, false);
+  const record = (harness.experienceStore as ExtensionTestExperienceStore).records[0]!.experience;
+  const final = record.policy.finalSnapshot!.approach;
+  assert.equal(final.strategyId, sourceCandidate.proposal.strategyId);
+  assert.equal(final.revisionIdentity, sourceCandidate.candidateId);
+  assert.equal(final.revisionFingerprint, strategyDerivationCandidateSemanticFingerprint(sourceCandidate));
+  assert.equal(final.revisionStatusAtRun, "trial");
+  assert.deepEqual(final.semantics, {
+    summary: sourceCandidate.proposal.summary,
+    useWhen: sourceCandidate.proposal.useWhen,
+    avoidWhen: sourceCandidate.proposal.avoidWhen,
+    principles: sourceCandidate.proposal.principles,
+  });
+  assert.doesNotMatch(JSON.stringify(record), /scopeCandidate|sourceProjectId|trustScope/);
+
+  await beginAgentRun(harness);
+  await assert.rejects(
+    harness.api.tool("pindie_policy_set").execute(
+      "scope-after-settlement",
+      { approach: {
+        strategyId: selection.strategyId,
+        revisionIdentity: selection.revisionIdentity,
+        revisionFingerprint: selection.revisionFingerprint,
+      } },
+      undefined,
+      undefined,
+      context("/target"),
+    ),
+    /without an active Candidate Trial/i,
+  );
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/target"));
+
+  await command.handler(scopeValue, {
+    ...context("/target"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  await beginAgentRun(harness, "/target");
+  assert.equal(harness.integration.trial.hasActiveScopeTrial, true);
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "new" },
+    context("/target"),
+  );
+  await startSession(harness, "/target", "new");
+  assert.equal(harness.integration.trial.hasTrial, false);
+  const postReplacementRun = await harnessBeforeAgentStart(harness, "/target");
+  assert.doesNotMatch(postReplacementRun.systemPrompt, /<PINDIE_SCOPE_TRIAL_PACKET>/);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/target"));
 });

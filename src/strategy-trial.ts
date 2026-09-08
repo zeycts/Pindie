@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import {
   strategyCandidateSemanticFingerprint,
   strategyRevisionSelectionFromCandidate,
@@ -15,6 +17,11 @@ import {
   validateStrategyDerivationCandidateArtifact,
   type StrategyDerivationCandidateV1,
 } from "./strategy-derivation-candidates.ts";
+import {
+  strategyRevisionSelectionFromScopeTrial,
+  validateScopeTrialBindingSnapshot,
+  type ScopeTrialBinding,
+} from "./strategy-trust-scope-trial.ts";
 
 export interface TrialPacket {
   readonly candidateId: string;
@@ -279,12 +286,24 @@ export interface DerivationTrialLease {
   readonly agentRunGeneration: number | null;
 }
 
-type StoredTrialLease = TrialLease | DerivationTrialLease;
+export interface ScopeTrialLease extends ScopeTrialBinding {
+  readonly candidateType: "strategy-trust-scope";
+  readonly sessionId: string;
+  readonly agentRunGeneration: number | null;
+}
+
+type StoredTrialLease = TrialLease | DerivationTrialLease | ScopeTrialLease;
 
 function isDerivationTrialLease(
   lease: StoredTrialLease,
 ): lease is DerivationTrialLease {
   return "candidateType" in lease && lease.candidateType === "strategy-derivation";
+}
+
+function isScopeTrialLease(
+  lease: StoredTrialLease,
+): lease is ScopeTrialLease {
+  return "candidateType" in lease && lease.candidateType === "strategy-trust-scope";
 }
 
 function sameDerivationCandidate(
@@ -322,16 +341,28 @@ export class TrialRuntime {
     return this.active !== null && isDerivationTrialLease(this.active);
   }
 
+  get hasPendingScopeTrial(): boolean {
+    return this.pending !== null && isScopeTrialLease(this.pending);
+  }
+
+  get hasActiveScopeTrial(): boolean {
+    return this.active !== null && isScopeTrialLease(this.active);
+  }
+
   /** Existing v0.6 view; null when the shared lease is a Derivation Trial. */
   get pendingTrial(): TrialLease | null {
-    return this.pending !== null && !isDerivationTrialLease(this.pending)
+    return this.pending !== null &&
+        !isDerivationTrialLease(this.pending) &&
+        !isScopeTrialLease(this.pending)
       ? this.pending
       : null;
   }
 
   /** Existing v0.6 view; null when the shared lease is a Derivation Trial. */
   get activeTrial(): TrialLease | null {
-    return this.active !== null && !isDerivationTrialLease(this.active)
+    return this.active !== null &&
+        !isDerivationTrialLease(this.active) &&
+        !isScopeTrialLease(this.active)
       ? this.active
       : null;
   }
@@ -344,6 +375,18 @@ export class TrialRuntime {
 
   get activeDerivationTrial(): DerivationTrialLease | null {
     return this.active !== null && isDerivationTrialLease(this.active)
+      ? this.active
+      : null;
+  }
+
+  get pendingScopeTrial(): ScopeTrialLease | null {
+    return this.pending !== null && isScopeTrialLease(this.pending)
+      ? this.pending
+      : null;
+  }
+
+  get activeScopeTrial(): ScopeTrialLease | null {
+    return this.active !== null && isScopeTrialLease(this.active)
       ? this.active
       : null;
   }
@@ -392,11 +435,28 @@ export class TrialRuntime {
     return true;
   }
 
+  /** Establish the shared runtime lease for one validated Scope Trial. */
+  establishScope(
+    sessionId: string,
+    binding: ScopeTrialBinding,
+  ): boolean {
+    if (sessionId.trim() === "" || this.hasTrial) return false;
+    const validated = validateScopeTrialBindingSnapshot(binding);
+    this.pending = Object.freeze({
+      candidateType: "strategy-trust-scope" as const,
+      sessionId,
+      ...validated,
+      agentRunGeneration: null,
+    });
+    return true;
+  }
+
   /** Bind an existing v0.6 Revision Trial without changing its lease shape. */
   bind(sessionId: string, agentRunGeneration: number): TrialLease | null {
     if (
       this.pending === null ||
       isDerivationTrialLease(this.pending) ||
+      isScopeTrialLease(this.pending) ||
       this.active !== null ||
       this.pending.sessionId !== sessionId ||
       !Number.isSafeInteger(agentRunGeneration) ||
@@ -431,6 +491,27 @@ export class TrialRuntime {
     return this.active;
   }
 
+  /** Bind the shared pending lease when it contains a Scope Candidate. */
+  bindScope(
+    sessionId: string,
+    agentRunGeneration: number,
+  ): ScopeTrialLease | null {
+    if (
+      this.pending === null ||
+      !isScopeTrialLease(this.pending) ||
+      this.active !== null ||
+      this.pending.sessionId !== sessionId ||
+      !Number.isSafeInteger(agentRunGeneration) ||
+      agentRunGeneration < 0
+    ) return null;
+    this.active = Object.freeze({
+      ...this.pending,
+      agentRunGeneration,
+    });
+    this.pending = null;
+    return this.active;
+  }
+
   isActiveForGeneration(agentRunGeneration: number | null): boolean {
     return this.active !== null &&
       agentRunGeneration !== null &&
@@ -444,6 +525,7 @@ export class TrialRuntime {
     if (
       this.active === null ||
       isDerivationTrialLease(this.active) ||
+      isScopeTrialLease(this.active) ||
       sessionId === null ||
       agentRunGeneration === null ||
       this.active.sessionId !== sessionId ||
@@ -465,6 +547,65 @@ export class TrialRuntime {
       this.active.agentRunGeneration !== agentRunGeneration
     ) return null;
     return this.active;
+  }
+
+  activeScopeFor(
+    sessionId: string | null,
+    agentRunGeneration: number | null,
+  ): ScopeTrialLease | null {
+    if (
+      this.active === null ||
+      !isScopeTrialLease(this.active) ||
+      sessionId === null ||
+      agentRunGeneration === null ||
+      this.active.sessionId !== sessionId ||
+      this.active.agentRunGeneration !== agentRunGeneration
+    ) return null;
+    return this.active;
+  }
+
+  /** Resolve only the exact active Scope Trial selector. */
+  resolveScopeSelector(
+    sessionId: string | null,
+    agentRunGeneration: number | null,
+    selector: unknown,
+    kind: "approach" | "modifier",
+    currentSourceCandidate?: StrategyDerivationCandidateV1,
+  ): StrategyRevisionSelection {
+    const lease = this.activeScopeFor(sessionId, agentRunGeneration);
+    if (lease === null) {
+      throw new Error("Scope Candidate revision selector is unavailable without an active Scope Trial for this Agent Run.");
+    }
+    if (!isStrategyRevisionSelector(selector)) {
+      throw new Error("Scope Candidate revision selector is malformed or not the exact selector from the active Scope Trial Packet.");
+    }
+    const candidate = validateStrategyDerivationCandidateArtifact(
+      currentSourceCandidate ?? lease.sourceCandidate,
+      lease.sourceCandidate.candidateId,
+    );
+    if (!isDeepStrictEqual(candidate, lease.sourceCandidate)) {
+      throw new Error("Source Derivation Candidate changed after the Scope Trial lease was activated.");
+    }
+    const fingerprint = strategyDerivationCandidateSemanticFingerprint(candidate);
+    if (
+      candidate.projectId !== lease.sourceStrategy.sourceProjectId ||
+      candidate.proposal.strategyId !== lease.sourceStrategy.strategyId ||
+      candidate.proposal.kind !== lease.sourceStrategy.kind ||
+      fingerprint !== lease.sourceStrategy.revisionFingerprint
+    ) {
+      throw new Error("Source Derivation Candidate no longer matches the active Scope Trial binding.");
+    }
+    if (candidate.proposal.kind !== kind) {
+      throw new Error(`Scope Candidate revision selector has the wrong ${kind} role for the active Scope Candidate.`);
+    }
+    if (
+      selector.strategyId !== lease.sourceStrategy.strategyId ||
+      selector.revisionIdentity !== lease.sourceStrategy.revisionIdentity ||
+      selector.revisionFingerprint !== lease.sourceStrategy.revisionFingerprint
+    ) {
+      throw new Error("Scope Candidate revision selector does not match the active Scope Trial.");
+    }
+    return strategyRevisionSelectionFromScopeTrial(candidate);
   }
 
   /** Resolve only the exact active v0.6 Candidate selector. */
