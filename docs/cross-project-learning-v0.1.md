@@ -203,6 +203,7 @@ Therefore:
 4. Scope artifacts reference source semantics; they never duplicate them as mutable authority.
 5. Trust scope is not Policy selection. Selection remains explicit and model-owned per Run.
 6. Evidence permits review, not a quality, universality, or causal claim.
+7. After promotion, the immutable Human Scope Decision is ongoing trust authority; its Trial refs remain audit provenance, not renewable trust leases.
 
 ## 5. Frozen SI v0.6 and v0.7 boundary
 
@@ -247,7 +248,7 @@ These are the only new durable global stores in v0.1. They follow existing conve
 - malformed artifacts are rejected, never repaired or normalized into a new identity; and
 - Candidate and Decision are separate artifacts.
 
-v0.1 must not create a global Experience store, mutable global Strategy catalog, active-Strategy pointer, global portfolio snapshot, copied semantics store, evidence index, or message queue. The user-global trusted set remains reconstructable from immutable scope artifacts and project-local authorities.
+v0.1 must not create a global Experience store, mutable global Strategy catalog, active-Strategy pointer, global portfolio snapshot, copied semantics store, evidence index, or message queue. The user-global trusted set remains reconstructable from immutable scope artifacts and project-local source Strategy authorities; project-local Trial Experience is required at promotion and retained by reference for later audit, not ongoing trust reconstruction.
 
 A short-lived global writer lock may appear beneath `~/.pindie/global/` during a write critical section. It is runtime concurrency control, not durable semantic state or an additional store; section 16 defines it.
 
@@ -405,6 +406,8 @@ remains the sole Experience authority. The ref is not a copy, mirror, migration,
 ### 9.2 Resolution
 
 Resolution directly opens the project-qualified path, strictly parses schema-v4, recomputes the record fingerprint, and requires exact equality. Missing, duplicate, malformed, unsupported-schema, or fingerprint-mismatched records are unresolved. A ref never falls back to another project or searches by bare UUID.
+
+Exact resolution is mandatory during evidence review and again for the complete selected set at the promotion write boundary. After an immutable promoted Scope Decision exists, ref resolution is an audit/replay operation only: an unresolved historical ref makes the audit incomplete but does not revoke the Human trust grant.
 
 ## 10. Explicit cross-project Trial
 
@@ -565,6 +568,7 @@ plus:
 - source project-local promoted trust still valid;
 - source project excluded from target-project count;
 - every selected project-qualified Experience ref resolvable and freshly eligible;
+- the complete selected ref set re-read, re-resolved, fingerprint-checked, and revalidated immediately before the promoted Decision write;
 - no prior terminal Scope Decision;
 - fewer than 8 currently valid user-global Derived Strategies;
 - current user-global logical identity available;
@@ -608,7 +612,7 @@ evidence
   trialRefs[]                 # CrossProjectExperienceRefV1, 0..1024
 ```
 
-For `promoted`, `trialRefs` must contain at least two eligible refs and satisfy the two-distinct-target-project gate. For `rejected`, zero or more currently resolved eligible refs may be recorded; rejection never claims that evidence falsified the Strategy.
+At creation of a `promoted` Decision, `trialRefs` must contain at least two freshly eligible refs and satisfy the two-distinct-target-project gate. Later structural Decision validation enforces their immutable qualified shapes, uniqueness, cardinality, and recorded project diversity without treating current Experience resolution as Decision validity. For `rejected`, zero or more currently resolved eligible refs may be recorded; rejection never claims that evidence falsified the Strategy.
 
 The Harness supplies every field except the Human's explicit `promoted` or `rejected` choice. Refs are unique and sorted canonically by `projectId`, then `recordId`, then `recordFingerprint`. The Decision repeats exact source/scope binding facts intentionally so validation can detect a mismatched Candidate; it does not repeat Strategy semantics.
 
@@ -622,9 +626,11 @@ A valid Decision must:
 - exactly match Candidate source and scope fields; and
 - contain only valid qualified reference shapes.
 
-Exactly one terminal Decision exists per scope Candidate. The store uses atomic create-without-replacement. A structurally valid, correctly Candidate-bound Decision remains terminal even if source or evidence later becomes unavailable; this prevents a second conflicting Human Decision. However, a `promoted` Decision projects user-global trust only while source resolution and every persisted promotion evidence ref remain valid and eligible.
+Exactly one terminal Decision exists per scope Candidate. The store uses atomic create-without-replacement. A structurally valid, correctly Candidate-bound Decision remains terminal even if source or historical evidence later becomes unavailable; this prevents a second conflicting Human Decision.
 
-Promotion rechecks all section 13 gates under the global writer lock immediately before the immutable write. Rejection requires a valid Candidate and source binding but does not require Promotion Eligibility.
+For promotion, the global writer critical section must re-read, re-resolve, fingerprint-check, and revalidate the complete selected `trialRefs` set immediately before the immutable write. Every section 13 attribution, exposure, distinct-project, source, collision, capacity, provenance, and terminal gate must still be true. The write freezes those refs as audit provenance for the evidence actually validated at the Human decision boundary.
+
+After that write, the promoted Decision—not continued Experience availability—is the ongoing trust grant. Later ref resolution may establish whether historical promotion evidence remains fully replayable, but missing, moved, deleted, unreadable, or fingerprint-mismatched historical Experience alone does not invalidate the Decision or revoke user-global trust. Rejection requires a valid Candidate and source binding but does not require Promotion Eligibility.
 
 Rejection means only that the Human declined this trust expansion. It is not experimental falsification, global demotion, source-project rejection, or mutation of the Strategy.
 
@@ -632,25 +638,27 @@ Rejection means only that the Human declined this trust expansion. It is not exp
 
 ### 15.1 No mutable global catalog
 
-One user-global trusted Derived Strategy exists at runtime only when this complete chain validates:
+One user-global trusted Derived Strategy exists at runtime only when this trust-and-semantics chain validates:
 
 ```text
 valid StrategyTrustScopeCandidateV1
 +
-valid matching promoted StrategyTrustScopeDecisionV1
+valid matching immutable promoted StrategyTrustScopeDecisionV1
 +
 valid immutable source StrategyDerivationCandidateV1
 +
 valid matching promoted source StrategyDerivationDecisionV1
 +
-resolvable eligible Decision evidence refs
+exact source trust/provenance binding required by v0.1
         ↓
 user-global trusted exact Derived Strategy revision
 ```
 
-The source Candidate supplies semantics. Scope Candidate and Decision supply only trust expansion and evidence binding. No materialized global Strategy copy or portfolio JSON exists.
+The source Candidate supplies ongoing semantics authority. The valid promoted Scope Decision supplies ongoing user-global trust authority. For post-promotion projection, Decision validity means strict artifact shape plus exact Candidate fingerprint, source, scope, and promoted-terminal binding; it does not include live Trial Experience replay. Its immutable `evidence.trialRefs` records what the Harness freshly validated before the Human Decision, but normal trust projection does not open, replay, or re-qualify those historical Experience files.
 
-A rejected Decision contributes no trust. An inactive Candidate contributes no normal selector. A promoted-but-stale chain contributes no current global trust.
+The Scope Candidate and Decision never copy Strategy semantics, and no materialized global Strategy copy or portfolio JSON exists. A rejected Decision contributes no trust. An inactive Candidate contributes no normal selector. Missing, malformed, inaccessible, or invalid source Strategy/promotion binding still makes the global Strategy unavailable because exact semantics/provenance can no longer be resolved; historical Trial evidence disappearance alone does not.
+
+A later explicit audit may report `historical promotion evidence is no longer fully replayable` with bounded missing/mismatch counts. That diagnostic is derived, read-only, non-persistent, and separate from normal Policy trust reconstruction.
 
 ### 15.2 Current project portfolio
 
@@ -852,7 +860,9 @@ Survives process restart:
 - every original project-local schema-v4 Experience file;
 - immutable global Scope Candidates;
 - immutable global Scope Decisions; and
-- user-global trust reconstructed from those artifacts when every binding still validates.
+- user-global trust reconstructed when the Scope Candidate/Decision and ongoing source Strategy trust/provenance bindings validate.
+
+Historical Trial Experience may also remain available for later audit, but its continued presence is not required to reconstruct an already-promoted user-global trust grant.
 
 Does not survive restart:
 
@@ -873,7 +883,8 @@ Prefer loss of optional transferred trust over ambiguity.
 
 - A malformed or unreadable scope Candidate/Decision enumeration makes the **user-global layer** unavailable for that reconstruction; it does not invalidate project-local artifacts.
 - A missing/malformed source or promoted source Decision invalidates only scope operations and user-global trust that depend on it.
-- An unresolved Decision evidence ref makes that promoted global trust chain stale and therefore unavailable.
+- Before promotion, any unresolved or ineligible selected evidence ref makes Promotion Eligibility false and prevents the Decision write.
+- After promotion, a missing, moved, deleted, unreadable, or fingerprint-mismatched historical Trial record makes only evidence audit/replay incomplete; it may produce a bounded diagnostic but does not remove user-global trust.
 - A target local/global same-ID different-revision collision omits the global layer in that target and reports conflict; it does not silently shadow either revision.
 - An incomplete review, changing read snapshot, stale candidate, full capacity, or unreadable conflict namespace makes Promotion Eligibility false.
 - Candidate/Decision write failure persists no replacement and changes no trust.
@@ -888,6 +899,7 @@ These failures must not:
 - corrupt, copy, or rewrite project-local Experience;
 - mutate source/local Candidate or Decision artifacts;
 - remove coherent project-local promoted trust;
+- revoke a valid promoted user-global Scope Decision merely because historical Trial Experience is no longer replayable;
 - change Task, Verification, Human Gate, Gateway, project mutation, Long Task, Pi Session, or Remote Companion authority; or
 - block ordinary non-Policy Task execution.
 
@@ -971,13 +983,14 @@ Deliver:
 
 Acceptance criteria:
 
-1. Every evidence item is project-qualified, fingerprint-bound, directly resolvable to valid live schema-v4, and never copied globally.
+1. Every evidence item is project-qualified, fingerprint-bound, directly resolvable to valid live schema-v4 at review and promotion time, and never copied globally.
 2. Eligibility requires at least two eligible Runs in at least two distinct non-source target projects.
 3. Exact identity, kind, semantics, trial status, ordinary attribution, and post-activation exposure are all required.
 4. Missing refs, incomplete reads, stale source trust, collision, ambiguity, capacity exhaustion, or prior Decision make eligibility false.
-5. Negative outcomes remain visible; no score, rank, reward, similarity, universality, superiority, or causal claim appears.
-6. Review is on-demand, bounded, read-only, and non-persistent.
-7. No Scope Decision or normal global selection exists yet.
+5. The complete selected ref set is suitable for mandatory re-read, re-resolution, fingerprint checking, and eligibility revalidation inside Slice D's promotion write critical section.
+6. Negative outcomes remain visible; no score, rank, reward, similarity, universality, superiority, or causal claim appears.
+7. Review is on-demand, bounded, read-only, and non-persistent.
+8. No Scope Decision or normal global selection exists yet.
 
 ### Slice D — Human user-global trust and normal projection
 
@@ -985,7 +998,7 @@ Deliver:
 
 - explicit Human scope `/promote` and `/reject` dispatch;
 - fresh lock-protected eligibility and immutable Scope Decision write;
-- valid user-global Derived projection from complete source/scope/evidence chain;
+- valid user-global Derived projection from the complete Scope Candidate/Decision and source Strategy trust/provenance chain, with Trial refs retained only for audit;
 - current-project portfolio composition, exact dedupe, fail-closed conflicts, and bounded context;
 - `/strategies` trust-origin presentation;
 - real normal-use dogfood in projects other than the source.
@@ -994,14 +1007,15 @@ Acceptance criteria:
 
 1. The Human supplies only `promoted | rejected`; the Harness supplies all identity, scope, time, and evidence facts.
 2. Exactly one immutable terminal Decision exists per Scope Candidate; rejection is not falsification.
-3. Promotion requires the complete section 13 gate at the command boundary and never occurs automatically.
+3. Promotion re-reads and fully revalidates the complete selected evidence set and every section 13 gate inside the global write critical section, then writes once; it never occurs automatically.
 4. At most eight user-global Derived Strategies are valid; total portfolio capacity is derived from owning constants.
-5. Global trust is reconstructed without a mutable catalog or copied semantics and becomes an exact normal selector in another project.
-6. Same-ID same-revision trust deduplicates; same-ID different-revision never shadows and fails the optional global layer closed.
-7. Fingerprint version 1 and all historical frozen v0.7 base fingerprints remain valid without migration.
-8. `/strategies` visibly distinguishes user-global, project-local, and combined trust while Experience remains schema-v4.
-9. A later ordinary non-Trial Run may explicitly select the global Strategy and record the same revision with `promoted` status; non-selection is also valid.
-10. State, capability, Gateway, Verification, Task, Long Task, Pi, Skill, and Session behavior remains unchanged.
+5. Global trust is reconstructed from the valid Scope Candidate, promoted Scope Decision, and still-resolvable source Strategy trust/provenance without a mutable catalog, copied semantics, or ongoing Trial Experience dependency.
+6. Later missing or unreadable historical Trial Experience yields only bounded audit/replay diagnostics and does not revoke the otherwise-valid Human trust grant.
+7. Same-ID same-revision trust deduplicates; same-ID different-revision never shadows and fails the optional global layer closed.
+8. Fingerprint version 1 and all historical frozen v0.7 base fingerprints remain valid without migration.
+9. `/strategies` visibly distinguishes user-global, project-local, and combined trust while Experience remains schema-v4.
+10. A later ordinary non-Trial Run may explicitly select the global Strategy and record the same revision with `promoted` status; non-selection is also valid.
+11. State, capability, Gateway, Verification, Task, Long Task, Pi, Skill, and Session behavior remains unchanged.
 
 ## 23. Future v0.2 boundary
 
@@ -1025,7 +1039,7 @@ v0.2 would ask whether multi-project evidence can justify proposing a **new** St
 1. **Global artifacts live at** `~/.pindie/global/strategy-scope-candidates/` and `strategy-scope-decisions/`.
 2. **Exact source reference is** source project ID + logical ID + kind + original Derivation Candidate UUID + frozen revision fingerprint.
 3. **Missing source behavior is** fail closed; no semantics copy or reconstruction and no portable store in v0.1.
-4. **Cross-project Experience identity is** `projectId + canonical record filename + canonical schema-v4 record fingerprint`.
+4. **Cross-project Experience identity is** `projectId + canonical record filename + canonical schema-v4 record fingerprint`; the complete selected set must resolve and revalidate at promotion, then its immutable refs become audit provenance rather than ongoing trust authority.
 5. **Experience schema is** unchanged v4; exact identity and `trial` status are sufficient.
 6. **Current portfolio fingerprinting is** unchanged version 1 over a deduplicated identity manifest; current fingerprints naturally include newly trusted global identities.
 7. **Historical v0.7 fingerprints remain** immutable valid snapshots and are never migrated or compared as current authority except under their frozen rules.
@@ -1036,7 +1050,7 @@ v0.2 would ask whether multi-project evidence can justify proposing a **new** St
 12. **Human command lifecycle is** existing `/trial`, `/trial-review`, `/promote`, `/reject` with `scope:` dispatch, plus one necessary explicit scope-hypothesis creation command because existing commands cannot create that artifact unambiguously.
 13. **`/strategies` presentation is** one exact deduplicated Strategy entry labeled user-global, project-local, or both; labels are not identity.
 14. **Leases are** one existing one-Run Trial lease and one short global write critical-section lock; neither is semantic State.
-15. **Restart persistence is** immutable source, Experience, Scope Candidate, and Scope Decision artifacts only; leases, packets, reviews, catalogs, and active Policy do not survive.
+15. **Restart persistence is** immutable source, Experience, Scope Candidate, and Scope Decision artifacts only; leases, packets, reviews, catalogs, and active Policy do not survive. Already-promoted trust reconstructs from the valid Scope Candidate/Decision plus source Strategy trust/provenance, not by replaying historical Trial refs.
 
 ## 25. Architecture audit
 
@@ -1053,6 +1067,8 @@ Experience schema-v5 or trust-scope field creep?        → reject
 Cross-project Derivation/new identity creep?             → reject
 Automatic Trial or Human trust Decision?                → reject
 Unbounded user-global trusted portfolio?                 → reject
+Evidence refs acting as post-promotion trust authority?  → reject
+Weakened promotion-boundary evidence revalidation?       → reject
 State/capability/Gateway/Task/Pi authority leakage?      → reject
 ```
 
