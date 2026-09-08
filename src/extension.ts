@@ -2585,9 +2585,6 @@ export function registerPindieExtension(
   };
 
   pi.on("agent_end", (event, ctx) => {
-    // A Scope Trial is exactly one explicit Agent Run; unlike ordinary Task
-    // Runs it must not trigger Pindie continuation into another Run.
-    if (trial.hasActiveScopeTrial) return;
     if (
       (adaptationRunGeneration !== null &&
         adaptationRunGeneration === run.activeAgentRunGeneration) ||

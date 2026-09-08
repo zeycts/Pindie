@@ -24,6 +24,7 @@ import { TaskMetricsTracker } from "../src/task-metrics.ts";
 import { PINDIE_CONTEXT_LIFECYCLE_TYPE } from "../src/context-governor.ts";
 import {
   installCommittedRolloverReceiver,
+  type CommittedRolloverRequest,
 } from "../src/long-task-control.ts";
 import {
   createPolicySnapshot,
@@ -377,6 +378,68 @@ function testDerivationDecisionReader(
     read: async (_root, candidateId) => decisions.get(candidateId) ?? null,
     readAll: async () => [...decisions.values()],
   };
+}
+
+function scopeTrialTestDependencies() {
+  const sourcePortfolio = createTrustedStrategyPortfolio(
+    "/source",
+    createPromotedStrategyRevisionCatalog([]),
+  );
+  const sourceCandidate = derivationTrialCandidate(
+    "33333333-0000-4000-8000-000000000071",
+    sourcePortfolio,
+  );
+  const sourceDecision = createStrategyDerivationDecision({
+    candidate: sourceCandidate,
+    decision: "promoted",
+    trialRecordIds: ["scope-source-trial-one", "scope-source-trial-two"],
+    decidedAt: "2026-03-01T00:00:00.000Z",
+  });
+  const sourceSelection = createStrategyRevisionSelection({
+    strategyId: sourceCandidate.proposal.strategyId,
+    kind: sourceCandidate.proposal.kind,
+    revisionIdentity: sourceCandidate.candidateId,
+    revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(sourceCandidate),
+    revisionStatusAtRun: "promoted",
+    semantics: sourceCandidate.proposal,
+  });
+  const sourceCatalog = createPromotedDerivedStrategyCatalog([{
+    candidate: sourceCandidate,
+    decision: sourceDecision,
+    selection: sourceSelection,
+  }]);
+  const scopeCandidate = createStrategyTrustScopeCandidate({
+    candidateId: "44444444-0000-4000-8000-000000000072",
+    sourceStrategy: {
+      sourceProjectId: sourceCandidate.projectId,
+      strategyId: sourceCandidate.proposal.strategyId,
+      kind: sourceCandidate.proposal.kind,
+      revisionIdentity: sourceCandidate.candidateId,
+      revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(sourceCandidate),
+    },
+    createdAt: "2026-03-02T00:00:00.000Z",
+  });
+  const globalCandidates = [scopeCandidate];
+  const globalCandidateStore: StrategyTrustScopeCandidateStore = {
+    read: async (candidateId) => globalCandidates.find((candidate) => candidate.candidateId === candidateId) ?? null,
+    readAll: async () => [...globalCandidates],
+    save: async (candidate) => { globalCandidates.push(candidate); },
+  };
+  const globalDecisionStore: StrategyTrustScopeDecisionStore = {
+    read: async () => null,
+    readAll: async () => [],
+    save: async () => undefined,
+  };
+  const sourceResolver: StrategyTrustScopeSourceResolver = {
+    resolve: async (sourceStrategy) => ({
+      sourceStrategy,
+      candidate: sourceCandidate,
+      decision: sourceDecision,
+      selection: sourceSelection,
+      promotedDerivedCatalog: sourceCatalog,
+    }),
+  };
+  return { scopeCandidate, globalCandidateStore, globalDecisionStore, sourceResolver };
 }
 
 function trustedStrategyCommandArtifacts() {
@@ -5550,6 +5613,9 @@ test("SI v0.6 Slice B /trial arms the next real Run without manufacturing user i
     modifiers: ["minimal-change"],
   });
   await captureObservationEvidence(harness, "trial-observation");
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(harness.api.sentMessages.length, 1);
+  assert.equal((harness.api.sentMessages[0] as { message: { customType: string } }).message.customType, PINDIE_CONTINUATION_PROBE_TYPE);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 
   assert.equal(harness.integration.trial.hasTrial, false);
@@ -5695,6 +5761,9 @@ test("SI v0.7 Derivation /trial binds one exact Run, creates no packet attributi
     modifiers: ["minimal-change"],
   });
   await captureObservationEvidence(harness, "derivation-trial-observation");
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(harness.api.sentMessages.length, 1);
+  assert.equal((harness.api.sentMessages[0] as { message: { customType: string } }).message.customType, PINDIE_CONTINUATION_PROBE_TYPE);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 
   assert.equal(harness.integration.trial.hasTrial, false);
@@ -6857,6 +6926,16 @@ test("Slice B Scope Trial dispatches through the shared lease and preserves sour
     },
   });
   await captureObservationEvidence(harness, "scope-trial-observation");
+  await harness.api.handler("agent_end")(agentEnd(), context("/target"));
+  assert.equal(harness.api.sentMessages.length, 1);
+  const continuationMessage = harness.api.sentMessages[0] as {
+    message: { customType: string; content: string; display: boolean };
+    options: unknown;
+  };
+  assert.equal(continuationMessage.message.customType, PINDIE_CONTINUATION_PROBE_TYPE);
+  assert.equal(continuationMessage.message.content, PINDIE_CONTINUATION_PROBE_MESSAGE);
+  assert.equal(continuationMessage.message.display, false);
+  assert.deepEqual(continuationMessage.options, { deliverAs: "followUp" });
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/target"));
 
   assert.equal(harness.integration.trial.hasTrial, false);
@@ -6874,7 +6953,9 @@ test("Slice B Scope Trial dispatches through the shared lease and preserves sour
   });
   assert.doesNotMatch(JSON.stringify(record), /scopeCandidate|sourceProjectId|trustScope/);
 
-  await beginAgentRun(harness);
+  const subsequentRun = await harnessBeforeAgentStart(harness, "/target");
+  assert.doesNotMatch(subsequentRun.systemPrompt, /<PINDIE_SCOPE_TRIAL_PACKET>/);
+  assert.equal(harness.integration.trial.hasActiveScopeTrial, false);
   await assert.rejects(
     harness.api.tool("pindie_policy_set").execute(
       "scope-after-settlement",
@@ -6907,4 +6988,99 @@ test("Slice B Scope Trial dispatches through the shared lease and preserves sour
   const postReplacementRun = await harnessBeforeAgentStart(harness, "/target");
   assert.doesNotMatch(postReplacementRun.systemPrompt, /<PINDIE_SCOPE_TRIAL_PACKET>/);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/target"));
+});
+
+test("Scope Trial handoff commits normally and automatic rollover does not inherit it", async () => {
+  let published: CommittedRolloverRequest | null = null;
+  const release = installCommittedRolloverReceiver((request) => {
+    published = request;
+  });
+  try {
+    const dependencies = scopeTrialTestDependencies();
+    const experienceStore = new ExtensionTestExperienceStore();
+    const continuityStore = new ExtensionTestContinuityStore();
+    const harness = createHarness([["/target", activeState("Scope rollover task")]], {}, {
+      experienceStore,
+      continuityStore,
+      strategyCandidateReader: { read: async () => null, readAll: async () => [] },
+      strategyDerivationCandidateReader: { read: async () => null, readAll: async () => [] },
+      strategyDecisionStore: testDecisionStore(),
+      strategyTrustScopeCandidateStore: dependencies.globalCandidateStore,
+      strategyTrustScopeDecisionStore: dependencies.globalDecisionStore,
+      strategyTrustScopeSourceResolver: dependencies.sourceResolver,
+    });
+    await startSession(harness, "/target");
+
+    const scopeValue = `scope:${dependencies.scopeCandidate.candidateId}`;
+    await harness.api.commands.get("trial").handler(scopeValue, {
+      ...context("/target"),
+      isIdle: () => true,
+      ui: { notify: () => undefined },
+    });
+    const firstRun = await harnessBeforeAgentStart(harness, "/target");
+    assert.match(firstRun.systemPrompt, /<PINDIE_SCOPE_TRIAL_PACKET>/);
+    const selection = harness.integration.trial.activeScopeTrial!.revisionSelection;
+
+    const input = handoffInput("Continue this Scope Trial Task after rollover");
+    assert.equal(await callGuard(harness, toolCall("pindie_task_handoff", input, "scope-rollover-handoff")), undefined);
+    const handoffResult = await harness.api.tool("pindie_task_handoff").execute(
+      "scope-rollover-handoff",
+      input,
+    );
+    assert.equal(handoffResult.terminate, true);
+    await harness.api.handler("tool_result")(
+      toolResult("pindie_task_handoff", false, "scope-rollover-handoff"),
+      context("/target"),
+    );
+    await harness.api.handler("agent_end")(agentEnd(), context("/target"));
+    assert.deepEqual(harness.api.sentMessages, []);
+    await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/target"));
+
+    assert.equal(harness.integration.trial.hasTrial, false);
+    assert.ok(published);
+    assert.equal(published.sourceSessionId, "remote-session");
+    assert.equal(continuityStore.records.length, 1);
+    assert.equal(published.checkpoint, continuityStore.records[0]!.checkpoint);
+
+    const secondEntries: unknown[] = [];
+    await harness.api.handler("session_shutdown")(
+      { type: "session_shutdown", reason: "new" },
+      context("/target", [], false, "remote-session"),
+    );
+    await harness.api.handler("session_start")(
+      { type: "session_start", reason: "new" },
+      context("/target", secondEntries, false, "session-b"),
+    );
+    const automaticRun = await harness.api.handler("before_agent_start")(
+      {
+        type: "before_agent_start",
+        prompt: "<PINDIE_LONG_TASK_RESUME>Continue the unfinished Task.</PINDIE_LONG_TASK_RESUME>",
+        systemPrompt: "",
+        systemPromptOptions: {},
+      },
+      context("/target", secondEntries, false, "session-b"),
+    ) as { systemPrompt: string };
+    assert.doesNotMatch(automaticRun.systemPrompt, /<PINDIE_SCOPE_TRIAL_PACKET>/);
+    assert.equal(harness.integration.trial.hasTrial, false);
+    await assert.rejects(
+      harness.api.tool("pindie_policy_set").execute(
+        "inherited-scope-policy",
+        { approach: {
+          strategyId: selection.strategyId,
+          revisionIdentity: selection.revisionIdentity,
+          revisionFingerprint: selection.revisionFingerprint,
+        } },
+        undefined,
+        undefined,
+        context("/target", secondEntries, false, "session-b"),
+      ),
+      /without an active Candidate Trial/i,
+    );
+    await harness.api.handler("agent_settled")(
+      { type: "agent_settled" },
+      context("/target", secondEntries, false, "session-b"),
+    );
+  } finally {
+    release();
+  }
 });
