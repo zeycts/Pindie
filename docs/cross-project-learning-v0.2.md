@@ -93,12 +93,12 @@ Use this versioned factual gate on both the shown packet and the exact model-cit
 
 ```text
 distinct qualified record locators >= 3
-distinct project IDs              >= 3
+distinct project IDs              >= 2
 distinct exact Task goal strings   >= 2
 distinct Policy Evidence Profiles  >= 2
 ```
 
-Three projects is the smallest proposed floor beyond a bilateral comparison: it prevents two namespaces, however prolific, from constituting cross-project synthesis. It is a product admission threshold, not a confidence level. Three records, one from each project, can suffice; multiple records per project are not mandatory.
+Two project namespaces establish the minimum cross-project condition for asking whether a missing abstraction may exist. Three records across two projects can suffice, provided goal and Policy-profile diversity also hold. This admits only an immutable inactive hypothesis, not a Policy selector, Trial, promotion, global trust or automatic recommendation/use. It is not statistical independence or confidence; stronger multi-project requirements belong to later Global Hypothesis Validation / trust design.
 
 Goals are compared before presentation truncation, using exact strings without semantic clustering or project prefixes. Profiles reuse `policyEvidenceProfileId()` unchanged. Count qualified locators, not fingerprints alone and not bare UUIDs. No minimum positive-outcome count or outcome-variety gate is introduced.
 
@@ -122,7 +122,7 @@ The on-demand scan may read all live records through the existing reader. Bounde
 
 1. Validate/evaluate all sources and compute the full eligible-pool gate. If insufficient, report counts and stop without a model turn.
 2. In stable ordered-pair order, find the first pair of records that differs in **both** exact goal and Policy profile. This is diversity selection, not outcome scoring. Such a pair exists whenever both diversity counts exceed one.
-3. Starting with that pair, add the first ordered record from an unrepresented project until three projects are represented. The witness contains three or four records, and never exceeds two records per project. Thus a sufficient eligible pool always has a bounded sufficient witness; a high-volume project cannot exhaust packet capacity before the cross-project gate is met.
+3. Add one third record: if the pair belongs to one project, choose the first ordered record from another project; otherwise choose the first ordered record not already selected. A sufficient pool guarantees this record exists. The witness has exactly three distinct records, at least two projects, two goals and two profiles, and never exceeds two records per project. Thus every sufficient eligible pool has a bounded sufficient witness; a high-volume project cannot exhaust packet capacity before the cross-project gate is met.
 4. Fill to eight records, subject to the two-per-project cap. At each step prefer, in order:
    - the lowest current selected count for that record's project (unrepresented projects first);
    - a previously unseen factual outcome signature;
@@ -167,6 +167,8 @@ Different local revisions using the same logical ID in different projects remain
 
 The captured comparison universe is Seeds, user-global trust, and local trust in the **represented** projects. The packet explicitly says that omitted projects and external Strategies are not covered by its missing-abstraction comparison. Reject new proposal IDs and exact semantic duplicates against this complete bounded comparison universe, not against arbitrary untrusted Candidate history. This does not prove world-wide novelty or reserve an ID globally.
 
+The frozen packet is the complete factual evidence available for hypothesis derivation. The model may reason over the frozen prompt/packet context but must not gather additional live evidence or use other Session history as derivation evidence. The bounded receipt therefore captures the complete supplied derivation evidence; it does not claim to capture the model's general prior knowledge. There is no evidence-expansion mechanism in v0.2. Additional observations would require a separately designed provenance-aware evidence-expansion path.
+
 Packet text marks all historical Task goals and Strategy prose as quoted data, not instructions. Inject it only into the bound `/derive-global` Run through existing SI prompt contribution plumbing. Reuse existing packet-history handling and add the new marker to any mode-specific context filtering. Never reconstruct an executable lease from conversation text or a compaction summary.
 
 ## 8. `/derive-global` command and native Run lifecycle
@@ -197,7 +199,7 @@ pindie_strategy_global_derivation_candidate_create
 
 Register it as project-mutation effect `none`, with the same Candidate telemetry category. Admission requires the active **global** mode, exact tool identity, matching token/Session/root/generation and fresh authority. The local tool requires local mode. Sharing the capability must not make the tools interchangeable.
 
-Allow existing `observe.project` and `observe.git` tools plus this exact creation tool. Block Policy declaration, Task/Gate/Verification/Memory tools, other Candidate tools, project writes, generic shell and unknown tools. Bash remains conservatively mutation-ambiguous even if its text claims to be read-only. Observation can inform discussion but cannot add source refs to the frozen packet.
+Make `/derive-global` packet-only: allow the frozen prompt/packet context and only `pindie_strategy_global_derivation_candidate_create`. Deny `observe.project`, `observe.git`, shell/bash, project mutation, Policy declaration, Task/Gate/Verification tools, Memory, local/Scope and other Candidate tools, and all other unknown tools. The model may reason over the packet but cannot gather additional live project evidence, even for discussion. Harness-owned freshness/trust revalidation remains unchanged: it validates the frozen receipt, never supplies expanded synthesis evidence. This restriction is global-mode-specific; existing local SI observation permissions remain unchanged.
 
 Use existing Core/SI startup effect and Run-control ports for affordances and Gateway enforcement. Do not introduce a second Tool Surface manager or enable tools absent from the Pi/user baseline. If generic Core diagnostics need to mention both derivation commands, change wording only, not Core ownership.
 
@@ -241,11 +243,11 @@ interface CrossProjectStrategyDerivationCandidateV1 {
 }
 ```
 
-The packet is embedded once as a **bounded historical derivation receipt**, not as a global Experience collection or renewable trust catalog. This preserves exactly what the model saw, the selection/gate version, source content bindings, comparison universe, observed trust chains and their semantics if live source files later disappear. Full Experience records are not copied. All packet refs remain project-local locators; the source files remain authority for fresh evidence resolution.
+The packet is embedded once as a **bounded historical derivation receipt**, not as a global Experience collection or renewable trust catalog. This preserves the complete factual derivation evidence supplied in the packet-only Run, the selection/gate version, source content bindings, comparison universe, observed trust chains and their semantics if live source files later disappear. Full Experience records are not copied. All packet refs remain project-local locators; the source files remain authority for fresh evidence resolution.
 
 The receipt is the only proposed future-proofing beyond a plain proposal: later validation can refer to an exact typed Candidate and inspect its derivation context without inventing a source project or rewriting it. Do not add target projects, Trial budgets, trust status, confidence, score, promotion fields or mutable evidence accumulation.
 
-Reuse local proposal limits: ID 1..64 lowercase ASCII kebab-case; summary ≤512; guidance item ≤256 and up to eight items; nonempty `useWhen`/`principles`, optional empty `avoidWhen`; hypothesis ≤1024. Source refs contain 3..8 unique locators, are canonical sorted, must be a subset of packet refs and must themselves pass the full cross-project gate.
+Reuse local proposal limits: ID 1..64 lowercase ASCII kebab-case; summary ≤512; guidance item ≤256 and up to eight items; nonempty `useWhen`/`principles`, optional empty `avoidWhen`; hypothesis ≤1024. Source refs contain 3..8 unique locators, are canonical sorted, must be a subset of packet refs and must themselves pass the full cross-project gate: at least three qualified records across at least two projects, two exact Task goal strings and two Policy Evidence Profiles.
 
 Model tool input contains only the proposal fields, hypothesis and cited qualified refs. IDs, timestamps, context, fingerprints, scope interpretation and provenance are Harness-authored. The model cannot supply a portfolio, rewrite a ref fingerprint, or assert trusted status.
 
@@ -359,7 +361,7 @@ Implement pure cross-project selection and receipt construction; no model comman
 
 Acceptance:
 
-- Two projects never suffice; three can. Exact-goal and exact-profile diversity remain independently necessary.
+- One project never suffices; three qualified records across two projects can. Exact-goal and exact-profile diversity remain independently necessary.
 - Shown and cited-set gate helpers count qualified locators, not bare UUIDs or truncated goals.
 - Permuting reader order produces identical packet output; timestamp ties are deterministic.
 - Hundreds of records in one project cannot dominate: eight total, two per project; a sufficient pool produces a sufficient witness even when rare goals/profiles/projects are old.
@@ -374,7 +376,7 @@ Acceptance:
 
 - Exact fields only, typed namespace, canonical IDs, atomic no-replacement writes and full fingerprint round trips.
 - Model cannot set identity/context/trust; wrong packet refs, pair duplicates, insufficient cited subsets, trusted-ID collisions and exact semantic duplicates fail.
-- Invocation project is not source ownership; a Candidate can cite three entirely different projects.
+- Invocation project is not source ownership; a Candidate can cite three records across two source projects, neither of which is the invocation project.
 - Existing local/Scope validators do not accept the new schema; no normal selector/catalog/Trial/promotion path admits it.
 - Bounded receipt survives source deletion as historical inspection only, never as renewed evidence authority.
 
@@ -387,9 +389,9 @@ Acceptance:
 - No-args explicit command only; no background work or model turn for failed admission/insufficiency.
 - All pairwise `/adapt` / `/derive` / local Trial / Scope Trial / `/derive-global` exclusions hold, including simultaneous async preparation.
 - Exactly one Run gets the packet; local/global Candidate tools cannot cross-use `policy.derive`.
-- Observation remains available; shell, mutation, Policy, Task/Gate/Verification/Memory and trust writes are denied for the global generation.
+- Only the frozen prompt/packet context and the exact global Candidate creation tool are allowed. `observe.project`, `observe.git`, shell/bash, mutation, Policy, Task/Gate/Verification/Memory, local/Scope and other Candidate tools, unknown tools and trust writes are denied for the global generation. No live observation or other Session history expands the packet's derivation evidence.
 - Stale Session, same-Session reload, root change, shutdown, abort, generation change, authority/source change and delayed callbacks invalidate correctly.
-- At most one artifact is committed, including concurrent calls and ambiguous write retry. Consuming creation permission does not lift the read-only Run restriction.
+- At most one artifact is committed, including concurrent calls and ambiguous write retry. Consuming creation permission does not lift the packet-only Run restriction or re-enable observations.
 - All global derivation Runs produce no ordinary Experience or project-work continuation; ordinary Trial settlement order is unchanged.
 
 ### Slice E — Composition and compatibility closure
