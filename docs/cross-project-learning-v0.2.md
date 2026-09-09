@@ -2,8 +2,6 @@
 
 Status: proposed design only; not implemented or approved for implementation.
 
-Baseline: latest fetched `main`, `1366ba690d359593b51a4750beb6582403950abc`, including merged PR #128 / Composable Pindie Slice F. No existing implementation or artifact is changed by this document.
-
 ## 1. Problem and exact boundary
 
 CPL v0.1 transfers an existing project-local promoted Derived revision into wider trust. CPL v0.2 asks a different question: can diverse, already-recorded project-local Experience justify asking the model for a missing-abstraction hypothesis?
