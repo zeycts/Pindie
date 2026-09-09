@@ -89,7 +89,11 @@ import {
   createStrategyTrustScopeCandidate,
   type StrategyTrustScopeCandidateStore,
 } from "../src/strategy-trust-scope-candidates.ts";
-import type { StrategyTrustScopeDecisionStore } from "../src/strategy-trust-scope-decisions.ts";
+import {
+  createStrategyTrustScopeDecision,
+  type StrategyTrustScopeDecisionStore,
+  type StrategyTrustScopeDecisionV1,
+} from "../src/strategy-trust-scope-decisions.ts";
 import type { StrategyTrustScopeSourceResolver } from "../src/strategy-trust-scope-resolution.ts";
 
 type CapturedHandler = (
@@ -441,6 +445,28 @@ function scopeTrialTestDependencies() {
     }),
   };
   return { scopeCandidate, globalCandidateStore, globalDecisionStore, sourceResolver };
+}
+
+function promotedGlobalScopeDecision(
+  scopeCandidate: ReturnType<typeof scopeTrialTestDependencies>["scopeCandidate"],
+): StrategyTrustScopeDecisionV1 {
+  return createStrategyTrustScopeDecision({
+    candidate: scopeCandidate,
+    decision: "promoted",
+    trialRefs: [
+      {
+        projectId: getProjectId("/scope-target-a"),
+        recordId: "11111111-1111-4111-8111-111111111111.json",
+        recordFingerprint: `sha256:${"a".repeat(64)}`,
+      },
+      {
+        projectId: getProjectId("/scope-target-b"),
+        recordId: "22222222-2222-4222-8222-222222222222.json",
+        recordFingerprint: `sha256:${"b".repeat(64)}`,
+      },
+    ],
+    decidedAt: "2026-03-03T00:00:00.000Z",
+  });
 }
 
 function trustedStrategyCommandArtifacts() {
@@ -1320,7 +1346,85 @@ test("SI v0.7 /strategies groups trusted Seed revisions and Derived identities",
   assert.equal(harness.api.sentUserMessages.length, 0);
 });
 
-test("SI v0.7 /strategies fails closed when trusted portfolio reconstruction fails", async () => {
+test("SI v0.7 /strategies preserves exact global and local trust deduplication", async () => {
+  const artifacts = trustedStrategyCommandArtifacts();
+  const sourceSelection = createStrategyRevisionSelection({
+    strategyId: artifacts.promotedDerivedCandidate.proposal.strategyId,
+    kind: artifacts.promotedDerivedCandidate.proposal.kind,
+    revisionIdentity: artifacts.promotedDerivedCandidate.candidateId,
+    revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(artifacts.promotedDerivedCandidate),
+    revisionStatusAtRun: "promoted",
+    semantics: artifacts.promotedDerivedCandidate.proposal,
+  });
+  const sourceCatalog = createPromotedDerivedStrategyCatalog([{
+    candidate: artifacts.promotedDerivedCandidate,
+    decision: artifacts.promotedDerivedDecision,
+    selection: sourceSelection,
+  }]);
+  const scopeCandidate = createStrategyTrustScopeCandidate({
+    candidateId: "66666666-0000-4000-8000-000000000106",
+    sourceStrategy: {
+      sourceProjectId: artifacts.promotedDerivedCandidate.projectId,
+      strategyId: artifacts.promotedDerivedCandidate.proposal.strategyId,
+      kind: artifacts.promotedDerivedCandidate.proposal.kind,
+      revisionIdentity: artifacts.promotedDerivedCandidate.candidateId,
+      revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(artifacts.promotedDerivedCandidate),
+    },
+    createdAt: "2026-03-05T00:00:00.000Z",
+  });
+  const globalDecision = promotedGlobalScopeDecision(scopeCandidate);
+  const globalCandidateStore: StrategyTrustScopeCandidateStore = {
+    read: async (candidateId) => candidateId === scopeCandidate.candidateId ? scopeCandidate : null,
+    readAll: async () => [scopeCandidate],
+    save: async () => undefined,
+  };
+  const globalDecisionStore: StrategyTrustScopeDecisionStore = {
+    read: async (candidateId) => candidateId === globalDecision.candidateId ? globalDecision : null,
+    readAll: async () => [globalDecision],
+    save: async () => undefined,
+  };
+  const harness = createHarness([['/repo', activeState()]], {}, {
+    strategyCandidateReader: {
+      read: async (_root: string, candidateId: string) => candidateId === artifacts.promotedSeedCandidate.candidateId
+        ? artifacts.promotedSeedCandidate
+        : null,
+    },
+    strategyDerivationCandidateReader: {
+      read: async (_root: string, candidateId: string) => candidateId === artifacts.promotedDerivedCandidate.candidateId
+        ? artifacts.promotedDerivedCandidate
+        : null,
+    },
+    strategyDecisionStore: testDecisionStore([artifacts.promotedSeedDecision]),
+    strategyDecisionReader: testDecisionStore([artifacts.promotedSeedDecision]),
+    strategyDerivationDecisionReader: testDerivationDecisionReader([artifacts.promotedDerivedDecision]),
+    strategyTrustScopeCandidateStore: globalCandidateStore,
+    strategyTrustScopeDecisionStore: globalDecisionStore,
+    strategyTrustScopeSourceResolver: {
+      resolve: async (sourceStrategy) => ({
+        sourceStrategy,
+        candidate: artifacts.promotedDerivedCandidate,
+        decision: artifacts.promotedDerivedDecision,
+        selection: sourceSelection,
+        promotedDerivedCatalog: sourceCatalog,
+      }),
+    },
+  });
+  await startSession(harness, "/repo");
+  const command = harness.api.commands.get("strategies");
+  assert.ok(command);
+  const notices: Array<{ message: string; type: string }> = [];
+  await command.handler("delivery-checkpoints", {
+    ...context("/repo"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  const detail = notices.at(-1)?.message ?? "";
+  assert.equal(notices.at(-1)?.type, "info");
+  assert.match(detail, /Trusted Strategy: delivery-checkpoints/);
+  assert.match(detail, /Trust: user-global \+ project-local/);
+  assert.doesNotMatch(detail, /Optional user-global layer: unavailable/);
+});
+
+test("SI v0.7 /strategies keeps a local portfolio when optional trust reconstruction fails", async () => {
   const failingDecisionReader = {
     read: async () => null,
     readAll: async () => { throw new Error("trust artifacts unavailable"); },
@@ -1335,14 +1439,20 @@ test("SI v0.7 /strategies fails closed when trusted portfolio reconstruction fai
   const command = harness.api.commands.get("strategies");
   assert.ok(command);
 
-  assert.equal(await command.getArgumentCompletions(""), null);
+  const fallbackCompletions = await command.getArgumentCompletions("");
+  assert.ok(fallbackCompletions);
+  assert.deepEqual(
+    fallbackCompletions!.map((option: any) => option.value),
+    SEED_STRATEGIES.map((strategy) => strategy.id).sort(),
+  );
   await command.handler("", {
     ...context("/wrong-cwd"),
     ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
   });
-  assert.equal(notices.at(-1)?.type, "warning");
-  assert.match(notices.at(-1)?.message ?? "", /trusted Strategy portfolio could not be reconstructed completely/);
-  assert.doesNotMatch(notices.at(-1)?.message ?? "", /Trusted Strategy Portfolio/);
+  assert.equal(notices.at(-1)?.type, "info");
+  assert.match(notices.at(-1)?.message ?? "", /Trusted Strategy Portfolio/);
+  assert.match(notices.at(-1)?.message ?? "", /Optional user-global layer: unavailable/);
+  assert.match(notices.at(-1)?.message ?? "", /trust artifacts unavailable/);
   assert.deepEqual(harness.integration.runtime.state, stateBefore);
   assert.deepEqual(harness.store.saves, savesBefore);
 
@@ -1354,6 +1464,110 @@ test("SI v0.7 /strategies fails closed when trusted portfolio reconstruction fai
   });
   assert.match(noRootNotices.at(-1)?.message ?? "", /no current project root.*no complete portfolio/i);
   assert.equal(await noRoot.api.commands.get("strategies").getArgumentCompletions(""), null);
+});
+
+test("SI v0.7 /strategies isolates a conflicting optional global revision", async () => {
+  const localCandidate = derivationTrialCandidate(
+    "55555555-0000-4000-8000-000000000105",
+  );
+  const localDecision = createStrategyDerivationDecision({
+    candidate: localCandidate,
+    decision: "promoted",
+    trialRecordIds: ["local-trial-one", "local-trial-two"],
+    decidedAt: "2026-03-04T00:00:00.000Z",
+  });
+  const localCandidateReader = {
+    read: async (_root: string, candidateId: string) => candidateId === localCandidate.candidateId
+      ? localCandidate
+      : null,
+  };
+  const localDecisionReader = testDerivationDecisionReader([localDecision]);
+  const global = scopeTrialTestDependencies();
+  const globalDecision = promotedGlobalScopeDecision(global.scopeCandidate);
+  const globalDecisionReader: StrategyTrustScopeDecisionStore = {
+    read: async (candidateId) => candidateId === globalDecision.candidateId ? globalDecision : null,
+    readAll: async () => [globalDecision],
+    save: async () => undefined,
+  };
+  const harness = createHarness([['/repo', activeState()]], {}, {
+    strategyCandidateReader: { read: async () => null, readAll: async () => [] },
+    strategyDerivationCandidateReader: localCandidateReader,
+    strategyDerivationDecisionReader: localDecisionReader,
+    strategyDecisionStore: testDecisionStore(),
+    strategyTrustScopeCandidateStore: global.globalCandidateStore,
+    strategyTrustScopeDecisionStore: globalDecisionReader,
+    strategyTrustScopeSourceResolver: global.sourceResolver,
+  });
+  await startSession(harness, "/repo");
+  const command = harness.api.commands.get("strategies");
+  assert.ok(command);
+  const completions = await command.getArgumentCompletions("boundary");
+  assert.deepEqual(completions, [{ value: "boundary-first", label: "boundary-first" }]);
+  const notices: Array<{ message: string; type: string }> = [];
+  await command.handler("", {
+    ...context("/repo"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  const report = notices.at(-1)?.message ?? "";
+  assert.equal(notices.at(-1)?.type, "info");
+  assert.match(report, /Trusted Strategy Portfolio/);
+  assert.match(report, /boundary-first · promoted 55555555/);
+  assert.doesNotMatch(report, /33333333/);
+  assert.match(report, /Optional user-global layer: unavailable/);
+  assert.match(report, /conflicting Derived logical Strategy identity/i);
+  assert.match(report, /Project-local and immutable Seed Strategies remain available/);
+});
+
+test("SI v0.7 /strategies keeps local inspection when optional global artifacts are malformed", async () => {
+  const artifacts = trustedStrategyCommandArtifacts();
+  const revisionDecisions = testDecisionStore([artifacts.promotedSeedDecision]);
+  const derivationDecisions = testDerivationDecisionReader([artifacts.promotedDerivedDecision]);
+  const brokenGlobalCandidates: StrategyTrustScopeCandidateStore = {
+    read: async () => null,
+    readAll: async () => { throw new Error("malformed global Scope artifact"); },
+    save: async () => undefined,
+  };
+  const emptyGlobalDecisions: StrategyTrustScopeDecisionStore = {
+    read: async () => null,
+    readAll: async () => [],
+    save: async () => undefined,
+  };
+  const harness = createHarness([['/repo', activeState()]], {}, {
+    strategyCandidateReader: {
+      read: async (_root: string, candidateId: string) => candidateId === artifacts.promotedSeedCandidate.candidateId
+        ? artifacts.promotedSeedCandidate
+        : null,
+    },
+    strategyDerivationCandidateReader: {
+      read: async (_root: string, candidateId: string) => candidateId === artifacts.promotedDerivedCandidate.candidateId
+        ? artifacts.promotedDerivedCandidate
+        : null,
+    },
+    strategyDecisionStore: revisionDecisions,
+    strategyDecisionReader: revisionDecisions,
+    strategyDerivationDecisionReader: derivationDecisions,
+    strategyTrustScopeCandidateStore: brokenGlobalCandidates,
+    strategyTrustScopeDecisionStore: emptyGlobalDecisions,
+    strategyTrustScopeSourceResolver: { resolve: async () => { throw new Error("unavailable"); } },
+  });
+  await startSession(harness, "/repo");
+  const command = harness.api.commands.get("strategies");
+  assert.ok(command);
+  assert.deepEqual(
+    await command.getArgumentCompletions("delivery"),
+    [{ value: "delivery-checkpoints", label: "delivery-checkpoints" }],
+  );
+  const notices: Array<{ message: string; type: string }> = [];
+  await command.handler("delivery-checkpoints", {
+    ...context("/repo"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  const detail = notices.at(-1)?.message ?? "";
+  assert.equal(notices.at(-1)?.type, "info");
+  assert.match(detail, /Trusted Strategy: delivery-checkpoints/);
+  assert.match(detail, /promoted Derived Strategy/);
+  assert.match(detail, /Optional user-global layer: unavailable/);
+  assert.match(detail, /malformed global Scope artifact/);
 });
 
 test("SI v0.6 /trial-review renders read-only Candidate and Seed evidence", async () => {

@@ -118,6 +118,17 @@ export interface TrustedStrategyPortfolio {
   readonly resolvedEntries: readonly TrustedPortfolioResolvedEntry[];
 }
 
+/** Runtime-only presentation state for the optional user-global layer. */
+export type TrustedPortfolioGlobalLayer =
+  | { readonly available: true }
+  | { readonly available: false; readonly reason: string };
+
+/** A coherent local-or-complete portfolio plus optional-global diagnostics. */
+export interface TrustedStrategyPortfolioPresentation {
+  readonly portfolio: TrustedStrategyPortfolio;
+  readonly globalLayer: TrustedPortfolioGlobalLayer;
+}
+
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
@@ -664,6 +675,31 @@ export function formatTrustedStrategyPortfolio(
   return strategyId === undefined
     ? formatTrustedStrategyList(portfolio)
     : formatTrustedStrategyDetails(portfolio, strategyId);
+}
+
+const MAX_TRUSTED_PORTFOLIO_DIAGNOSTIC_LENGTH = 256;
+
+function boundedTrustedPortfolioDiagnostic(reason: string): string {
+  const normalized = reason.replace(/[\r\n\t]+/gu, " ").replace(/\s{2,}/gu, " ").trim();
+  return normalized.length <= MAX_TRUSTED_PORTFOLIO_DIAGNOSTIC_LENGTH
+    ? normalized
+    : `${normalized.slice(0, MAX_TRUSTED_PORTFOLIO_DIAGNOSTIC_LENGTH - 1)}…`;
+}
+
+/** Render a coherent portfolio while explaining loss of optional global trust. */
+export function formatTrustedStrategyPortfolioPresentation(
+  presentation: TrustedStrategyPortfolioPresentation,
+  strategyId?: string,
+): string {
+  const report = formatTrustedStrategyPortfolio(presentation.portfolio, strategyId);
+  if (presentation.globalLayer.available) return report;
+  return [
+    report,
+    "",
+    "Optional user-global layer: unavailable",
+    `  Reason: ${boundedTrustedPortfolioDiagnostic(presentation.globalLayer.reason)}`,
+    "  Project-local and immutable Seed Strategies remain available; no unavailable global revision is shown as trusted.",
+  ].join("\n");
 }
 
 /** Resolve an exact trusted selection with all semantics/status supplied by the Harness. */

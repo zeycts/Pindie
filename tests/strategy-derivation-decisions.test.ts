@@ -45,6 +45,7 @@ import {
   type TrustedStrategyPortfolio,
 } from "../src/strategy-portfolio.ts";
 import { getSeedStrategy, SEED_STRATEGIES } from "../src/strategies.ts";
+import { MAX_USER_GLOBAL_DERIVED_STRATEGIES } from "../src/strategy-trust-scope-constants.ts";
 import type { PindieState } from "../src/state.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
 
@@ -189,12 +190,14 @@ function emptyDecisionReader() {
 test("Derived trust and trusted portfolio bounds share their SSOT", () => {
   assert.equal(PORTFOLIO_MAX_PROMOTED_DERIVED_STRATEGIES, CATALOG_MAX_PROMOTED_DERIVED_STRATEGIES);
   assert.equal(CATALOG_MAX_PROMOTED_DERIVED_STRATEGIES, 8);
+  assert.equal(MAX_USER_GLOBAL_DERIVED_STRATEGIES, 8);
   assert.equal(MAX_PROMOTED_STRATEGY_REVISIONS, SEED_STRATEGIES.length);
-  assert.equal(
-    MAX_TRUSTED_PORTFOLIO_ENTRIES,
-    SEED_STRATEGIES.length + MAX_PROMOTED_STRATEGY_REVISIONS + CATALOG_MAX_PROMOTED_DERIVED_STRATEGIES + 8,
-  );
-  assert.equal(MAX_TRUSTED_PORTFOLIO_ENTRIES, 30);
+  const expectedPortfolioEntries = SEED_STRATEGIES.length +
+    MAX_PROMOTED_STRATEGY_REVISIONS +
+    CATALOG_MAX_PROMOTED_DERIVED_STRATEGIES +
+    MAX_USER_GLOBAL_DERIVED_STRATEGIES;
+  assert.equal(MAX_TRUSTED_PORTFOLIO_ENTRIES, expectedPortfolioEntries);
+  assert.equal(expectedPortfolioEntries, 30);
 });
 
 test("Derivation Decision V1 is immutable, strictly bound, and atomically create-only", async (t) => {

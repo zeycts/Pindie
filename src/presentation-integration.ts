@@ -42,9 +42,10 @@ import {
   type ScopeProjectTrustReader,
 } from "./strategy-trust-scope-review.ts";
 import {
-  formatTrustedStrategyPortfolio,
+  formatTrustedStrategyPortfolioPresentation,
   trustedLogicalStrategyIds,
   type TrustedStrategyPortfolio,
+  type TrustedStrategyPortfolioPresentation,
 } from "./strategy-portfolio.ts";
 import {
   deriveEfficiencySnapshot,
@@ -85,6 +86,7 @@ export interface PresentationIntegrationOptions {
   scopeProjectTrustReader?: ScopeProjectTrustReader;
   strategyDerivationDecisionReader?: StrategyDerivationDecisionReader;
   loadTrustedPortfolio?: (projectRoot: string) => Promise<TrustedStrategyPortfolio>;
+  loadPresentationPortfolio?: (projectRoot: string) => Promise<TrustedStrategyPortfolioPresentation>;
   getAuthoritativeState: () => PindieState | null;
   getStateUnavailableReason: () => string | null;
   getRunStale: () => boolean;
@@ -123,6 +125,7 @@ export class PresentationIntegration {
   private readonly scopeProjectTrustReader: ScopeProjectTrustReader | null;
   private readonly strategyDerivationDecisionReader: StrategyDerivationDecisionReader | null;
   private readonly loadTrustedPortfolio: ((projectRoot: string) => Promise<TrustedStrategyPortfolio>) | null;
+  private readonly loadPresentationPortfolio: ((projectRoot: string) => Promise<TrustedStrategyPortfolioPresentation>) | null;
   private readonly getAuthoritativeState: () => PindieState | null;
   private readonly getStateUnavailableReason: () => string | null;
   private readonly getRunStale: () => boolean;
@@ -157,6 +160,14 @@ export class PresentationIntegration {
     this.scopeProjectTrustReader = options.scopeProjectTrustReader ?? null;
     this.strategyDerivationDecisionReader = options.strategyDerivationDecisionReader ?? null;
     this.loadTrustedPortfolio = options.loadTrustedPortfolio ?? null;
+    const strictPortfolioLoader = options.loadTrustedPortfolio;
+    this.loadPresentationPortfolio = options.loadPresentationPortfolio ??
+      (strictPortfolioLoader === undefined
+        ? null
+        : async (projectRoot) => Object.freeze({
+            portfolio: await strictPortfolioLoader(projectRoot),
+            globalLayer: Object.freeze({ available: true as const }),
+          }));
     this.getAuthoritativeState = options.getAuthoritativeState;
     this.getStateUnavailableReason = options.getStateUnavailableReason;
     this.getRunStale = options.getRunStale;
@@ -393,17 +404,17 @@ export class PresentationIntegration {
     prefix: string,
   ): Promise<Array<{ value: string; label: string }> | null> {
     const projectRoot = this.getProjectRoot();
-    const loadTrustedPortfolio = this.loadTrustedPortfolio;
-    if (projectRoot === null || loadTrustedPortfolio === null) return null;
-    let portfolio: TrustedStrategyPortfolio;
+    const loadPresentationPortfolio = this.loadPresentationPortfolio;
+    if (projectRoot === null || loadPresentationPortfolio === null) return null;
+    let presentation: TrustedStrategyPortfolioPresentation;
     try {
-      portfolio = await loadTrustedPortfolio(projectRoot);
+      presentation = await loadPresentationPortfolio(projectRoot);
     } catch {
       // Completion must not expose a partial or untrusted Strategy set.
       return null;
     }
     if (this.getProjectRoot() !== projectRoot) return null;
-    return trustedLogicalStrategyIds(portfolio)
+    return trustedLogicalStrategyIds(presentation.portfolio)
       .filter((strategyId) => strategyId.startsWith(prefix))
       .map((strategyId) => ({ value: strategyId, label: strategyId }));
   }
@@ -425,29 +436,29 @@ export class PresentationIntegration {
       );
       return;
     }
-    const loadTrustedPortfolio = this.loadTrustedPortfolio;
-    if (loadTrustedPortfolio === null) {
+    const loadPresentationPortfolio = this.loadPresentationPortfolio;
+    if (loadPresentationPortfolio === null) {
       ctx.ui.notify(
-        "Pindie could not show /strategies: the trusted Strategy portfolio loader is unavailable; no complete portfolio can be shown.",
+        "Pindie could not show /strategies: the presentation-safe trusted Strategy portfolio loader is unavailable.",
         "warning",
       );
       return;
     }
 
-    let portfolio: TrustedStrategyPortfolio;
+    let presentation: TrustedStrategyPortfolioPresentation;
     try {
-      portfolio = await loadTrustedPortfolio(projectRoot);
+      presentation = await loadPresentationPortfolio(projectRoot);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       ctx.ui.notify(
-        `Pindie could not show /strategies: trusted Strategy portfolio could not be reconstructed completely: ${message}`,
+        `Pindie could not show /strategies: trusted Strategy portfolio could not be reconstructed: ${message}`,
         "warning",
       );
       return;
     }
     if (this.getProjectRoot() !== projectRoot) {
       ctx.ui.notify(
-        "Pindie could not show /strategies: the current project changed while reading the trusted Strategy portfolio; no complete portfolio can be shown.",
+        "Pindie could not show /strategies: the current project changed while reading the trusted Strategy portfolio.",
         "warning",
       );
       return;
@@ -455,7 +466,7 @@ export class PresentationIntegration {
 
     if (
       requestedId !== "" &&
-      !trustedLogicalStrategyIds(portfolio).includes(requestedId)
+      !trustedLogicalStrategyIds(presentation.portfolio).includes(requestedId)
     ) {
       ctx.ui.notify(
         `Pindie could not show /strategies: '${requestedId}' is not a currently trusted logical Strategy ID.`,
@@ -464,8 +475,8 @@ export class PresentationIntegration {
       return;
     }
     ctx.ui.notify(
-      formatTrustedStrategyPortfolio(
-        portfolio,
+      formatTrustedStrategyPortfolioPresentation(
+        presentation,
         requestedId === "" ? undefined : requestedId,
       ),
       "info",

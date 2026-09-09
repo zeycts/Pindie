@@ -129,11 +129,14 @@ import { getSeedStrategy, SEED_STRATEGIES } from "./strategies.ts";
 import {
   createTrustedStrategyPortfolio,
   formatPromotedTrustedStrategyPortfolio,
+  formatTrustedStrategyPortfolioPresentation,
   loadTrustedStrategyPortfolio,
   resolveTrustedPortfolioRevisionSelection,
   sameTrustedPortfolioSnapshot,
   trustedLogicalStrategyIds,
+  type TrustedPortfolioGlobalLayer,
   type TrustedStrategyPortfolio,
+  type TrustedStrategyPortfolioPresentation,
 } from "./strategy-portfolio.ts";
 import {
   assembleRunExperience,
@@ -293,6 +296,18 @@ export interface PindieExtensionIntegration {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+const MAX_OPTIONAL_GLOBAL_DIAGNOSTIC_LENGTH = 256;
+
+function optionalGlobalUnavailableReason(error: unknown): string {
+  const reason = `optional user-global layer unavailable: ${errorMessage(error)}`
+    .replace(/[\r\n\t]+/gu, " ")
+    .replace(/\s{2,}/gu, " ")
+    .trim();
+  return reason.length <= MAX_OPTIONAL_GLOBAL_DIAGNOSTIC_LENGTH
+    ? reason
+    : `${reason.slice(0, MAX_OPTIONAL_GLOBAL_DIAGNOSTIC_LENGTH - 1)}…`;
 }
 
 const STALE_EXTENSION_CONTEXT_ERROR =
@@ -468,32 +483,6 @@ export function registerPindieExtension(
     }
     return decision;
   };
-  const presentation = new PresentationIntegration(pi, {
-    getState: () => runtime.projectRoot === null ? null : runtime.state,
-    getProjectRoot: () => runtime.projectRoot,
-    experienceReader,
-    strategyCandidateReader,
-    strategyDerivationCandidateReader,
-    strategyDecisionReader,
-    strategyTrustScopeCandidateReader: strategyTrustScopeCandidateStore,
-    strategyTrustScopeDecisionReader: strategyTrustScopeDecisionStore,
-    strategyTrustScopeSourceResolver,
-    crossProjectExperienceReader: crossProjectExperienceReader ?? undefined,
-    scopeProjectTrustReader,
-    loadTrustedPortfolio,
-    getAuthoritativeState: () => run.authoritativeState,
-    getStateUnavailableReason: () => run.stateUnavailableReason,
-    getRunStale: () => run.agentRunIsStale,
-    subscriptionUsageProvider: options.subscriptionUsageProvider,
-    getStatusWidth: options.getStatusWidth,
-    now: options.now,
-    activityLingerMs: options.activityLingerMs,
-    scheduleActivityRefresh: options.scheduleActivityRefresh,
-    clearActivityRefresh: options.clearActivityRefresh,
-    runTimer: options.runTimer,
-    runCost: options.runCost,
-    taskMetrics: options.taskMetrics,
-  });
   const resolveProjectRoot = options.resolveProjectRoot ??
     defaultResolveProjectRoot;
   const loadNormalTrustedPortfolio = async (
@@ -501,11 +490,13 @@ export function registerPindieExtension(
   ): Promise<{
     readonly portfolio: TrustedStrategyPortfolio | null;
     readonly promotedCatalog: PromotedStrategyRevisionCatalog;
+    readonly globalLayer: TrustedPortfolioGlobalLayer;
   }> => {
     if (projectRoot === null) {
       return {
         portfolio: null,
         promotedCatalog: emptyPromotedStrategyRevisionCatalog(),
+        globalLayer: Object.freeze({ available: true as const }),
       };
     }
 
@@ -545,40 +536,50 @@ export function registerPindieExtension(
     try {
       const completePortfolio = await loadTrustedPortfolio(projectRoot);
       return runtime.projectRoot === projectRoot
-        ? { portfolio: completePortfolio, promotedCatalog }
+        ? {
+            portfolio: completePortfolio,
+            promotedCatalog,
+            globalLayer: Object.freeze({ available: true as const }),
+          }
         : {
             portfolio: null,
             promotedCatalog: emptyPromotedStrategyRevisionCatalog(),
+            globalLayer: Object.freeze({ available: true as const }),
           };
     } catch (error) {
       console.warn(
         `[Pindie] User-global trusted Strategy projection unavailable; using project-local trust only: ${errorMessage(error)}`,
       );
-    }
+      const globalLayer: TrustedPortfolioGlobalLayer = Object.freeze({
+        available: false,
+        reason: optionalGlobalUnavailableReason(error),
+      });
 
-    let portfolio: TrustedStrategyPortfolio;
-    try {
-      portfolio = createTrustedStrategyPortfolio(
-        projectRoot,
-        promotedCatalog,
-        promotedDerivedCatalog,
-      );
-    } catch (error) {
-      // A malformed Derived projection cannot make Seeds or valid v0.6 trust
-      // unavailable. Reconstruct the smaller coherent v0.6 portfolio.
-      console.warn(
-        `[Pindie] Trusted Strategy portfolio projection unavailable; using no Derived availability: ${errorMessage(error)}`,
-      );
-      promotedDerivedCatalog = emptyPromotedDerivedStrategyCatalog();
-      portfolio = createTrustedStrategyPortfolio(projectRoot, promotedCatalog, promotedDerivedCatalog);
-    }
+      let portfolio: TrustedStrategyPortfolio;
+      try {
+        portfolio = createTrustedStrategyPortfolio(
+          projectRoot,
+          promotedCatalog,
+          promotedDerivedCatalog,
+        );
+      } catch (fallbackError) {
+        // A malformed Derived projection cannot make Seeds or valid v0.6 trust
+        // unavailable. Reconstruct the smaller coherent v0.6 portfolio.
+        console.warn(
+          `[Pindie] Trusted Strategy portfolio projection unavailable; using no Derived availability: ${errorMessage(fallbackError)}`,
+        );
+        promotedDerivedCatalog = emptyPromotedDerivedStrategyCatalog();
+        portfolio = createTrustedStrategyPortfolio(projectRoot, promotedCatalog, promotedDerivedCatalog);
+      }
 
-    return runtime.projectRoot === projectRoot
-      ? { portfolio, promotedCatalog }
-      : {
-          portfolio: null,
-          promotedCatalog: emptyPromotedStrategyRevisionCatalog(),
-        };
+      return runtime.projectRoot === projectRoot
+        ? { portfolio, promotedCatalog, globalLayer }
+        : {
+            portfolio: null,
+            promotedCatalog: emptyPromotedStrategyRevisionCatalog(),
+            globalLayer,
+          };
+    }
   };
   // Project-local SI paths retain the existing failure-isolation posture when
   // the optional user-global layer is malformed. Scope-specific paths keep
@@ -594,6 +595,45 @@ export function registerPindieExtension(
       throw strictError;
     }
   };
+  const loadPresentationPortfolio = async (
+    projectRoot: string,
+  ): Promise<TrustedStrategyPortfolioPresentation> => {
+    const loaded = await loadNormalTrustedPortfolio(projectRoot);
+    if (loaded.portfolio === null) {
+      throw new Error("the current project changed while reading the trusted Strategy portfolio");
+    }
+    return Object.freeze({
+      portfolio: loaded.portfolio,
+      globalLayer: loaded.globalLayer,
+    });
+  };
+  const presentation = new PresentationIntegration(pi, {
+    getState: () => runtime.projectRoot === null ? null : runtime.state,
+    getProjectRoot: () => runtime.projectRoot,
+    experienceReader,
+    strategyCandidateReader,
+    strategyDerivationCandidateReader,
+    strategyDecisionReader,
+    strategyTrustScopeCandidateReader: strategyTrustScopeCandidateStore,
+    strategyTrustScopeDecisionReader: strategyTrustScopeDecisionStore,
+    strategyTrustScopeSourceResolver,
+    crossProjectExperienceReader: crossProjectExperienceReader ?? undefined,
+    scopeProjectTrustReader,
+    loadTrustedPortfolio,
+    loadPresentationPortfolio,
+    getAuthoritativeState: () => run.authoritativeState,
+    getStateUnavailableReason: () => run.stateUnavailableReason,
+    getRunStale: () => run.agentRunIsStale,
+    subscriptionUsageProvider: options.subscriptionUsageProvider,
+    getStatusWidth: options.getStatusWidth,
+    now: options.now,
+    activityLingerMs: options.activityLingerMs,
+    scheduleActivityRefresh: options.scheduleActivityRefresh,
+    clearActivityRefresh: options.clearActivityRefresh,
+    runTimer: options.runTimer,
+    runCost: options.runCost,
+    taskMetrics: options.taskMetrics,
+  });
   type LiveRemoteSession = { sessionId: string; ctx: ExtensionContext; generation: number };
   let liveRemoteSession: LiveRemoteSession | null = null;
   let nextRemoteLeaseGeneration = 0;

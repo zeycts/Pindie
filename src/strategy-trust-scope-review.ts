@@ -71,9 +71,10 @@ import {
 } from "./strategy-trust-scope-resolution.ts";
 import { SEED_STRATEGIES } from "./strategies.ts";
 import { getProjectId } from "./store.ts";
+import { MAX_USER_GLOBAL_DERIVED_STRATEGIES } from "./strategy-trust-scope-constants.ts";
 
-/** The v0.1 bound for future user-global Derived trust. */
-export const MAX_USER_GLOBAL_DERIVED_STRATEGIES = 8;
+/** Re-export the owning v0.1 bound for compatibility with review callers. */
+export { MAX_USER_GLOBAL_DERIVED_STRATEGIES };
 /** Human detail bounds; aggregate facts are never truncated by these values. */
 export const MAX_SCOPE_REVIEW_PROJECT_DETAILS = 16;
 export const MAX_SCOPE_REVIEW_RECORD_DETAILS = 8;
@@ -1286,10 +1287,64 @@ export async function deriveStrategyTrustScopeTrialReview(
   );
   if (!selectedRefResolution.valid) reasons.push(...selectedRefResolution.reasons);
 
-  // Final authority pass: the Experience scan remains lock-free, but no
-  // eligibility gate may combine its initial global/source/trust facts with a
-  // later authority state. These reads are deliberately immediately before
-  // the synchronous gate assembly.
+  // Promotion keeps one final, direct read of the complete selected ref set
+  // inside the caller's writer-lock critical section. Compare each selected
+  // project's full matching snapshot with the preceding pass so a changed
+  // record cannot silently satisfy an earlier eligibility decision. This
+  // promotion-boundary evidence reread deliberately precedes the final
+  // authority pass below; otherwise authority could change after its last
+  // freshness check and still be combined with this selected evidence.
+  let boundarySelectedRefResolution: { readonly valid: boolean; readonly reasons: readonly string[] } = {
+    valid: true,
+    reasons: Object.freeze([]),
+  };
+  if (selectedEvidenceRefs.length > 0) {
+    const boundaryReads = new Map<string, PreparedProjectExperience>();
+    const boundaryReasons: string[] = [];
+    const selectedProjectIds = [...new Set(selectedEvidenceRefs.map((ref) => ref.projectId))]
+      .sort(compareText);
+    for (const projectId of selectedProjectIds) {
+      try {
+        const prepared = prepareProjectExperience(
+          projectId,
+          await input.experienceReader.readProjectId(projectId),
+          source,
+        );
+        boundaryReads.set(projectId, prepared);
+        const prior = freshReads.get(projectId);
+        if (prior === undefined || prior.matching.length !== prepared.matching.length ||
+          prior.matchingDigest !== prepared.matchingDigest || !prepared.complete) {
+          evidenceScanComplete = false;
+          boundaryReasons.push(`selected project ${shortIdentity(projectId)} matching Experience snapshot changed or is incomplete at the promotion boundary`);
+        }
+      } catch (error) {
+        evidenceScanComplete = false;
+        boundaryReasons.push(`selected project ${shortIdentity(projectId)} fresh Experience resolution failed at the promotion boundary: ${errorMessage(error)}`);
+      }
+    }
+    const selectedAtBoundary = await freshSelectedRefs(
+      selectedEvidenceRefs,
+      boundaryReads,
+      source,
+      sourceFacts.sourceCandidate,
+      {
+        sourceBindingValid: sourceFacts.sourceBindingValid,
+        sourceTrustValid: sourceFacts.sourceTrustValid,
+        globalStateComplete: globalFacts.globalStateComplete,
+      },
+    );
+    boundarySelectedRefResolution = Object.freeze({
+      valid: boundaryReasons.length === 0 && selectedAtBoundary.valid,
+      reasons: Object.freeze([...boundaryReasons, ...selectedAtBoundary.reasons]),
+    });
+    if (!boundarySelectedRefResolution.valid) reasons.push(...boundarySelectedRefResolution.reasons);
+  }
+
+  // Final authority pass: the Experience scan and selected-ref promotion
+  // boundary remain lock-free, but no eligibility gate may combine their
+  // earlier global/source/trust facts with a later authority state. These
+  // reads are deliberately the last asynchronous authority reconstruction
+  // before synchronous gate assembly.
   const [finalGlobalFacts, finalSourceFacts] = await Promise.all([
     deriveGlobalReviewFacts(
       candidate,
@@ -1344,56 +1399,6 @@ export async function deriveStrategyTrustScopeTrialReview(
   const authoritySnapshotFresh = globalAuthorityFresh &&
     sourceAuthorityFresh &&
     projectTrustAuthorityFresh;
-
-  // Promotion keeps one final, direct read of the complete selected ref set
-  // inside the caller's writer-lock critical section. Compare each selected
-  // project's full matching snapshot with the preceding pass so a changed
-  // record cannot silently satisfy an earlier eligibility decision.
-  let boundarySelectedRefResolution: { readonly valid: boolean; readonly reasons: readonly string[] } = {
-    valid: true,
-    reasons: Object.freeze([]),
-  };
-  if (selectedEvidenceRefs.length > 0) {
-    const boundaryReads = new Map<string, PreparedProjectExperience>();
-    const boundaryReasons: string[] = [];
-    const selectedProjectIds = [...new Set(selectedEvidenceRefs.map((ref) => ref.projectId))]
-      .sort(compareText);
-    for (const projectId of selectedProjectIds) {
-      try {
-        const prepared = prepareProjectExperience(
-          projectId,
-          await input.experienceReader.readProjectId(projectId),
-          source,
-        );
-        boundaryReads.set(projectId, prepared);
-        const prior = freshReads.get(projectId);
-        if (prior === undefined || prior.matching.length !== prepared.matching.length ||
-          prior.matchingDigest !== prepared.matchingDigest || !prepared.complete) {
-          evidenceScanComplete = false;
-          boundaryReasons.push(`selected project ${shortIdentity(projectId)} matching Experience snapshot changed or is incomplete at the promotion boundary`);
-        }
-      } catch (error) {
-        evidenceScanComplete = false;
-        boundaryReasons.push(`selected project ${shortIdentity(projectId)} fresh Experience resolution failed at the promotion boundary: ${errorMessage(error)}`);
-      }
-    }
-    const selectedAtBoundary = await freshSelectedRefs(
-      selectedEvidenceRefs,
-      boundaryReads,
-      source,
-      finalSourceFacts.sourceCandidate,
-      {
-        sourceBindingValid: sourceAuthorityFresh && finalSourceFacts.sourceBindingValid,
-        sourceTrustValid: sourceAuthorityFresh && finalSourceFacts.sourceTrustValid,
-        globalStateComplete: globalAuthorityFresh && finalGlobalFacts.globalStateComplete,
-      },
-    );
-    boundarySelectedRefResolution = Object.freeze({
-      valid: boundaryReasons.length === 0 && selectedAtBoundary.valid,
-      reasons: Object.freeze([...boundaryReasons, ...selectedAtBoundary.reasons]),
-    });
-    if (!boundarySelectedRefResolution.valid) reasons.push(...boundarySelectedRefResolution.reasons);
-  }
 
   projectTrustScanComplete = projectTrustAuthorityFresh;
 
