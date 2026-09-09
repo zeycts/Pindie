@@ -1,13 +1,11 @@
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { Client } from "@notionhq/client";
-
 import {
-  DiscordRemote,
   discordRemoteConfig,
   type DiscordRemoteConfigResult,
-} from "./discord-remote.ts";
+} from "./remote-config.ts";
 import {
   FileRunExperienceReader,
   FileRunExperienceStore,
@@ -17,11 +15,9 @@ import {
 } from "./experience-store.ts";
 import {
   NOTION_PROJECT_MEMORY_API_VERSION,
-  NotionProjectMemorySink,
   notionProjectMemoryConfig,
   type NotionProjectMemoryConfigResult,
-} from "./notion-project-memory.ts";
-import { RemoteCompanion } from "./remote-companion.ts";
+} from "./notion-project-memory-config.ts";
 import { RemoteRoutingStore } from "./remote-routing.ts";
 import {
   FileStrategyCandidateStore,
@@ -68,7 +64,36 @@ import {
   type TaskContinuityStore,
 } from "./store.ts";
 import type { PindieExtensionOptions } from "./extension.ts";
+import type { NotionProjectMemoryClient } from "./notion-project-memory.ts";
 import type { ProjectMemorySink } from "./project-memory.ts";
+
+const require = createRequire(import.meta.url);
+
+type DiscordRemoteModule = typeof import("./discord-remote.ts");
+type RemoteCompanionModule = typeof import("./remote-companion.ts");
+type NotionProjectMemoryModule = typeof import("./notion-project-memory.ts");
+type NotionSdkModule = {
+  readonly Client: new (options: {
+    readonly auth: string;
+    readonly notionVersion: string;
+  }) => NotionProjectMemoryClient;
+};
+
+function loadDiscordRemoteModule(): DiscordRemoteModule {
+  return require("./discord-remote.ts") as DiscordRemoteModule;
+}
+
+function loadRemoteCompanionModule(): RemoteCompanionModule {
+  return require("./remote-companion.ts") as RemoteCompanionModule;
+}
+
+function loadNotionProjectMemoryModule(): NotionProjectMemoryModule {
+  return require("./notion-project-memory.ts") as NotionProjectMemoryModule;
+}
+
+function loadNotionSdk(): NotionSdkModule {
+  return require("@notionhq/client") as NotionSdkModule;
+}
 
 /** Startup-time product selection. This is configuration, not semantic State. */
 export interface PindieFeatureSelection {
@@ -153,6 +178,16 @@ export function resolvePindieFeatureSelection(
       "Pindie feature selection is invalid: Cross-Project Learning requires Self-Improvement.",
     );
   }
+  if (!selfImprovement) {
+    throw new Error(
+      "Slice C composition does not support disabling Self-Improvement until Composable Slice D is implemented.",
+    );
+  }
+  if (!crossProjectLearning) {
+    throw new Error(
+      "Slice C composition does not support disabling Cross-Project Learning until Composable Slice E is implemented.",
+    );
+  }
 
   const remoteAvailable = availability.remote === true;
   const workMemoryAvailable = availability.workMemory === true;
@@ -193,17 +228,6 @@ export function resolvePindieStorageRoots(
       "projects",
     ),
   });
-}
-
-function assertSliceASelection(selection: PindieFeatureSelection): void {
-  // Slice A establishes the selection contract and makes the already-optional
-  // adapters explicit. SI, CPL, and Presentation still share the existing
-  // integrated registration path; their independent absence is later work.
-  if (!selection.selfImprovement || !selection.crossProjectLearning || !selection.presentation) {
-    throw new Error(
-      "This Slice A composition does not support disabling Self-Improvement, Cross-Project Learning, or Presentation yet.",
-    );
-  }
 }
 
 function configuredWarnings(
@@ -249,7 +273,6 @@ export function composePindieExtension(
     },
     env,
   );
-  assertSliceASelection(selection);
 
   const stateStore: PindieStateStore = input.store ?? new FileStateStore({
     baseDir: roots.projectsBaseDir,
@@ -312,6 +335,8 @@ export function composePindieExtension(
   if (selection.workMemory) {
     projectMemorySink = input.projectMemorySink;
     if (projectMemorySink === undefined && configuredMemory?.enabled === true) {
+      const { Client } = loadNotionSdk();
+      const { NotionProjectMemorySink } = loadNotionProjectMemoryModule();
       const client = new Client({
         auth: configuredMemory.config.token,
         notionVersion: NOTION_PROJECT_MEMORY_API_VERSION,
@@ -324,10 +349,12 @@ export function composePindieExtension(
   }
 
   let remoteCompanion: PindieExtensionOptions["remoteCompanion"];
-  let remoteRoutingStore = input.remoteRoutingStore;
+  let remoteRoutingStore = selection.remote ? input.remoteRoutingStore : undefined;
   if (selection.remote) {
     remoteCompanion = input.remoteCompanion;
     if (remoteCompanion === undefined && configuredRemote?.enabled === true) {
+      const { DiscordRemote } = loadDiscordRemoteModule();
+      const { RemoteCompanion } = loadRemoteCompanionModule();
       const discord = new DiscordRemote(configuredRemote.config);
       remoteRoutingStore ??= new RemoteRoutingStore({
         baseDir: roots.remoteRoutingBaseDir,
@@ -342,8 +369,14 @@ export function composePindieExtension(
     }
   }
 
+  const {
+    projectMemorySink: _inputProjectMemorySink,
+    remoteCompanion: _inputRemoteCompanion,
+    remoteRoutingStore: _inputRemoteRoutingStore,
+    ...inputWithoutOptionalFeatures
+  } = input;
   const extensionOptions: PindieExtensionOptions = {
-    ...input,
+    ...inputWithoutOptionalFeatures,
     store: stateStore,
     continuityStore,
     experienceStore,
@@ -362,9 +395,9 @@ export function composePindieExtension(
     strategyTrustScopeSourceResolver,
     strategyTrustScopeWriterLock,
     scopeProjectTrustReader,
-    projectMemorySink,
-    remoteCompanion,
-    remoteRoutingStore,
+    ...(projectMemorySink === undefined ? {} : { projectMemorySink }),
+    ...(remoteCompanion === undefined ? {} : { remoteCompanion }),
+    ...(remoteRoutingStore === undefined ? {} : { remoteRoutingStore }),
     featureSelection: selection,
     storageRoots: roots,
   };

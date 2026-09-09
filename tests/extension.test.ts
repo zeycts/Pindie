@@ -890,6 +890,60 @@ test("Work Memory registration is conditional on an injected ProjectMemorySink",
   );
 });
 
+test("Presentation can be disabled without removing Core settlement or SI commands", async () => {
+  let usageCalls = 0;
+  const harness = createHarness(
+    [["/repo", activeState()]],
+    {},
+    {
+      featureSelection: { presentation: false },
+      subscriptionUsageProvider: {
+        fetchUsage: async () => {
+          usageCalls += 1;
+          return null;
+        },
+      },
+    },
+  );
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const uiContext = {
+    ...context("/repo"),
+    hasUI: true,
+    ui: {
+      theme: { fg: (_color: string, text: string) => text },
+      notify: () => undefined,
+      setStatus: (id: string, text: string | undefined) => statuses.push({ id, text }),
+    },
+  };
+
+  assert.equal(harness.integration.reasoning, null);
+  assert.equal(harness.integration.runActivity, null);
+  assert.equal(harness.api.commands.has("efficiency"), false);
+  assert.equal(harness.api.commands.has("reasoning"), false);
+  assert.equal(harness.api.commands.has("experience"), true);
+  assert.equal(harness.api.commands.has("strategies"), true);
+  assert.equal(harness.api.commands.has("trial-review"), true);
+  assert.equal(harness.api.handlers.has("thinking_level_select"), false);
+  assert.equal(harness.api.handlers.has("turn_end"), false);
+  assert.equal(harness.api.handlers.has("tool_execution_start"), false);
+  assert.equal(harness.api.handlers.has("tool_execution_end"), false);
+
+  await harness.api.handler("session_start")(
+    { type: "session_start", reason: "startup" },
+    uiContext,
+  );
+  await harness.api.handler("before_agent_start")(
+    { type: "before_agent_start", systemPrompt: "", prompt: "Continue", systemPromptOptions: {} },
+    uiContext,
+  );
+  assert.equal(harness.integration.runTimer.active, true);
+  assert.equal(usageCalls, 0);
+  assert.deepEqual(statuses, []);
+
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, uiContext);
+  assert.equal(harness.integration.runTimer.active, false);
+});
+
 test("configured extension composes Memory and Discord options in one registration", () => {
   const memory = {
     PINDIE_NOTION_TOKEN: "test-notion-token",
