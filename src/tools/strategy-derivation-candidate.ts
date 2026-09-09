@@ -26,7 +26,6 @@ import type {
   RunExperienceSourceRecord,
 } from "../experience-store.ts";
 import {
-  loadTrustedStrategyPortfolio,
   sameTrustedPortfolioSnapshot,
   trustedLogicalStrategyIds,
   type TrustedStrategyPortfolio,

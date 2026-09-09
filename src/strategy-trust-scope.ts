@@ -56,7 +56,7 @@ import {
 import {
   readScopeTrialGlobalArtifacts,
   type ScopeTrialGlobalArtifacts,
-} from "./strategy-trust-scope-trial.ts";
+} from "./strategy-trust-safety.ts";
 import {
   SEED_STRATEGIES,
 } from "./strategies.ts";

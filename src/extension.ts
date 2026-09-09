@@ -36,6 +36,7 @@ import {
   shouldProbeContinuation,
 } from "./continuation.ts";
 import { PresentationIntegration } from "./presentation-integration.ts";
+import { CrossProjectLearningIntegration } from "./cross-project-learning-integration.ts";
 import { SelfImprovementIntegration } from "./self-improvement-integration.ts";
 import type {
   RunExperienceProjectReader,
@@ -277,11 +278,11 @@ function registerComposedPindieExtension(
     defaultResolveProjectRoot;
 
   let selfImprovement: SelfImprovementIntegration | null = null;
+  let crossProjectLearning: CrossProjectLearningIntegration | null = null;
   if (featureSelection.selfImprovement) {
     const {
       experienceStore,
       experienceReader,
-      crossProjectExperienceReader,
       strategyCandidateStore,
       strategyCandidateReader,
       strategyDerivationCandidateStore,
@@ -294,7 +295,6 @@ function registerComposedPindieExtension(
       strategyTrustScopeDecisionStore,
       strategyTrustScopeSourceResolver,
       strategyTrustScopeWriterLock,
-      scopeProjectTrustReader,
     } = options;
     if (
       experienceStore === undefined || experienceReader === undefined ||
@@ -303,8 +303,7 @@ function registerComposedPindieExtension(
       strategyDecisionStore === undefined || strategyDecisionReader === undefined ||
       strategyDerivationDecisionStore === undefined || strategyDerivationDecisionReader === undefined ||
       strategyTrustScopeCandidateStore === undefined || strategyTrustScopeDecisionStore === undefined ||
-      strategyTrustScopeSourceResolver === undefined || strategyTrustScopeWriterLock === undefined ||
-      scopeProjectTrustReader === undefined
+      strategyTrustScopeSourceResolver === undefined || strategyTrustScopeWriterLock === undefined
     ) {
       throw new Error("Self-Improvement composition is missing an explicit production dependency.");
     }
@@ -317,7 +316,6 @@ function registerComposedPindieExtension(
       },
       experienceStore,
       experienceReader,
-      crossProjectExperienceReader,
       strategyCandidateStore,
       strategyCandidateReader,
       strategyDerivationCandidateStore,
@@ -330,9 +328,25 @@ function registerComposedPindieExtension(
       strategyTrustScopeDecisionStore,
       strategyTrustScopeSourceResolver,
       strategyTrustScopeWriterLock,
-      scopeProjectTrustReader,
       now: continuityNow,
     });
+  }
+  if (featureSelection.crossProjectLearning) {
+    if (selfImprovement === null) {
+      throw new Error("Cross-Project Learning requires Self-Improvement.");
+    }
+    if (options.crossProjectExperienceReader === undefined || options.scopeProjectTrustReader === undefined) {
+      throw new Error("Cross-Project Learning composition is missing an explicit production dependency.");
+    }
+    crossProjectLearning = new CrossProjectLearningIntegration({
+      pi,
+      learning: selfImprovement.learningAccess,
+      trust: selfImprovement.strategyTrustAccess,
+      crossProjectExperienceReader: options.crossProjectExperienceReader,
+      scopeProjectTrustReader: options.scopeProjectTrustReader,
+      now: continuityNow,
+    });
+    selfImprovement.attachCrossProjectLearning(crossProjectLearning.asAttachment());
   }
   const presentation = new PresentationIntegration(pi, {
     getState: () => runtime.projectRoot === null ? null : runtime.state,
@@ -501,6 +515,7 @@ function registerComposedPindieExtension(
     });
   }
   selfImprovement?.registerCommands();
+  crossProjectLearning?.registerCommands();
 
   if (featureSelection.presentation) {
     pi.registerCommand("reasoning", {

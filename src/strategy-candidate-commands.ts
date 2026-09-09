@@ -33,20 +33,6 @@ import {
   type StrategyDerivationCandidateReader,
   type StrategyDerivationCandidateV1,
 } from "./strategy-derivation-candidates.ts";
-import type {
-  StrategyTrustScopeCandidateReader,
-} from "./strategy-trust-scope-candidates.ts";
-import type {
-  StrategyTrustScopeDecisionReader,
-} from "./strategy-trust-scope-decisions.ts";
-import {
-  listOpenScopeTrialCandidates,
-  scopeTrialCommandValue,
-  type ScopeTrialCandidateProjectionEntry,
-} from "./strategy-trust-scope-trial.ts";
-import type {
-  StrategyTrustScopeSourceResolver,
-} from "./strategy-trust-scope-resolution.ts";
 import {
   trustedLogicalStrategyIds,
   type TrustedStrategyPortfolio,
@@ -86,10 +72,6 @@ export interface TrialCommandProjectionInput {
   readonly derivationDecisionReader?: StrategyDerivationDecisionReader;
   /** Fresh current trust used to exclude stale or collided Derivation Candidates. */
   readonly trustedPortfolio: TrustedStrategyPortfolio;
-  /** Optional global Scope Trial projection; omitted preserves SI-only callers. */
-  readonly scopeCandidateReader?: StrategyTrustScopeCandidateReader;
-  readonly scopeDecisionReader?: StrategyTrustScopeDecisionReader;
-  readonly scopeSourceResolver?: StrategyTrustScopeSourceResolver;
 }
 
 export interface TrialReviewCommandProjectionInput {
@@ -111,13 +93,7 @@ export type TrialCommandProjectionEntry =
       readonly label: string;
       readonly option: AutocompleteItem;
     }
-  | {
-      readonly kind: "scope";
-      readonly candidate: ScopeTrialCandidateProjectionEntry["candidate"];
-      readonly binding: ScopeTrialCandidateProjectionEntry["binding"];
-      readonly label: string;
-      readonly option: AutocompleteItem;
-    };
+;
 
 export type TrialReviewCommandProjectionEntry =
   | (CandidateCommandProjectionEntry & { readonly kind: "revision" })
@@ -533,36 +509,6 @@ export async function buildTrialCommandProjection(
     option: { value: candidate.candidateId, label: "" },
   })));
 
-  if (
-    input.scopeCandidateReader !== undefined &&
-    input.scopeDecisionReader !== undefined &&
-    input.scopeSourceResolver !== undefined
-  ) {
-    try {
-      const scopeProjection = await listOpenScopeTrialCandidates({
-        targetProjectRoot: input.projectRoot,
-        targetPortfolio: input.trustedPortfolio,
-        candidateReader: input.scopeCandidateReader,
-        decisionReader: input.scopeDecisionReader,
-        sourceResolver: input.scopeSourceResolver,
-      });
-      entries.push(...scopeProjection.entries.map((entry) => ({
-        kind: "scope" as const,
-        candidate: entry.candidate,
-        binding: entry.binding,
-        label: entry.label,
-        option: {
-          value: scopeTrialCommandValue(entry.candidate.candidateId),
-          label: "",
-        },
-      })));
-    } catch {
-      // Scope artifacts are an optional global projection. A malformed or
-      // changing global namespace must hide Scope subjects without hiding the
-      // independent project-local Revision/Derivation options.
-    }
-  }
-
   // Keep labels bounded and disambiguate only display collisions. Values are
   // always the exact canonical UUID and never parsed from the label.
   const labels = entries.map((entry) => entry.label);
@@ -597,9 +543,7 @@ export async function buildTrialCommandProjection(
       ...entry,
       label,
       option: Object.freeze({
-        value: entry.kind === "scope"
-          ? scopeTrialCommandValue(entry.candidate.candidateId)
-          : entry.candidate.candidateId,
+        value: entry.candidate.candidateId,
         label,
       }),
     });

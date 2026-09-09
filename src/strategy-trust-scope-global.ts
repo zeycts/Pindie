@@ -1,6 +1,9 @@
 import { isDeepStrictEqual } from "node:util";
 
-import type { ScopeTrialGlobalArtifacts } from "./strategy-trust-scope-trial.ts";
+import {
+  readScopeTrialGlobalArtifacts,
+  type ScopeTrialGlobalArtifacts,
+} from "./strategy-trust-scope-artifacts.ts";
 import type { StrategyDerivationCandidateV1 } from "./strategy-derivation-candidates.ts";
 import type { StrategyDerivationDecisionV1 } from "./strategy-derivation-decisions.ts";
 import {
@@ -179,11 +182,9 @@ function promotedScopeDecisions(
 export async function loadUserGlobalTrustedDerivedStrategyProjection(
   input: UserGlobalTrustedDerivedStrategyProjectionInput,
 ): Promise<UserGlobalTrustedDerivedStrategyProjection> {
-  // These modules depend on the project-local portfolio for frozen v0.7
-  // validation. Loading them lazily keeps the optional global projection from
-  // introducing a module-initialization cycle into strategy-portfolio.ts.
-  const [scopeTrial, derivationCandidates, derivationDecisions, scopeCandidates] = await Promise.all([
-    import("./strategy-trust-scope-trial.ts"),
+  // These validators retain the immutable source schemas while the global
+  // projection remains independent from Scope-Trial business behavior.
+  const [derivationCandidates, derivationDecisions, scopeCandidates] = await Promise.all([
     import("./strategy-derivation-candidates.ts"),
     import("./strategy-derivation-decisions.ts"),
     import("./strategy-trust-scope-candidates.ts"),
@@ -195,7 +196,7 @@ export async function loadUserGlobalTrustedDerivedStrategyProjection(
     validateDecision: derivationDecisions.validateStrategyDerivationDecisionArtifact,
     validateDecisionBinding: derivationDecisions.validateStrategyDerivationDecisionBinding,
   };
-  const artifacts = await scopeTrial.readScopeTrialGlobalArtifacts(
+  const artifacts = await readScopeTrialGlobalArtifacts(
     input.candidateReader,
     input.decisionReader,
   );

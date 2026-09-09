@@ -127,7 +127,7 @@ test("Slice A never derives feature roots from an injected StateStore", () => {
   );
 });
 
-test("Slice D allows SI off, derives CPL off, and drops SI dependencies", () => {
+test("Slice E allows SI-only composition and drops CPL dependencies when disabled", () => {
   const roots = {
     projectsBaseDir: "/tmp/slice-d-projects",
     globalBaseDir: "/tmp/slice-d-global",
@@ -168,6 +168,19 @@ test("Slice D allows SI off, derives CPL off, and drops SI dependencies", () => 
   );
   assert.equal(composition.extensionOptions.experienceStore, undefined);
 
+  const siOnly = composePindieExtension({
+    featureSelection: { selfImprovement: true, crossProjectLearning: false },
+    storageRoots: roots,
+  });
+  assert.equal(siOnly.featureSelection.selfImprovement, true);
+  assert.equal(siOnly.featureSelection.crossProjectLearning, false);
+  for (const dependency of ["experienceStore", "strategyCandidateStore", "strategyTrustScopeCandidateStore", "strategyTrustScopeWriterLock"]) {
+    assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), true, dependency);
+  }
+  for (const dependency of ["crossProjectExperienceReader", "scopeProjectTrustReader"]) {
+    assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), false, dependency);
+  }
+
   assert.deepEqual(
     resolvePindieFeatureSelection({ selfImprovement: false }, {}, {}),
     {
@@ -187,13 +200,13 @@ test("Slice D allows SI off, derives CPL off, and drops SI dependencies", () => 
     ),
     /Cross-Project Learning requires Self-Improvement/,
   );
-  assert.throws(
-    () => resolvePindieFeatureSelection(
+  assert.equal(
+    resolvePindieFeatureSelection(
       { selfImprovement: true, crossProjectLearning: false },
       {},
       {},
-    ),
-    /Slice D composition does not support disabling Cross-Project Learning until Composable Slice E is implemented/,
+    ).crossProjectLearning,
+    false,
   );
 
   const optionalDisabled = composeConfiguredPindieExtension(
@@ -214,7 +227,7 @@ test("Slice D allows SI off, derives CPL off, and drops SI dependencies", () => 
   assert.equal(optionalDisabled.extensionOptions.projectMemorySink, undefined);
 });
 
-test("Slice D resolves environment-driven SI/CPL selection and rejects incompatible combinations", () => {
+test("Slice E resolves environment-driven SI/CPL selection and rejects incompatible combinations", () => {
   const siOff = composeConfiguredPindieExtension({}, {
     PINDIE_SELF_IMPROVEMENT_ENABLED: "false",
   });
@@ -236,12 +249,25 @@ test("Slice D resolves environment-driven SI/CPL selection and rejects incompati
     }),
     /Cross-Project Learning requires Self-Improvement/,
   );
-  assert.throws(
-    () => composeConfiguredPindieExtension({}, {
-      PINDIE_SELF_IMPROVEMENT_ENABLED: "true",
-      PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "false",
-    }),
-    /Slice D composition does not support disabling Cross-Project Learning until Composable Slice E is implemented/,
+  const siOnly = composeConfiguredPindieExtension({}, {
+    PINDIE_SELF_IMPROVEMENT_ENABLED: "true",
+    PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "false",
+  });
+  assert.equal(siOnly.featureSelection.selfImprovement, true);
+  assert.equal(siOnly.featureSelection.crossProjectLearning, false);
+  assert.equal(Object.hasOwn(siOnly.extensionOptions, "crossProjectExperienceReader"), false);
+  assert.equal(Object.hasOwn(siOnly.extensionOptions, "scopeProjectTrustReader"), false);
+
+  assert.deepEqual(
+    siOnly.featureSelection,
+    resolvePindieFeatureSelection(
+      { selfImprovement: true, crossProjectLearning: false },
+      {},
+      {
+        PINDIE_SELF_IMPROVEMENT_ENABLED: "true",
+        PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "false",
+      },
+    ),
   );
 });
 

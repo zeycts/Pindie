@@ -63,7 +63,7 @@ import type {
 import {
   readScopeTrialGlobalArtifacts,
   type ScopeTrialGlobalArtifacts,
-} from "./strategy-trust-scope-trial.ts";
+} from "./strategy-trust-safety.ts";
 import {
   STRATEGY_REVISION_DIRECTORY_NAME,
   type ResolvedStrategyTrustScopeSource,

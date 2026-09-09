@@ -27,11 +27,8 @@ import {
   type StrategyTrustScopeCandidateV1,
   type StrategyTrustScopeSourceStrategyV1,
 } from "./strategy-trust-scope-candidates.ts";
-import {
-  validateStrategyTrustScopeDecisionArtifact,
-  validateStrategyTrustScopeDecisionBinding,
-  type StrategyTrustScopeDecisionReader,
-  type StrategyTrustScopeDecisionV1,
+import type {
+  StrategyTrustScopeDecisionReader,
 } from "./strategy-trust-scope-decisions.ts";
 import {
   type ResolvedStrategyTrustScopeSource,
@@ -40,6 +37,13 @@ import {
 import type {
   TrustedStrategyPortfolio,
 } from "./strategy-portfolio.ts";
+import { readScopeTrialGlobalArtifacts } from "./strategy-trust-safety.ts";
+import type { ScopeTrialGlobalArtifacts } from "./strategy-trust-safety.ts";
+
+// Compatibility exports retain the existing Scope-Trial-facing names while
+// immutable global artifact validation belongs to the trust-safety substrate.
+export { readScopeTrialGlobalArtifacts };
+export type { ScopeTrialGlobalArtifacts };
 
 /** Explicit namespace used by `/trial` for global Scope Candidates. */
 export const SCOPE_TRIAL_COMMAND_PREFIX = "scope:";
@@ -91,10 +95,6 @@ export interface ScopeTrialBinding {
   readonly renderedPacket: string;
 }
 
-export interface ScopeTrialGlobalArtifacts {
-  readonly candidates: readonly StrategyTrustScopeCandidateV1[];
-  readonly decisions: readonly StrategyTrustScopeDecisionV1[];
-}
 
 export interface ScopeTrialResolutionInput {
   readonly candidateId: string;
@@ -187,71 +187,6 @@ export function isScopeTrialCommandValue(value: string): boolean {
   } catch {
     return false;
   }
-}
-
-function validateGlobalArtifacts(
-  rawCandidates: readonly StrategyTrustScopeCandidateV1[],
-  rawDecisions: readonly StrategyTrustScopeDecisionV1[],
-): ScopeTrialGlobalArtifacts {
-  if (!Array.isArray(rawCandidates) || !Array.isArray(rawDecisions)) {
-    throw new Error("Global Scope artifact readers returned invalid collections.");
-  }
-  const candidatesById = new Map<string, StrategyTrustScopeCandidateV1>();
-  const candidateFingerprints = new Map<string, string>();
-  for (const rawCandidate of rawCandidates) {
-    const candidate = validateStrategyTrustScopeCandidateArtifact(
-      rawCandidate,
-      rawCandidate.candidateId,
-    );
-    if (candidatesById.has(candidate.candidateId)) {
-      throw new Error(`Duplicate global Scope Candidates exist for '${candidate.candidateId}'.`);
-    }
-    const fingerprint = strategyTrustScopeCandidateFingerprint(candidate);
-    const priorId = candidateFingerprints.get(fingerprint);
-    if (priorId !== undefined) {
-      throw new Error(`Global Scope Candidates '${priorId}' and '${candidate.candidateId}' bind the same exact hypothesis.`);
-    }
-    candidatesById.set(candidate.candidateId, candidate);
-    candidateFingerprints.set(fingerprint, candidate.candidateId);
-  }
-
-  const decisionsById = new Map<string, StrategyTrustScopeDecisionV1>();
-  for (const rawDecision of rawDecisions) {
-    const decision = validateStrategyTrustScopeDecisionArtifact(
-      rawDecision,
-      rawDecision.candidateId,
-    );
-    if (decisionsById.has(decision.candidateId)) {
-      throw new Error(`Duplicate global Scope Decisions exist for '${decision.candidateId}'.`);
-    }
-    const candidate = candidatesById.get(decision.candidateId);
-    if (candidate === undefined) {
-      throw new Error(`Global Scope Decision '${decision.candidateId}' is missing its immutable Candidate.`);
-    }
-    validateStrategyTrustScopeDecisionBinding(decision, candidate);
-    decisionsById.set(decision.candidateId, decision);
-  }
-
-  const candidates = [...candidatesById.values()].sort((left, right) =>
-    compareText(left.candidateId, right.candidateId));
-  const decisions = [...decisionsById.values()].sort((left, right) =>
-    compareText(left.candidateId, right.candidateId));
-  return Object.freeze({
-    candidates: Object.freeze(candidates),
-    decisions: Object.freeze(decisions),
-  });
-}
-
-/** Read and strictly validate the complete global Scope namespace. */
-export async function readScopeTrialGlobalArtifacts(
-  candidateReader: StrategyTrustScopeCandidateReader,
-  decisionReader: StrategyTrustScopeDecisionReader,
-): Promise<ScopeTrialGlobalArtifacts> {
-  const [candidates, decisions] = await Promise.all([
-    candidateReader.readAll(),
-    decisionReader.readAll(),
-  ]);
-  return validateGlobalArtifacts(candidates, decisions);
 }
 
 function sourceSelectionFromCandidate(

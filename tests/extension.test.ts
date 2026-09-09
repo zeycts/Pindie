@@ -948,7 +948,7 @@ test("Presentation can be disabled without removing Core settlement or SI comman
   assert.equal(harness.integration.runTimer.active, false);
 });
 
-test("Slice D SI off keeps Core tools and Seed Policy without reading SI stores", async () => {
+test("Slice E SI off keeps Core tools and Seed Policy without reading SI stores", async () => {
   const reader = new ExtensionTestExperienceReader();
   const experienceStore = new ExtensionTestExperienceStore();
   const harness = createHarness(
@@ -1018,6 +1018,74 @@ test("Slice D SI off keeps Core tools and Seed Policy without reading SI stores"
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
   assert.deepEqual(reader.roots, []);
   assert.deepEqual(experienceStore.records, []);
+});
+
+test("Slice E SI-only keeps local learning while omitting CPL workflow and global presentation", async () => {
+  let globalReads = 0;
+  const globalCandidates: StrategyTrustScopeCandidateStore = {
+    read: async () => null,
+    readAll: async () => {
+      globalReads += 1;
+      throw new Error("CPL global namespace must not be read for SI-only presentation");
+    },
+    save: async () => undefined,
+  };
+  const globalDecisions: StrategyTrustScopeDecisionStore = {
+    read: async () => null,
+    readAll: async () => {
+      globalReads += 1;
+      throw new Error("CPL global namespace must not be read for SI-only presentation");
+    },
+    save: async () => undefined,
+  };
+  const revisionReader = { read: async () => null, readAll: async () => [] };
+  const derivationReader = { read: async () => null, readAll: async () => [] };
+  const decisions = testDecisionStore();
+  const derivationDecisions = testDerivationDecisionReader();
+  const harness = createHarness(
+    [["/repo", activeState("SI-only task")]],
+    {},
+    {
+      featureSelection: { selfImprovement: true, crossProjectLearning: false },
+      strategyCandidateReader: revisionReader,
+      strategyDecisionStore: decisions,
+      strategyDecisionReader: decisions,
+      strategyDerivationCandidateReader: derivationReader,
+      strategyDerivationDecisionReader: derivationDecisions,
+      strategyTrustScopeCandidateStore: globalCandidates,
+      strategyTrustScopeDecisionStore: globalDecisions,
+      strategyTrustScopeSourceResolver: { resolve: async () => { throw new Error("not reached"); } },
+    },
+  );
+
+  assert.equal(harness.integration.featureSelection.selfImprovement, true);
+  assert.equal(harness.integration.featureSelection.crossProjectLearning, false);
+  for (const command of ["experience", "strategies", "adapt", "derive", "trial", "trial-review", "promote", "reject"]) {
+    assert.equal(harness.api.commands.has(command), true, `SI command '${command}' must be present`);
+  }
+  for (const command of ["trust-transfer"]) {
+    assert.equal(harness.api.commands.has(command), false, `CPL command '${command}' must be absent`);
+  }
+
+  await startSession(harness, "/repo");
+  await harnessBeforeAgentStart(harness, "/repo");
+  assert.equal(globalReads, 0);
+  const strategyNotices: Array<{ message: string; type: string }> = [];
+  await harness.api.commands.get("strategies").handler("", {
+    ...context("/repo"),
+    ui: { notify: (message: string, type: string) => strategyNotices.push({ message, type }) },
+  });
+  assert.equal(globalReads, 0);
+  assert.doesNotMatch(strategyNotices.at(-1)?.message ?? "", /user-global/i);
+
+  const trialOptions = await harness.api.commands.get("trial").getArgumentCompletions("");
+  assert.deepEqual(trialOptions, []);
+  await executeSemanticTool(harness, "pindie_policy_set", "si-only-seed-policy", {
+    approach: "direct-action",
+  });
+  assert.equal(harness.integration.policySnapshot?.approach.strategyId, "direct-action");
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(globalReads, 0);
 });
 
 test("configured extension composes Memory and Discord options in one registration", () => {
@@ -7169,6 +7237,7 @@ test("SI v0.7 local Derived promotion uses the shared writer lock for final stri
     invalid: 0,
   };
   const harness = createHarness([["/repo", activeState("Derived promotion")]], {}, {
+    featureSelection: { selfImprovement: true, crossProjectLearning: false },
     experienceReader,
     strategyCandidateReader: { read: async () => null, readAll: async () => [] },
     strategyDecisionStore: testDecisionStore(),
@@ -7225,6 +7294,7 @@ test("SI v0.7 local Derived promotion fails when a valid global revision owns th
   };
   const emptyRevisionReader = { read: async () => null, readAll: async () => [] };
   const harness = createHarness([["/repo", activeState("Global conflict")]], {}, {
+    featureSelection: { selfImprovement: true, crossProjectLearning: false },
     experienceReader: Object.assign(new ExtensionTestExperienceReader(), {
       result: {
         records: derivationPromotionRecords(localCandidate),
@@ -7293,6 +7363,7 @@ test("SI v0.7 malformed global authority is presentation-isolated but blocks loc
     invalid: 0,
   };
   const harness = createHarness([["/repo", activeState("Malformed global authority")]], {}, {
+    featureSelection: { selfImprovement: true, crossProjectLearning: false },
     experienceReader,
     strategyCandidateReader: { read: async () => null, readAll: async () => [] },
     strategyDecisionStore: testDecisionStore(),
@@ -7310,8 +7381,9 @@ test("SI v0.7 malformed global authority is presentation-isolated but blocks loc
     ...context("/repo"),
     ui: { notify: (message: string, type: string) => strategyNotices.push({ message, type }) },
   });
-  assert.match(strategyNotices.at(-1)?.message ?? "", /Optional user-global layer: unavailable/);
-  assert.match(strategyNotices.at(-1)?.message ?? "", /immutable Seed Strategies remain available/);
+  assert.doesNotMatch(strategyNotices.at(-1)?.message ?? "", /Optional user-global layer: unavailable/);
+  assert.doesNotMatch(strategyNotices.at(-1)?.message ?? "", /user-global/);
+  assert.match(strategyNotices.at(-1)?.message ?? "", /Trusted Strategy Portfolio/);
 
   const promotionNotices: Array<{ message: string; type: string }> = [];
   await harness.api.commands.get("promote").handler(localCandidate.candidateId, {
@@ -7346,6 +7418,7 @@ test("SI v0.7 unrelated local Derived promotion remains valid with coherent glob
   };
   const emptyScope = emptyScopeAuthority();
   const harness = createHarness([["/repo", activeState("Unrelated local promotion")]], {}, {
+    featureSelection: { selfImprovement: true, crossProjectLearning: false },
     experienceReader,
     strategyCandidateReader: { read: async () => null, readAll: async () => [] },
     strategyDecisionStore: testDecisionStore(),
