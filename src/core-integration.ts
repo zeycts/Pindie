@@ -97,6 +97,7 @@ export interface CoreToolRegistrationOptions {
     kind: "approach" | "modifier",
     ctx: ExtensionContext,
   ) => StrategyRevisionSelection | Promise<StrategyRevisionSelection>;
+  /** Read-only observation after Core stages the Policy Snapshot. */
   readonly onPolicySet?: (snapshot: PolicySnapshot) => void;
   /** Read-only projection refresh after a Core semantic State transition. */
   readonly onSemanticStateChange?: () => void;
@@ -339,10 +340,7 @@ export class CoreIntegration {
   }
 
   /** Derive current Core authority for focused callers and Core-only tests. */
-  authorizeTool(
-    toolName: string,
-    additionalCapabilities: readonly PindieCapability[] = [],
-  ): CoreAuthorizationResult {
+  authorizeTool(toolName: string): CoreAuthorizationResult {
     const effect = this.classifyToolEffect(toolName);
     const derivation = this.run.deriveSnapshot();
     if (!derivation.ok) {
@@ -357,7 +355,6 @@ export class CoreIntegration {
     const capabilities = new Set<PindieCapability>(
       deriveCapabilities(derivation.snapshot),
     );
-    for (const capability of additionalCapabilities) capabilities.add(capability);
     return {
       effect,
       snapshot: derivation.snapshot,

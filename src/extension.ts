@@ -1897,7 +1897,6 @@ function registerComposedPindieExtension(
       presentation.refreshStatus();
       projectRemoteSemantics();
     },
-    onPolicySet: (snapshot) => run.setPolicySnapshot(snapshot),
     resolveRevisionSelector: async (
       selector: StrategyRevisionSelector,
       kind: "approach" | "modifier",

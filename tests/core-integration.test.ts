@@ -125,6 +125,24 @@ test("Core-only assembly owns base Task, Gateway, verification/Gate, and Seed Po
   assert.equal(getVerificationStatus(core.runtime.state.task!), "passed");
 });
 
+test("Core-only authorization ignores caller-provided capability injection", async () => {
+  const core = createCoreIntegration({
+    store: new MemoryStateStore(),
+    continuityStore,
+    taskHandoffEnabled: false,
+  });
+  await core.runtime.load("/core-only");
+  core.beginAgentRunFacts(coreContext());
+
+  const result = Reflect.apply(core.authorizeTool, core, [
+    "edit",
+    ["project.mutate"],
+  ]);
+
+  assert.equal(result.capabilities.has("project.mutate"), false);
+  assert.equal(result.decision?.allowed, false);
+});
+
 test("Core integration has no optional feature implementation imports", async () => {
   const source = await readFile(new URL("../src/core-integration.ts", import.meta.url), "utf8");
 
