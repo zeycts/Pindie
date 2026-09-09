@@ -1345,6 +1345,56 @@ export async function deriveStrategyTrustScopeTrialReview(
     sourceAuthorityFresh &&
     projectTrustAuthorityFresh;
 
+  // Promotion keeps one final, direct read of the complete selected ref set
+  // inside the caller's writer-lock critical section. Compare each selected
+  // project's full matching snapshot with the preceding pass so a changed
+  // record cannot silently satisfy an earlier eligibility decision.
+  let boundarySelectedRefResolution: { readonly valid: boolean; readonly reasons: readonly string[] } = {
+    valid: true,
+    reasons: Object.freeze([]),
+  };
+  if (selectedEvidenceRefs.length > 0) {
+    const boundaryReads = new Map<string, PreparedProjectExperience>();
+    const boundaryReasons: string[] = [];
+    const selectedProjectIds = [...new Set(selectedEvidenceRefs.map((ref) => ref.projectId))]
+      .sort(compareText);
+    for (const projectId of selectedProjectIds) {
+      try {
+        const prepared = prepareProjectExperience(
+          projectId,
+          await input.experienceReader.readProjectId(projectId),
+          source,
+        );
+        boundaryReads.set(projectId, prepared);
+        const prior = freshReads.get(projectId);
+        if (prior === undefined || prior.matching.length !== prepared.matching.length ||
+          prior.matchingDigest !== prepared.matchingDigest || !prepared.complete) {
+          evidenceScanComplete = false;
+          boundaryReasons.push(`selected project ${shortIdentity(projectId)} matching Experience snapshot changed or is incomplete at the promotion boundary`);
+        }
+      } catch (error) {
+        evidenceScanComplete = false;
+        boundaryReasons.push(`selected project ${shortIdentity(projectId)} fresh Experience resolution failed at the promotion boundary: ${errorMessage(error)}`);
+      }
+    }
+    const selectedAtBoundary = await freshSelectedRefs(
+      selectedEvidenceRefs,
+      boundaryReads,
+      source,
+      finalSourceFacts.sourceCandidate,
+      {
+        sourceBindingValid: sourceAuthorityFresh && finalSourceFacts.sourceBindingValid,
+        sourceTrustValid: sourceAuthorityFresh && finalSourceFacts.sourceTrustValid,
+        globalStateComplete: globalAuthorityFresh && finalGlobalFacts.globalStateComplete,
+      },
+    );
+    boundarySelectedRefResolution = Object.freeze({
+      valid: boundaryReasons.length === 0 && selectedAtBoundary.valid,
+      reasons: Object.freeze([...boundaryReasons, ...selectedAtBoundary.reasons]),
+    });
+    if (!boundarySelectedRefResolution.valid) reasons.push(...boundarySelectedRefResolution.reasons);
+  }
+
   projectTrustScanComplete = projectTrustAuthorityFresh;
 
   const globalStateComplete = globalFacts.globalStateComplete &&
@@ -1405,7 +1455,9 @@ export async function deriveStrategyTrustScopeTrialReview(
     projectTrustScanComplete &&
     globalStateComplete &&
     authoritySnapshotFresh;
-  const selectedEvidenceRefsValid = selectedRefResolution.valid && authoritySnapshotFresh;
+  const selectedEvidenceRefsValid = selectedRefResolution.valid &&
+    boundarySelectedRefResolution.valid &&
+    authoritySnapshotFresh;
   if (selectedRefResolution.valid && !authoritySnapshotFresh) {
     reasons.push("selected evidence refs were validated against an authority snapshot that changed during review");
   }
@@ -1645,6 +1697,149 @@ export async function buildScopeTrialReviewCommandProjection(input: {
 
 export function filterScopeTrialReviewCommandOptions(
   projection: ScopeTrialReviewCommandProjection,
+  prefix: string,
+): Array<{ readonly value: string; readonly label: string }> {
+  return projection.options.filter((option) => option.value.startsWith(prefix));
+}
+
+export type StrategyTrustScopeDecisionCommand = "promote" | "reject";
+export const MAX_SCOPE_DECISION_COMMAND_LABEL_LENGTH = 192;
+
+export interface ScopeDecisionCommandProjectionEntry {
+  readonly candidate: StrategyTrustScopeCandidateV1;
+  readonly review: StrategyTrustScopeTrialReview | null;
+  readonly label: string;
+  readonly option: { readonly value: string; readonly label: string };
+}
+
+export interface ScopeDecisionCommandProjection {
+  readonly command: StrategyTrustScopeDecisionCommand;
+  readonly entries: readonly ScopeDecisionCommandProjectionEntry[];
+  readonly options: readonly { readonly value: string; readonly label: string }[];
+}
+
+function scopeDecisionLabel(
+  candidate: StrategyTrustScopeCandidateV1,
+  command: StrategyTrustScopeDecisionCommand,
+  review: StrategyTrustScopeTrialReview | null,
+): string {
+  const source = candidate.sourceStrategy;
+  const suffix = command === "promote"
+    ? `user-global trust eligible · ${review?.eligibleTrialRunCount ?? 0} eligible Runs · ${review?.distinctEligibleTargetProjectCount ?? 0} target projects`
+    : "open user-global trust hypothesis · rejection is not falsification";
+  const label = `${source.strategyId} (${source.kind}) · source ${shortIdentity(source.sourceProjectId)} · revision ${shortIdentity(source.revisionIdentity)} · ${suffix}`;
+  return label.length <= MAX_SCOPE_DECISION_COMMAND_LABEL_LENGTH
+    ? label
+    : `${label.slice(0, MAX_SCOPE_DECISION_COMMAND_LABEL_LENGTH - 1)}…`;
+}
+
+/**
+ * Build fresh namespaced `/promote` or `/reject` options for Scope
+ * Candidates. Completion is advisory; command dispatch repeats the lock-held
+ * authority and evidence checks.
+ */
+export async function buildScopeDecisionCommandProjection(input: {
+  readonly command: StrategyTrustScopeDecisionCommand;
+  readonly candidateReader: StrategyTrustScopeCandidateReader;
+  readonly decisionReader: StrategyTrustScopeDecisionReader;
+  readonly sourceResolver: StrategyTrustScopeSourceResolver;
+  readonly experienceReader?: RunExperienceProjectReader;
+  readonly projectTrustReader?: ScopeProjectTrustReader;
+  readonly currentProjectRoot?: string | null;
+}): Promise<ScopeDecisionCommandProjection> {
+  if (input.command === "promote" &&
+    (input.experienceReader === undefined || input.projectTrustReader === undefined)) {
+    throw new Error("Scope Promotion completion requires the complete cross-project authority projection.");
+  }
+  const artifacts = await readScopeTrialGlobalArtifacts(
+    input.candidateReader,
+    input.decisionReader,
+  );
+  const terminalIds = new Set(artifacts.decisions.map((decision) => decision.candidateId));
+  const entries: ScopeDecisionCommandProjectionEntry[] = [];
+  for (const candidate of [...artifacts.candidates].sort((left, right) =>
+    compareText(left.candidateId, right.candidateId))) {
+    if (terminalIds.has(candidate.candidateId)) continue;
+    if (input.command === "reject") {
+      const sourceFacts = await deriveSourceReviewFacts(candidate, input.sourceResolver);
+      if (!sourceFacts.sourceBindingValid || !sourceFacts.sourceTrustValid ||
+        SEED_STRATEGIES.some((seed) => seed.id === candidate.sourceStrategy.strategyId)) {
+        continue;
+      }
+      const label = scopeDecisionLabel(candidate, input.command, null);
+      entries.push({
+        candidate,
+        review: null,
+        label,
+        option: Object.freeze({
+          value: scopeTrialReviewCommandValue(candidate.candidateId),
+          label,
+        }),
+      });
+      continue;
+    }
+
+    const review = await deriveStrategyTrustScopeTrialReview({
+      candidate,
+      candidateReader: input.candidateReader,
+      decisionReader: input.decisionReader,
+      sourceResolver: input.sourceResolver,
+      experienceReader: input.experienceReader!,
+      projectTrustReader: input.projectTrustReader!,
+      currentProjectRoot: input.currentProjectRoot,
+    });
+    if (!review.promotionEligibility.eligible) continue;
+    const label = scopeDecisionLabel(candidate, input.command, review);
+    entries.push({
+      candidate,
+      review,
+      label,
+      option: Object.freeze({
+        value: scopeTrialReviewCommandValue(candidate.candidateId),
+        label,
+      }),
+    });
+  }
+
+  // Values are the opaque namespaced IDs. Add a bounded short suffix only if
+  // two meaning-first labels collide; the parser never consumes labels.
+  const labels = entries.map((entry) => entry.label);
+  const groups = new Map<string, number[]>();
+  labels.forEach((label, index) => {
+    const group = groups.get(label) ?? [];
+    group.push(index);
+    groups.set(label, group);
+  });
+  for (const indexes of groups.values()) {
+    if (indexes.length < 2) continue;
+    for (const index of indexes) {
+      const entry = entries[index]!;
+      labels[index] = `${entry.label.slice(0, MAX_SCOPE_DECISION_COMMAND_LABEL_LENGTH - 11)} · ${entry.candidate.candidateId.slice(0, 8)}`;
+    }
+  }
+  const labeled = entries.map((entry, index) => Object.freeze({
+    ...entry,
+    label: labels[index]!,
+    option: Object.freeze({
+      value: scopeTrialReviewCommandValue(entry.candidate.candidateId),
+      label: labels[index]!,
+    }),
+  }));
+  labeled.sort((left, right) => {
+    const labelOrder = compareText(left.label, right.label);
+    return labelOrder !== 0
+      ? labelOrder
+      : compareText(left.candidate.candidateId, right.candidate.candidateId);
+  });
+  return Object.freeze({
+    command: input.command,
+    entries: Object.freeze(labeled),
+    options: Object.freeze(labeled.map((entry) => entry.option)),
+  });
+}
+
+export function filterScopeDecisionCommandOptions(
+  projection: ScopeDecisionCommandProjection,
   prefix: string,
 ): Array<{ readonly value: string; readonly label: string }> {
   return projection.options.filter((option) => option.value.startsWith(prefix));

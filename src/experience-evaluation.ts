@@ -1930,7 +1930,8 @@ function isCurrentPortfolioCoherent(
       const resolved = portfolio.resolvedEntries[index];
       if (
         !isRecord(resolved) ||
-        !hasExactKeys(resolved, DERIVATION_REVIEW_RESOLVED_FIELDS) ||
+        (!hasExactKeys(resolved, DERIVATION_REVIEW_RESOLVED_FIELDS) &&
+          !hasExactKeys(resolved, [...DERIVATION_REVIEW_RESOLVED_FIELDS, "trust"])) ||
         !isCoherentReviewManifestEntry(resolved.manifest) ||
         JSON.stringify(entry) !== JSON.stringify(resolved.manifest) ||
         !isBoundedReviewSemantics(resolved.semantics)

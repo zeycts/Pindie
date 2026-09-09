@@ -192,9 +192,9 @@ test("Derived trust and trusted portfolio bounds share their SSOT", () => {
   assert.equal(MAX_PROMOTED_STRATEGY_REVISIONS, SEED_STRATEGIES.length);
   assert.equal(
     MAX_TRUSTED_PORTFOLIO_ENTRIES,
-    SEED_STRATEGIES.length + MAX_PROMOTED_STRATEGY_REVISIONS + CATALOG_MAX_PROMOTED_DERIVED_STRATEGIES,
+    SEED_STRATEGIES.length + MAX_PROMOTED_STRATEGY_REVISIONS + CATALOG_MAX_PROMOTED_DERIVED_STRATEGIES + 8,
   );
-  assert.equal(MAX_TRUSTED_PORTFOLIO_ENTRIES, 22);
+  assert.equal(MAX_TRUSTED_PORTFOLIO_ENTRIES, 30);
 });
 
 test("Derivation Decision V1 is immutable, strictly bound, and atomically create-only", async (t) => {

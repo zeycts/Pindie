@@ -80,9 +80,11 @@ import {
 } from "./strategy-trust-scope-decisions.ts";
 import {
   createStrategyTrustScopeCandidateForProject,
+  createStrategyTrustScopeDecisionForHuman,
   filterTrustTransferCommandOptions,
   listTransferableDerivedStrategies,
   type StrategyTrustScopeCandidateCreationDependencies,
+  type StrategyTrustScopeDecisionCreationDependencies,
 } from "./strategy-trust-scope.ts";
 import {
   parseScopeTrialCommandValue,
@@ -96,7 +98,9 @@ import {
   type StrategyTrustScopeSourceResolver,
 } from "./strategy-trust-scope-resolution.ts";
 import {
+  buildScopeDecisionCommandProjection,
   buildScopeTrialReviewCommandProjection,
+  filterScopeDecisionCommandOptions,
   filterScopeTrialReviewCommandOptions,
   FileScopeProjectTrustReader,
   type ScopeProjectTrustReader,
@@ -446,6 +450,9 @@ export function registerPindieExtension(
       strategyCandidateReader,
       strategyDerivationDecisionReader,
       strategyDerivationCandidateReader,
+      strategyTrustScopeCandidateStore,
+      strategyTrustScopeDecisionStore,
+      strategyTrustScopeSourceResolver,
     );
   const readDerivationDecisionForCandidate = async (
     projectRoot: string,
@@ -532,6 +539,23 @@ export function registerPindieExtension(
       );
     }
 
+    // First prefer the complete current projection, including user-global
+    // trust. If any optional global/source chain is incoherent, fall back to
+    // the independently reconstructed project-local projection below.
+    try {
+      const completePortfolio = await loadTrustedPortfolio(projectRoot);
+      return runtime.projectRoot === projectRoot
+        ? { portfolio: completePortfolio, promotedCatalog }
+        : {
+            portfolio: null,
+            promotedCatalog: emptyPromotedStrategyRevisionCatalog(),
+          };
+    } catch (error) {
+      console.warn(
+        `[Pindie] User-global trusted Strategy projection unavailable; using project-local trust only: ${errorMessage(error)}`,
+      );
+    }
+
     let portfolio: TrustedStrategyPortfolio;
     try {
       portfolio = createTrustedStrategyPortfolio(
@@ -555,6 +579,20 @@ export function registerPindieExtension(
           portfolio: null,
           promotedCatalog: emptyPromotedStrategyRevisionCatalog(),
         };
+  };
+  // Project-local SI paths retain the existing failure-isolation posture when
+  // the optional user-global layer is malformed. Scope-specific paths keep
+  // using loadTrustedPortfolio directly so their global authority is strict.
+  const loadProjectTrustedPortfolio = async (
+    projectRoot: string,
+  ): Promise<TrustedStrategyPortfolio> => {
+    try {
+      return await loadTrustedPortfolio(projectRoot);
+    } catch (strictError) {
+      const fallback = await loadNormalTrustedPortfolio(projectRoot);
+      if (fallback.portfolio !== null) return fallback.portfolio;
+      throw strictError;
+    }
   };
   type LiveRemoteSession = { sessionId: string; ctx: ExtensionContext; generation: number };
   let liveRemoteSession: LiveRemoteSession | null = null;
@@ -698,7 +736,7 @@ export function registerPindieExtension(
   ) => {
     let trustedPortfolio: TrustedStrategyPortfolio | null = null;
     try {
-      trustedPortfolio = await loadTrustedPortfolio(projectRoot);
+      trustedPortfolio = await loadProjectTrustedPortfolio(projectRoot);
     } catch {
       // A current trust read is needed for Derived promotion eligibility, but
       // it is not needed to expose valid Revision commands or reject a valid
@@ -720,7 +758,7 @@ export function registerPindieExtension(
     const projectRoot = runtime.projectRoot;
     if (projectRoot === null) return null;
     try {
-      const trustedPortfolio = await loadTrustedPortfolio(projectRoot);
+      const trustedPortfolio = await loadProjectTrustedPortfolio(projectRoot);
       const projection = await buildTrialCommandProjection({
         projectRoot,
         candidateReader: strategyCandidateReader,
@@ -746,7 +784,7 @@ export function registerPindieExtension(
     if (projectRoot === null) return null;
     let trustedPortfolio = null as Awaited<ReturnType<typeof loadTrustedPortfolio>> | null;
     try {
-      trustedPortfolio = await loadTrustedPortfolio(projectRoot);
+      trustedPortfolio = await loadProjectTrustedPortfolio(projectRoot);
     } catch {
       // A stale or malformed current trust portfolio must not hide a valid
       // historical Derivation Candidate from read-only review completion.
@@ -789,7 +827,23 @@ export function registerPindieExtension(
     if (projectRoot === null) return null;
     try {
       const projection = await unifiedCandidateCommandProjection(command, projectRoot);
-      return projection.options.filter((option) => option.value.startsWith(prefix));
+      const options = [...projection.options];
+      try {
+        const scopeProjection = await buildScopeDecisionCommandProjection({
+          command,
+          candidateReader: strategyTrustScopeCandidateStore,
+          decisionReader: strategyTrustScopeDecisionStore,
+          sourceResolver: strategyTrustScopeSourceResolver,
+          experienceReader: crossProjectExperienceReader ?? undefined,
+          projectTrustReader: scopeProjectTrustReader,
+          currentProjectRoot: projectRoot,
+        });
+        options.push(...filterScopeDecisionCommandOptions(scopeProjection, prefix));
+      } catch {
+        // Global Scope completion is optional UI. Dispatch repeats the full
+        // lock-held authority check and must not trust a stale option.
+      }
+      return options.filter((option) => option.value.startsWith(prefix));
     } catch {
       // Completion is advisory UI. Malformed or changing trust artifacts must
       // not become options, and must never be treated as command authority.
@@ -1078,7 +1132,7 @@ export function registerPindieExtension(
 
     let portfolio;
     try {
-      portfolio = await loadTrustedPortfolio(projectRoot);
+      portfolio = await loadProjectTrustedPortfolio(projectRoot);
     } catch (error) {
       ctx.ui.notify(`Pindie could not start /derive: trusted Strategy portfolio validation failed: ${errorMessage(error)}`, "warning");
       return;
@@ -1339,7 +1393,7 @@ export function registerPindieExtension(
         if (existingDecision !== null) {
           throw new Error("an immutable terminal Derivation Decision already exists for this Candidate");
         }
-        const portfolio = await loadTrustedPortfolio(projectRoot);
+        const portfolio = await loadProjectTrustedPortfolio(projectRoot);
         validateStrategyDerivationCandidateBinding(
           candidateRef.candidate,
           projectRoot,
@@ -1407,7 +1461,7 @@ export function registerPindieExtension(
         if (latestDecision !== null) {
           throw new Error("an immutable terminal Derivation Decision was recorded before arming");
         }
-        const portfolio = await loadTrustedPortfolio(projectRoot);
+        const portfolio = await loadProjectTrustedPortfolio(projectRoot);
         validateStrategyDerivationCandidateBinding(
           candidateRef.candidate,
           projectRoot,
@@ -1439,6 +1493,79 @@ export function registerPindieExtension(
     );
   };
 
+  const handleScopeStrategyDecisionCommand = async (
+    terminalDecision: "promoted" | "rejected",
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> => {
+    const requestedValue = args.trim();
+    const verb = terminalDecision === "promoted" ? "promote" : "reject";
+    const command = terminalDecision === "promoted" ? "/promote" : "/reject";
+    const failure = (message: string): void => {
+      ctx.ui.notify(`Pindie could not ${verb} Scope Candidate: ${message}`, "warning");
+    };
+    if (!requestedValue) {
+      await notifyMissingCandidateCommandArgument(verb, ctx);
+      return;
+    }
+    if (/\s/.test(requestedValue)) {
+      ctx.ui.notify(`Usage: ${command} scope:<candidate-id>`, "warning");
+      return;
+    }
+    let candidateId: string | null;
+    try {
+      candidateId = parseScopeTrialCommandValue(requestedValue);
+    } catch (error) {
+      failure(errorMessage(error));
+      return;
+    }
+    if (candidateId === null) {
+      failure(requestedValue.includes(":")
+        ? "unknown Candidate subject namespace."
+        : "Scope Decisions require the namespaced value scope:<candidate-id>.");
+      return;
+    }
+    const projectRoot = runtime.projectRoot;
+    if (projectRoot === null) {
+      failure("no current project root is loaded.");
+      return;
+    }
+    if (!ctx.isIdle()) {
+      failure("the Agent is busy.");
+      return;
+    }
+
+    const dependencies: StrategyTrustScopeDecisionCreationDependencies = {
+      candidateReader: strategyTrustScopeCandidateStore,
+      decisionStore: strategyTrustScopeDecisionStore,
+      sourceResolver: strategyTrustScopeSourceResolver,
+      writerLock: strategyTrustScopeWriterLock,
+      experienceReader: crossProjectExperienceReader ?? undefined,
+      projectTrustReader: scopeProjectTrustReader,
+    };
+    try {
+      const result = await createStrategyTrustScopeDecisionForHuman({
+        candidateId,
+        decision: terminalDecision,
+        decidedAt: new Date(continuityNow()).toISOString(),
+        currentProjectRoot: projectRoot,
+      }, dependencies);
+      if (terminalDecision === "promoted") {
+        ctx.ui.notify(
+          `Scope Candidate '${candidateId}' promoted: the exact Derived Strategy is trusted for explicit normal Policy selection as user-global trust. It is not a default or recommendation; ${result.decision.evidence.trialRefs.length} validated Trial evidence ref(s) were retained for audit provenance.`,
+          "info",
+        );
+      } else {
+        ctx.ui.notify(
+          `Scope Candidate '${candidateId}' rejected: no user-global trust was granted. Rejection is a Human trust decision, not experimental falsification.`,
+          "info",
+        );
+      }
+    } catch (error) {
+      failure(errorMessage(error));
+    }
+  };
+
   const handleStrategyDecisionCommand = async (
     terminalDecision: "promoted" | "rejected",
     args: string,
@@ -1456,7 +1583,15 @@ export function registerPindieExtension(
       return;
     }
     if (/\s/.test(requestedId)) {
-      ctx.ui.notify(`Usage: ${command} <candidate-id>`, "warning");
+      ctx.ui.notify(`Usage: ${command} <candidate-id> (or scope:<candidate-id>)`, "warning");
+      return;
+    }
+    if (requestedId.startsWith("scope:")) {
+      await handleScopeStrategyDecisionCommand(terminalDecision, requestedId, ctx);
+      return;
+    }
+    if (requestedId.includes(":")) {
+      failure("unknown Candidate subject namespace.");
       return;
     }
     if (!isCanonicalStrategyCandidateId(requestedId)) {
@@ -1625,7 +1760,7 @@ export function registerPindieExtension(
     // proceed with a null current portfolio when trust is unavailable.
     let currentPortfolio: TrustedStrategyPortfolio | null = null;
     try {
-      currentPortfolio = await loadTrustedPortfolio(projectRoot);
+      currentPortfolio = await loadProjectTrustedPortfolio(projectRoot);
     } catch (error) {
       if (terminalDecision === "promoted") {
         failure(`trusted Strategy portfolio could not be validated; no trust transition occurred: ${errorMessage(error)}`);
@@ -1666,7 +1801,7 @@ export function registerPindieExtension(
     if (terminalDecision === "promoted") {
       let latestPortfolio: TrustedStrategyPortfolio;
       try {
-        latestPortfolio = await loadTrustedPortfolio(projectRoot);
+        latestPortfolio = await loadProjectTrustedPortfolio(projectRoot);
       } catch (error) {
         failure(`trusted Strategy portfolio changed or could not be validated; no trust transition occurred: ${errorMessage(error)}`);
         return;
@@ -1842,7 +1977,7 @@ export function registerPindieExtension(
           throw new Error("Derivation Candidate selector is unavailable: the immutable Candidate artifact or its cross-store binding changed after the Trial lease was activated.");
         }
         const currentCandidate = currentCandidateRef.candidate;
-        const currentPortfolio = await loadTrustedPortfolio(projectRoot);
+        const currentPortfolio = await loadProjectTrustedPortfolio(projectRoot);
         validateStrategyDerivationCandidateBinding(
           currentCandidate,
           projectRoot,
@@ -1887,7 +2022,7 @@ export function registerPindieExtension(
     candidateStore: strategyDerivationCandidateStore,
     getProjectRoot: () => runtime.projectRoot,
     getAgentRunGeneration: () => run.activeAgentRunGeneration,
-    loadPortfolio: (projectRoot) => loadTrustedPortfolio(projectRoot),
+    loadPortfolio: (projectRoot) => loadProjectTrustedPortfolio(projectRoot),
   }));
   pi.registerTool(createPindieTaskStartTool(runtime, taskToolOptions));
   pi.registerTool(createPindieTaskReplaceTool(runtime, taskToolOptions));

@@ -442,7 +442,7 @@ test("cross-project review requires exact identity, semantics, trial status, att
   assert.match(report, /Promotion Eligibility: eligible for Human review/);
   assert.match(report, /Negative factual outcomes remain visible/);
   assert.doesNotMatch(report, /\n(?:Score|Ranking|Reward|Causal claim):/i);
-  assert.equal(populated.experienceReader.readCalls.length, populated.projectIds.length * 2);
+  assert.equal(populated.experienceReader.readCalls.length, populated.projectIds.length * 2 + 2);
   assert.equal(populated.projectTrustReader.readCalls.length, populated.projectIds.length * 2);
 });
 

@@ -1,17 +1,25 @@
+import { isDeepStrictEqual } from "node:util";
+
 import {
   createStrategyTrustScopeCandidate,
   FileStrategyTrustScopeCandidateStore,
+  isCanonicalStrategyTrustScopeCandidateId,
   strategyTrustScopeCandidateFingerprint,
   validateStrategyTrustScopeCandidateArtifact,
+  validateStrategyTrustScopeSourceStrategy,
+  type StrategyTrustScopeCandidateReader,
   type StrategyTrustScopeCandidateV1,
   type StrategyTrustScopeCandidateStore,
   type StrategyTrustScopeSourceStrategyV1,
 } from "./strategy-trust-scope-candidates.ts";
 import {
+  createStrategyTrustScopeDecision,
   FileStrategyTrustScopeDecisionStore,
   validateStrategyTrustScopeDecisionArtifact,
   validateStrategyTrustScopeDecisionBinding,
   type StrategyTrustScopeDecisionReader,
+  type StrategyTrustScopeDecisionStore,
+  type StrategyTrustScopeDecisionTerminal,
   type StrategyTrustScopeDecisionV1,
 } from "./strategy-trust-scope-decisions.ts";
 import {
@@ -24,6 +32,31 @@ import {
   type GlobalWriterLock,
   getProjectId,
 } from "./store.ts";
+import {
+  strategyDerivationCandidateSemanticFingerprint,
+  validateStrategyDerivationCandidateArtifact,
+  type StrategyDerivationCandidateV1,
+} from "./strategy-derivation-candidates.ts";
+import {
+  validateStrategyDerivationDecisionArtifact,
+  validateStrategyDerivationDecisionBinding,
+} from "./strategy-derivation-decisions.ts";
+import {
+  strategySelectionId,
+  strategySelectionRevisionFingerprint,
+  strategySelectionRevisionIdentity,
+  strategySelectionRevisionStatus,
+} from "./policy.ts";
+import type { RunExperienceProjectReader } from "./experience-store.ts";
+import {
+  deriveStrategyTrustScopeTrialReview,
+  type ScopeProjectTrustReader,
+  type StrategyTrustScopeTrialReview,
+} from "./strategy-trust-scope-review.ts";
+import {
+  readScopeTrialGlobalArtifacts,
+  type ScopeTrialGlobalArtifacts,
+} from "./strategy-trust-scope-trial.ts";
 import {
   SEED_STRATEGIES,
 } from "./strategies.ts";
@@ -121,6 +154,68 @@ function validateGlobalFacts(
 }
 
 /**
+ * Validate the complete immutable source chain required by a Scope Decision.
+ * Scope artifacts carry identity only; the source resolver remains the
+ * authority for Derived semantics and project-local promotion.
+ */
+export function validateStrategyTrustScopeSourceResolution(
+  candidate: StrategyTrustScopeCandidateV1,
+  resolved: ResolvedStrategyTrustScopeSource,
+): ResolvedStrategyTrustScopeSource {
+  const validatedCandidate = validateStrategyTrustScopeCandidateArtifact(
+    candidate,
+    candidate.candidateId,
+  );
+  const source = validateStrategyTrustScopeSourceStrategy(resolved.sourceStrategy);
+  if (!sameSourceBinding(source, validatedCandidate.sourceStrategy)) {
+    throw new Error("resolved source Strategy binding does not match the immutable Scope Candidate");
+  }
+  const sourceCandidate = validateStrategyDerivationCandidateArtifact(
+    resolved.candidate,
+    validatedCandidate.sourceStrategy.revisionIdentity,
+  );
+  const sourceFingerprint = strategyDerivationCandidateSemanticFingerprint(sourceCandidate);
+  if (
+    sourceCandidate.projectId !== source.sourceProjectId ||
+    sourceCandidate.proposal.strategyId !== source.strategyId ||
+    sourceCandidate.proposal.kind !== source.kind ||
+    sourceCandidate.candidateId !== source.revisionIdentity ||
+    sourceFingerprint !== source.revisionFingerprint
+  ) {
+    throw new Error("resolved source Derivation Candidate does not match the immutable Scope Candidate");
+  }
+  const sourceDecision = validateStrategyDerivationDecisionBinding(
+    validateStrategyDerivationDecisionArtifact(
+      resolved.decision,
+      sourceCandidate.candidateId,
+    ),
+    sourceCandidate,
+  );
+  if (sourceDecision.decision !== "promoted") {
+    throw new Error("resolved source Strategy is not currently promoted in its project");
+  }
+  const expectedSemantics = {
+    summary: sourceCandidate.proposal.summary,
+    useWhen: [...sourceCandidate.proposal.useWhen],
+    avoidWhen: [...sourceCandidate.proposal.avoidWhen],
+    principles: [...sourceCandidate.proposal.principles],
+  };
+  const selection = resolved.selection;
+  if (
+    strategySelectionRevisionStatus(selection) !== "promoted" ||
+    strategySelectionId(selection) !== sourceCandidate.proposal.strategyId ||
+    selection.kind !== sourceCandidate.proposal.kind ||
+    strategySelectionRevisionIdentity(selection) !== sourceCandidate.candidateId ||
+    strategySelectionRevisionFingerprint(selection) !== sourceFingerprint ||
+    !isDeepStrictEqual(selection.semantics, expectedSemantics)
+  ) {
+    throw new Error("resolved source Strategy selection is not the exact promoted Derived revision");
+  }
+  return resolved;
+}
+
+
+/**
  * Fresh lock-protected read/check/write for one explicit trust-scope
  * hypothesis. The source resolver, not the caller, supplies authoritative
  * source identity and the Candidate occurrence is the only new artifact.
@@ -185,6 +280,122 @@ export async function createStrategyTrustScopeCandidateForProject(
 }
 
 export const createTrustScopeCandidateForProject = createStrategyTrustScopeCandidateForProject;
+
+export interface CreateStrategyTrustScopeDecisionForHumanInput {
+  readonly candidateId: string;
+  readonly decision: StrategyTrustScopeDecisionTerminal;
+  /** Optional deterministic test seam; the Harness owns this timestamp. */
+  readonly decidedAt?: string;
+  readonly currentProjectRoot?: string | null;
+}
+
+export interface StrategyTrustScopeDecisionCreationDependencies {
+  readonly candidateReader: StrategyTrustScopeCandidateReader;
+  readonly decisionStore: StrategyTrustScopeDecisionStore;
+  readonly sourceResolver: StrategyTrustScopeSourceResolver;
+  readonly writerLock: GlobalWriterLock;
+  /** Required for promotion; rejection intentionally has no evidence gate. */
+  readonly experienceReader?: RunExperienceProjectReader;
+  /** Required for promotion's complete local-collision scan. */
+  readonly projectTrustReader?: ScopeProjectTrustReader;
+}
+
+export interface StrategyTrustScopeDecisionCreationResult {
+  readonly decision: StrategyTrustScopeDecisionV1;
+  readonly review: StrategyTrustScopeTrialReview | null;
+}
+
+/**
+ * Perform one Human Scope Decision as a lock-protected read/check/write. The
+ * lock covers the final review and selected evidence revalidation; the
+ * immutable Decision store is the no-replacement backstop.
+ */
+export async function createStrategyTrustScopeDecisionForHuman(
+  input: CreateStrategyTrustScopeDecisionForHumanInput,
+  dependencies: StrategyTrustScopeDecisionCreationDependencies,
+): Promise<StrategyTrustScopeDecisionCreationResult> {
+  if (!isCanonicalStrategyTrustScopeCandidateId(input.candidateId)) {
+    throw new Error("Scope Decision Candidate ID must be a canonical lowercase UUID-v4.");
+  }
+  return dependencies.writerLock.withLock(async () => {
+    let artifacts: ScopeTrialGlobalArtifacts;
+    try {
+      artifacts = await readScopeTrialGlobalArtifacts(
+        dependencies.candidateReader,
+        dependencies.decisionStore,
+      );
+    } catch (error) {
+      throw new Error(`Global Scope artifacts are malformed or ambiguous; no Decision was written: ${errorMessage(error)}`);
+    }
+    const candidate = artifacts.candidates.find((item) => item.candidateId === input.candidateId);
+    if (candidate === undefined) {
+      throw new Error(`Scope Candidate '${input.candidateId}' was not found; no Decision was written.`);
+    }
+    if (artifacts.decisions.some((item) => item.candidateId === input.candidateId)) {
+      throw new Error("An immutable terminal Scope Decision already exists; no replacement Decision was written.");
+    }
+
+    let resolved: ResolvedStrategyTrustScopeSource;
+    try {
+      resolved = await dependencies.sourceResolver.resolve(candidate.sourceStrategy);
+      validateStrategyTrustScopeSourceResolution(candidate, resolved);
+    } catch (error) {
+      throw new Error(`Source Strategy resolution failed closed; no Decision was written: ${errorMessage(error)}`);
+    }
+
+    let review: StrategyTrustScopeTrialReview | null = null;
+    let trialRefs: readonly import("./cross-project-experience.ts").CrossProjectExperienceRefV1[] = [];
+    if (input.decision === "promoted") {
+      if (dependencies.experienceReader === undefined || dependencies.projectTrustReader === undefined) {
+        throw new Error("Promotion requires the complete cross-project Experience and local-trust readers; no Decision was written.");
+      }
+      try {
+        review = await deriveStrategyTrustScopeTrialReview({
+          candidate,
+          candidateReader: dependencies.candidateReader,
+          decisionReader: dependencies.decisionStore,
+          sourceResolver: dependencies.sourceResolver,
+          experienceReader: dependencies.experienceReader,
+          projectTrustReader: dependencies.projectTrustReader,
+          currentProjectRoot: input.currentProjectRoot,
+        });
+      } catch (error) {
+        throw new Error(`Scope Promotion Eligibility review failed; no Decision was written: ${errorMessage(error)}`);
+      }
+      if (!review.promotionEligibility.eligible) {
+        const reasons = review.promotionEligibility.reasons.slice(0, 8);
+        throw new Error(
+          `Scope Promotion Eligibility is not satisfied; no Decision was written.${reasons.length > 0 ? ` Reasons: ${reasons.join("; ")}` : ""}`,
+        );
+      }
+      // The review's final authority pass is deliberately the last read/check
+      // before constructing this immutable artifact. Its selected refs have
+      // already been directly re-read, fingerprint-checked, and revalidated.
+      trialRefs = review.selectedEvidenceRefs;
+    }
+
+    let decision: StrategyTrustScopeDecisionV1;
+    try {
+      decision = createStrategyTrustScopeDecision({
+        candidate,
+        decision: input.decision,
+        trialRefs,
+        decidedAt: input.decidedAt,
+      });
+      validateStrategyTrustScopeDecisionBinding(decision, candidate);
+    } catch (error) {
+      throw new Error(`Scope Decision construction failed; no Decision was written: ${errorMessage(error)}`);
+    }
+    try {
+      await dependencies.decisionStore.save(decision);
+    } catch (error) {
+      throw new Error(`Scope Decision was not persisted; no trust transition occurred: ${errorMessage(error)}`);
+    }
+    return Object.freeze({ decision, review });
+  });
+}
+
+export const createTrustScopeDecisionForHuman = createStrategyTrustScopeDecisionForHuman;
 
 export interface TrustTransferCompletionEntry {
   readonly sourceStrategy: StrategyTrustScopeSourceStrategyV1;
