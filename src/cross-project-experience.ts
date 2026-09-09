@@ -4,6 +4,7 @@ import {
   parseRunExperience,
   type RunExperience,
 } from "./run-experience.ts";
+import type { RunExperienceProjectReader } from "./experience-store.ts";
 
 export const CROSS_PROJECT_EXPERIENCE_REF_SCHEMA_VERSION = 1 as const;
 export const MAX_CROSS_PROJECT_EXPERIENCE_REFS = 1024;
@@ -226,4 +227,41 @@ export function isSortedCrossProjectExperienceRefs(
     if (compareCrossProjectExperienceRefs(refs[index - 1]!, refs[index]!) >= 0) return false;
   }
   return true;
+}
+
+/**
+ * Resolve one qualified locator directly against its owning live namespace.
+ * A missing, duplicated, malformed, or fingerprint-mismatched record never
+ * falls back to a bare UUID or another project.
+ */
+export async function resolveCrossProjectExperienceRef(
+  value: CrossProjectExperienceRefV1,
+  reader: RunExperienceProjectReader,
+): Promise<RunExperience | null> {
+  const ref = validateCrossProjectExperienceRefArtifact(value);
+  let result: unknown;
+  try {
+    result = await reader.readProjectId(ref.projectId);
+  } catch {
+    return null;
+  }
+  if (
+    typeof result !== "object" || result === null || Array.isArray(result) ||
+    !Array.isArray((result as { records?: unknown }).records)
+  ) return null;
+  const matches = (result as { records: readonly unknown[] }).records.filter((record) =>
+    typeof record === "object" && record !== null && !Array.isArray(record) &&
+    (record as { recordId?: unknown }).recordId === ref.recordId);
+  if (matches.length !== 1) return null;
+  const experience = parseRunExperience(
+    (matches[0] as { experience?: unknown }).experience,
+  );
+  if (experience === null) return null;
+  try {
+    return crossProjectExperienceRecordFingerprint(experience) === ref.recordFingerprint
+      ? experience
+      : null;
+  } catch {
+    return null;
+  }
 }

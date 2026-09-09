@@ -39,6 +39,16 @@ export interface RunExperienceReader {
   read(projectRoot: string): Promise<RunExperienceReadResult>;
 }
 
+/**
+ * Read-only project-namespace access used by on-demand cross-project review.
+ * Project IDs are addressed directly; no repository root or display path is
+ * inferred for another project's records.
+ */
+export interface RunExperienceProjectReader {
+  listProjectIds(): Promise<readonly string[]>;
+  readProjectId(projectId: string): Promise<RunExperienceReadResult>;
+}
+
 function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error &&
     typeof error.code === "string" ? error.code : undefined;
@@ -57,8 +67,10 @@ const EMPTY_READ_RESULT: RunExperienceReadResult = Object.freeze({
 
 const CANONICAL_RECORD_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/;
 
+const CANONICAL_PROJECT_NAMESPACE = /^[0-9a-f]{64}$/;
+
 /** Read-only current-project access to immutable Run Experience records. */
-export class FileRunExperienceReader implements RunExperienceReader {
+export class FileRunExperienceReader implements RunExperienceReader, RunExperienceProjectReader {
   private readonly baseDir: string;
 
   constructor(options: FileRunExperienceStoreOptions = {}) {
@@ -66,7 +78,42 @@ export class FileRunExperienceReader implements RunExperienceReader {
   }
 
   async read(projectRoot: string): Promise<RunExperienceReadResult> {
-    const directory = this.experienceDirectory(projectRoot);
+    return this.readProjectId(getProjectId(projectRoot));
+  }
+
+  /** Enumerate only canonical, directly-addressable project namespaces. */
+  async listProjectIds(): Promise<readonly string[]> {
+    let entries;
+    try {
+      entries = await readdir(this.baseDir, { withFileTypes: true });
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return Object.freeze([]);
+      throw new Error(
+        `Could not enumerate Pindie project namespaces '${this.baseDir}': ${errorMessage(error)}`,
+      );
+    }
+    const projectIds: string[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !CANONICAL_PROJECT_NAMESPACE.test(entry.name)) {
+        throw new Error(
+          `Could not enumerate Pindie project namespaces '${this.baseDir}': non-canonical project namespace '${entry.name}'.`,
+        );
+      }
+      projectIds.push(entry.name);
+    }
+    return Object.freeze(projectIds.sort((left, right) =>
+      left < right ? -1 : left > right ? 1 : 0));
+  }
+
+  /** Read one live Experience directory by canonical project identity. */
+  async readProjectId(projectId: string): Promise<RunExperienceReadResult> {
+    if (!CANONICAL_PROJECT_NAMESPACE.test(projectId)) {
+      throw new Error("Pindie Experience projectId must be a canonical lowercase project identity.");
+    }
+    return this.readDirectory(join(this.baseDir, projectId, EXPERIENCE_DIRECTORY_NAME));
+  }
+
+  private async readDirectory(directory: string): Promise<RunExperienceReadResult> {
     let entries;
     try {
       entries = await readdir(directory, { withFileTypes: true });
@@ -123,6 +170,13 @@ export class FileRunExperienceReader implements RunExperienceReader {
       getProjectId(projectRoot),
       EXPERIENCE_DIRECTORY_NAME,
     );
+  }
+
+  experienceDirectoryForProjectId(projectId: string): string {
+    if (!CANONICAL_PROJECT_NAMESPACE.test(projectId)) {
+      throw new Error("Pindie Experience projectId must be a canonical lowercase project identity.");
+    }
+    return join(this.baseDir, projectId, EXPERIENCE_DIRECTORY_NAME);
   }
 }
 

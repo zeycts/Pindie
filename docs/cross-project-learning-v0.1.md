@@ -928,7 +928,7 @@ The contract is personal-user only.
 
 ## 22. Implementation slices
 
-Slices A–B are implemented by the runtime substrate in this branch; Slices C–D remain future work. Each future Slice must use focused contract tests and preserve the earlier slices' boundaries.
+Slices A–C are implemented by the runtime substrate in this branch; Slice D remains future work. Each future Slice must use focused contract tests and preserve the earlier slices' boundaries.
 
 ### Slice A — Trust Scope substrate
 

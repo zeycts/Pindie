@@ -1040,9 +1040,9 @@ Real dogfood completed the Candidate → two Trials → Trial Review → explici
 
 The authoritative SI v0.7 architecture contract is maintained in [`docs/self-improvement-v0.7.md`](./self-improvement-v0.7.md). SI v0.7 is implemented, dogfooded, trust-closed, normal-use validated, and frozen: its explicit Human-owned slow path runs from eligible trusted-policy Experience through an optional new logical Strategy hypothesis, bounded Candidate Trials, separate source/Trial review, and immutable Human trust. The first real Derived logical Strategy was `delivery-checkpoints` (`modifier`); later ordinary non-Trial Runs naturally selected it and recorded promoted schema-v4 Experience. This closes lifecycle and normal usability, not causal effectiveness. The contract preserves schema-v4 Experience and the existing candidate-command UX without automatic learning, novelty claims, Derived-Strategy adaptation, or changes to State, authority, Task, Long Task Runtime, or Pi's Agent Loop. Future new capabilities require a new scoped version/problem statement.
 
-### Cross-Project Learning v0.1 — Strategy Trust Transfer (Architecture / next)
+### Cross-Project Learning v0.1 — Strategy Trust Transfer (Slice C implemented; Slice D next)
 
-SI v0.1–v0.7 are implemented and frozen. The authoritative next architecture contract is [`docs/cross-project-learning-v0.1.md`](./cross-project-learning-v0.1.md): it transfers trust for an exact already-promoted project-local Derived Strategy without transferring Experience ownership or changing Strategy identity.
+SI v0.1–v0.7 are implemented and frozen, and Cross-Project Learning v0.1 Slices A–C are implemented. The authoritative contract is [`docs/cross-project-learning-v0.1.md`](./cross-project-learning-v0.1.md): Slice C provides read-only fresh evidence review and Promotion Eligibility for an exact already-promoted project-local Derived Strategy without transferring Experience ownership or changing Strategy identity; Human global trust remains Slice D.
 
 ### Cross-Project Learning v0.2 — Cross-Project Strategy Derivation (Later)
 
