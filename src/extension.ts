@@ -45,6 +45,7 @@ import { ExecutionIntegration } from "./execution-integration.ts";
 import {
   FileRunExperienceReader,
   FileRunExperienceStore,
+  type RunExperienceProjectReader,
   type RunExperienceReader,
   type RunExperienceStore,
 } from "./experience-store.ts";
@@ -94,6 +95,12 @@ import {
   FileStrategyTrustScopeSourceResolver,
   type StrategyTrustScopeSourceResolver,
 } from "./strategy-trust-scope-resolution.ts";
+import {
+  buildScopeTrialReviewCommandProjection,
+  filterScopeTrialReviewCommandOptions,
+  FileScopeProjectTrustReader,
+  type ScopeProjectTrustReader,
+} from "./strategy-trust-scope-review.ts";
 import {
   createStrategyRevisionDecision,
   emptyPromotedStrategyRevisionCatalog,
@@ -237,6 +244,8 @@ export interface PindieExtensionOptions {
   strategyTrustScopeDecisionStore?: StrategyTrustScopeDecisionStore;
   strategyTrustScopeSourceResolver?: StrategyTrustScopeSourceResolver;
   strategyTrustScopeWriterLock?: GlobalWriterLock;
+  crossProjectExperienceReader?: RunExperienceProjectReader;
+  scopeProjectTrustReader?: ScopeProjectTrustReader;
   resolveProjectRoot?: ProjectRootResolver;
   subscriptionUsageProvider?: SubscriptionUsageProvider;
   getStatusWidth?: () => number | undefined;
@@ -359,6 +368,12 @@ export function registerPindieExtension(
   const experienceReader = options.experienceReader ?? new FileRunExperienceReader({
     baseDir: experienceStorageBaseDir,
   });
+  const crossProjectExperienceReader = options.crossProjectExperienceReader ?? (
+    typeof (experienceReader as Partial<RunExperienceProjectReader>).listProjectIds === "function" &&
+      typeof (experienceReader as Partial<RunExperienceProjectReader>).readProjectId === "function"
+      ? experienceReader as unknown as RunExperienceProjectReader
+      : null
+  );
   const continuityStore = options.continuityStore ?? new FileTaskContinuityStore({
     baseDir: experienceStorageBaseDir,
   });
@@ -392,6 +407,9 @@ export function registerPindieExtension(
     projectsBaseDir: experienceStorageBaseDir,
   });
   const strategyTrustScopeWriterLock = options.strategyTrustScopeWriterLock ?? new FileGlobalWriterLock();
+  const scopeProjectTrustReader = options.scopeProjectTrustReader ?? new FileScopeProjectTrustReader({
+    projectsBaseDir: experienceStorageBaseDir,
+  });
   const strategyTrustScopeCandidateCreationDependencies: StrategyTrustScopeCandidateCreationDependencies = {
     candidateStore: strategyTrustScopeCandidateStore,
     decisionReader: strategyTrustScopeDecisionStore,
@@ -450,6 +468,11 @@ export function registerPindieExtension(
     strategyCandidateReader,
     strategyDerivationCandidateReader,
     strategyDecisionReader,
+    strategyTrustScopeCandidateReader: strategyTrustScopeCandidateStore,
+    strategyTrustScopeDecisionReader: strategyTrustScopeDecisionStore,
+    strategyTrustScopeSourceResolver,
+    crossProjectExperienceReader: crossProjectExperienceReader ?? undefined,
+    scopeProjectTrustReader,
     loadTrustedPortfolio,
     getAuthoritativeState: () => run.authoritativeState,
     getStateUnavailableReason: () => run.stateUnavailableReason,
@@ -738,7 +761,18 @@ export function registerPindieExtension(
         derivationDecisionReader: strategyDerivationDecisionReader,
         trustedPortfolio,
       });
-      return filterTrialReviewCommandOptions(projection, prefix);
+      const options = filterTrialReviewCommandOptions(projection, prefix);
+      try {
+        const scopeProjection = await buildScopeTrialReviewCommandProjection({
+          candidateReader: strategyTrustScopeCandidateStore,
+          decisionReader: strategyTrustScopeDecisionStore,
+        });
+        options.push(...filterScopeTrialReviewCommandOptions(scopeProjection, prefix));
+      } catch {
+        // Global Scope completion is optional. A malformed global namespace
+        // must not hide the independent Revision/Derivation review options.
+      }
+      return options;
     } catch {
       // Completion is advisory UI. Malformed artifacts never become options.
       return null;

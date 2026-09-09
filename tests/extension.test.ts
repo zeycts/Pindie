@@ -64,6 +64,7 @@ import {
 } from "../src/run-experience.ts";
 import { taskContractFingerprint } from "../src/task-continuity.ts";
 import type {
+  RunExperienceProjectReader,
   RunExperienceReadResult,
   RunExperienceReader,
   RunExperienceStore,
@@ -6988,6 +6989,74 @@ test("Slice B Scope Trial dispatches through the shared lease and preserves sour
   const postReplacementRun = await harnessBeforeAgentStart(harness, "/target");
   assert.doesNotMatch(postReplacementRun.systemPrompt, /<PINDIE_SCOPE_TRIAL_PACKET>/);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/target"));
+});
+
+test("Slice C /trial-review scope is completion-driven, fresh, bounded, and read-only", async () => {
+  const dependencies = scopeTrialTestDependencies();
+  const source = await dependencies.sourceResolver.resolve(
+    dependencies.scopeCandidate.sourceStrategy,
+  );
+  const trialSelection = createStrategyRevisionSelection({
+    strategyId: source.candidate.proposal.strategyId,
+    kind: source.candidate.proposal.kind,
+    revisionIdentity: source.candidate.candidateId,
+    revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(source.candidate),
+    revisionStatusAtRun: "trial",
+    semantics: source.candidate.proposal,
+  });
+  const policy = createPolicySnapshotFromRevisions({
+    approach: trialSelection,
+  });
+  const targetRecord = (recordId: string) => ({
+    recordId,
+    experience: commandExperience("Scope review evidence", policy),
+  });
+  const sourceId = source.candidate.projectId;
+  const targetAId = getProjectId("/target-a");
+  const targetBId = getProjectId("/target-b");
+  const crossProjectExperienceReader: RunExperienceProjectReader = {
+    listProjectIds: async () => [sourceId, targetAId, targetBId],
+    readProjectId: async (projectId) => {
+      const records = projectId === targetAId
+        ? [targetRecord("11111111-1111-4111-8111-111111111111.json")]
+        : projectId === targetBId
+          ? [targetRecord("22222222-2222-4222-8222-222222222222.json")]
+          : [];
+      return { records, loadedRecords: records.length, unsupportedSchema: 0, invalid: 0 };
+    },
+  };
+  const scopeProjectTrustReader = {
+    readProjectId: async (projectId: string) => ({ projectId, promotedDerived: [] }),
+  };
+  const harness = createHarness([["/target", activeState("Scope review")]], {}, {
+    strategyCandidateReader: { read: async () => null, readAll: async () => [] },
+    strategyDerivationCandidateReader: { read: async () => null, readAll: async () => [] },
+    strategyDecisionStore: testDecisionStore(),
+    strategyTrustScopeCandidateStore: dependencies.globalCandidateStore,
+    strategyTrustScopeDecisionStore: dependencies.globalDecisionStore,
+    strategyTrustScopeSourceResolver: dependencies.sourceResolver,
+    crossProjectExperienceReader,
+    scopeProjectTrustReader,
+  });
+  await startSession(harness, "/target");
+  const command = harness.api.commands.get("trial-review");
+  assert.ok(command);
+  const options = await command.getArgumentCompletions("scope:");
+  assert.equal(options?.length, 1);
+  assert.equal(options?.[0]?.value, `scope:${dependencies.scopeCandidate.candidateId}`);
+  const notices: Array<{ message: string; type: string }> = [];
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  await command.handler(`scope:${dependencies.scopeCandidate.candidateId}`, {
+    ...context("/target"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  assert.equal(notices.at(-1)?.type, "info");
+  assert.match(notices.at(-1)?.message ?? "", /Strategy Trust Transfer Review/);
+  assert.match(notices.at(-1)?.message ?? "", /Distinct eligible target projects: 2/);
+  assert.match(notices.at(-1)?.message ?? "", /Promotion Eligibility: eligible for Human review/);
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.deepEqual(harness.store.saves, []);
+  assert.equal(harness.experienceStore.records.length, 0);
 });
 
 test("Scope Trial handoff commits normally and automatic rollover does not inherit it", async () => {

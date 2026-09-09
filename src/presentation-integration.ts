@@ -13,7 +13,10 @@ import {
   formatExperienceReport,
   formatStrategyDerivationTrialReview,
 } from "./experience-evaluation.ts";
-import type { RunExperienceReader } from "./experience-store.ts";
+import type {
+  RunExperienceProjectReader,
+  RunExperienceReader,
+} from "./experience-store.ts";
 import {
   isCanonicalStrategyCandidateId,
   type StrategyCandidateReader,
@@ -29,6 +32,15 @@ import {
 } from "./strategy-derivation-decisions.ts";
 import { resolveTrialCandidate } from "./strategy-candidate-resolution.ts";
 import type { StrategyDerivationCandidateReader } from "./strategy-derivation-candidates.ts";
+import type { StrategyTrustScopeCandidateReader } from "./strategy-trust-scope-candidates.ts";
+import type { StrategyTrustScopeDecisionReader } from "./strategy-trust-scope-decisions.ts";
+import type { StrategyTrustScopeSourceResolver } from "./strategy-trust-scope-resolution.ts";
+import {
+  deriveStrategyTrustScopeTrialReview,
+  formatStrategyTrustScopeTrialReview,
+  parseScopeTrialReviewCommandValue,
+  type ScopeProjectTrustReader,
+} from "./strategy-trust-scope-review.ts";
 import {
   formatTrustedStrategyPortfolio,
   trustedLogicalStrategyIds,
@@ -66,6 +78,11 @@ export interface PresentationIntegrationOptions {
   strategyCandidateReader: StrategyCandidateReader;
   strategyDerivationCandidateReader: StrategyDerivationCandidateReader;
   strategyDecisionReader?: StrategyRevisionDecisionReader;
+  strategyTrustScopeCandidateReader?: StrategyTrustScopeCandidateReader;
+  strategyTrustScopeDecisionReader?: StrategyTrustScopeDecisionReader;
+  strategyTrustScopeSourceResolver?: StrategyTrustScopeSourceResolver;
+  crossProjectExperienceReader?: RunExperienceProjectReader;
+  scopeProjectTrustReader?: ScopeProjectTrustReader;
   strategyDerivationDecisionReader?: StrategyDerivationDecisionReader;
   loadTrustedPortfolio?: (projectRoot: string) => Promise<TrustedStrategyPortfolio>;
   getAuthoritativeState: () => PindieState | null;
@@ -99,6 +116,11 @@ export class PresentationIntegration {
   private readonly strategyCandidateReader: StrategyCandidateReader;
   private readonly strategyDerivationCandidateReader: StrategyDerivationCandidateReader;
   private readonly strategyDecisionReader: StrategyRevisionDecisionReader | null;
+  private readonly strategyTrustScopeCandidateReader: StrategyTrustScopeCandidateReader | null;
+  private readonly strategyTrustScopeDecisionReader: StrategyTrustScopeDecisionReader | null;
+  private readonly strategyTrustScopeSourceResolver: StrategyTrustScopeSourceResolver | null;
+  private readonly crossProjectExperienceReader: RunExperienceProjectReader | null;
+  private readonly scopeProjectTrustReader: ScopeProjectTrustReader | null;
   private readonly strategyDerivationDecisionReader: StrategyDerivationDecisionReader | null;
   private readonly loadTrustedPortfolio: ((projectRoot: string) => Promise<TrustedStrategyPortfolio>) | null;
   private readonly getAuthoritativeState: () => PindieState | null;
@@ -128,6 +150,11 @@ export class PresentationIntegration {
     this.strategyCandidateReader = options.strategyCandidateReader;
     this.strategyDerivationCandidateReader = options.strategyDerivationCandidateReader;
     this.strategyDecisionReader = options.strategyDecisionReader ?? null;
+    this.strategyTrustScopeCandidateReader = options.strategyTrustScopeCandidateReader ?? null;
+    this.strategyTrustScopeDecisionReader = options.strategyTrustScopeDecisionReader ?? null;
+    this.strategyTrustScopeSourceResolver = options.strategyTrustScopeSourceResolver ?? null;
+    this.crossProjectExperienceReader = options.crossProjectExperienceReader ?? null;
+    this.scopeProjectTrustReader = options.scopeProjectTrustReader ?? null;
     this.strategyDerivationDecisionReader = options.strategyDerivationDecisionReader ?? null;
     this.loadTrustedPortfolio = options.loadTrustedPortfolio ?? null;
     this.getAuthoritativeState = options.getAuthoritativeState;
@@ -445,11 +472,89 @@ export class PresentationIntegration {
     );
   }
 
+  private async handleScopeTrialReviewCommand(
+    candidateId: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> {
+    const candidateReader = this.strategyTrustScopeCandidateReader;
+    const decisionReader = this.strategyTrustScopeDecisionReader;
+    const sourceResolver = this.strategyTrustScopeSourceResolver;
+    const experienceReader = this.crossProjectExperienceReader;
+    const projectTrustReader = this.scopeProjectTrustReader;
+    if (
+      candidateReader === null || decisionReader === null || sourceResolver === null ||
+      experienceReader === null || projectTrustReader === null
+    ) {
+      ctx.ui.notify(
+        "Pindie could not show Scope Trial review: the complete cross-project read-only authority projection is unavailable.",
+        "warning",
+      );
+      return;
+    }
+
+    let candidate;
+    try {
+      candidate = await candidateReader.read(candidateId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Pindie could not show Scope Trial review: Candidate read failed: ${message}`, "warning");
+      return;
+    }
+    if (candidate === null) {
+      ctx.ui.notify(
+        `Pindie could not show Scope Trial review: Scope Candidate '${candidateId}' was not found.`,
+        "warning",
+      );
+      return;
+    }
+    const currentProjectRoot = this.getProjectRoot();
+    try {
+      const review = await deriveStrategyTrustScopeTrialReview({
+        candidate,
+        candidateReader,
+        decisionReader,
+        sourceResolver,
+        experienceReader,
+        projectTrustReader,
+        currentProjectRoot,
+      });
+      if (currentProjectRoot !== this.getProjectRoot()) {
+        ctx.ui.notify(
+          "Pindie could not show Scope Trial review: the current project changed while reading cross-project evidence.",
+          "warning",
+        );
+        return;
+      }
+      ctx.ui.notify(formatStrategyTrustScopeTrialReview(review), "info");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Pindie could not show Scope Trial review: evidence evaluation failed: ${message}`, "warning");
+    }
+  }
+
   async handleTrialReviewCommand(
     args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> {
     const requestedId = args.trim();
+    if (requestedId.startsWith("scope:")) {
+      try {
+        const candidateId = parseScopeTrialReviewCommandValue(requestedId);
+        if (candidateId === null) throw new Error("Scope review subject namespace is invalid.");
+        await this.handleScopeTrialReviewCommand(candidateId, ctx);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Pindie could not show Scope Trial review: ${message}`, "warning");
+      }
+      return;
+    }
+    if (requestedId.includes(":")) {
+      ctx.ui.notify(
+        "Pindie could not show Trial review: unknown Candidate subject namespace.",
+        "warning",
+      );
+      return;
+    }
     if (!requestedId || /\s/.test(requestedId)) {
       ctx.ui.notify("Usage: /trial-review <candidate-id>", "warning");
       return;
