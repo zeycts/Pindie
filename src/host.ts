@@ -13,6 +13,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { PiRuntimeAdapter } from "./pi-runtime.ts";
 import { registerConfiguredPindieExtension } from "./extension.ts";
+import {
+  resolvePindieFeatureSelection,
+  type PindieFeatureSelectionOverrides,
+  type PindieStorageRootOverrides,
+} from "./composition.ts";
 import { TaskMetricsTracker } from "./task-metrics.ts";
 import {
   installCommittedRolloverReceiver,
@@ -46,6 +51,8 @@ export interface PindieHostDependencies {
 export interface PindieHostOptions {
   cwd?: string;
   agentDir?: string;
+  featureSelection?: PindieFeatureSelectionOverrides;
+  storageRoots?: PindieStorageRootOverrides;
   sessionManager?: SessionManager;
   interactiveModeOptions?: InteractiveModeOptions;
   longTaskRollover?: LongTaskRolloverSupervisorOptions;
@@ -72,20 +79,33 @@ export function createPindieRuntimeFactory(
     "createAgentSessionServices" | "createAgentSessionFromServices"
   > = {},
   taskMetrics = new TaskMetricsTracker(),
+  compositionOptions: {
+    readonly featureSelection?: PindieFeatureSelectionOverrides;
+    readonly storageRoots?: PindieStorageRootOverrides;
+  } = {},
 ): CreateAgentSessionRuntimeFactory {
   const createServices = dependencies.createAgentSessionServices ?? createAgentSessionServices;
   const createSession = dependencies.createAgentSessionFromServices ?? createAgentSessionFromServices;
   const resources = getPindieResourcePaths();
+  const featureSelection = resolvePindieFeatureSelection(
+    compositionOptions.featureSelection,
+  );
 
   return async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
     const services = await createServices({
       cwd,
       agentDir,
       resourceLoaderOptions: {
-        additionalSkillPaths: [resources.skillsPath],
+        additionalSkillPaths: featureSelection.bundledSkills
+          ? [resources.skillsPath]
+          : [],
         extensionFactories: [{
           name: "pindie",
-          factory: (pi) => registerConfiguredPindieExtension(pi, { taskMetrics }),
+          factory: (pi) => registerConfiguredPindieExtension(pi, {
+            taskMetrics,
+            featureSelection: compositionOptions.featureSelection,
+            storageRoots: compositionOptions.storageRoots,
+          }),
         }],
       },
     });
@@ -139,7 +159,10 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   };
 
   try {
-    nativeRuntime = await createRuntime(createPindieRuntimeFactory(dependencies, taskMetrics), {
+    nativeRuntime = await createRuntime(createPindieRuntimeFactory(dependencies, taskMetrics, {
+      featureSelection: options.featureSelection,
+      storageRoots: options.storageRoots,
+    }), {
       cwd,
       agentDir,
       sessionManager,

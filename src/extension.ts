@@ -1,6 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 
-import { Client } from "@notionhq/client";
+import {
+  composeConfiguredPindieExtension,
+  composePindieExtension,
+  type PindieFeatureSelection,
+  type PindieStorageRoots,
+} from "./composition.ts";
 import {
   type ExtensionAPI,
   type ExtensionCommandContext,
@@ -42,12 +47,10 @@ import {
   type CandidateCommandName,
 } from "./strategy-candidate-commands.ts";
 import { ExecutionIntegration } from "./execution-integration.ts";
-import {
-  FileRunExperienceReader,
-  FileRunExperienceStore,
-  type RunExperienceProjectReader,
-  type RunExperienceReader,
-  type RunExperienceStore,
+import type {
+  RunExperienceProjectReader,
+  RunExperienceReader,
+  RunExperienceStore,
 } from "./experience-store.ts";
 import {
   AdaptationRuntime,
@@ -58,26 +61,22 @@ import {
   buildDerivationPacket,
 } from "./strategy-derivation.ts";
 import {
-  FileStrategyCandidateStore,
   isCanonicalStrategyCandidateId,
   type StrategyCandidateReader,
   type StrategyCandidateStore,
 } from "./strategy-candidates.ts";
 import {
-  FileStrategyDerivationCandidateStore,
   hasExactTrustedStrategySemanticDuplicate,
   validateStrategyDerivationCandidateBinding,
   type StrategyDerivationCandidateReader,
   type StrategyDerivationCandidateStore,
   type StrategyDerivationCandidateV1,
 } from "./strategy-derivation-candidates.ts";
-import {
-  FileStrategyTrustScopeCandidateStore,
-  type StrategyTrustScopeCandidateStore,
+import type {
+  StrategyTrustScopeCandidateStore,
 } from "./strategy-trust-scope-candidates.ts";
-import {
-  FileStrategyTrustScopeDecisionStore,
-  type StrategyTrustScopeDecisionStore,
+import type {
+  StrategyTrustScopeDecisionStore,
 } from "./strategy-trust-scope-decisions.ts";
 import {
   createStrategyTrustScopeCandidateForProject,
@@ -94,22 +93,19 @@ import {
   sameScopeTrialBinding,
   type ScopeTrialBinding,
 } from "./strategy-trust-scope-trial.ts";
-import {
-  FileStrategyTrustScopeSourceResolver,
-  type StrategyTrustScopeSourceResolver,
+import type {
+  StrategyTrustScopeSourceResolver,
 } from "./strategy-trust-scope-resolution.ts";
 import {
   buildScopeDecisionCommandProjection,
   buildScopeTrialReviewCommandProjection,
   filterScopeDecisionCommandOptions,
   filterScopeTrialReviewCommandOptions,
-  FileScopeProjectTrustReader,
   type ScopeProjectTrustReader,
 } from "./strategy-trust-scope-review.ts";
 import {
   createStrategyRevisionDecision,
   emptyPromotedStrategyRevisionCatalog,
-  FileStrategyDecisionStore,
   loadPromotedStrategyRevisionCatalog,
   validateStrategyRevisionDecisionBinding,
   type PromotedStrategyRevisionCatalog,
@@ -119,7 +115,6 @@ import {
 import {
   createStrategyDerivationDecision,
   emptyPromotedDerivedStrategyCatalog,
-  FileStrategyDerivationDecisionStore,
   loadPromotedDerivedStrategyCatalog,
   validateStrategyDerivationDecisionBinding,
   validateStrategyDerivationDecisionProjectBinding,
@@ -149,13 +144,9 @@ import {
   type ToolEffect,
 } from "./execution-semantics.ts";
 import { PresentationIntegration } from "./presentation-integration.ts";
-import { RemoteCompanion, type RemotePi, type RemoteStatusFacts } from "./remote-companion.ts";
-import { DiscordRemote, discordRemoteConfig } from "./discord-remote.ts";
-import {
-  NOTION_PROJECT_MEMORY_API_VERSION,
-  NotionProjectMemorySink,
-  notionProjectMemoryConfig,
-} from "./notion-project-memory.ts";
+import type { RemoteCompanion, RemotePi, RemoteStatusFacts } from "./remote-companion.ts";
+import type { DiscordRemote } from "./discord-remote.ts";
+import type { RemoteRoutingStore } from "./remote-routing.ts";
 import type { ProjectMemorySink } from "./project-memory.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
 import type {
@@ -186,10 +177,7 @@ import {
   type PindieState,
 } from "./state.ts";
 import {
-  FileStateStore,
-  FileGlobalWriterLock,
   StateLockBusyError,
-  FileTaskContinuityStore,
   type GlobalWriterLock,
   type TaskContinuityStore,
   type PindieStateStore,
@@ -236,6 +224,12 @@ import {
 type ProjectRootResolver = (cwd: string) => Promise<string>;
 
 export interface PindieExtensionOptions {
+  /** Startup selection; composition resolves this before registration. */
+  featureSelection?: Partial<PindieFeatureSelection>;
+  /** Explicit production/test storage namespaces; never inferred from a Store class. */
+  storageRoots?: Partial<PindieStorageRoots>;
+  /** Explicit Remote routing storage used when composition constructs Remote. */
+  remoteRoutingStore?: RemoteRoutingStore;
   store?: PindieStateStore;
   continuityStore?: TaskContinuityStore;
   experienceStore?: RunExperienceStore;
@@ -279,6 +273,7 @@ export interface PindieExtensionOptions {
 }
 
 export interface PindieExtensionIntegration {
+  readonly featureSelection: PindieFeatureSelection;
   readonly runtime: PindieRuntime;
   readonly runActivity: RunActivityTracker;
   readonly reasoning: ReasoningController;
@@ -373,63 +368,45 @@ export function registerPindieExtension(
   pi: ExtensionAPI,
   options: PindieExtensionOptions = {},
 ): PindieExtensionIntegration {
+  const composition = composePindieExtension(options);
+  return registerComposedPindieExtension(
+    pi,
+    composition.extensionOptions,
+    composition.featureSelection,
+  );
+}
+
+function registerComposedPindieExtension(
+  pi: ExtensionAPI,
+  options: PindieExtensionOptions,
+  featureSelection: PindieFeatureSelection,
+): PindieExtensionIntegration {
   // Capture the Host lease at extension registration. A released extension
   // publisher must never be able to target a later Host in this process.
   const committedRolloverPublisher = getCommittedRolloverPublisher();
   const sessionLifecyclePublisher = getSessionLifecyclePublisher();
   const taskHandoffEnabled = options.enableTaskHandoff === true || committedRolloverPublisher !== null;
-  const stateStore = options.store ?? new FileStateStore();
-  const experienceStorageBaseDir = stateStore instanceof FileStateStore
-    ? stateStore.storageBaseDir
-    : undefined;
-  const experienceStore = options.experienceStore ?? new FileRunExperienceStore({
-    baseDir: experienceStorageBaseDir,
-  });
-  const experienceReader = options.experienceReader ?? new FileRunExperienceReader({
-    baseDir: experienceStorageBaseDir,
-  });
-  const crossProjectExperienceReader = options.crossProjectExperienceReader ?? (
-    typeof (experienceReader as Partial<RunExperienceProjectReader>).listProjectIds === "function" &&
-      typeof (experienceReader as Partial<RunExperienceProjectReader>).readProjectId === "function"
-      ? experienceReader as unknown as RunExperienceProjectReader
-      : null
-  );
-  const continuityStore = options.continuityStore ?? new FileTaskContinuityStore({
-    baseDir: experienceStorageBaseDir,
-  });
-  const strategyCandidateStore = options.strategyCandidateStore ?? new FileStrategyCandidateStore({
-    baseDir: experienceStorageBaseDir,
-  });
-  const strategyCandidateReader = options.strategyCandidateReader ?? (
-    typeof (strategyCandidateStore as Partial<StrategyCandidateReader>).read === "function"
-      ? strategyCandidateStore as unknown as StrategyCandidateReader
-      : new FileStrategyCandidateStore({ baseDir: experienceStorageBaseDir })
-  );
-  const strategyDerivationCandidateStore = options.strategyDerivationCandidateStore ?? new FileStrategyDerivationCandidateStore({
-    baseDir: experienceStorageBaseDir,
-  });
-  const strategyDerivationCandidateReader = options.strategyDerivationCandidateReader ?? (
-    typeof (strategyDerivationCandidateStore as Partial<StrategyDerivationCandidateReader>).read === "function"
-      ? strategyDerivationCandidateStore as unknown as StrategyDerivationCandidateReader
-      : new FileStrategyDerivationCandidateStore({ baseDir: experienceStorageBaseDir })
-  );
-  const strategyDecisionStore = options.strategyDecisionStore ?? new FileStrategyDecisionStore({
-    baseDir: experienceStorageBaseDir,
-  });
-  const strategyDecisionReader = options.strategyDecisionReader ?? strategyDecisionStore;
-  const strategyDerivationDecisionStore = options.strategyDerivationDecisionStore ?? new FileStrategyDerivationDecisionStore({
-    baseDir: experienceStorageBaseDir,
-  });
-  const strategyDerivationDecisionReader = options.strategyDerivationDecisionReader ?? strategyDerivationDecisionStore;
-  const strategyTrustScopeCandidateStore = options.strategyTrustScopeCandidateStore ?? new FileStrategyTrustScopeCandidateStore();
-  const strategyTrustScopeDecisionStore = options.strategyTrustScopeDecisionStore ?? new FileStrategyTrustScopeDecisionStore();
-  const strategyTrustScopeSourceResolver = options.strategyTrustScopeSourceResolver ?? new FileStrategyTrustScopeSourceResolver({
-    projectsBaseDir: experienceStorageBaseDir,
-  });
-  const strategyTrustScopeWriterLock = options.strategyTrustScopeWriterLock ?? new FileGlobalWriterLock();
-  const scopeProjectTrustReader = options.scopeProjectTrustReader ?? new FileScopeProjectTrustReader({
-    projectsBaseDir: experienceStorageBaseDir,
-  });
+  // Composition supplies every production dependency explicitly. Keeping this
+  // assertion at the compatibility boundary prevents feature code from
+  // manufacturing storage defaults again.
+  const stateStore = options.store!;
+  const experienceStore = options.experienceStore!;
+  const experienceReader = options.experienceReader!;
+  const crossProjectExperienceReader = options.crossProjectExperienceReader ?? null;
+  const continuityStore = options.continuityStore!;
+  const strategyCandidateStore = options.strategyCandidateStore!;
+  const strategyCandidateReader = options.strategyCandidateReader!;
+  const strategyDerivationCandidateStore = options.strategyDerivationCandidateStore!;
+  const strategyDerivationCandidateReader = options.strategyDerivationCandidateReader!;
+  const strategyDecisionStore = options.strategyDecisionStore!;
+  const strategyDecisionReader = options.strategyDecisionReader!;
+  const strategyDerivationDecisionStore = options.strategyDerivationDecisionStore!;
+  const strategyDerivationDecisionReader = options.strategyDerivationDecisionReader!;
+  const strategyTrustScopeCandidateStore = options.strategyTrustScopeCandidateStore!;
+  const strategyTrustScopeDecisionStore = options.strategyTrustScopeDecisionStore!;
+  const strategyTrustScopeSourceResolver = options.strategyTrustScopeSourceResolver!;
+  const strategyTrustScopeWriterLock = options.strategyTrustScopeWriterLock!;
+  const scopeProjectTrustReader = options.scopeProjectTrustReader!;
   const strategyTrustScopeCandidateCreationDependencies: StrategyTrustScopeCandidateCreationDependencies = {
     candidateStore: strategyTrustScopeCandidateStore,
     decisionReader: strategyTrustScopeDecisionStore,
@@ -3310,6 +3287,7 @@ export function registerPindieExtension(
   });
 
   return {
+    featureSelection,
     runtime,
     reasoning: presentation.reasoning,
     runActivity: presentation.runActivity,
@@ -3339,41 +3317,13 @@ export function registerConfiguredPindieExtension(
   options: PindieExtensionOptions = {},
   env: Record<string, string | undefined> = process.env,
 ): void {
-  let projectMemorySink = options.projectMemorySink;
-  if (projectMemorySink === undefined) {
-    const configuredMemory = notionProjectMemoryConfig(env);
-    if (!configuredMemory.enabled) {
-      if (configuredMemory.warning) console.warn(configuredMemory.warning);
-    } else {
-      const client = new Client({
-        auth: configuredMemory.config.token,
-        notionVersion: NOTION_PROJECT_MEMORY_API_VERSION,
-      });
-      projectMemorySink = new NotionProjectMemorySink({
-        client,
-        dataSourceId: configuredMemory.config.dataSourceId,
-      });
-    }
-  }
-
-  const finalOptions = projectMemorySink === options.projectMemorySink
-    ? options
-    : { ...options, projectMemorySink };
-  const configured = discordRemoteConfig(env);
-  if (!configured.enabled) {
-    if (configured.warning) console.warn(configured.warning);
-    registerPindieExtension(pi, finalOptions);
-    return;
-  }
-  const discord = new DiscordRemote(configured.config);
-  registerPindieExtension(pi, {
-    ...finalOptions,
-    remoteCompanion: options.remoteCompanion ?? {
-      companion: new RemoteCompanion(discord),
-      guildId: configured.config.guildId,
-      discord,
-    },
-  });
+  const composition = composeConfiguredPindieExtension(options, env);
+  for (const warning of composition.warnings) console.warn(warning);
+  registerComposedPindieExtension(
+    pi,
+    composition.extensionOptions,
+    composition.featureSelection,
+  );
 }
 
 export default function pindieExtension(pi: ExtensionAPI): void {
