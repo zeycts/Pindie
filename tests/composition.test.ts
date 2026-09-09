@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -21,6 +22,51 @@ import { FileStrategyTrustScopeDecisionStore } from "../src/strategy-trust-scope
 import { RemoteRoutingStore } from "../src/remote-routing.ts";
 import { FileGlobalWriterLock, FileStateStore } from "../src/store.ts";
 import { getProjectId } from "../src/store.ts";
+
+interface SourceImport {
+  readonly moduleSpecifier: string;
+  readonly typeOnly: boolean;
+  readonly names: readonly string[];
+}
+
+function sourceImports(source: string): SourceImport[] {
+  const imports: SourceImport[] = [];
+  const staticImportPattern = /(?:^|\n)\s*import\s+(type\s+)?([\s\S]*?)\s+from\s+["']([^"']+)["']/g;
+  for (const match of source.matchAll(staticImportPattern)) {
+    const clause = match[2]!.trim();
+    const namedClause = /^\{([\s\S]*)\}$/u.exec(clause);
+    const specifiers = namedClause === null
+      ? []
+      : namedClause[1]!
+        .split(",")
+        .map((specifier) => specifier.trim())
+        .filter((specifier) => specifier !== "");
+    const names = specifiers.map((specifier) =>
+      specifier.replace(/^type\s+/u, "").split(/\s+as\s+/u)[0]!.trim());
+    imports.push({
+      moduleSpecifier: match[3]!,
+      typeOnly: match[1] !== undefined ||
+        (namedClause !== null && specifiers.every((specifier) => specifier.startsWith("type "))),
+      names,
+    });
+  }
+
+  const dynamicImportPattern = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g;
+  for (const match of source.matchAll(dynamicImportPattern)) {
+    const precedingSource = source.slice(0, match.index ?? 0);
+    if (/\btypeof\s*$/u.test(precedingSource)) continue;
+    imports.push({ moduleSpecifier: match[1]!, typeOnly: false, names: [] });
+  }
+  return imports;
+}
+
+function importsFrom(source: string, moduleSpecifier: string): SourceImport[] {
+  return sourceImports(source).filter((entry) => entry.moduleSpecifier === moduleSpecifier);
+}
+
+function hasRuntimeImport(source: string, moduleSpecifier: string): boolean {
+  return importsFrom(source, moduleSpecifier).some((entry) => !entry.typeOnly);
+}
 
 const projectRoot = "/workspace/composable-pindie";
 const execFileAsync = promisify(execFile);
@@ -225,6 +271,58 @@ test("Slice E allows SI-only composition and drops CPL dependencies when disable
   assert.equal(optionalDisabled.featureSelection.workMemory, false);
   assert.equal(optionalDisabled.extensionOptions.remoteCompanion, undefined);
   assert.equal(optionalDisabled.extensionOptions.projectMemorySink, undefined);
+});
+
+test("Slice E protects the SI/CPL and trust runtime import boundaries", async () => {
+  const [coreSource, selfImprovementSource, crossProjectLearningSource, portfolioSource, trustSafetySource, globalSource] = await Promise.all(
+    [
+      "core-integration.ts",
+      "self-improvement-integration.ts",
+      "cross-project-learning-integration.ts",
+      "strategy-portfolio.ts",
+      "strategy-trust-safety.ts",
+      "strategy-trust-scope-global.ts",
+    ].map((file) => readFile(new URL(`../src/${file}`, import.meta.url), "utf8")),
+  );
+
+  assert.equal(hasRuntimeImport(coreSource, "./self-improvement-integration.ts"), false);
+  assert.equal(hasRuntimeImport(coreSource, "./cross-project-learning-integration.ts"), false);
+  assert.equal(hasRuntimeImport(selfImprovementSource, "./cross-project-learning-integration.ts"), false);
+
+  const cplSelfImprovementImports = importsFrom(
+    crossProjectLearningSource,
+    "./self-improvement-integration.ts",
+  );
+  assert.equal(cplSelfImprovementImports.length, 1);
+  assert.equal(cplSelfImprovementImports[0]!.typeOnly, true);
+  assert.deepEqual(
+    [...cplSelfImprovementImports[0]!.names].sort(),
+    [
+      "CrossProjectLearningAttachment",
+      "SelfImprovementLearningAccess",
+      "SelfImprovementStrategyTrustAccess",
+    ].sort(),
+  );
+
+  const portfolioDerivationDecisionImports = importsFrom(
+    portfolioSource,
+    "./strategy-derivation-decisions.ts",
+  );
+  assert.equal(portfolioDerivationDecisionImports.length, 1);
+  assert.equal(portfolioDerivationDecisionImports[0]!.typeOnly, true);
+
+  for (const moduleSpecifier of [
+    "./strategy-trust-scope-global.ts",
+    "./strategy-trust-scope.ts",
+    "./strategy-trust-scope-review.ts",
+    "./strategy-trust-scope-trial.ts",
+    "./strategy-trust-safety.ts",
+  ]) {
+    assert.equal(hasRuntimeImport(portfolioSource, moduleSpecifier), false, moduleSpecifier);
+  }
+  assert.equal(hasRuntimeImport(globalSource, "./strategy-portfolio.ts"), false);
+  assert.equal(hasRuntimeImport(globalSource, "./strategy-trust-scope-trial.ts"), false);
+  assert.equal(hasRuntimeImport(trustSafetySource, "./strategy-trust-scope-global.ts"), true);
 });
 
 test("Slice E resolves environment-driven SI/CPL selection and rejects incompatible combinations", () => {
