@@ -99,9 +99,10 @@ export interface PresentationIntegrationOptions {
     delayMs: number,
   ) => ReturnType<typeof setTimeout>;
   clearActivityRefresh?: (timer: ReturnType<typeof setTimeout>) => void;
-  runTimer?: RunTimer;
-  runCost?: RunCostTracker;
-  taskMetrics?: TaskMetricsTracker;
+  /** Core-owned measurement sources consumed by Presentation. */
+  runTimer: RunTimer;
+  runCost: RunCostTracker;
+  taskMetrics: TaskMetricsTracker;
 }
 
 /** Runtime-only reasoning, activity, efficiency, and status presentation ownership. */
@@ -176,9 +177,9 @@ export class PresentationIntegration {
     this.getStatusWidth = options.getStatusWidth ??
       (() => process.stdout.columns);
     this.now = options.now ?? Date.now;
-    this.runCost = options.runCost ?? new RunCostTracker();
-    this.runTimer = options.runTimer ?? new RunTimer();
-    this.taskMetrics = options.taskMetrics ?? new TaskMetricsTracker();
+    this.runCost = options.runCost;
+    this.runTimer = options.runTimer;
+    this.taskMetrics = options.taskMetrics;
     this.runActivity = new RunActivityTracker({
       now: this.now,
       lingerMs: options.activityLingerMs,
@@ -200,8 +201,8 @@ export class PresentationIntegration {
     this.clearActivityLingerRefresh();
     this.reasoning.reset(this.pi.getThinkingLevel());
     this.runActivity.reset();
-    this.runCost.reset();
-    this.runTimer.reset();
+    // RunCostTracker, RunTimer, and TaskMetricsTracker are Core-owned
+    // measurement sources. Presentation only consumes their current facts.
   }
 
   resetSubscriptionUsage(): void {
