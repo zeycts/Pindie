@@ -127,21 +127,14 @@ test("Slice A never derives feature roots from an injected StateStore", () => {
   );
 });
 
-test("Slice A feature selection preserves dependency rules and explicit adapter off", () => {
-  assert.deepEqual(
-    resolvePindieFeatureSelection(
-      { selfImprovement: false },
-      { remote: true, workMemory: true },
-      {},
-    ),
-    {
-      selfImprovement: false,
-      crossProjectLearning: false,
-      remote: true,
-      workMemory: true,
-      bundledSkills: true,
-      presentation: true,
-    },
+test("Slice C rejects unsupported SI/CPL disabling and preserves dependency rules", () => {
+  assert.throws(
+    () => composePindieExtension({ featureSelection: { selfImprovement: false } }),
+    /does not support disabling Self-Improvement until Composable Slice D is implemented/,
+  );
+  assert.throws(
+    () => composePindieExtension({ featureSelection: { crossProjectLearning: false } }),
+    /does not support disabling Cross-Project Learning until Composable Slice E is implemented/,
   );
   assert.throws(
     () => resolvePindieFeatureSelection(
@@ -168,6 +161,21 @@ test("Slice A feature selection preserves dependency rules and explicit adapter 
   assert.equal(composition.featureSelection.workMemory, false);
   assert.equal(composition.extensionOptions.remoteCompanion, undefined);
   assert.equal(composition.extensionOptions.projectMemorySink, undefined);
+});
+
+test("Slice C rejects environment-driven SI/CPL disabling", () => {
+  assert.throws(
+    () => composeConfiguredPindieExtension({}, {
+      PINDIE_SELF_IMPROVEMENT_ENABLED: "false",
+    }),
+    /does not support disabling Self-Improvement until Composable Slice D is implemented/,
+  );
+  assert.throws(
+    () => composeConfiguredPindieExtension({}, {
+      PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "false",
+    }),
+    /does not support disabling Cross-Project Learning until Composable Slice E is implemented/,
+  );
 });
 
 test("Slice C accepts independent Presentation selection", () => {

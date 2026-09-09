@@ -178,6 +178,16 @@ export function resolvePindieFeatureSelection(
       "Pindie feature selection is invalid: Cross-Project Learning requires Self-Improvement.",
     );
   }
+  if (!selfImprovement) {
+    throw new Error(
+      "Slice C composition does not support disabling Self-Improvement until Composable Slice D is implemented.",
+    );
+  }
+  if (!crossProjectLearning) {
+    throw new Error(
+      "Slice C composition does not support disabling Cross-Project Learning until Composable Slice E is implemented.",
+    );
+  }
 
   const remoteAvailable = availability.remote === true;
   const workMemoryAvailable = availability.workMemory === true;
