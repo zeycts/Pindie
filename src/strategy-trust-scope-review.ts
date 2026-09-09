@@ -251,6 +251,150 @@ function sourceIdentityKey(source: StrategyTrustScopeSourceStrategyV1): string {
   return [source.strategyId, source.kind, source.revisionIdentity, source.revisionFingerprint].join("\0");
 }
 
+function fingerprintProjection(value: unknown): string {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new Error("Authority projection could not be serialized deterministically.");
+  return `sha256:${createHash("sha256").update(serialized).digest("hex")}`;
+}
+
+function sourceStrategyAuthorityProjection(
+  source: StrategyTrustScopeSourceStrategyV1,
+): Record<string, unknown> {
+  return {
+    sourceProjectId: source.sourceProjectId,
+    strategyId: source.strategyId,
+    kind: source.kind,
+    revisionIdentity: source.revisionIdentity,
+    revisionFingerprint: source.revisionFingerprint,
+  };
+}
+
+function strategySelectionAuthorityProjection(
+  selection: StrategyRevisionSelection,
+): Record<string, unknown> {
+  return {
+    strategyId: strategySelectionId(selection),
+    kind: selection.kind,
+    revisionIdentity: strategySelectionRevisionIdentity(selection),
+    revisionFingerprint: strategySelectionRevisionFingerprint(selection),
+    revisionStatusAtRun: strategySelectionRevisionStatus(selection),
+    semantics: {
+      summary: selection.semantics.summary,
+      useWhen: [...selection.semantics.useWhen],
+      avoidWhen: [...selection.semantics.avoidWhen],
+      principles: [...selection.semantics.principles],
+    },
+  };
+}
+
+function strategyCandidateAuthorityProjection(
+  candidate: StrategyDerivationCandidateV1,
+): Record<string, unknown> {
+  return {
+    schemaVersion: candidate.schemaVersion,
+    candidateId: candidate.candidateId,
+    createdAt: candidate.createdAt,
+    projectId: candidate.projectId,
+    basePortfolio: {
+      fingerprintVersion: candidate.basePortfolio.fingerprintVersion,
+      fingerprint: candidate.basePortfolio.fingerprint,
+      entries: candidate.basePortfolio.entries.map((entry) => ({
+        origin: entry.origin,
+        strategyId: entry.strategyId,
+        kind: entry.kind,
+        revisionIdentity: entry.revisionIdentity,
+        revisionFingerprint: entry.revisionFingerprint,
+      })),
+    },
+    proposal: {
+      strategyId: candidate.proposal.strategyId,
+      kind: candidate.proposal.kind,
+      summary: candidate.proposal.summary,
+      useWhen: [...candidate.proposal.useWhen],
+      avoidWhen: [...candidate.proposal.avoidWhen],
+      principles: [...candidate.proposal.principles],
+    },
+    evidence: {
+      sourceRecordIds: [...candidate.evidence.sourceRecordIds],
+    },
+    hypothesis: candidate.hypothesis,
+  };
+}
+
+function strategyDecisionAuthorityProjection(
+  decision: StrategyDerivationDecisionV1,
+): Record<string, unknown> {
+  return {
+    schemaVersion: decision.schemaVersion,
+    candidateId: decision.candidateId,
+    candidateFingerprint: decision.candidateFingerprint,
+    decidedAt: decision.decidedAt,
+    projectId: decision.projectId,
+    basePortfolioFingerprint: decision.basePortfolioFingerprint,
+    strategy: {
+      strategyId: decision.strategy.strategyId,
+      kind: decision.strategy.kind,
+    },
+    decision: decision.decision,
+    evidence: {
+      sourceRecordIds: [...decision.evidence.sourceRecordIds],
+      trialRecordIds: [...decision.evidence.trialRecordIds],
+    },
+  };
+}
+
+/** Snapshot the complete source trust/provenance resolution used by a review. */
+function sourceResolutionAuthorityFingerprint(
+  resolved: ResolvedStrategyTrustScopeSource,
+): string {
+  const sourceStrategy = validateStrategyTrustScopeSourceStrategy(resolved.sourceStrategy);
+  const candidate = validateStrategyDerivationCandidateArtifact(
+    resolved.candidate,
+    resolved.candidate.candidateId,
+  );
+  const decision = validateStrategyDerivationDecisionBinding(
+    validateStrategyDerivationDecisionArtifact(resolved.decision, candidate.candidateId),
+    candidate,
+  );
+  if (decision.decision !== "promoted") {
+    throw new Error("source Strategy promotion is not terminal promoted trust");
+  }
+  const candidateFingerprint = strategyDerivationCandidateSemanticFingerprint(candidate);
+  if (candidate.projectId !== sourceStrategy.sourceProjectId ||
+    candidate.proposal.strategyId !== sourceStrategy.strategyId ||
+    candidate.proposal.kind !== sourceStrategy.kind ||
+    candidate.candidateId !== sourceStrategy.revisionIdentity ||
+    candidateFingerprint !== sourceStrategy.revisionFingerprint) {
+    throw new Error("source Strategy resolution does not match its exact binding");
+  }
+  const selection = resolved.selection;
+  if (strategySelectionRevisionStatus(selection) !== "promoted" ||
+    strategySelectionId(selection) !== candidate.proposal.strategyId ||
+    selection.kind !== candidate.proposal.kind ||
+    strategySelectionRevisionIdentity(selection) !== candidate.candidateId ||
+    strategySelectionRevisionFingerprint(selection) !== candidateFingerprint ||
+    !sameSemantics(selection.semantics, candidate)) {
+    throw new Error("source Strategy resolution has an invalid promoted selection");
+  }
+  const promotedDerived = [...resolved.promotedDerivedCatalog.entries]
+    .map((entry) => ({
+      candidate: strategyCandidateAuthorityProjection(entry.candidate),
+      decision: strategyDecisionAuthorityProjection(entry.decision),
+      selection: strategySelectionAuthorityProjection(entry.selection),
+    }))
+    .sort((left, right) => compareText(
+      `${left.selection.strategyId}\0${left.selection.kind}\0${left.selection.revisionIdentity}\0${left.selection.revisionFingerprint}`,
+      `${right.selection.strategyId}\0${right.selection.kind}\0${right.selection.revisionIdentity}\0${right.selection.revisionFingerprint}`,
+    ));
+  return fingerprintProjection({
+    sourceStrategy: sourceStrategyAuthorityProjection(sourceStrategy),
+    candidate: strategyCandidateAuthorityProjection(candidate),
+    decision: strategyDecisionAuthorityProjection(decision),
+    selection: strategySelectionAuthorityProjection(selection),
+    promotedDerived,
+  });
+}
+
 async function readJson(path: string): Promise<unknown> {
   let contents: string;
   try {
@@ -507,6 +651,11 @@ interface MutableInventory {
   totalDeniedCalls: number;
 }
 
+interface GlobalSourceAuthorityProjection {
+  readonly source: StrategyTrustScopeSourceStrategyV1;
+  readonly resolutionFingerprint: string;
+}
+
 interface GlobalReviewFacts {
   readonly artifacts: ScopeTrialGlobalArtifacts | null;
   readonly globalStateComplete: boolean;
@@ -515,8 +664,11 @@ interface GlobalReviewFacts {
   readonly candidateOpen: boolean;
   readonly terminalDecision: StrategyTrustScopeDecisionV1 | null;
   readonly promotedGlobalEntries: readonly StrategyTrustScopeSourceStrategyV1[];
+  readonly promotedGlobalSourceAuthority: readonly GlobalSourceAuthorityProjection[];
   readonly globalLogicalIdAvailable: boolean;
   readonly userGlobalCapacityAvailable: boolean;
+  /** Fingerprint of every global fact used by the review gate. */
+  readonly authorityFingerprint: string;
 }
 
 interface SourceReviewFacts {
@@ -524,6 +676,14 @@ interface SourceReviewFacts {
   readonly sourceCandidate: StrategyDerivationCandidateV1 | null;
   readonly sourceBindingValid: boolean;
   readonly sourceTrustValid: boolean;
+  /** Includes exact source semantics, promotion, and the resolved local catalog. */
+  readonly authorityFingerprint: string | null;
+  readonly reasons: readonly string[];
+}
+
+interface ProjectTrustScanFacts {
+  readonly complete: boolean;
+  readonly snapshots: ReadonlyMap<string, ScopeProjectTrustSnapshot>;
   readonly reasons: readonly string[];
 }
 
@@ -741,6 +901,7 @@ async function deriveGlobalReviewFacts(
   const candidateOpen = candidateInGlobalNamespace && terminalDecision === null;
 
   const promotedGlobalEntries: StrategyTrustScopeSourceStrategyV1[] = [];
+  const promotedGlobalSourceAuthority: GlobalSourceAuthorityProjection[] = [];
   const globalIds = new Set<string>();
   if (artifacts !== null) {
     for (const decision of artifacts.decisions.filter((item) => item.decision === "promoted")) {
@@ -750,18 +911,38 @@ async function deriveGlobalReviewFacts(
         if (!sameSourceBinding(resolved.sourceStrategy, source)) {
           throw new Error("promoted Scope Decision source binding changed during resolution");
         }
+        const resolutionFingerprint = sourceResolutionAuthorityFingerprint(resolved);
         if (globalIds.has(source.strategyId)) {
           throw new Error(`multiple valid user-global revisions own logical Strategy ID '${source.strategyId}'`);
         }
         globalIds.add(source.strategyId);
         promotedGlobalEntries.push(source);
+        promotedGlobalSourceAuthority.push(Object.freeze({
+          source: Object.freeze({ ...source }),
+          resolutionFingerprint,
+        }));
       } catch (error) {
         reasons.push(`promoted user-global Scope Decision for '${source.strategyId}' could not be freshly resolved: ${errorMessage(error)}`);
       }
     }
   }
+  promotedGlobalEntries.sort((left, right) => compareText(sourceIdentityKey(left), sourceIdentityKey(right)));
+  promotedGlobalSourceAuthority.sort((left, right) => compareText(sourceIdentityKey(left.source), sourceIdentityKey(right.source)));
   const globalStateComplete = artifacts !== null && reasons.length === 0;
   const sourceStrategyId = candidate.sourceStrategy.strategyId;
+  const globalLogicalIdAvailable = globalStateComplete && !globalIds.has(sourceStrategyId);
+  const userGlobalCapacityAvailable = globalStateComplete &&
+    promotedGlobalEntries.length < MAX_USER_GLOBAL_DERIVED_STRATEGIES;
+  const authorityFingerprint = fingerprintProjection({
+    artifacts,
+    candidateInGlobalNamespace,
+    candidateOpen,
+    terminalDecision,
+    promotedGlobalEntries,
+    promotedGlobalSourceAuthority,
+    globalLogicalIdAvailable,
+    userGlobalCapacityAvailable,
+  });
   return Object.freeze({
     artifacts,
     globalStateComplete,
@@ -770,9 +951,10 @@ async function deriveGlobalReviewFacts(
     candidateOpen,
     terminalDecision,
     promotedGlobalEntries: Object.freeze(promotedGlobalEntries),
-    globalLogicalIdAvailable: globalStateComplete && !globalIds.has(sourceStrategyId),
-    userGlobalCapacityAvailable: globalStateComplete &&
-      promotedGlobalEntries.length < MAX_USER_GLOBAL_DERIVED_STRATEGIES,
+    promotedGlobalSourceAuthority: Object.freeze(promotedGlobalSourceAuthority),
+    globalLogicalIdAvailable,
+    userGlobalCapacityAvailable,
+    authorityFingerprint,
   });
 }
 
@@ -806,11 +988,13 @@ async function deriveSourceReviewFacts(
       strategySelectionRevisionFingerprint(resolved.selection) === resolvedFingerprint &&
       sameSemantics((resolved.selection as StrategyRevisionSelection).semantics, sourceCandidate);
     if (!sourceTrustValid) reasons.push("source project-local promoted trust is not a valid exact Derived revision");
+    const authorityFingerprint = sourceResolutionAuthorityFingerprint(resolved);
     return Object.freeze({
       resolved,
       sourceCandidate,
       sourceBindingValid,
       sourceTrustValid,
+      authorityFingerprint,
       reasons: Object.freeze(reasons),
     });
   } catch (error) {
@@ -820,6 +1004,7 @@ async function deriveSourceReviewFacts(
       sourceCandidate: null,
       sourceBindingValid: false,
       sourceTrustValid: false,
+      authorityFingerprint: null,
       reasons: Object.freeze(reasons),
     });
   }
@@ -831,6 +1016,63 @@ function validateProjectIdList(value: readonly string[]): readonly string[] {
   const unique = new Set(ids);
   if (unique.size !== ids.length) throw new Error("Experience project namespace reader returned duplicate project IDs.");
   return Object.freeze([...unique].sort(compareText));
+}
+
+async function readProjectTrustSnapshots(
+  projectIds: readonly string[],
+  projectTrustReader: ScopeProjectTrustReader,
+): Promise<ProjectTrustScanFacts> {
+  const snapshots = new Map<string, ScopeProjectTrustSnapshot>();
+  const reasons: string[] = [];
+  let complete = true;
+  for (const projectId of projectIds) {
+    try {
+      const snapshot = validateScopeProjectTrustSnapshot(
+        await projectTrustReader.readProjectId(projectId),
+        projectId,
+      );
+      snapshots.set(projectId, snapshot);
+    } catch (error) {
+      complete = false;
+      reasons.push(`project ${shortIdentity(projectId)} fresh local trust scan failed: ${errorMessage(error)}`);
+    }
+  }
+  return Object.freeze({
+    complete,
+    snapshots,
+    reasons: Object.freeze([...new Set(reasons)]),
+  });
+}
+
+function sameProjectIdList(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return left.length === right.length && left.every((projectId, index) => projectId === right[index]);
+}
+
+function sameProjectTrustSnapshot(
+  left: ScopeProjectTrustSnapshot,
+  right: ScopeProjectTrustSnapshot,
+): boolean {
+  return left.projectId === right.projectId &&
+    left.promotedDerived.length === right.promotedDerived.length &&
+    left.promotedDerived.every((entry, index) =>
+      manifestEntryKey(entry) === manifestEntryKey(right.promotedDerived[index]!));
+}
+
+function sameProjectTrustProjection(
+  projectIds: readonly string[],
+  left: ReadonlyMap<string, ScopeProjectTrustSnapshot>,
+  right: ReadonlyMap<string, ScopeProjectTrustSnapshot>,
+): boolean {
+  if (left.size !== right.size || left.size !== projectIds.length) return false;
+  return projectIds.every((projectId) => {
+    const leftSnapshot = left.get(projectId);
+    const rightSnapshot = right.get(projectId);
+    return leftSnapshot !== undefined && rightSnapshot !== undefined &&
+      sameProjectTrustSnapshot(leftSnapshot, rightSnapshot);
+  });
 }
 
 async function freshSelectedRefs(
@@ -897,16 +1139,17 @@ export async function deriveStrategyTrustScopeTrialReview(
 
   let projectIds: readonly string[] = [];
   let evidenceScanComplete = true;
+  let projectTrustScanComplete = true;
   try {
     projectIds = validateProjectIdList(await input.experienceReader.listProjectIds());
   } catch (error) {
     evidenceScanComplete = false;
+    projectTrustScanComplete = false;
     reasons.push(`cross-project Experience namespace scan could not be completed: ${errorMessage(error)}`);
   }
 
   const firstReads = new Map<string, PreparedProjectExperience>();
   const trustSnapshots = new Map<string, ScopeProjectTrustSnapshot>();
-  let projectTrustScanComplete = true;
   const inventories = new Map<string, MutableInventory>();
   const selectedFirstByProject = new Map<string, CrossProjectExperienceRefV1>();
   const selectedExtraRefs: CrossProjectExperienceRefV1[] = [];
@@ -1043,8 +1286,82 @@ export async function deriveStrategyTrustScopeTrialReview(
   );
   if (!selectedRefResolution.valid) reasons.push(...selectedRefResolution.reasons);
 
-  const promotedGlobalSources = globalFacts.promotedGlobalEntries;
-  let localConflictFree = projectTrustScanComplete;
+  // Final authority pass: the Experience scan remains lock-free, but no
+  // eligibility gate may combine its initial global/source/trust facts with a
+  // later authority state. These reads are deliberately immediately before
+  // the synchronous gate assembly.
+  const [finalGlobalFacts, finalSourceFacts] = await Promise.all([
+    deriveGlobalReviewFacts(
+      candidate,
+      input.candidateReader,
+      input.decisionReader,
+      input.sourceResolver,
+    ),
+    deriveSourceReviewFacts(candidate, input.sourceResolver),
+  ]);
+
+  let finalProjectIds: readonly string[] = [];
+  let finalProjectTrustFacts: ProjectTrustScanFacts = {
+    complete: false,
+    snapshots: new Map(),
+    reasons: Object.freeze([]),
+  };
+  try {
+    finalProjectIds = validateProjectIdList(await input.experienceReader.listProjectIds());
+    finalProjectTrustFacts = await readProjectTrustSnapshots(
+      finalProjectIds,
+      input.projectTrustReader,
+    );
+  } catch (error) {
+    reasons.push(`final project-local trust namespace scan could not be completed: ${errorMessage(error)}`);
+  }
+
+  const globalAuthorityFresh = globalFacts.globalStateComplete === finalGlobalFacts.globalStateComplete &&
+    globalFacts.authorityFingerprint === finalGlobalFacts.authorityFingerprint;
+  if (!globalAuthorityFresh) {
+    reasons.push("global Scope Candidate/Decision authority or promoted source resolution changed during review; the read snapshot is not coherent");
+  }
+  if (!finalGlobalFacts.globalStateComplete) reasons.push(...finalGlobalFacts.globalStateReasons);
+
+  const sourceAuthorityFresh = sourceFacts.sourceBindingValid === finalSourceFacts.sourceBindingValid &&
+    sourceFacts.sourceTrustValid === finalSourceFacts.sourceTrustValid &&
+    sourceFacts.authorityFingerprint === finalSourceFacts.authorityFingerprint;
+  if (!sourceAuthorityFresh) {
+    reasons.push("source Strategy binding or project-local promoted trust changed during review; the read snapshot is not coherent");
+  }
+  if (!finalSourceFacts.sourceBindingValid || !finalSourceFacts.sourceTrustValid) {
+    reasons.push(...finalSourceFacts.reasons);
+  }
+
+  const projectTrustAuthorityFresh = projectTrustScanComplete &&
+    finalProjectTrustFacts.complete &&
+    sameProjectIdList(projectIds, finalProjectIds) &&
+    sameProjectTrustProjection(projectIds, trustSnapshots, finalProjectTrustFacts.snapshots);
+  if (!projectTrustAuthorityFresh) {
+    reasons.push("project-local trust namespace set or promoted Derived identity projection changed during review; the collision scan is not coherent");
+    reasons.push(...finalProjectTrustFacts.reasons);
+  }
+  const authoritySnapshotFresh = globalAuthorityFresh &&
+    sourceAuthorityFresh &&
+    projectTrustAuthorityFresh;
+
+  projectTrustScanComplete = projectTrustAuthorityFresh;
+
+  const globalStateComplete = globalFacts.globalStateComplete &&
+    finalGlobalFacts.globalStateComplete &&
+    globalAuthorityFresh;
+  const scopeCandidateOpen = finalGlobalFacts.candidateOpen;
+  const noTerminalScopeDecision = finalGlobalFacts.terminalDecision === null;
+  const sourceBindingValid = sourceFacts.sourceBindingValid &&
+    finalSourceFacts.sourceBindingValid &&
+    sourceAuthorityFresh;
+  const sourceTrustValid = sourceFacts.sourceTrustValid &&
+    finalSourceFacts.sourceTrustValid &&
+    sourceAuthorityFresh;
+  const globalLogicalIdAvailable = finalGlobalFacts.globalLogicalIdAvailable;
+  const userGlobalCapacityAvailable = finalGlobalFacts.userGlobalCapacityAvailable;
+  const promotedGlobalSources = finalGlobalFacts.promotedGlobalEntries;
+  let localConflictFree = projectTrustScanComplete && projectTrustAuthorityFresh;
   for (const snapshot of trustSnapshots.values()) {
     for (const entry of snapshot.promotedDerived) {
       if (entry.strategyId !== source.strategyId) continue;
@@ -1059,14 +1376,11 @@ export async function deriveStrategyTrustScopeTrialReview(
     // once a valid global revision already owns its logical ID.
     reasons.push(`user-global logical Strategy ID '${source.strategyId}' is already owned by a trusted revision`);
   }
-  if (!globalFacts.globalLogicalIdAvailable && globalFacts.globalStateComplete) {
-    // The detailed conflict reason above is intentionally retained.
-  }
   if (!localConflictFree) reasons.push("project-local trust conflict or incomplete local trust state prevents a deterministic collision scan");
-  if (!globalFacts.userGlobalCapacityAvailable && globalFacts.globalStateComplete) {
+  if (!finalGlobalFacts.userGlobalCapacityAvailable && finalGlobalFacts.globalStateComplete) {
     reasons.push(`user-global Derived Strategy capacity is full at ${MAX_USER_GLOBAL_DERIVED_STRATEGIES}`);
   }
-  if (!evidenceScanComplete || !projectTrustScanComplete || !globalFacts.globalStateComplete) {
+  if (!evidenceScanComplete || !projectTrustScanComplete || !globalStateComplete || !authoritySnapshotFresh) {
     reasons.push("evidence completeness cannot be established from a complete deterministic authority scan");
   }
 
@@ -1084,14 +1398,17 @@ export async function deriveStrategyTrustScopeTrialReview(
   if (distinctEligibleTargetProjectCount < 2) reasons.push("at least 2 distinct non-source target projects are required");
 
   const scopeCandidateValid = true;
-  const scopeCandidateOpen = globalFacts.candidateOpen;
-  const noTerminalScopeDecision = globalFacts.terminalDecision === null;
   const proposedTrustScopeValid = candidate.currentTrustScope === "project" &&
     candidate.proposedTrustScope === "user-global";
   const noSeedLogicalIdCollision = !SEED_STRATEGIES.some((seed) => seed.id === source.strategyId);
   const evidenceCompletenessValid = evidenceScanComplete &&
-    projectTrustScanComplete && globalFacts.globalStateComplete;
-  const selectedEvidenceRefsValid = selectedRefResolution.valid;
+    projectTrustScanComplete &&
+    globalStateComplete &&
+    authoritySnapshotFresh;
+  const selectedEvidenceRefsValid = selectedRefResolution.valid && authoritySnapshotFresh;
+  if (selectedRefResolution.valid && !authoritySnapshotFresh) {
+    reasons.push("selected evidence refs were validated against an authority snapshot that changed during review");
+  }
   const reasonsUnique = [...new Set(reasons)];
   if (!scopeCandidateOpen) reasonsUnique.push(
     noTerminalScopeDecision
@@ -1099,17 +1416,17 @@ export async function deriveStrategyTrustScopeTrialReview(
       : "a terminal Scope Decision already exists for this Candidate",
   );
   if (!noSeedLogicalIdCollision) reasonsUnique.push("proposed logical Strategy ID collides with an immutable Seed");
-  if (!sourceFacts.sourceBindingValid) reasonsUnique.push("source binding is invalid or stale");
-  if (!sourceFacts.sourceTrustValid) reasonsUnique.push("source Strategy trust is invalid or stale");
-  if (!globalFacts.globalLogicalIdAvailable) reasonsUnique.push("current user-global logical Strategy ID is unavailable");
-  if (!globalFacts.userGlobalCapacityAvailable) reasonsUnique.push("user-global Derived Strategy capacity is unavailable");
+  if (!sourceBindingValid) reasonsUnique.push("source binding is invalid or stale");
+  if (!sourceTrustValid) reasonsUnique.push("source Strategy trust is invalid or stale");
+  if (!globalLogicalIdAvailable) reasonsUnique.push("current user-global logical Strategy ID is unavailable");
+  if (!userGlobalCapacityAvailable) reasonsUnique.push("user-global Derived Strategy capacity is unavailable");
   if (!selectedEvidenceRefsValid) reasonsUnique.push("the selected evidence reference set is not fully resolvable and eligible");
   const promotionReasons = Object.freeze([...new Set(reasonsUnique)]);
   const promotionEligibility: ScopePromotionEligibility = Object.freeze({
     eligible: scopeCandidateValid && scopeCandidateOpen && noTerminalScopeDecision &&
-      sourceFacts.sourceBindingValid && sourceFacts.sourceTrustValid && proposedTrustScopeValid &&
-      noSeedLogicalIdCollision && globalFacts.globalLogicalIdAvailable && localConflictFree &&
-      globalFacts.userGlobalCapacityAvailable && evidenceCompletenessValid && selectedEvidenceRefsValid &&
+      sourceBindingValid && sourceTrustValid && proposedTrustScopeValid &&
+      noSeedLogicalIdCollision && globalLogicalIdAvailable && localConflictFree &&
+      userGlobalCapacityAvailable && evidenceCompletenessValid && selectedEvidenceRefsValid &&
       eligibleTrialRunCount >= 2 && distinctEligibleTargetProjectCount >= 2,
     requiredEligibleTrialRunCount: 2,
     eligibleTrialRunCount,
@@ -1118,13 +1435,13 @@ export async function deriveStrategyTrustScopeTrialReview(
     scopeCandidateValid,
     scopeCandidateOpen,
     noTerminalScopeDecision,
-    sourceBindingValid: sourceFacts.sourceBindingValid,
-    sourceStrategyTrustValid: sourceFacts.sourceTrustValid,
+    sourceBindingValid,
+    sourceStrategyTrustValid: sourceTrustValid,
     proposedTrustScopeValid,
     noSeedLogicalIdCollision,
-    globalLogicalIdAvailable: globalFacts.globalLogicalIdAvailable,
+    globalLogicalIdAvailable,
     projectLocalConflictFree: localConflictFree,
-    userGlobalCapacityAvailable: globalFacts.userGlobalCapacityAvailable,
+    userGlobalCapacityAvailable,
     evidenceCompletenessValid,
     selectedEvidenceRefsValid,
     retainedEligibleRefCount: selectedEvidenceRefs.length,
@@ -1140,7 +1457,7 @@ export async function deriveStrategyTrustScopeTrialReview(
     candidateFingerprint,
     sourceCandidate: sourceFacts.sourceCandidate,
     currentProjectIsSource,
-    terminalDecision: globalFacts.terminalDecision,
+    terminalDecision: finalGlobalFacts.terminalDecision,
     inventories: inventoriesFinal,
     matchingRecordCount,
     ineligibleMatchingRunCount,
@@ -1149,10 +1466,10 @@ export async function deriveStrategyTrustScopeTrialReview(
     eligibleTargetProjectIds,
     selectedEvidenceRefs,
     omittedEligibleRefCount: Math.max(0, eligibleTrialRunCount - selectedEvidenceRefs.length),
-    sourceTrustValid: sourceFacts.sourceTrustValid,
-    sourceBindingValid: sourceFacts.sourceBindingValid,
+    sourceTrustValid,
+    sourceBindingValid,
     evidenceScanComplete,
-    globalStateComplete: globalFacts.globalStateComplete,
+    globalStateComplete,
     projectTrustScanComplete,
     promotionEligibility,
     reasons: promotionReasons,

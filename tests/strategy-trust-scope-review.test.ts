@@ -42,9 +42,10 @@ import {
   type StrategyTrustScopeCandidateReader,
   type StrategyTrustScopeCandidateV1,
 } from "../src/strategy-trust-scope-candidates.ts";
-import type {
-  StrategyTrustScopeDecisionReader,
-  StrategyTrustScopeDecisionV1,
+import {
+  createStrategyTrustScopeDecision,
+  type StrategyTrustScopeDecisionReader,
+  type StrategyTrustScopeDecisionV1,
 } from "../src/strategy-trust-scope-decisions.ts";
 import {
   buildScopeTrialReviewCommandProjection,
@@ -442,7 +443,102 @@ test("cross-project review requires exact identity, semantics, trial status, att
   assert.match(report, /Negative factual outcomes remain visible/);
   assert.doesNotMatch(report, /\n(?:Score|Ranking|Reward|Causal claim):/i);
   assert.equal(populated.experienceReader.readCalls.length, populated.projectIds.length * 2);
-  assert.equal(populated.projectTrustReader.readCalls.length, populated.projectIds.length);
+  assert.equal(populated.projectTrustReader.readCalls.length, populated.projectIds.length * 2);
+});
+
+test("final project-local trust freshness fails closed when a target gains a conflicting revision", async () => {
+  const fixture = scopeFixture();
+  const exact = policyFor(fixture.sourceCandidate);
+  const recordsByProject = recordsFor(fixture, [
+    [TARGET_A_ROOT, 81, experience(exact)],
+    [TARGET_B_ROOT, 82, experience(exact)],
+  ]);
+  const populated = scopeFixture(recordsByProject);
+  const targetAId = getProjectId(TARGET_A_ROOT);
+  const conflict = {
+    strategyId: fixture.sourceCandidate.proposal.strategyId,
+    kind: fixture.sourceCandidate.proposal.kind,
+    revisionIdentity: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    revisionFingerprint: `sha256:${"c".repeat(64)}`,
+  };
+  const trustReads = new Map<string, number>();
+  const projectTrustReader: ScopeProjectTrustReader = {
+    readProjectId: async (projectId) => {
+      const readNumber = trustReads.get(projectId) ?? 0;
+      trustReads.set(projectId, readNumber + 1);
+      return {
+        projectId,
+        promotedDerived: projectId === targetAId && readNumber > 0 ? [conflict] : [],
+      };
+    },
+  };
+  const review = await deriveStrategyTrustScopeTrialReview({
+    ...reviewInput(populated),
+    projectTrustReader,
+  });
+
+  assert.equal(review.projectTrustScanComplete, false);
+  assert.equal(review.promotionEligibility.projectLocalConflictFree, false);
+  assert.equal(review.promotionEligibility.eligible, false);
+  assert.match(review.reasons.join(" "), /project-local.*changed|conflicting local revision|coherent/i);
+});
+
+test("final global freshness fails closed when a terminal Scope Decision appears", async () => {
+  const fixture = scopeFixture(recordsFor(scopeFixture(), [
+    [TARGET_A_ROOT, 91, experience(policyFor(sourceCandidate()))],
+    [TARGET_B_ROOT, 92, experience(policyFor(sourceCandidate()))],
+  ]));
+  const terminalDecision = createStrategyTrustScopeDecision({
+    candidate: fixture.candidate,
+    decision: "rejected",
+    trialRefs: [],
+    decidedAt: "2026-07-05T00:00:00.000Z",
+  });
+  let decisionReadCount = 0;
+  const decisionReader: StrategyTrustScopeDecisionReader = {
+    read: async () => null,
+    readAll: async () => {
+      decisionReadCount += 1;
+      return decisionReadCount === 1 ? [] : [terminalDecision];
+    },
+  };
+  const review = await deriveStrategyTrustScopeTrialReview({
+    ...reviewInput(fixture),
+    decisionReader,
+  });
+
+  assert.equal(review.globalStateComplete, false);
+  assert.equal(review.promotionEligibility.scopeCandidateOpen, false);
+  assert.equal(review.promotionEligibility.noTerminalScopeDecision, false);
+  assert.equal(review.promotionEligibility.eligible, false);
+  assert.equal(review.terminalDecision?.decision, "rejected");
+  assert.match(review.reasons.join(" "), /global.*changed|terminal Scope Decision|coherent/i);
+});
+
+test("final source freshness fails closed when the exact promoted binding disappears", async () => {
+  const fixture = scopeFixture(recordsFor(scopeFixture(), [
+    [TARGET_A_ROOT, 101, experience(policyFor(sourceCandidate()))],
+    [TARGET_B_ROOT, 102, experience(policyFor(sourceCandidate()))],
+  ]));
+  let sourceReadCount = 0;
+  const sourceResolver: StrategyTrustScopeSourceResolver = {
+    resolve: async (binding) => {
+      sourceReadCount += 1;
+      if (sourceReadCount > 1) throw new Error("source promoted binding missing");
+      return fixture.sourceResolver.resolve(binding);
+    },
+  };
+  const review = await deriveStrategyTrustScopeTrialReview({
+    ...reviewInput(fixture),
+    sourceResolver,
+  });
+
+  assert.equal(review.sourceBindingValid, false);
+  assert.equal(review.sourceTrustValid, false);
+  assert.equal(review.promotionEligibility.sourceBindingValid, false);
+  assert.equal(review.promotionEligibility.sourceStrategyTrustValid, false);
+  assert.equal(review.promotionEligibility.eligible, false);
+  assert.match(review.reasons.join(" "), /source.*(missing|changed|stale|coherent)/i);
 });
 
 test("fresh second-pass resolution invalidates changed selected refs and remains read-only", async () => {
