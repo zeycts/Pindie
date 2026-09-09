@@ -7,7 +7,7 @@ Pindie is a personal AI agent for indie development built on the Pi agent harnes
 For architecture or implementation work, use this order:
 
 1. The explicit approved task specification in the current request.
-2. `docs/composable-pindie-architecture-v0.1.md` — authoritative target contract when the task touches Composable Pindie v0.1 or one of its Slices. It is a target architecture, not implemented-current-state documentation.
+2. `docs/composable-pindie-architecture-v0.1.md` — authoritative implemented architecture contract when the task touches Composable Pindie v0.1 or its completed Slices A–F. It is the current source of truth for the final composition boundary and its invariants.
 3. `docs/architecture.md` — current architecture and ownership boundaries.
 4. `docs/remote-companion.md` — authoritative Remote Companion architecture/behavior when the task touches Remote Companion or Discord integration.
 5. `docs/behavior.md` — current semantic and behavioral contract.
@@ -63,14 +63,14 @@ For an approved task:
 5. Preserve unrelated runtime behavior and user work.
 6. Run `pnpm run check` before declaring completion.
 
-For Composable Pindie v0.1, implement strictly one approved Slice at a time. Do not begin the next Slice until the current Slice has been independently reviewed and approved.
+Composable Pindie Architecture v0.1 is complete through final Slice F. Preserve its final feature-selection, trust-safety, lifecycle, and dependency-direction invariants; do not begin post-v0.1 architecture work without a new approved task.
 
 ## Maintenance posture
 
-The v0.2 implemented architecture baseline is complete.
+The v0.2 implemented architecture baseline and the Composable Pindie v0.1 migration through Slice F are complete.
 
-`docs/composable-pindie-architecture-v0.1.md` is an approved target migration contract, not evidence that its target boundaries are already implemented. Until a Slice is completed and synchronized into current-state documentation, source/tests plus `docs/architecture.md` remain the implemented-state baseline.
+`docs/composable-pindie-architecture-v0.1.md` records the implemented final composition boundary and remains the single architecture source of truth for that boundary. Source/tests and the synchronized architecture guidance remain the implemented-state baseline.
 
-Future architecture changes should be driven by concrete dogfood failures, explicit user goals, or verified incompatibilities with Pi/runtime reality.
+Future architecture changes should be driven by concrete dogfood failures, explicit user goals, or verified incompatibilities with Pi/runtime reality, not by speculative post-v0.1 cleanup.
 
 Do not create new architectural milestones or refactor established ownership boundaries merely for additional cleanup.

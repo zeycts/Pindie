@@ -22,6 +22,8 @@ import { FileStrategyTrustScopeDecisionStore } from "../src/strategy-trust-scope
 import { RemoteRoutingStore } from "../src/remote-routing.ts";
 import { FileGlobalWriterLock, FileStateStore } from "../src/store.ts";
 import { getProjectId } from "../src/store.ts";
+import { RemoteCompanion, type RemoteSurface } from "../src/remote-companion.ts";
+import type { ProjectMemorySink } from "../src/project-memory.ts";
 
 interface SourceImport {
   readonly moduleSpecifier: string;
@@ -273,7 +275,7 @@ test("Slice E allows SI-only composition and drops CPL dependencies when disable
   assert.equal(optionalDisabled.extensionOptions.projectMemorySink, undefined);
 });
 
-test("Slice E protects the SI/CPL and trust runtime import boundaries", async () => {
+test("Slice F protects the final Core/SI/CPL and trust runtime import boundaries", async () => {
   const [coreSource, selfImprovementSource, crossProjectLearningSource, portfolioSource, trustSafetySource, globalSource] = await Promise.all(
     [
       "core-integration.ts",
@@ -285,8 +287,16 @@ test("Slice E protects the SI/CPL and trust runtime import boundaries", async ()
     ].map((file) => readFile(new URL(`../src/${file}`, import.meta.url), "utf8")),
   );
 
-  assert.equal(hasRuntimeImport(coreSource, "./self-improvement-integration.ts"), false);
-  assert.equal(hasRuntimeImport(coreSource, "./cross-project-learning-integration.ts"), false);
+  for (const moduleSpecifier of [
+    "./self-improvement-integration.ts",
+    "./cross-project-learning-integration.ts",
+    "./presentation-integration.ts",
+    "./remote-companion.ts",
+    "./discord-remote.ts",
+    "./notion-project-memory.ts",
+  ]) {
+    assert.equal(hasRuntimeImport(coreSource, moduleSpecifier), false, moduleSpecifier);
+  }
   assert.equal(hasRuntimeImport(selfImprovementSource, "./cross-project-learning-integration.ts"), false);
 
   const cplSelfImprovementImports = importsFrom(
@@ -325,7 +335,7 @@ test("Slice E protects the SI/CPL and trust runtime import boundaries", async ()
   assert.equal(hasRuntimeImport(trustSafetySource, "./strategy-trust-scope-global.ts"), true);
 });
 
-test("Slice E resolves environment-driven SI/CPL selection and rejects incompatible combinations", () => {
+test("Slice F preserves environment-driven selection and clearly rejects SI-off plus CPL-on", () => {
   const siOff = composeConfiguredPindieExtension({}, {
     PINDIE_SELF_IMPROVEMENT_ENABLED: "false",
   });
@@ -367,6 +377,104 @@ test("Slice E resolves environment-driven SI/CPL selection and rejects incompati
       },
     ),
   );
+});
+
+test("Slice F assembles the final composition matrix through the production composition root", () => {
+  const remoteSurface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+    send: async () => undefined,
+    updateSessionPresentation: async () => undefined,
+  };
+  const remoteCompanion = {
+    companion: new RemoteCompanion(remoteSurface),
+    guildId: "guild",
+  };
+  const projectMemorySink: ProjectMemorySink = {
+    capture: async () => ({ ok: true, outcome: "created" }),
+  };
+  const roots = {
+    projectsBaseDir: "/tmp/slice-f-projects",
+    globalBaseDir: "/tmp/slice-f-global",
+    remoteRoutingBaseDir: "/tmp/slice-f-remote",
+  } as const;
+  const compose = (input: Parameters<typeof composePindieExtension>[0]) =>
+    composePindieExtension({
+      ...input,
+      storageRoots: roots,
+    }, { env: {} });
+  const optionalInput = { remoteCompanion, projectMemorySink };
+  const selection = (
+    overrides: Partial<typeof DEFAULT_PINDIE_FEATURE_SELECTION> = {},
+  ) => ({
+    selfImprovement: false,
+    crossProjectLearning: false,
+    remote: false,
+    workMemory: false,
+    bundledSkills: false,
+    presentation: false,
+    ...overrides,
+  });
+  const cases = [
+    ["Core only", selection()],
+    ["Core + SI", selection({ selfImprovement: true })],
+    ["Core + SI + CPL", selection({ selfImprovement: true, crossProjectLearning: true })],
+    ["Core + Remote", selection({ remote: true })],
+    ["Core + Work Memory", selection({ workMemory: true })],
+  ] as const;
+
+  for (const [name, featureSelection] of cases) {
+    const composition = compose({ ...optionalInput, featureSelection });
+    assert.deepEqual(composition.featureSelection, featureSelection, name);
+    for (const dependency of [
+      "experienceStore",
+      "experienceReader",
+      "strategyCandidateStore",
+      "strategyCandidateReader",
+      "strategyDerivationCandidateStore",
+      "strategyDerivationCandidateReader",
+      "strategyDecisionStore",
+      "strategyDecisionReader",
+      "strategyDerivationDecisionStore",
+      "strategyDerivationDecisionReader",
+      "strategyTrustScopeCandidateStore",
+      "strategyTrustScopeDecisionStore",
+      "strategyTrustScopeSourceResolver",
+      "strategyTrustScopeWriterLock",
+    ]) {
+      assert.equal(
+        Object.hasOwn(composition.extensionOptions, dependency),
+        featureSelection.selfImprovement,
+        `${name}: ${dependency}`,
+      );
+    }
+    for (const dependency of ["crossProjectExperienceReader", "scopeProjectTrustReader"]) {
+      assert.equal(
+        Object.hasOwn(composition.extensionOptions, dependency),
+        featureSelection.crossProjectLearning,
+        `${name}: ${dependency}`,
+      );
+    }
+    assert.equal(
+      Object.hasOwn(composition.extensionOptions, "remoteCompanion"),
+      featureSelection.remote,
+      `${name}: remoteCompanion`,
+    );
+    assert.equal(
+      Object.hasOwn(composition.extensionOptions, "projectMemorySink"),
+      featureSelection.workMemory,
+      `${name}: projectMemorySink`,
+    );
+  }
+
+  const defaultComposition = composePindieExtension({}, { env: {} });
+  assert.deepEqual(
+    defaultComposition.featureSelection,
+    DEFAULT_PINDIE_FEATURE_SELECTION,
+    "default full-feature composition",
+  );
+  assert.equal(Object.hasOwn(defaultComposition.extensionOptions, "remoteCompanion"), false);
+  assert.equal(Object.hasOwn(defaultComposition.extensionOptions, "projectMemorySink"), false);
 });
 
 test("Slice C accepts independent Presentation selection", () => {
