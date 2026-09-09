@@ -23,6 +23,7 @@ import {
   getSessionLifecyclePublisher,
 } from "../src/long-task-control.ts";
 import { createTaskContinuity } from "../src/task-continuity.ts";
+import { TaskMetricsTracker } from "../src/task-metrics.ts";
 
 class ManualScheduler {
   readonly callbacks: Array<() => void> = [];
@@ -127,6 +128,36 @@ test("runtime factory passes project cwd and package resources to Pi services", 
   assert.equal((sessionOptions as { services: AgentSessionServices }).services, services);
   assert.equal(runtimeResult.session, session);
   assert.equal(runtimeResult.services, services);
+});
+
+test("runtime factory omits Pindie-added Skills when the startup selection disables them", async () => {
+  const services = fakeSessionServices();
+  let servicesOptions: CreateAgentSessionServicesOptions | undefined;
+  const factory = createPindieRuntimeFactory(
+    {
+      createAgentSessionServices: async (options) => {
+        servicesOptions = options;
+        return services;
+      },
+      createAgentSessionFromServices: async () => ({
+        session: {} as AgentSession,
+        extensionsResult: {} as LoadExtensionsResult,
+      }),
+    },
+    new TaskMetricsTracker(),
+    { featureSelection: { bundledSkills: false } },
+  );
+
+  await factory({
+    cwd: "/tmp/pindie-host-project",
+    agentDir: "/tmp/pindie-host-agent",
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+  });
+
+  assert.deepEqual(
+    servicesOptions?.resourceLoaderOptions?.additionalSkillPaths,
+    [],
+  );
 });
 
 test("Host creates one runtime and supplies that same runtime to InteractiveMode", async () => {
