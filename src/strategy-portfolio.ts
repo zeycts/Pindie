@@ -1,17 +1,11 @@
 import { createHash } from "node:crypto";
 
 import {
-  loadPromotedStrategyRevisionCatalog,
   MAX_PROMOTED_STRATEGY_REVISIONS,
   type PromotedStrategyRevisionCatalog,
-  type StrategyRevisionDecisionReader,
 } from "./strategy-decisions.ts";
-import {
-  loadPromotedDerivedStrategyCatalog,
-  emptyPromotedDerivedStrategyCatalog,
-  MAX_PROMOTED_DERIVED_STRATEGIES,
-  type PromotedDerivedStrategyCatalog,
-  type StrategyDerivationDecisionReader,
+import type {
+  PromotedDerivedStrategyCatalog,
 } from "./strategy-derivation-decisions.ts";
 import {
   createStrategyRevisionSelection,
@@ -26,16 +20,6 @@ import {
 import {
   MAX_USER_GLOBAL_DERIVED_STRATEGIES,
 } from "./strategy-trust-scope-constants.ts";
-import type {
-  StrategyTrustScopeCandidateReader,
-} from "./strategy-trust-scope-candidates.ts";
-import type {
-  StrategyTrustScopeDecisionReader,
-} from "./strategy-trust-scope-decisions.ts";
-import type {
-  StrategyTrustScopeSourceResolver,
-} from "./strategy-trust-scope-resolution.ts";
-import type { StrategyDerivationCandidateReader } from "./strategy-derivation-candidates.ts";
 import {
   getSeedStrategy,
   SEED_STRATEGIES,
@@ -45,12 +29,23 @@ import {
 import {
   getProjectId,
 } from "./store.ts";
-import type { StrategyCandidateReader } from "./strategy-candidates.ts";
 
 export const TRUSTED_PORTFOLIO_FINGERPRINT_VERSION = 1 as const;
 const CANONICAL_PROJECT_ID = /^[0-9a-f]{64}$/;
-/** Keep the portfolio-facing import compatible with the catalog's SSOT bound. */
-export { MAX_PROMOTED_DERIVED_STRATEGIES };
+/** Shared bound for project-local promoted Derived identities. */
+export const MAX_PROMOTED_DERIVED_STRATEGIES = 8;
+
+function emptyPromotedDerivedStrategyCatalog(): PromotedDerivedStrategyCatalog {
+  const entries = Object.freeze([]);
+  return Object.freeze({
+    entries,
+    selections: Object.freeze([]),
+    resolve(_selector: unknown, _kind: SeedStrategyKind): StrategyRevisionSelection {
+      throw new Error("Promoted Derived Strategy is unavailable in the current project catalog or has the wrong role.");
+    },
+  });
+}
+
 /**
  * Immutable Seeds + maximum promoted Seed revisions + project-local promoted
  * Derived identities + user-global promoted Derived identities.
@@ -422,57 +417,6 @@ export function createTrustedStrategyPortfolio(
 export const buildTrustedStrategyPortfolio = createTrustedStrategyPortfolio;
 export const createTrustedPortfolio = createTrustedStrategyPortfolio;
 
-/** Reconstruct the trusted portfolio; trust-artifact failures are propagated. */
-export async function loadTrustedStrategyPortfolio(
-  projectRoot: string,
-  decisionReader: StrategyRevisionDecisionReader,
-  candidateReader: StrategyCandidateReader,
-  derivationDecisionReader?: StrategyDerivationDecisionReader,
-  derivationCandidateReader?: StrategyDerivationCandidateReader,
-  scopeCandidateReader?: StrategyTrustScopeCandidateReader,
-  scopeDecisionReader?: StrategyTrustScopeDecisionReader,
-  scopeSourceResolver?: StrategyTrustScopeSourceResolver,
-): Promise<TrustedStrategyPortfolio> {
-  const promotedCatalog = await loadPromotedStrategyRevisionCatalog(
-    projectRoot,
-    decisionReader,
-    candidateReader,
-  );
-  const promotedDerivedCatalog = derivationDecisionReader !== undefined &&
-      derivationCandidateReader !== undefined
-    ? await loadPromotedDerivedStrategyCatalog(
-      projectRoot,
-      derivationDecisionReader,
-      derivationCandidateReader,
-      candidateReader,
-    )
-    : emptyPromotedDerivedStrategyCatalog();
-  const scopeDependencies = [scopeCandidateReader, scopeDecisionReader, scopeSourceResolver];
-  if (scopeDependencies.some((dependency) => dependency !== undefined) &&
-    scopeDependencies.some((dependency) => dependency === undefined)) {
-    throw new Error("User-global trusted Strategy projection dependencies are incomplete.");
-  }
-  const userGlobalEntries = scopeCandidateReader !== undefined &&
-      scopeDecisionReader !== undefined && scopeSourceResolver !== undefined
-    ? (await (async () => {
-        const { loadUserGlobalTrustedDerivedStrategyProjection } = await import("./strategy-trust-scope-global.ts");
-        return loadUserGlobalTrustedDerivedStrategyProjection({
-          candidateReader: scopeCandidateReader,
-          decisionReader: scopeDecisionReader,
-          sourceResolver: scopeSourceResolver,
-        });
-      })()).entries.map((entry): TrustedPortfolioGlobalEntry => ({
-      sourceProjectId: entry.sourceStrategy.sourceProjectId,
-      selection: entry.selection,
-    }))
-    : [];
-  return createTrustedStrategyPortfolio(
-    projectRoot,
-    promotedCatalog,
-    promotedDerivedCatalog,
-    userGlobalEntries,
-  );
-}
 
 function semanticsEqual(
   left: TrustedPortfolioStrategySemantics,

@@ -17,6 +17,7 @@ import {
   type StrategyDerivationCandidateReader,
   type StrategyDerivationCandidateV1,
 } from "./strategy-derivation-candidates.ts";
+import { MAX_PROMOTED_DERIVED_STRATEGIES } from "./strategy-portfolio.ts";
 import type {
   StrategyCandidateReader,
 } from "./strategy-candidates.ts";
@@ -34,7 +35,7 @@ export const MAX_DERIVATION_DECISION_TRIAL_RECORD_IDS = 1024;
 export const MAX_DERIVATION_DECISION_RECORD_ID_LENGTH = 128;
 export const MAX_DERIVATION_DECISION_TIMESTAMP_LENGTH = 64;
 export const MAX_DERIVATION_DECISION_STRATEGY_ID_LENGTH = 64;
-export const MAX_PROMOTED_DERIVED_STRATEGIES = 8;
+export { MAX_PROMOTED_DERIVED_STRATEGIES };
 
 const CANONICAL_FINGERPRINT = /^sha256:[0-9a-f]{64}$/;
 const CANONICAL_PROJECT_ID = /^[0-9a-f]{64}$/;

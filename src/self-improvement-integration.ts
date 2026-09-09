@@ -19,7 +19,6 @@ import {
   formatStrategyDerivationTrialReview,
 } from "./experience-evaluation.ts";
 import type {
-  RunExperienceProjectReader,
   RunExperienceReader,
   RunExperienceStore,
 } from "./experience-store.ts";
@@ -44,41 +43,14 @@ import {
   type StrategyDerivationCandidateV1,
 } from "./strategy-derivation-candidates.ts";
 import type {
-  StrategyTrustScopeCandidateReader,
   StrategyTrustScopeCandidateStore,
 } from "./strategy-trust-scope-candidates.ts";
 import type {
-  StrategyTrustScopeDecisionReader,
   StrategyTrustScopeDecisionStore,
 } from "./strategy-trust-scope-decisions.ts";
-import {
-  createStrategyTrustScopeCandidateForProject,
-  createStrategyTrustScopeDecisionForHuman,
-  filterTrustTransferCommandOptions,
-  listTransferableDerivedStrategies,
-  type StrategyTrustScopeCandidateCreationDependencies,
-  type StrategyTrustScopeDecisionCreationDependencies,
-} from "./strategy-trust-scope.ts";
-import {
-  parseScopeTrialCommandValue,
-  resolveScopeTrialBinding,
-  revalidateScopeTrialBinding,
-  sameScopeTrialBinding,
-  type ScopeTrialBinding,
-} from "./strategy-trust-scope-trial.ts";
 import type {
   StrategyTrustScopeSourceResolver,
 } from "./strategy-trust-scope-resolution.ts";
-import {
-  buildScopeDecisionCommandProjection,
-  buildScopeTrialReviewCommandProjection,
-  deriveStrategyTrustScopeTrialReview,
-  filterScopeDecisionCommandOptions,
-  filterScopeTrialReviewCommandOptions,
-  formatStrategyTrustScopeTrialReview,
-  parseScopeTrialReviewCommandValue,
-  type ScopeProjectTrustReader,
-} from "./strategy-trust-scope-review.ts";
 import {
   buildCandidateCommandProjection,
   buildTrialCommandProjection,
@@ -111,13 +83,17 @@ import {
   createTrustedStrategyPortfolio,
   formatPromotedTrustedStrategyPortfolio,
   formatTrustedStrategyPortfolioPresentation,
-  loadTrustedStrategyPortfolio,
   resolveTrustedPortfolioRevisionSelection,
   sameTrustedPortfolioSnapshot,
   trustedLogicalStrategyIds,
   type TrustedPortfolioGlobalLayer,
   type TrustedStrategyPortfolio,
+  type TrustedStrategyPortfolioPresentation,
 } from "./strategy-portfolio.ts";
+import {
+  loadProjectTrustedStrategyPortfolio,
+  loadTrustedStrategyPortfolio,
+} from "./strategy-trust-safety.ts";
 import { getSeedStrategy, SEED_STRATEGIES } from "./strategies.ts";
 import {
   assembleRunExperience,
@@ -129,6 +105,7 @@ import {
   type ScopeTrialLease,
   type TrialLease,
 } from "./strategy-trial.ts";
+import type { ScopeTrialBinding } from "./strategy-trust-scope-trial.ts";
 import { resolveTrialCandidate } from "./strategy-candidate-resolution.ts";
 import type {
   PolicySnapshot,
@@ -152,13 +129,92 @@ export interface SelfImprovementCorePort {
   readonly isAgentRunCurrent: (generation: number) => boolean;
 }
 
+/** The narrow shared Trial lease surface exposed to CPL. */
+export interface SelfImprovementTrialAccess {
+  readonly hasTrial: boolean;
+  readonly hasPendingScopeTrial: boolean;
+  readonly hasActiveScopeTrial: boolean;
+  readonly pendingScopeTrial: ScopeTrialLease | null;
+  readonly activeScopeTrial: ScopeTrialLease | null;
+  readonly establishScope: (sessionId: string, binding: ScopeTrialBinding) => boolean;
+  readonly activeScopeFor: (
+    sessionId: string | null,
+    agentRunGeneration: number | null,
+  ) => ScopeTrialLease | null;
+  readonly resolveScopeSelector: (
+    sessionId: string | null,
+    agentRunGeneration: number | null,
+    selector: unknown,
+    kind: "approach" | "modifier",
+    currentSourceCandidate?: import("./strategy-derivation-candidates.ts").StrategyDerivationCandidateV1,
+  ) => StrategyRevisionSelection;
+}
+
+/** SI learning facts and the one Trial lease CPL is allowed to use. */
+export interface SelfImprovementLearningAccess {
+  readonly getProjectRoot: ProjectRootGetter;
+  readonly getActiveAgentRunGeneration: AgentRunGenerationGetter;
+  readonly hasAdaptationAttempt: () => boolean;
+  readonly hasDerivationAttempt: () => boolean;
+  readonly trial: SelfImprovementTrialAccess;
+}
+
+/** SI-owned trust readers and reconstruction operations exposed to CPL. */
+export interface SelfImprovementStrategyTrustAccess {
+  readonly loadTrustedPortfolio: (projectRoot: string) => Promise<TrustedStrategyPortfolio>;
+  readonly loadProjectTrustedPortfolio: (projectRoot: string) => Promise<TrustedStrategyPortfolio>;
+  readonly scopeCandidateStore: StrategyTrustScopeCandidateStore;
+  readonly scopeDecisionStore: StrategyTrustScopeDecisionStore;
+  readonly scopeSourceResolver: StrategyTrustScopeSourceResolver;
+  readonly writerLock: GlobalWriterLock;
+}
+
+/** Startup attachment points supplied by the optional CPL integration. */
+export interface CrossProjectLearningAttachment {
+  readonly validatePendingScopeTrial: (binding: ScopeTrialBinding) => Promise<void>;
+  readonly resolveScopeRevisionSelector: (
+    lease: ScopeTrialLease,
+    selector: StrategyRevisionSelector,
+    kind: "approach" | "modifier",
+    sessionId: string,
+    agentRunGeneration: number | null,
+  ) => Promise<StrategyRevisionSelection>;
+  readonly handleScopeTrialCommand: (
+    args: string,
+    ctx: ExtensionCommandContext,
+  ) => Promise<void>;
+  readonly handleScopeTrialReviewCommand: (
+    candidateId: string,
+    ctx: ExtensionCommandContext,
+  ) => Promise<void>;
+  readonly handleScopeDecisionCommand: (
+    terminalDecision: "promoted" | "rejected",
+    args: string,
+    ctx: ExtensionCommandContext,
+  ) => Promise<void>;
+  readonly scopeCommandCompletions: (
+    command: CandidateCommandName,
+    projectRoot: string,
+    prefix: string,
+  ) => Promise<readonly { readonly value: string; readonly label: string }[]>;
+  readonly handleTrustTransferCommand: (
+    args: string,
+    ctx: ExtensionCommandContext,
+  ) => Promise<void>;
+  readonly trustTransferCommandCompletions: (
+    prefix: string,
+  ) => Promise<Array<{ readonly value: string; readonly label: string }> | null>;
+  readonly loadPresentationPortfolio: (
+    projectRoot: string,
+  ) => Promise<TrustedStrategyPortfolioPresentation>;
+}
+
 /** Explicit production/test dependencies owned by the SI composition path. */
 export interface SelfImprovementIntegrationOptions {
   readonly pi: ExtensionAPI;
   readonly core: SelfImprovementCorePort;
   readonly experienceStore: RunExperienceStore;
   readonly experienceReader: RunExperienceReader;
-  readonly crossProjectExperienceReader?: RunExperienceProjectReader;
   readonly strategyCandidateStore: StrategyCandidateStore;
   readonly strategyCandidateReader: StrategyCandidateReader;
   readonly strategyDerivationCandidateStore: StrategyDerivationCandidateStore;
@@ -171,7 +227,6 @@ export interface SelfImprovementIntegrationOptions {
   readonly strategyTrustScopeDecisionStore: StrategyTrustScopeDecisionStore;
   readonly strategyTrustScopeSourceResolver: StrategyTrustScopeSourceResolver;
   readonly strategyTrustScopeWriterLock: GlobalWriterLock;
-  readonly scopeProjectTrustReader: ScopeProjectTrustReader;
   readonly now?: () => number;
 }
 
@@ -207,7 +262,6 @@ export class SelfImprovementIntegration {
   private readonly core: SelfImprovementCorePort;
   private readonly experienceStore: RunExperienceStore;
   private readonly experienceReader: RunExperienceReader;
-  private readonly crossProjectExperienceReader: RunExperienceProjectReader | null;
   private readonly strategyCandidateStore: StrategyCandidateStore;
   private readonly strategyCandidateReader: StrategyCandidateReader;
   private readonly strategyDerivationCandidateStore: StrategyDerivationCandidateStore;
@@ -220,9 +274,8 @@ export class SelfImprovementIntegration {
   private readonly strategyTrustScopeDecisionStore: StrategyTrustScopeDecisionStore;
   private readonly strategyTrustScopeSourceResolver: StrategyTrustScopeSourceResolver;
   private readonly strategyTrustScopeWriterLock: GlobalWriterLock;
-  private readonly scopeProjectTrustReader: ScopeProjectTrustReader;
   private readonly now: () => number;
-  private readonly strategyTrustScopeCandidateCreationDependencies: StrategyTrustScopeCandidateCreationDependencies;
+  private crossProjectLearning: CrossProjectLearningAttachment | null = null;
   private currentPromotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
   private currentTrustedStrategyPortfolio: TrustedStrategyPortfolio | null = null;
   private adaptationRunGeneration: number | null = null;
@@ -233,7 +286,6 @@ export class SelfImprovementIntegration {
     this.core = options.core;
     this.experienceStore = options.experienceStore;
     this.experienceReader = options.experienceReader;
-    this.crossProjectExperienceReader = options.crossProjectExperienceReader ?? null;
     this.strategyCandidateStore = options.strategyCandidateStore;
     this.strategyCandidateReader = options.strategyCandidateReader;
     this.strategyDerivationCandidateStore = options.strategyDerivationCandidateStore;
@@ -246,14 +298,40 @@ export class SelfImprovementIntegration {
     this.strategyTrustScopeDecisionStore = options.strategyTrustScopeDecisionStore;
     this.strategyTrustScopeSourceResolver = options.strategyTrustScopeSourceResolver;
     this.strategyTrustScopeWriterLock = options.strategyTrustScopeWriterLock;
-    this.scopeProjectTrustReader = options.scopeProjectTrustReader;
     this.now = options.now ?? Date.now;
-    this.strategyTrustScopeCandidateCreationDependencies = {
-      candidateStore: this.strategyTrustScopeCandidateStore,
-      decisionReader: this.strategyTrustScopeDecisionStore,
-      sourceResolver: this.strategyTrustScopeSourceResolver,
+  }
+
+  attachCrossProjectLearning(attachment: CrossProjectLearningAttachment): void {
+    if (this.crossProjectLearning !== null) {
+      throw new Error("Cross-Project Learning is already attached to Self-Improvement.");
+    }
+    this.crossProjectLearning = attachment;
+  }
+
+  get learningAccess(): SelfImprovementLearningAccess {
+    return Object.freeze({
+      getProjectRoot: this.core.getProjectRoot,
+      getActiveAgentRunGeneration: this.core.getActiveAgentRunGeneration,
+      hasAdaptationAttempt: () => this.adaptation.hasAttempt,
+      hasDerivationAttempt: () => this.derivation.hasDerivation,
+      trial: this.trial,
+    });
+  }
+
+  get strategyTrustAccess(): SelfImprovementStrategyTrustAccess {
+    return Object.freeze({
+      loadTrustedPortfolio: (projectRoot: string) => this.loadTrustedPortfolio(projectRoot),
+      loadProjectTrustedPortfolio: (projectRoot: string) => loadProjectTrustedStrategyPortfolio(projectRoot, {
+        decisionReader: this.strategyDecisionReader,
+        candidateReader: this.strategyCandidateReader,
+        derivationDecisionReader: this.strategyDerivationDecisionReader,
+        derivationCandidateReader: this.strategyDerivationCandidateReader,
+      }),
+      scopeCandidateStore: this.strategyTrustScopeCandidateStore,
+      scopeDecisionStore: this.strategyTrustScopeDecisionStore,
+      scopeSourceResolver: this.strategyTrustScopeSourceResolver,
       writerLock: this.strategyTrustScopeWriterLock,
-    };
+    });
   }
 
   get promotedStrategyRevisionCatalog(): PromotedStrategyRevisionCatalog {
@@ -297,16 +375,15 @@ export class SelfImprovementIntegration {
   }
 
   private async loadTrustedPortfolio(projectRoot: string): Promise<TrustedStrategyPortfolio> {
-    return loadTrustedStrategyPortfolio(
-      projectRoot,
-      this.strategyDecisionReader,
-      this.strategyCandidateReader,
-      this.strategyDerivationDecisionReader,
-      this.strategyDerivationCandidateReader,
-      this.strategyTrustScopeCandidateStore,
-      this.strategyTrustScopeDecisionStore,
-      this.strategyTrustScopeSourceResolver,
-    );
+    return loadTrustedStrategyPortfolio(projectRoot, {
+      decisionReader: this.strategyDecisionReader,
+      candidateReader: this.strategyCandidateReader,
+      derivationDecisionReader: this.strategyDerivationDecisionReader,
+      derivationCandidateReader: this.strategyDerivationCandidateReader,
+      scopeCandidateReader: this.strategyTrustScopeCandidateStore,
+      scopeDecisionReader: this.strategyTrustScopeDecisionStore,
+      scopeSourceResolver: this.strategyTrustScopeSourceResolver,
+    });
   }
 
   private async readDerivationDecisionForCandidate(
@@ -366,11 +443,28 @@ export class SelfImprovementIntegration {
       );
     }
 
+    let localPortfolio: TrustedStrategyPortfolio;
     try {
-      const completePortfolio = await this.loadTrustedPortfolio(projectRoot);
+      localPortfolio = createTrustedStrategyPortfolio(
+        projectRoot,
+        promotedCatalog,
+        promotedDerivedCatalog,
+      );
+    } catch (error) {
+      console.warn(
+        `[Pindie] Trusted Strategy portfolio projection unavailable; using no Derived availability: ${errorMessage(error)}`,
+      );
+      localPortfolio = createTrustedStrategyPortfolio(
+        projectRoot,
+        promotedCatalog,
+        emptyPromotedDerivedStrategyCatalog(),
+      );
+    }
+
+    if (this.crossProjectLearning === null) {
       return this.core.getProjectRoot() === projectRoot
         ? {
-            portfolio: completePortfolio,
+            portfolio: localPortfolio,
             promotedCatalog,
             globalLayer: Object.freeze({ available: true as const }),
           }
@@ -379,43 +473,53 @@ export class SelfImprovementIntegration {
             promotedCatalog: emptyPromotedStrategyRevisionCatalog(),
             globalLayer: Object.freeze({ available: true as const }),
           };
+    }
+
+    try {
+      const presentation = await this.crossProjectLearning.loadPresentationPortfolio(projectRoot);
+      return this.core.getProjectRoot() === projectRoot
+        ? {
+            portfolio: presentation.portfolio,
+            promotedCatalog,
+            globalLayer: presentation.globalLayer,
+          }
+        : {
+            portfolio: null,
+            promotedCatalog: emptyPromotedStrategyRevisionCatalog(),
+            globalLayer: presentation.globalLayer,
+          };
     } catch (error) {
       console.warn(
         `[Pindie] User-global trusted Strategy projection unavailable; using project-local trust only: ${errorMessage(error)}`,
       );
-      const globalLayer: TrustedPortfolioGlobalLayer = Object.freeze({
-        available: false,
-        reason: optionalGlobalUnavailableReason(error),
-      });
-
-      let portfolio: TrustedStrategyPortfolio;
-      try {
-        portfolio = createTrustedStrategyPortfolio(
-          projectRoot,
-          promotedCatalog,
-          promotedDerivedCatalog,
-        );
-      } catch (fallbackError) {
-        console.warn(
-          `[Pindie] Trusted Strategy portfolio projection unavailable; using no Derived availability: ${errorMessage(fallbackError)}`,
-        );
-        promotedDerivedCatalog = emptyPromotedDerivedStrategyCatalog();
-        portfolio = createTrustedStrategyPortfolio(projectRoot, promotedCatalog, promotedDerivedCatalog);
-      }
-
       return this.core.getProjectRoot() === projectRoot
-        ? { portfolio, promotedCatalog, globalLayer }
+        ? {
+            portfolio: localPortfolio,
+            promotedCatalog,
+            globalLayer: Object.freeze({
+              available: false,
+              reason: optionalGlobalUnavailableReason(error),
+            }),
+          }
         : {
             portfolio: null,
             promotedCatalog: emptyPromotedStrategyRevisionCatalog(),
-            globalLayer,
+            globalLayer: Object.freeze({
+              available: false,
+              reason: optionalGlobalUnavailableReason(error),
+            }),
           };
     }
   }
 
   private async loadProjectTrustedPortfolio(projectRoot: string): Promise<TrustedStrategyPortfolio> {
     try {
-      return await this.loadTrustedPortfolio(projectRoot);
+      return await loadProjectTrustedStrategyPortfolio(projectRoot, {
+        decisionReader: this.strategyDecisionReader,
+        candidateReader: this.strategyCandidateReader,
+        derivationDecisionReader: this.strategyDerivationDecisionReader,
+        derivationCandidateReader: this.strategyDerivationCandidateReader,
+      });
     } catch (strictError) {
       const fallback = await this.loadNormalTrustedPortfolio(projectRoot);
       if (fallback.portfolio !== null) return fallback.portfolio;
@@ -423,10 +527,10 @@ export class SelfImprovementIntegration {
     }
   }
 
-  private async loadPresentationPortfolio(projectRoot: string): Promise<{
-    readonly portfolio: TrustedStrategyPortfolio;
-    readonly globalLayer: TrustedPortfolioGlobalLayer;
-  }> {
+  private async loadPresentationPortfolio(projectRoot: string): Promise<TrustedStrategyPortfolioPresentation> {
+    if (this.crossProjectLearning !== null) {
+      return this.crossProjectLearning.loadPresentationPortfolio(projectRoot);
+    }
     const loaded = await this.loadNormalTrustedPortfolio(projectRoot);
     if (loaded.portfolio === null) {
       throw new Error("the current project changed while reading the trusted Strategy portfolio");
@@ -449,42 +553,21 @@ export class SelfImprovementIntegration {
     } catch (error) {
       throw new Error(`Candidate revision selector could not resolve the current Session: ${errorMessage(error)}`);
     }
-    let scopeTargetPortfolio: TrustedStrategyPortfolio | null = null;
     const activeScopeTrial = this.trial.activeScopeFor(
       sessionId,
       this.core.getActiveAgentRunGeneration(),
     );
     if (activeScopeTrial !== null) {
-      const projectRoot = this.core.getProjectRoot();
-      if (projectRoot === null) {
-        throw new Error("Scope Candidate selector is unavailable: no current target project root is loaded.");
+      if (this.crossProjectLearning === null) {
+        throw new Error("Scope Candidate selector is unavailable because Cross-Project Learning is disabled.");
       }
-      if (projectRoot !== activeScopeTrial.targetProjectRoot) {
-        throw new Error("Scope Candidate selector is unavailable: the target project changed while the Scope Trial was active.");
-      }
-      const currentPortfolio = await this.loadTrustedPortfolio(projectRoot);
-      const currentBinding = await revalidateScopeTrialBinding(
+      return this.crossProjectLearning.resolveScopeRevisionSelector(
         activeScopeTrial,
-        currentPortfolio,
-        {
-          candidateReader: this.strategyTrustScopeCandidateStore,
-          decisionReader: this.strategyTrustScopeDecisionStore,
-          sourceResolver: this.strategyTrustScopeSourceResolver,
-        },
+        selector,
+        kind,
+        sessionId,
+        this.core.getActiveAgentRunGeneration(),
       );
-      if (!sameScopeTrialBinding(activeScopeTrial, currentBinding)) {
-        throw new Error("Scope Candidate selector is unavailable: the source/global binding or target trust changed while the Scope Trial was active.");
-      }
-      scopeTargetPortfolio = currentPortfolio;
-      if (selector.revisionIdentity === activeScopeTrial.sourceStrategy.revisionIdentity) {
-        return this.trial.resolveScopeSelector(
-          sessionId,
-          this.core.getActiveAgentRunGeneration(),
-          selector,
-          kind,
-          currentBinding.sourceCandidate,
-        );
-      }
     }
 
     if (this.trial.activeFor(sessionId, this.core.getActiveAgentRunGeneration()) !== null) {
@@ -539,7 +622,7 @@ export class SelfImprovementIntegration {
       }
     }
 
-    const portfolio = scopeTargetPortfolio ?? this.trustedStrategyPortfolio;
+    const portfolio = this.trustedStrategyPortfolio;
     if (portfolio === null || this.core.getProjectRoot() === null) {
       throw new Error("Candidate revision selector is unavailable without a captured trusted Strategy portfolio for this Agent Run.");
     }
@@ -619,25 +702,11 @@ export class SelfImprovementIntegration {
         const pendingScopeTrial = this.trial.pendingScopeTrial;
         const pendingDerivationTrial = this.trial.pendingDerivationTrial;
         if (pendingScopeTrial !== null) {
-          const projectRoot = this.core.getProjectRoot();
           try {
-            if (projectRoot === null) throw new Error("no current project root is loaded");
-            if (projectRoot !== pendingScopeTrial.targetProjectRoot) {
-              throw new Error("the target project changed after the Scope Trial was armed");
+            if (this.crossProjectLearning === null) {
+              throw new Error("Cross-Project Learning is disabled");
             }
-            const currentPortfolio = await this.loadTrustedPortfolio(projectRoot);
-            const currentBinding = await revalidateScopeTrialBinding(
-              pendingScopeTrial,
-              currentPortfolio,
-              {
-                candidateReader: this.strategyTrustScopeCandidateStore,
-                decisionReader: this.strategyTrustScopeDecisionStore,
-                sourceResolver: this.strategyTrustScopeSourceResolver,
-              },
-            );
-            if (!sameScopeTrialBinding(pendingScopeTrial, currentBinding)) {
-              throw new Error("the Scope Candidate, source binding, or target trust changed after /trial was armed");
-            }
+            await this.crossProjectLearning.validatePendingScopeTrial(pendingScopeTrial);
           } catch (error) {
             this.trial.clear();
             throw new Error(`Pindie rejected this Agent Run: the pending Scope Trial binding is stale or invalid: ${errorMessage(error)}`);
@@ -801,11 +870,6 @@ export class SelfImprovementIntegration {
       getArgumentCompletions: (prefix) => this.getStrategyArgumentCompletions(prefix),
       handler: async (args, ctx) => this.handleStrategiesCommand(args, ctx),
     });
-    this.pi.registerCommand("trust-transfer", {
-      description: "Propose one project-local promoted Derived Strategy for user-global trust",
-      getArgumentCompletions: (prefix) => this.trustTransferCommandCompletions(prefix),
-      handler: async (args, ctx) => this.handleTrustTransferCommand(args, ctx),
-    });
     this.pi.registerCommand("adapt", {
       description: "Start explicit Strategy Revision Candidate adaptation for a Seed Strategy",
       getArgumentCompletions: (prefix) => SEED_STRATEGIES
@@ -846,61 +910,9 @@ export class SelfImprovementIntegration {
     });
   }
 
-  // Remaining command projections/handlers are intentionally kept on this
-  // integration. They are moved here from Presentation without changing their
-  // read, lease, trust, or notification semantics.
-
-  private async handleScopeTrialReviewCommand(
-    candidateId: string,
-    ctx: ExtensionCommandContext,
-  ): Promise<void> {
-    const candidateReader: StrategyTrustScopeCandidateReader = this.strategyTrustScopeCandidateStore;
-    const decisionReader: StrategyTrustScopeDecisionReader = this.strategyTrustScopeDecisionStore;
-    const sourceResolver = this.strategyTrustScopeSourceResolver;
-    const experienceReader = this.crossProjectExperienceReader;
-    const projectTrustReader = this.scopeProjectTrustReader;
-    if (experienceReader === null) {
-      ctx.ui.notify(
-        "Pindie could not show Scope Trial review: the complete cross-project read-only authority projection is unavailable.",
-        "warning",
-      );
-      return;
-    }
-
-    let candidate;
-    try {
-      candidate = await candidateReader.read(candidateId);
-    } catch (error) {
-      ctx.ui.notify(`Pindie could not show Scope Trial review: Candidate read failed: ${errorMessage(error)}`, "warning");
-      return;
-    }
-    if (candidate === null) {
-      ctx.ui.notify(`Pindie could not show Scope Trial review: Scope Candidate '${candidateId}' was not found.`, "warning");
-      return;
-    }
-    const currentProjectRoot = this.core.getProjectRoot();
-    try {
-      const review = await deriveStrategyTrustScopeTrialReview({
-        candidate,
-        candidateReader,
-        decisionReader,
-        sourceResolver,
-        experienceReader,
-        projectTrustReader,
-        currentProjectRoot,
-      });
-      if (currentProjectRoot !== this.core.getProjectRoot()) {
-        ctx.ui.notify(
-          "Pindie could not show Scope Trial review: the current project changed while reading cross-project evidence.",
-          "warning",
-        );
-        return;
-      }
-      ctx.ui.notify(formatStrategyTrustScopeTrialReview(review), "info");
-    } catch (error) {
-      ctx.ui.notify(`Pindie could not show Scope Trial review: evidence evaluation failed: ${errorMessage(error)}`, "warning");
-    }
-  }
+  // Unified Trial/Decision command entry points stay on SI. Scope subjects
+  // are delegated to the attached CPL integration without registering a
+  // second command or a generic router.
 
   private async handleTrialReviewCommand(
     args: string,
@@ -908,10 +920,13 @@ export class SelfImprovementIntegration {
   ): Promise<void> {
     const requestedId = args.trim();
     if (requestedId.startsWith("scope:")) {
+      if (this.crossProjectLearning === null) {
+        ctx.ui.notify("Pindie could not show Trial review: unknown Candidate subject namespace.", "warning");
+        return;
+      }
       try {
-        const candidateId = parseScopeTrialReviewCommandValue(requestedId);
-        if (candidateId === null) throw new Error("Scope review subject namespace is invalid.");
-        await this.handleScopeTrialReviewCommand(candidateId, ctx);
+        const candidateId = requestedId.slice("scope:".length);
+        await this.crossProjectLearning.handleScopeTrialReviewCommand(candidateId, ctx);
       } catch (error) {
         ctx.ui.notify(`Pindie could not show Scope Trial review: ${errorMessage(error)}`, "warning");
       }
@@ -1146,11 +1161,16 @@ export class SelfImprovementIntegration {
         experienceReader: this.experienceReader,
         derivationDecisionReader: this.strategyDerivationDecisionReader,
         trustedPortfolio,
-        scopeCandidateReader: this.strategyTrustScopeCandidateStore,
-        scopeDecisionReader: this.strategyTrustScopeDecisionStore,
-        scopeSourceResolver: this.strategyTrustScopeSourceResolver,
       });
-      return filterTrialCommandOptions(projection, prefix);
+      const options = filterTrialCommandOptions(projection, prefix);
+      if (this.crossProjectLearning !== null) {
+        try {
+          options.push(...await this.crossProjectLearning.scopeCommandCompletions("trial", projectRoot, prefix));
+        } catch {
+          // Global completion is advisory and cannot hide local Trial options.
+        }
+      }
+      return options;
     } catch {
       return null;
     }
@@ -1176,14 +1196,12 @@ export class SelfImprovementIntegration {
         trustedPortfolio,
       });
       const options = filterTrialReviewCommandOptions(projection, prefix);
-      try {
-        const scopeProjection = await buildScopeTrialReviewCommandProjection({
-          candidateReader: this.strategyTrustScopeCandidateStore,
-          decisionReader: this.strategyTrustScopeDecisionStore,
-        });
-        options.push(...filterScopeTrialReviewCommandOptions(scopeProjection, prefix));
-      } catch {
-        // Global completion is advisory and cannot hide local review options.
+      if (this.crossProjectLearning !== null) {
+        try {
+          options.push(...await this.crossProjectLearning.scopeCommandCompletions("trial-review", projectRoot, prefix));
+        } catch {
+          // Global completion is advisory and cannot hide local review options.
+        }
       }
       return options;
     } catch {
@@ -1202,41 +1220,14 @@ export class SelfImprovementIntegration {
     try {
       const projection = await this.unifiedCandidateCommandProjection(command, projectRoot);
       const options = [...projection.options];
-      try {
-        const scopeProjection = await buildScopeDecisionCommandProjection({
-          command,
-          candidateReader: this.strategyTrustScopeCandidateStore,
-          decisionReader: this.strategyTrustScopeDecisionStore,
-          sourceResolver: this.strategyTrustScopeSourceResolver,
-          experienceReader: this.crossProjectExperienceReader ?? undefined,
-          projectTrustReader: this.scopeProjectTrustReader,
-          currentProjectRoot: projectRoot,
-        });
-        options.push(...filterScopeDecisionCommandOptions(scopeProjection, prefix));
-      } catch {
-        // Global completion is advisory; dispatch repeats all authority checks.
+      if (this.crossProjectLearning !== null) {
+        try {
+          options.push(...await this.crossProjectLearning.scopeCommandCompletions(command, projectRoot, prefix));
+        } catch {
+          // Global completion is advisory; dispatch repeats all authority checks.
+        }
       }
       return options.filter((option) => option.value.startsWith(prefix));
-    } catch {
-      return null;
-    }
-  }
-
-  private async trustTransferCommandProjection(projectRoot: string) {
-    const portfolio = await this.loadTrustedPortfolio(projectRoot);
-    return listTransferableDerivedStrategies(
-      projectRoot,
-      portfolio,
-      this.strategyTrustScopeSourceResolver,
-    );
-  }
-
-  private async trustTransferCommandCompletions(prefix: string) {
-    const projectRoot = this.core.getProjectRoot();
-    if (projectRoot === null) return null;
-    try {
-      const projection = await this.trustTransferCommandProjection(projectRoot);
-      return filterTrustTransferCommandOptions(projection, prefix);
     } catch {
       return null;
     }
@@ -1273,84 +1264,6 @@ export class SelfImprovementIntegration {
       // A failed read cannot prove that the project has no Candidates.
     }
     ctx.ui.notify("No Candidate selected. Use command completion to choose one.", "warning");
-  }
-
-  private async handleTrustTransferCommand(
-    args: string,
-    ctx: ExtensionCommandContext,
-  ): Promise<void> {
-    const requestedId = args.trim();
-    if (!requestedId) {
-      const options = await this.trustTransferCommandCompletions("");
-      if (options !== null && options.length === 0) {
-        ctx.ui.notify(
-          "No project-local promoted Derived Strategy is currently transferable to a user-global trust hypothesis.",
-          "info",
-        );
-      } else {
-        ctx.ui.notify(
-          "No Strategy selected. Use /trust-transfer completion to choose a project-local promoted Derived Strategy.",
-          "warning",
-        );
-      }
-      return;
-    }
-    if (/\s/.test(requestedId)) {
-      ctx.ui.notify("Usage: /trust-transfer <local-promoted-derived-strategy>", "warning");
-      return;
-    }
-    const projectRoot = this.core.getProjectRoot();
-    if (projectRoot === null) {
-      ctx.ui.notify("Pindie could not create a trust-transfer hypothesis: no current project root is loaded.", "warning");
-      return;
-    }
-    if (!ctx.isIdle()) {
-      ctx.ui.notify("Pindie could not create a trust-transfer hypothesis: the Agent is busy.", "warning");
-      return;
-    }
-
-    let projection;
-    try {
-      projection = await this.trustTransferCommandProjection(projectRoot);
-    } catch (error) {
-      ctx.ui.notify(
-        `Pindie could not create a trust-transfer hypothesis: transferable Derived Strategies could not be resolved: ${errorMessage(error)}`,
-        "warning",
-      );
-      return;
-    }
-    const selected = projection.entries.find((entry) => entry.option.value === requestedId);
-    if (selected === undefined) {
-      ctx.ui.notify(
-        `Pindie could not create a trust-transfer hypothesis: '${requestedId}' is not a currently transferable promoted Derived Strategy. Use completion to choose one exact revision.`,
-        "warning",
-      );
-      return;
-    }
-    if (this.core.getProjectRoot() !== projectRoot || !ctx.isIdle()) {
-      ctx.ui.notify(
-        "Pindie could not create a trust-transfer hypothesis: the current project or Agent state changed while reading trust.",
-        "warning",
-      );
-      return;
-    }
-
-    try {
-      const candidate = await createStrategyTrustScopeCandidateForProject(
-        {
-          projectRoot,
-          sourceStrategy: selected.sourceStrategy,
-          createdAt: new Date(this.now()).toISOString(),
-        },
-        this.strategyTrustScopeCandidateCreationDependencies,
-      );
-      ctx.ui.notify(
-        `Trust-transfer hypothesis created for '${candidate.sourceStrategy.strategyId}' (${candidate.sourceStrategy.kind}), revision ${candidate.sourceStrategy.revisionIdentity.slice(0, 8)}: project-local trusted Derived Strategy proposed for user-global trust.`,
-        "info",
-      );
-    } catch (error) {
-      ctx.ui.notify(`Pindie could not create a trust-transfer hypothesis: ${errorMessage(error)}`, "warning");
-    }
   }
 
   private async handleAdaptationCommand(
@@ -1474,7 +1387,11 @@ export class SelfImprovementIntegration {
       return;
     }
     if (requestedId.startsWith("scope:")) {
-      await this.handleScopeStrategyDecisionCommand(terminalDecision, requestedId, ctx);
+      if (this.crossProjectLearning === null) {
+        failure("unknown Candidate subject namespace.");
+        return;
+      }
+      await this.crossProjectLearning.handleScopeDecisionCommand(terminalDecision, requestedId, ctx);
       return;
     }
     if (requestedId.includes(":")) {
@@ -1785,79 +1702,6 @@ export class SelfImprovementIntegration {
     );
   }
 
-  private async handleScopeStrategyDecisionCommand(
-    terminalDecision: "promoted" | "rejected",
-    args: string,
-    ctx: ExtensionCommandContext,
-  ): Promise<void> {
-    const requestedValue = args.trim();
-    const verb = terminalDecision === "promoted" ? "promote" : "reject";
-    const command = terminalDecision === "promoted" ? "/promote" : "/reject";
-    const failure = (message: string): void => {
-      ctx.ui.notify(`Pindie could not ${verb} Scope Candidate: ${message}`, "warning");
-    };
-    if (!requestedValue) {
-      await this.notifyMissingCandidateCommandArgument(verb as CandidateCommandName, ctx);
-      return;
-    }
-    if (/\s/.test(requestedValue)) {
-      ctx.ui.notify(`Usage: ${command} scope:<candidate-id>`, "warning");
-      return;
-    }
-    let candidateId: string | null;
-    try {
-      candidateId = parseScopeTrialCommandValue(requestedValue);
-    } catch (error) {
-      failure(errorMessage(error));
-      return;
-    }
-    if (candidateId === null) {
-      failure(requestedValue.includes(":")
-        ? "unknown Candidate subject namespace."
-        : "Scope Decisions require the namespaced value scope:<candidate-id>.");
-      return;
-    }
-    const projectRoot = this.core.getProjectRoot();
-    if (projectRoot === null) {
-      failure("no current project root is loaded.");
-      return;
-    }
-    if (!ctx.isIdle()) {
-      failure("the Agent is busy.");
-      return;
-    }
-
-    const dependencies: StrategyTrustScopeDecisionCreationDependencies = {
-      candidateReader: this.strategyTrustScopeCandidateStore,
-      decisionStore: this.strategyTrustScopeDecisionStore,
-      sourceResolver: this.strategyTrustScopeSourceResolver,
-      writerLock: this.strategyTrustScopeWriterLock,
-      experienceReader: this.crossProjectExperienceReader ?? undefined,
-      projectTrustReader: this.scopeProjectTrustReader,
-    };
-    try {
-      const result = await createStrategyTrustScopeDecisionForHuman({
-        candidateId,
-        decision: terminalDecision,
-        decidedAt: new Date(this.now()).toISOString(),
-        currentProjectRoot: projectRoot,
-      }, dependencies);
-      if (terminalDecision === "promoted") {
-        ctx.ui.notify(
-          `Scope Candidate '${candidateId}' promoted: the exact Derived Strategy is trusted for explicit normal Policy selection as user-global trust. It is not a default or recommendation; ${result.decision.evidence.trialRefs.length} validated Trial evidence ref(s) were retained for audit provenance.`,
-          "info",
-        );
-      } else {
-        ctx.ui.notify(
-          `Scope Candidate '${candidateId}' rejected: no user-global trust was granted. Rejection is a Human trust decision, not experimental falsification.`,
-          "info",
-        );
-      }
-    } catch (error) {
-      failure(errorMessage(error));
-    }
-  }
-
   private async handleTrialCommand(
     args: string,
     ctx: ExtensionCommandContext,
@@ -1871,18 +1715,19 @@ export class SelfImprovementIntegration {
       ctx.ui.notify("Usage: /trial <candidate-id> (or scope:candidate-id)", "warning");
       return;
     }
-    let scopeCandidateId: string | null = null;
     if (requestedId.startsWith("scope:")) {
-      try {
-        scopeCandidateId = parseScopeTrialCommandValue(requestedId);
-      } catch (error) {
-        ctx.ui.notify(`Pindie could not arm /trial: ${errorMessage(error)}`, "warning");
+      if (this.crossProjectLearning === null) {
+        ctx.ui.notify("Pindie could not arm /trial: unknown Candidate subject namespace.", "warning");
         return;
       }
-    } else if (requestedId.includes(":")) {
+      await this.crossProjectLearning.handleScopeTrialCommand(requestedId, ctx);
+      return;
+    }
+    if (requestedId.includes(":")) {
       ctx.ui.notify("Pindie could not arm /trial: unknown Candidate subject namespace.", "warning");
       return;
-    } else if (!isCanonicalStrategyCandidateId(requestedId)) {
+    }
+    if (!isCanonicalStrategyCandidateId(requestedId)) {
       ctx.ui.notify("Pindie could not arm /trial: candidate-id must be a canonical lowercase UUID-v4.", "warning");
       return;
     }
@@ -1905,77 +1750,6 @@ export class SelfImprovementIntegration {
     }
     if (this.derivation.hasDerivation) {
       ctx.ui.notify("Pindie could not arm /trial: a Strategy Derivation attempt is already pending or active.", "warning");
-      return;
-    }
-
-    if (scopeCandidateId !== null) {
-      const sessionId = ctx.sessionManager.getSessionId();
-      let targetPortfolio: TrustedStrategyPortfolio;
-      try {
-        targetPortfolio = await this.loadTrustedPortfolio(projectRoot);
-      } catch (error) {
-        ctx.ui.notify(`Pindie could not arm /trial Scope Candidate: target trusted portfolio is unavailable: ${errorMessage(error)}`, "warning");
-        return;
-      }
-      let binding: ScopeTrialBinding;
-      try {
-        binding = await resolveScopeTrialBinding({
-          candidateId: scopeCandidateId,
-          targetProjectRoot: projectRoot,
-          targetPortfolio,
-          candidateReader: this.strategyTrustScopeCandidateStore,
-          decisionReader: this.strategyTrustScopeDecisionStore,
-          sourceResolver: this.strategyTrustScopeSourceResolver,
-        });
-      } catch (error) {
-        ctx.ui.notify(`Pindie could not arm /trial Scope Candidate: ${errorMessage(error)}`, "warning");
-        return;
-      }
-
-      if (
-        ctx.sessionManager.getSessionId() !== sessionId ||
-        this.core.getProjectRoot() !== projectRoot ||
-        !ctx.isIdle()
-      ) {
-        ctx.ui.notify("Pindie could not arm /trial Scope Candidate: the current Session, project, or Agent state changed while reading the binding.", "warning");
-        return;
-      }
-      try {
-        const latestPortfolio = await this.loadTrustedPortfolio(projectRoot);
-        const latestBinding = await resolveScopeTrialBinding({
-          candidateId: scopeCandidateId,
-          targetProjectRoot: projectRoot,
-          targetPortfolio: latestPortfolio,
-          candidateReader: this.strategyTrustScopeCandidateStore,
-          decisionReader: this.strategyTrustScopeDecisionStore,
-          sourceResolver: this.strategyTrustScopeSourceResolver,
-        });
-        if (!sameScopeTrialBinding(binding, latestBinding)) {
-          throw new Error("the Scope Candidate, source binding, or target trust changed before arming");
-        }
-        binding = latestBinding;
-      } catch (error) {
-        ctx.ui.notify(`Pindie could not arm /trial Scope Candidate: fresh binding validation failed: ${errorMessage(error)}`, "warning");
-        return;
-      }
-      if (this.core.getProjectRoot() !== projectRoot || !ctx.isIdle()) {
-        ctx.ui.notify("Pindie could not arm /trial Scope Candidate: the current project or Agent state changed before arming.", "warning");
-        return;
-      }
-      if (this.trial.hasTrial || this.adaptation.hasAttempt || this.derivation.hasDerivation) {
-        ctx.ui.notify("Pindie could not arm /trial Scope Candidate: another Self-Improvement attempt or Candidate Trial is already pending or active.", "warning");
-        return;
-      }
-      try {
-        if (!this.trial.establishScope(sessionId, binding)) {
-          ctx.ui.notify("Pindie could not arm /trial Scope Candidate: another Candidate Trial is already pending or active.", "warning");
-          return;
-        }
-      } catch (error) {
-        ctx.ui.notify(`Pindie could not arm /trial Scope Candidate: invalid binding: ${errorMessage(error)}`, "warning");
-        return;
-      }
-      ctx.ui.notify(`Scope Trial armed for the next Agent Run (Scope Candidate ${scopeCandidateId}).`, "info");
       return;
     }
 

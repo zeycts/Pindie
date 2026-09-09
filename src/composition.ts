@@ -178,12 +178,6 @@ export function resolvePindieFeatureSelection(
       "Pindie feature selection is invalid: Cross-Project Learning requires Self-Improvement.",
     );
   }
-  if (selfImprovement && !crossProjectLearning) {
-    throw new Error(
-      "Slice D composition does not support disabling Cross-Project Learning until Composable Slice E is implemented.",
-    );
-  }
-
   const remoteAvailable = availability.remote === true;
   const workMemoryAvailable = availability.workMemory === true;
   const requestedRemote = overrides.remote ??
@@ -300,9 +294,6 @@ export function composePindieExtension(
     experienceReader = input.experienceReader ?? new FileRunExperienceReader({
       baseDir: roots.projectsBaseDir,
     });
-    crossProjectExperienceReader = input.crossProjectExperienceReader ??
-      (isProjectReader(experienceReader) ? experienceReader : undefined);
-
     strategyCandidateStore = input.strategyCandidateStore ??
       new FileStrategyCandidateStore({ baseDir: roots.projectsBaseDir });
     strategyCandidateReader = input.strategyCandidateReader ??
@@ -333,8 +324,24 @@ export function composePindieExtension(
     strategyTrustScopeWriterLock = input.strategyTrustScopeWriterLock ?? new FileGlobalWriterLock({
       baseDir: roots.globalBaseDir,
     });
+  }
+
+  if (selection.crossProjectLearning) {
+    crossProjectExperienceReader = input.crossProjectExperienceReader ??
+      (experienceReader !== undefined && isProjectReader(experienceReader) ? experienceReader : undefined);
     scopeProjectTrustReader = input.scopeProjectTrustReader ??
       new FileScopeProjectTrustReader({ projectsBaseDir: roots.projectsBaseDir });
+    if (crossProjectExperienceReader === undefined) {
+      // A custom SI-only test reader may not expose the optional cross-project
+      // namespace. Keep CPL assembled but make its evidence path fail closed;
+      // production composition always supplies FileRunExperienceReader.
+      crossProjectExperienceReader = {
+        listProjectIds: async () => Object.freeze([]),
+        readProjectId: async () => {
+          throw new Error("Cross-project Experience reader is unavailable.");
+        },
+      };
+    }
   }
 
   let projectMemorySink: ProjectMemorySink | undefined;
@@ -405,7 +412,6 @@ export function composePindieExtension(
       ? {
           experienceStore: experienceStore!,
           experienceReader: experienceReader!,
-          crossProjectExperienceReader,
           strategyCandidateStore: strategyCandidateStore!,
           strategyCandidateReader: strategyCandidateReader!,
           strategyDerivationCandidateStore: strategyDerivationCandidateStore!,
@@ -418,6 +424,11 @@ export function composePindieExtension(
           strategyTrustScopeDecisionStore: strategyTrustScopeDecisionStore!,
           strategyTrustScopeSourceResolver: strategyTrustScopeSourceResolver!,
           strategyTrustScopeWriterLock: strategyTrustScopeWriterLock!,
+        }
+      : {}),
+    ...(selection.crossProjectLearning
+      ? {
+          crossProjectExperienceReader: crossProjectExperienceReader!,
           scopeProjectTrustReader: scopeProjectTrustReader!,
         }
       : {}),
