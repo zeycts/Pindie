@@ -23,6 +23,18 @@ import {
   type StrategyRevisionSelection,
   type StrategyRevisionSelector,
 } from "./policy.ts";
+import {
+  MAX_USER_GLOBAL_DERIVED_STRATEGIES,
+} from "./strategy-trust-scope-constants.ts";
+import type {
+  StrategyTrustScopeCandidateReader,
+} from "./strategy-trust-scope-candidates.ts";
+import type {
+  StrategyTrustScopeDecisionReader,
+} from "./strategy-trust-scope-decisions.ts";
+import type {
+  StrategyTrustScopeSourceResolver,
+} from "./strategy-trust-scope-resolution.ts";
 import type { StrategyDerivationCandidateReader } from "./strategy-derivation-candidates.ts";
 import {
   getSeedStrategy,
@@ -36,16 +48,37 @@ import {
 import type { StrategyCandidateReader } from "./strategy-candidates.ts";
 
 export const TRUSTED_PORTFOLIO_FINGERPRINT_VERSION = 1 as const;
+const CANONICAL_PROJECT_ID = /^[0-9a-f]{64}$/;
 /** Keep the portfolio-facing import compatible with the catalog's SSOT bound. */
 export { MAX_PROMOTED_DERIVED_STRATEGIES };
-/** Immutable Seeds + maximum promoted Seed revisions + promoted Derived identities. */
+/**
+ * Immutable Seeds + maximum promoted Seed revisions + project-local promoted
+ * Derived identities + user-global promoted Derived identities.
+ */
 export const MAX_TRUSTED_PORTFOLIO_ENTRIES =
-  SEED_STRATEGIES.length + MAX_PROMOTED_STRATEGY_REVISIONS + MAX_PROMOTED_DERIVED_STRATEGIES;
+  SEED_STRATEGIES.length +
+  MAX_PROMOTED_STRATEGY_REVISIONS +
+  MAX_PROMOTED_DERIVED_STRATEGIES +
+  MAX_USER_GLOBAL_DERIVED_STRATEGIES;
 
 export type TrustedPortfolioOrigin =
   | "seed"
   | "promoted-seed-revision"
   | "promoted-derived";
+
+/** Runtime-only trust provenance; never part of the canonical manifest. */
+export type TrustedPortfolioTrustOrigin = "seed" | "project-local" | "user-global";
+
+export interface TrustedPortfolioTrustMetadata {
+  readonly origins: readonly TrustedPortfolioTrustOrigin[];
+  readonly sourceProjectIds: readonly string[];
+}
+
+/** A validated exact Derived selection resolved from the user-global layer. */
+export interface TrustedPortfolioGlobalEntry {
+  readonly sourceProjectId: string;
+  readonly selection: StrategyRevisionSelection;
+}
 
 /** The only identity facts in the canonical trusted-portfolio manifest. */
 export interface TrustedPortfolioManifestEntry {
@@ -67,6 +100,8 @@ export interface TrustedPortfolioStrategySemantics {
 export interface TrustedPortfolioResolvedEntry {
   readonly manifest: TrustedPortfolioManifestEntry;
   readonly semantics: TrustedPortfolioStrategySemantics;
+  /** Optional for compatibility with frozen test seams; runtime entries set it. */
+  readonly trust?: TrustedPortfolioTrustMetadata;
 }
 
 /**
@@ -81,6 +116,17 @@ export interface TrustedStrategyPortfolio {
   readonly fingerprint: string;
   readonly entries: readonly TrustedPortfolioManifestEntry[];
   readonly resolvedEntries: readonly TrustedPortfolioResolvedEntry[];
+}
+
+/** Runtime-only presentation state for the optional user-global layer. */
+export type TrustedPortfolioGlobalLayer =
+  | { readonly available: true }
+  | { readonly available: false; readonly reason: string };
+
+/** A coherent local-or-complete portfolio plus optional-global diagnostics. */
+export interface TrustedStrategyPortfolioPresentation {
+  readonly portfolio: TrustedStrategyPortfolio;
+  readonly globalLayer: TrustedPortfolioGlobalLayer;
 }
 
 function compareText(left: string, right: string): number {
@@ -115,6 +161,46 @@ function copySemantics(
   });
 }
 
+const TRUST_ORIGIN_ORDER: Record<TrustedPortfolioTrustOrigin, number> = {
+  seed: 0,
+  "user-global": 1,
+  "project-local": 2,
+};
+
+function trustMetadata(
+  origins: readonly TrustedPortfolioTrustOrigin[],
+  sourceProjectIds: readonly string[],
+): TrustedPortfolioTrustMetadata {
+  return Object.freeze({
+    origins: Object.freeze([...new Set(origins)].sort((left, right) =>
+      TRUST_ORIGIN_ORDER[left] - TRUST_ORIGIN_ORDER[right])),
+    sourceProjectIds: Object.freeze([...new Set(sourceProjectIds)].sort(compareText)),
+  });
+}
+
+function trustForManifest(
+  manifest: TrustedPortfolioManifestEntry,
+): TrustedPortfolioTrustMetadata {
+  return manifest.origin === "seed"
+    ? trustMetadata(["seed"], [])
+    : trustMetadata(["project-local"], []);
+}
+
+function entryTrust(
+  entry: TrustedPortfolioResolvedEntry,
+): TrustedPortfolioTrustMetadata {
+  return entry.trust ?? trustForManifest(entry.manifest);
+}
+
+function trustIdentityKey(entry: TrustedPortfolioManifestEntry): string {
+  return [
+    entry.strategyId,
+    entry.kind,
+    entry.revisionIdentity,
+    entry.revisionFingerprint,
+  ].join("\0");
+}
+
 function seedResolvedEntry(
   strategy: (typeof SEED_STRATEGIES)[number],
 ): TrustedPortfolioResolvedEntry {
@@ -133,6 +219,7 @@ function seedResolvedEntry(
       avoidWhen: strategy.avoidWhen ?? [],
       principles: strategy.principles,
     }),
+    trust: trustMetadata(["seed"], []),
   });
 }
 
@@ -165,6 +252,7 @@ function promotedResolvedEntry(
       avoidWhen: selection.semantics.avoidWhen,
       principles: selection.semantics.principles,
     }),
+    trust: trustMetadata(["project-local"], []),
   });
 }
 
@@ -195,6 +283,33 @@ function promotedDerivedResolvedEntry(
       avoidWhen: selection.semantics.avoidWhen,
       principles: selection.semantics.principles,
     }),
+    trust: trustMetadata(["project-local"], []),
+  });
+}
+
+function globalDerivedResolvedEntry(
+  entry: TrustedPortfolioGlobalEntry,
+): TrustedPortfolioResolvedEntry {
+  const selection = entry.selection;
+  if (
+    typeof entry.sourceProjectId !== "string" ||
+    !CANONICAL_PROJECT_ID.test(entry.sourceProjectId) ||
+    selection.revisionStatusAtRun !== "promoted" ||
+    getSeedStrategy(selection.strategyId) !== null ||
+    selection.revisionIdentity === "seed"
+  ) {
+    throw new Error("User-global Derived Strategy cannot be resolved into the trusted portfolio.");
+  }
+  return Object.freeze({
+    manifest: Object.freeze({
+      origin: "promoted-derived" as const,
+      strategyId: selection.strategyId,
+      kind: selection.kind,
+      revisionIdentity: selection.revisionIdentity,
+      revisionFingerprint: selection.revisionFingerprint,
+    }),
+    semantics: copySemantics(selection.semantics),
+    trust: trustMetadata(["user-global"], [entry.sourceProjectId]),
   });
 }
 
@@ -226,35 +341,71 @@ export function trustedPortfolioFingerprint(
 export const computeTrustedPortfolioFingerprint = trustedPortfolioFingerprint;
 export const projectTrustedPortfolioFingerprint = trustedPortfolioFingerprint;
 
-/** Construct the current trusted portfolio from immutable Seeds and v0.6 trust. */
+/** Construct the current trusted portfolio from immutable trust projections. */
 export function createTrustedStrategyPortfolio(
   projectRoot: string,
   promotedCatalog: PromotedStrategyRevisionCatalog,
   promotedDerivedCatalog: PromotedDerivedStrategyCatalog = emptyPromotedDerivedStrategyCatalog(),
+  userGlobalEntries: readonly TrustedPortfolioGlobalEntry[] = [],
 ): TrustedStrategyPortfolio {
   const projectId = getProjectId(projectRoot);
-  const resolved = [
+  if (userGlobalEntries.length > MAX_USER_GLOBAL_DERIVED_STRATEGIES) {
+    throw new Error(`User-global Derived Strategy capacity exceeds ${MAX_USER_GLOBAL_DERIVED_STRATEGIES}.`);
+  }
+  const rawResolved = [
     ...SEED_STRATEGIES.map(seedResolvedEntry),
     ...promotedCatalog.entries.map(promotedResolvedEntry),
     ...promotedDerivedCatalog.entries.map(promotedDerivedResolvedEntry),
+    ...userGlobalEntries.map(globalDerivedResolvedEntry),
   ].sort((left, right) => compareManifestEntries(left.manifest, right.manifest));
 
+  if (rawResolved.length > MAX_TRUSTED_PORTFOLIO_ENTRIES) {
+    throw new Error("Trusted Strategy portfolio exceeds its bounded manifest.");
+  }
+
+  // Global and local trust have equal advisory status. Exact identity is the
+  // only deduplication key; a different revision under one logical ID is an
+  // ambiguity, never a precedence decision.
+  const resolvedByIdentity = new Map<string, TrustedPortfolioResolvedEntry>();
+  for (const entry of rawResolved) {
+    const key = trustIdentityKey(entry.manifest);
+    const prior = resolvedByIdentity.get(key);
+    if (prior === undefined) {
+      resolvedByIdentity.set(key, entry);
+      continue;
+    }
+    if (!semanticsEqual(prior.semantics, entry.semantics)) {
+      throw new Error("Trusted Strategy portfolio contains conflicting semantics for one exact revision.");
+    }
+    const priorTrust = entryTrust(prior);
+    const currentTrust = entryTrust(entry);
+    resolvedByIdentity.set(key, Object.freeze({
+      manifest: prior.manifest,
+      semantics: prior.semantics,
+      trust: trustMetadata(
+        [...priorTrust.origins, ...currentTrust.origins],
+        [...priorTrust.sourceProjectIds, ...currentTrust.sourceProjectIds],
+      ),
+    }));
+  }
+
+  const resolved = [...resolvedByIdentity.values()]
+    .sort((left, right) => compareManifestEntries(left.manifest, right.manifest));
   if (resolved.length > MAX_TRUSTED_PORTFOLIO_ENTRIES) {
     throw new Error("Trusted Strategy portfolio exceeds its bounded manifest.");
   }
-  const seen = new Set<string>();
-  const derivedLogicalIds = new Set<string>();
+  const derivedLogicalIds = new Map<string, TrustedPortfolioManifestEntry>();
   for (const entry of resolved) {
-    const key = manifestSortKey(entry.manifest);
-    if (seen.has(key)) throw new Error("Trusted Strategy portfolio contains duplicate manifest entries.");
-    seen.add(key);
-    if (entry.manifest.origin === "promoted-derived") {
-      if (derivedLogicalIds.has(entry.manifest.strategyId) ||
-        SEED_STRATEGIES.some((seed) => seed.id === entry.manifest.strategyId)) {
-        throw new Error("Trusted Strategy portfolio contains a duplicate Derived logical Strategy identity.");
+    if (entry.manifest.origin !== "promoted-derived") continue;
+    const prior = derivedLogicalIds.get(entry.manifest.strategyId);
+    if (prior !== undefined ||
+      SEED_STRATEGIES.some((seed) => seed.id === entry.manifest.strategyId)) {
+      if (prior !== undefined && trustIdentityKey(prior) === trustIdentityKey(entry.manifest)) {
+        continue;
       }
-      derivedLogicalIds.add(entry.manifest.strategyId);
+      throw new Error("Trusted Strategy portfolio contains a duplicate or conflicting Derived logical Strategy identity.");
     }
+    derivedLogicalIds.set(entry.manifest.strategyId, entry.manifest);
   }
 
   const entries = Object.freeze(resolved.map((entry) => entry.manifest));
@@ -278,6 +429,9 @@ export async function loadTrustedStrategyPortfolio(
   candidateReader: StrategyCandidateReader,
   derivationDecisionReader?: StrategyDerivationDecisionReader,
   derivationCandidateReader?: StrategyDerivationCandidateReader,
+  scopeCandidateReader?: StrategyTrustScopeCandidateReader,
+  scopeDecisionReader?: StrategyTrustScopeDecisionReader,
+  scopeSourceResolver?: StrategyTrustScopeSourceResolver,
 ): Promise<TrustedStrategyPortfolio> {
   const promotedCatalog = await loadPromotedStrategyRevisionCatalog(
     projectRoot,
@@ -293,7 +447,31 @@ export async function loadTrustedStrategyPortfolio(
       candidateReader,
     )
     : emptyPromotedDerivedStrategyCatalog();
-  return createTrustedStrategyPortfolio(projectRoot, promotedCatalog, promotedDerivedCatalog);
+  const scopeDependencies = [scopeCandidateReader, scopeDecisionReader, scopeSourceResolver];
+  if (scopeDependencies.some((dependency) => dependency !== undefined) &&
+    scopeDependencies.some((dependency) => dependency === undefined)) {
+    throw new Error("User-global trusted Strategy projection dependencies are incomplete.");
+  }
+  const userGlobalEntries = scopeCandidateReader !== undefined &&
+      scopeDecisionReader !== undefined && scopeSourceResolver !== undefined
+    ? (await (async () => {
+        const { loadUserGlobalTrustedDerivedStrategyProjection } = await import("./strategy-trust-scope-global.ts");
+        return loadUserGlobalTrustedDerivedStrategyProjection({
+          candidateReader: scopeCandidateReader,
+          decisionReader: scopeDecisionReader,
+          sourceResolver: scopeSourceResolver,
+        });
+      })()).entries.map((entry): TrustedPortfolioGlobalEntry => ({
+      sourceProjectId: entry.sourceStrategy.sourceProjectId,
+      selection: entry.selection,
+    }))
+    : [];
+  return createTrustedStrategyPortfolio(
+    projectRoot,
+    promotedCatalog,
+    promotedDerivedCatalog,
+    userGlobalEntries,
+  );
 }
 
 function semanticsEqual(
@@ -368,6 +546,23 @@ const TRUSTED_PORTFOLIO_ORIGIN_ORDER: Record<TrustedPortfolioOrigin, number> = {
   "promoted-derived": 2,
 };
 
+function formatTrustOrigins(
+  entry: TrustedPortfolioResolvedEntry,
+): string {
+  const trust = entryTrust(entry);
+  if (trust.origins.length === 0) return "unavailable";
+  return trust.origins.join(" + ");
+}
+
+function formatTrustSourceProjects(
+  entry: TrustedPortfolioResolvedEntry,
+): string | null {
+  const sourceProjectIds = entryTrust(entry).sourceProjectIds;
+  return sourceProjectIds.length === 0
+    ? null
+    : sourceProjectIds.map((projectId) => projectId.slice(0, 8)).join(", ");
+}
+
 function compareHumanPortfolioEntries(
   left: TrustedPortfolioResolvedEntry,
   right: TrustedPortfolioResolvedEntry,
@@ -412,9 +607,12 @@ function formatTrustedStrategyList(
       const identity = manifest.origin === "seed"
         ? manifest.strategyId
         : `${manifest.strategyId} · promoted ${manifest.revisionIdentity.slice(0, 8)}`;
+      const sourceProjects = formatTrustSourceProjects(entry);
       lines.push(
         `  ${identity}`,
         `    ${TRUSTED_PORTFOLIO_ORIGIN_LABELS[manifest.origin]}`,
+        `    Trust: ${formatTrustOrigins(entry)}`,
+        ...(sourceProjects === null ? [] : [`    Source project: ${sourceProjects}`]),
         `    ${entry.semantics.summary}`,
         "",
       );
@@ -447,6 +645,10 @@ function formatTrustedStrategyDetails(
       `Logical Strategy ID: ${manifest.strategyId}`,
       `Kind: ${manifest.kind}`,
       `Origin: ${TRUSTED_PORTFOLIO_ORIGIN_LABELS[manifest.origin]}`,
+      `Trust: ${formatTrustOrigins(entry)}`,
+      ...(formatTrustSourceProjects(entry) === null
+        ? []
+        : [`Source project: ${formatTrustSourceProjects(entry)}`]),
       `Revision identity: ${manifest.revisionIdentity}`,
       `Revision status: ${manifest.origin === "seed" ? "seed" : "promoted"}`,
       `Revision fingerprint: ${manifest.revisionFingerprint}`,
@@ -473,6 +675,31 @@ export function formatTrustedStrategyPortfolio(
   return strategyId === undefined
     ? formatTrustedStrategyList(portfolio)
     : formatTrustedStrategyDetails(portfolio, strategyId);
+}
+
+const MAX_TRUSTED_PORTFOLIO_DIAGNOSTIC_LENGTH = 256;
+
+function boundedTrustedPortfolioDiagnostic(reason: string): string {
+  const normalized = reason.replace(/[\r\n\t]+/gu, " ").replace(/\s{2,}/gu, " ").trim();
+  return normalized.length <= MAX_TRUSTED_PORTFOLIO_DIAGNOSTIC_LENGTH
+    ? normalized
+    : `${normalized.slice(0, MAX_TRUSTED_PORTFOLIO_DIAGNOSTIC_LENGTH - 1)}…`;
+}
+
+/** Render a coherent portfolio while explaining loss of optional global trust. */
+export function formatTrustedStrategyPortfolioPresentation(
+  presentation: TrustedStrategyPortfolioPresentation,
+  strategyId?: string,
+): string {
+  const report = formatTrustedStrategyPortfolio(presentation.portfolio, strategyId);
+  if (presentation.globalLayer.available) return report;
+  return [
+    report,
+    "",
+    "Optional user-global layer: unavailable",
+    `  Reason: ${boundedTrustedPortfolioDiagnostic(presentation.globalLayer.reason)}`,
+    "  Project-local and immutable Seed Strategies remain available; no unavailable global revision is shown as trusted.",
+  ].join("\n");
 }
 
 /** Resolve an exact trusted selection with all semantics/status supplied by the Harness. */
@@ -514,7 +741,7 @@ export function formatPromotedTrustedStrategyPortfolio(
   if (promoted.length === 0) return "";
   const lines = [
     "<PINDIE_PROMOTED_STRATEGIES>",
-    "Project-local promoted Strategies available for explicit normal Policy declaration:",
+    "Project-local and user-global promoted Strategies available for explicit normal Policy declaration:",
     "Promotion means only that the exact immutable revision is trusted enough to be selectable; it is not a default, recommendation, superiority claim, or causal finding.",
     "Seed revisions remain selectable by their existing shorthand.",
     "",
@@ -524,6 +751,10 @@ export function formatPromotedTrustedStrategyPortfolio(
     lines.push(
       `- ${manifest.strategyId} (${manifest.kind}) · promoted ${manifest.revisionIdentity.slice(0, 8)}`,
       `  Origin: ${manifest.origin}`,
+      `  Trust: ${formatTrustOrigins(entry)}`,
+      ...(formatTrustSourceProjects(entry) === null
+        ? []
+        : [`  Source project: ${formatTrustSourceProjects(entry)}`]),
       `  Revision fingerprint: ${manifest.revisionFingerprint}`,
       "  Revision status: promoted",
       "  Exact selector:",
@@ -545,7 +776,7 @@ export function formatPromotedTrustedStrategyPortfolio(
     );
   }
   lines.push(
-    "The Harness supplies validated kind, semantics, fingerprint, and revisionStatusAtRun = promoted from immutable trust artifacts.",
+    "The Harness supplies validated kind, semantics, fingerprint, trust-origin presentation, and revisionStatusAtRun = promoted from immutable trust artifacts.",
     "Inactive and rejected Candidates are not included in normal context.",
     "</PINDIE_PROMOTED_STRATEGIES>",
   );

@@ -442,7 +442,7 @@ test("cross-project review requires exact identity, semantics, trial status, att
   assert.match(report, /Promotion Eligibility: eligible for Human review/);
   assert.match(report, /Negative factual outcomes remain visible/);
   assert.doesNotMatch(report, /\n(?:Score|Ranking|Reward|Causal claim):/i);
-  assert.equal(populated.experienceReader.readCalls.length, populated.projectIds.length * 2);
+  assert.equal(populated.experienceReader.readCalls.length, populated.projectIds.length * 2 + 2);
   assert.equal(populated.projectTrustReader.readCalls.length, populated.projectIds.length * 2);
 });
 
@@ -539,6 +539,128 @@ test("final source freshness fails closed when the exact promoted binding disapp
   assert.equal(review.promotionEligibility.sourceStrategyTrustValid, false);
   assert.equal(review.promotionEligibility.eligible, false);
   assert.match(review.reasons.join(" "), /source.*(missing|changed|stale|coherent)/i);
+});
+
+test("final authority freshness runs after the selected evidence boundary", async () => {
+  const fixture = scopeFixture(recordsFor(scopeFixture(), [
+    [TARGET_A_ROOT, 111, experience(policyFor(sourceCandidate()))],
+    [TARGET_B_ROOT, 112, experience(policyFor(sourceCandidate()))],
+  ]));
+  const terminalDecision = createStrategyTrustScopeDecision({
+    candidate: fixture.candidate,
+    decision: "rejected",
+    trialRefs: [],
+    decidedAt: "2026-07-06T00:00:00.000Z",
+  });
+  let boundaryReached = false;
+  let experienceReads = 0;
+  const experienceReader: RunExperienceProjectReader = {
+    listProjectIds: async () => fixture.experienceReader.listProjectIds(),
+    readProjectId: async (projectId) => {
+      experienceReads += 1;
+      if (experienceReads > fixture.projectIds.length * 2) boundaryReached = true;
+      return fixture.experienceReader.readProjectId(projectId);
+    },
+  };
+  const decisionReader: StrategyTrustScopeDecisionReader = {
+    read: async () => null,
+    readAll: async () => boundaryReached ? [terminalDecision] : [],
+  };
+  const review = await deriveStrategyTrustScopeTrialReview({
+    ...reviewInput(fixture),
+    experienceReader,
+    decisionReader,
+  });
+
+  assert.equal(boundaryReached, true);
+  assert.equal(review.globalStateComplete, false);
+  assert.equal(review.promotionEligibility.scopeCandidateOpen, false);
+  assert.equal(review.promotionEligibility.eligible, false);
+  assert.match(review.reasons.join(" "), /terminal Scope Decision|global.*changed|coherent/i);
+});
+
+test("final project-local trust freshness catches a conflict appearing at the boundary", async () => {
+  const fixture = scopeFixture(recordsFor(scopeFixture(), [
+    [TARGET_A_ROOT, 121, experience(policyFor(sourceCandidate()))],
+    [TARGET_B_ROOT, 122, experience(policyFor(sourceCandidate()))],
+  ]));
+  const targetAId = getProjectId(TARGET_A_ROOT);
+  const conflict = {
+    strategyId: fixture.sourceCandidate.proposal.strategyId,
+    kind: fixture.sourceCandidate.proposal.kind,
+    revisionIdentity: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    revisionFingerprint: `sha256:${"c".repeat(64)}`,
+  };
+  let boundaryReached = false;
+  let experienceReads = 0;
+  const experienceReader: RunExperienceProjectReader = {
+    listProjectIds: async () => fixture.experienceReader.listProjectIds(),
+    readProjectId: async (projectId) => {
+      experienceReads += 1;
+      if (experienceReads > fixture.projectIds.length * 2) boundaryReached = true;
+      return fixture.experienceReader.readProjectId(projectId);
+    },
+  };
+  const projectTrustReader: ScopeProjectTrustReader = {
+    readProjectId: async (projectId) => ({
+      projectId,
+      promotedDerived: boundaryReached && projectId === targetAId ? [conflict] : [],
+    }),
+  };
+  const review = await deriveStrategyTrustScopeTrialReview({
+    ...reviewInput(fixture),
+    experienceReader,
+    projectTrustReader,
+  });
+
+  assert.equal(boundaryReached, true);
+  assert.equal(review.projectTrustScanComplete, false);
+  assert.equal(review.promotionEligibility.projectLocalConflictFree, false);
+  assert.equal(review.promotionEligibility.eligible, false);
+  assert.match(review.reasons.join(" "), /project-local.*changed|conflicting local revision|coherent/i);
+});
+
+test("a project namespace change at the evidence boundary fails closed", async () => {
+  const fixture = scopeFixture(recordsFor(scopeFixture(), [
+    [TARGET_A_ROOT, 131, experience(policyFor(sourceCandidate()))],
+    [TARGET_B_ROOT, 132, experience(policyFor(sourceCandidate()))],
+  ]));
+  const addedProjectId = getProjectId("/scope-review-target-c");
+  let boundaryReached = false;
+  let experienceReads = 0;
+  const experienceReader: RunExperienceProjectReader = {
+    listProjectIds: async () => Object.freeze(boundaryReached
+      ? [...fixture.projectIds, addedProjectId].sort()
+      : [...fixture.projectIds]),
+    readProjectId: async (projectId) => {
+      experienceReads += 1;
+      if (experienceReads > fixture.projectIds.length * 2) boundaryReached = true;
+      return fixture.experienceReader.readProjectId(projectId);
+    },
+  };
+  const review = await deriveStrategyTrustScopeTrialReview({
+    ...reviewInput(fixture),
+    experienceReader,
+  });
+
+  assert.equal(boundaryReached, true);
+  assert.equal(review.projectTrustScanComplete, false);
+  assert.equal(review.promotionEligibility.eligible, false);
+  assert.match(review.reasons.join(" "), /project-local trust namespace set|collision scan.*coherent/i);
+});
+
+test("two unchanged eligible target Runs remain promotion-eligible", async () => {
+  const fixture = scopeFixture(recordsFor(scopeFixture(), [
+    [TARGET_A_ROOT, 141, experience(policyFor(sourceCandidate()))],
+    [TARGET_B_ROOT, 142, experience(policyFor(sourceCandidate()))],
+  ]));
+  const review = await deriveStrategyTrustScopeTrialReview(reviewInput(fixture));
+
+  assert.equal(review.eligibleTrialRunCount, 2);
+  assert.equal(review.distinctEligibleTargetProjectCount, 2);
+  assert.equal(review.selectedEvidenceRefs.length, 2);
+  assert.equal(review.promotionEligibility.eligible, true);
+  assert.equal(review.promotionEligibility.selectedEvidenceRefsValid, true);
 });
 
 test("fresh second-pass resolution invalidates changed selected refs and remains read-only", async () => {

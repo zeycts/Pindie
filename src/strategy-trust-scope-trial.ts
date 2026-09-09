@@ -37,15 +37,20 @@ import {
   type ResolvedStrategyTrustScopeSource,
   type StrategyTrustScopeSourceResolver,
 } from "./strategy-trust-scope-resolution.ts";
-import {
-  trustedLogicalStrategyIds,
-  type TrustedStrategyPortfolio,
+import type {
+  TrustedStrategyPortfolio,
 } from "./strategy-portfolio.ts";
 
 /** Explicit namespace used by `/trial` for global Scope Candidates. */
 export const SCOPE_TRIAL_COMMAND_PREFIX = "scope:";
 export const STRATEGY_TRUST_SCOPE_TRIAL_COMMAND_PREFIX = SCOPE_TRIAL_COMMAND_PREFIX;
 export const MAX_SCOPE_TRIAL_COMMAND_LABEL_LENGTH = 160;
+
+function trustedPortfolioLogicalIds(
+  portfolio: Pick<TrustedStrategyPortfolio, "entries">,
+): readonly string[] {
+  return [...new Set(portfolio.entries.map((entry) => entry.strategyId))];
+}
 
 export interface ScopeTrialPacket {
   readonly candidateType: "strategy-trust-scope";
@@ -491,7 +496,7 @@ export async function createScopeTrialBinding(
   if (SEED_STRATEGIES.some((seed) => seed.id === scopeCandidate.sourceStrategy.strategyId)) {
     throw new Error("Seed Strategies and promoted Seed revisions are not Scope Trial subjects.");
   }
-  if (trustedLogicalStrategyIds(targetPortfolio).includes(scopeCandidate.sourceStrategy.strategyId)) {
+  if (trustedPortfolioLogicalIds(targetPortfolio).includes(scopeCandidate.sourceStrategy.strategyId)) {
     throw new Error("The target project already trusts this logical Strategy ID; same-ID Scope Trials are denied.");
   }
 
