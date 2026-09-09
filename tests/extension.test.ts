@@ -2589,6 +2589,43 @@ test("SI v0.2 Policy Snapshot is optional, transcript-visible, replaceable, and 
   assert.equal(harness.integration.policySnapshot, null);
 });
 
+test("failed Policy declaration restores the previous Snapshot after one Core mutation", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  await executeSemanticTool(harness, "pindie_policy_set", "policy-first", {
+    approach: "architecture-first",
+  });
+  assert.equal(harness.integration.policySnapshot?.approach.id, "architecture-first");
+
+  const failedCallId = "policy-failed-replacement";
+  const input = { approach: "explore-first" };
+  assert.equal(
+    await callGuard(harness, toolCall("pindie_policy_set", input, failedCallId)),
+    undefined,
+  );
+  const executionResult = await harness.api.tool("pindie_policy_set").execute(
+    failedCallId,
+    input,
+    undefined,
+    undefined,
+    context("/repo"),
+  ) as { content: Array<Record<string, unknown>> };
+  await harness.api.handler("tool_result")(
+    toolResult(
+      "pindie_policy_set",
+      true,
+      failedCallId,
+      executionResult.content,
+      input,
+    ),
+    context("/repo"),
+  );
+
+  assert.equal(harness.integration.policySnapshot?.approach.id, "architecture-first");
+});
+
 test("SI v0.2 policy declaration stays outside Evaluation and PindieState persistence", async () => {
   let fingerprintCaptures = 0;
   const harness = createHarness([["/repo", verifiedState()]], {}, {

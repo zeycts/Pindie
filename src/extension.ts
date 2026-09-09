@@ -7,6 +7,13 @@ import {
   type PindieStorageRoots,
 } from "./composition.ts";
 import {
+  coreGatewayDenialReason,
+  corePromptContribution,
+  createCoreIntegration,
+  type CoreIntegration,
+  type CoreSettlementFacts,
+} from "./core-integration.ts";
+import {
   type ExtensionAPI,
   type ExtensionCommandContext,
   type ExtensionContext,
@@ -15,14 +22,12 @@ import {
 
 import {
   createPindieStateCheckpointMessage,
-  appendPindieSystemContract,
   appendPindieWorkMemoryContract,
   createPindieRunBaselineMessage,
   renderCurrentPindieActionEligibility,
   renderPindieProjectMutationUpdate,
 } from "./context.ts";
 import {
-  ContextLifecycleGovernor,
   formatContextLifecycleGuidance,
   PINDIE_CONTEXT_LIFECYCLE_TYPE,
   type ContextGovernorTuning,
@@ -46,7 +51,6 @@ import {
   filterTrialReviewCommandOptions,
   type CandidateCommandName,
 } from "./strategy-candidate-commands.ts";
-import { ExecutionIntegration } from "./execution-integration.ts";
 import type {
   RunExperienceProjectReader,
   RunExperienceReader,
@@ -138,11 +142,6 @@ import {
   assembleRunExperience,
   isEligibleRunExperience,
 } from "./run-experience.ts";
-import {
-  authorizeToolEffect,
-  classifyToolEffect,
-  type ToolEffect,
-} from "./execution-semantics.ts";
 import { PresentationIntegration } from "./presentation-integration.ts";
 import type { RemoteCompanion, RemotePi, RemoteStatusFacts } from "./remote-companion.ts";
 import type { DiscordRemote } from "./discord-remote.ts";
@@ -157,14 +156,10 @@ import type {
 import type { ProjectFingerprint } from "./project-mutation.ts";
 import type { ReasoningController } from "./reasoning.ts";
 import type { RunActivityTracker } from "./run-activity.ts";
-import { RunIntegration } from "./run-integration.ts";
 import type { RunCostTracker } from "./run-cost.ts";
 import type { RunTimer } from "./run-timer.ts";
-import {
-  TaskMetricsTracker,
-  type ConsumptionMetrics,
-} from "./task-metrics.ts";
-import { PindieRuntime } from "./runtime.ts";
+import type { TaskMetricsTracker } from "./task-metrics.ts";
+import type { PindieRuntime } from "./runtime.ts";
 import {
   deriveCapabilities,
   type PindieCapability,
@@ -182,18 +177,12 @@ import {
   type TaskContinuityStore,
   type PindieStateStore,
 } from "./store.ts";
-import {
-  createTaskContinuity,
-  taskContractFingerprint,
-} from "./task-continuity.ts";
+import { taskContractFingerprint } from "./task-continuity.ts";
 import {
   getCommittedRolloverPublisher,
   getSessionLifecyclePublisher,
 } from "./long-task-control.ts";
-import {
-  PINDIE_TASK_HANDOFF_TOOL,
-  TaskHandoffRuntime,
-} from "./task-handoff-runtime.ts";
+import { PINDIE_TASK_HANDOFF_TOOL } from "./task-handoff-runtime.ts";
 import {
   TrialRuntime,
   type DerivationTrialLease,
@@ -202,24 +191,9 @@ import {
 } from "./strategy-trial.ts";
 import { resolveTrialCandidate } from "./strategy-candidate-resolution.ts";
 import type { SubscriptionUsageProvider } from "./subscription-usage.ts";
-import {
-  createPindieGateOpenTool,
-  createPindieGateResolveTool,
-} from "./tools/gate.ts";
-import { createPindiePolicySetTool } from "./tools/policy.ts";
 import { createPindieStrategyCandidateTool } from "./tools/strategy-candidate.ts";
 import { createPindieStrategyDerivationCandidateTool } from "./tools/strategy-derivation-candidate.ts";
-import { createPindieGitObserveTool } from "./tools/git-observe.ts";
 import { createPindieMemoryCaptureTool } from "./tools/memory.ts";
-import {
-  createPindieTaskCompleteTool,
-  createPindieTaskHandoffTool,
-  createPindieTaskProgressTool,
-  createPindieTaskRefineTool,
-  createPindieTaskReplaceTool,
-  createPindieTaskStartTool,
-  createPindieVerificationRecordTool,
-} from "./tools/task.ts";
 
 type ProjectRootResolver = (cwd: string) => Promise<string>;
 
@@ -274,13 +248,14 @@ export interface PindieExtensionOptions {
 
 export interface PindieExtensionIntegration {
   readonly featureSelection: PindieFeatureSelection;
+  readonly core: CoreIntegration;
   readonly runtime: PindieRuntime;
   readonly runActivity: RunActivityTracker;
   readonly reasoning: ReasoningController;
   readonly runCost: RunCostTracker;
   readonly runTimer: RunTimer;
   readonly taskMetrics: TaskMetricsTracker;
-  readonly contextGovernor: ContextLifecycleGovernor;
+  readonly contextGovernor: CoreIntegration["contextGovernor"];
   readonly trial: TrialRuntime;
   readonly derivation: DerivationRuntime;
   readonly promotedStrategyRevisionCatalog: PromotedStrategyRevisionCatalog;
@@ -334,34 +309,6 @@ function safeSessionEntries(
     if (isStaleExtensionContextError(error)) return null;
     throw error;
   }
-}
-
-function gatewayDenialReason(
-  snapshot: SemanticSnapshot,
-  requiredCapability: ToolEffect["requiredCapability"],
-): string {
-  if (requiredCapability === "policy.adapt") {
-    return "Pindie blocked this call: Strategy Candidate creation requires a live explicit adaptation attempt. Use /adapt <strategy-id> while the Agent is idle.";
-  }
-  if (requiredCapability === "policy.derive") {
-    return "Pindie blocked this call: Strategy Derivation Candidate creation requires a live explicit /derive Run. Use /derive while the Agent is idle.";
-  }
-  if (snapshot.authority === "coherent" && requiredCapability === "task.replace") {
-    if (snapshot.taskStatus === "done") {
-      return `Pindie blocked this call: the completed Task is terminal and cannot be replaced. Use pindie_task_start to begin new durable work. Task status: ${snapshot.taskStatus}. Verification: ${snapshot.verificationStatus}.`;
-    }
-    if (snapshot.taskStatus === "idle") {
-      return `Pindie blocked this call: There is no unfinished Task to replace. Use pindie_task_start to begin a Task. Task status: ${snapshot.taskStatus}. Verification: ${snapshot.verificationStatus}.`;
-    }
-  }
-
-  const authority = snapshot.authority === "coherent"
-    ? ""
-    : ` Agent Run authority is ${snapshot.authority};`;
-  if (snapshot.authority === "unavailable") {
-    return `Pindie blocked this call:${authority} missing capability '${requiredCapability}'.`;
-  }
-  return `Pindie blocked this call:${authority} missing capability '${requiredCapability}'. Task status: ${snapshot.taskStatus}. Verification: ${snapshot.verificationStatus}.`;
 }
 
 export function registerPindieExtension(
@@ -427,13 +374,23 @@ function registerComposedPindieExtension(
   // creation consumes its active lease, so settlement still excludes this
   // Self-Improvement Run from ordinary Experience and continuation.
   let derivationRunGeneration: number | null = null;
-  const runtime = new PindieRuntime(stateStore);
-  const run = new RunIntegration(runtime);
-  const handoff = new TaskHandoffRuntime();
-  const contextGovernor = new ContextLifecycleGovernor(options.contextGovernorTuning);
-  const execution = new ExecutionIntegration({
+  const core = createCoreIntegration({
+    store: stateStore,
+    continuityStore,
+    committedRolloverPublisher,
+    taskHandoffEnabled,
+    now: continuityNow,
+    runTimer: options.runTimer,
+    runCost: options.runCost,
+    taskMetrics: options.taskMetrics,
+    contextGovernorTuning: options.contextGovernorTuning,
     captureProjectFingerprint: options.captureProjectFingerprint,
   });
+  const runtime = core.runtime;
+  const run = core.run;
+  const handoff = core.handoff;
+  const contextGovernor = core.contextGovernor;
+  const execution = core.execution;
   // Derivation review needs a fresh trusted portfolio but must tolerate a
   // failed current trust read as a false Promotion Eligibility fact.
   const loadTrustedPortfolio = (projectRoot: string) =>
@@ -608,9 +565,9 @@ function registerComposedPindieExtension(
     activityLingerMs: options.activityLingerMs,
     scheduleActivityRefresh: options.scheduleActivityRefresh,
     clearActivityRefresh: options.clearActivityRefresh,
-    runTimer: options.runTimer,
-    runCost: options.runCost,
-    taskMetrics: options.taskMetrics,
+    runTimer: core.runTimer,
+    runCost: core.runCost,
+    taskMetrics: core.taskMetrics,
   });
   type LiveRemoteSession = { sessionId: string; ctx: ExtensionContext; generation: number };
   let liveRemoteSession: LiveRemoteSession | null = null;
@@ -635,8 +592,7 @@ function registerComposedPindieExtension(
   };
 
   const markUnavailable = (reason: string): void => {
-    execution.semanticAuthorityUnavailable();
-    run.markUnavailable(reason);
+    core.markAuthorityUnavailable(reason);
     presentation.refreshStatus();
     void options.remoteCompanion?.companion.milestone("authority:unavailable", "PINDIE AUTHORITY UNAVAILABLE");
   };
@@ -673,7 +629,7 @@ function registerComposedPindieExtension(
   };
 
   const semanticStateChanged = (): void => {
-    execution.semanticStateChanged(runtime.externalStateEpoch);
+    core.notifySemanticStateChanged();
     presentation.refreshStatus();
     projectRemoteSemantics();
   };
@@ -1936,37 +1892,11 @@ function registerComposedPindieExtension(
     );
   };
 
-  const taskToolOptions = {
-    captureTaskMetricsBaseline: (): ConsumptionMetrics =>
-      presentation.currentRunMetrics(),
-    onTaskEpochStarted: (state: PindieState, baseline: ConsumptionMetrics) => {
-      const task = state.task;
-      if (runtime.projectRoot === null || task === null) return;
-      presentation.startTask(
-        runtime.projectRoot,
-        taskContractFingerprint(task),
-        baseline,
-      );
+  core.registerTools(pi, {
+    onSemanticStateChange: () => {
       presentation.refreshStatus();
+      projectRemoteSemantics();
     },
-    onTaskRefined: (state: PindieState) => {
-      const task = state.task;
-      if (runtime.projectRoot === null || task === null) return;
-      presentation.refineTask(
-        runtime.projectRoot,
-        taskContractFingerprint(task),
-      );
-      presentation.refreshStatus();
-    },
-    onTaskCompleted: (_state: PindieState) => {
-      const metrics = presentation.completeTask();
-      presentation.refreshStatus();
-      return metrics;
-    },
-    onStateChange: semanticStateChanged,
-  };
-  pi.registerTool(createPindiePolicySetTool({
-    onPolicySet: (snapshot) => run.setPolicySnapshot(snapshot),
     resolveRevisionSelector: async (
       selector: StrategyRevisionSelector,
       kind: "approach" | "modifier",
@@ -2082,7 +2012,7 @@ function registerComposedPindieExtension(
       }
       return resolved;
     },
-  }));
+  });
   pi.registerTool(createPindieStrategyCandidateTool({
     adaptation,
     experienceReader,
@@ -2098,37 +2028,6 @@ function registerComposedPindieExtension(
     getAgentRunGeneration: () => run.activeAgentRunGeneration,
     loadPortfolio: (projectRoot) => loadProjectTrustedPortfolio(projectRoot),
   }));
-  pi.registerTool(createPindieTaskStartTool(runtime, taskToolOptions));
-  pi.registerTool(createPindieTaskReplaceTool(runtime, taskToolOptions));
-  pi.registerTool(createPindieTaskRefineTool(runtime, taskToolOptions));
-  pi.registerTool(createPindieTaskProgressTool(runtime, taskToolOptions));
-  pi.registerTool(createPindieVerificationRecordTool(runtime, {
-    ...taskToolOptions,
-    resolveEvidence: (refs) => execution.resolveVerificationEvidence(refs),
-  }));
-  pi.registerTool(createPindieTaskCompleteTool(runtime, taskToolOptions));
-  if (taskHandoffEnabled) {
-    pi.registerTool(createPindieTaskHandoffTool(runtime, {
-      ...taskToolOptions,
-      onHandoffStaged: (toolCallId, state, progressSummary, decisions) => {
-        if (state.task === null) {
-          throw new Error("Pindie rejected this handoff: no current Task is available to stage.");
-        }
-        handoff.stageHandoff(
-          toolCallId,
-          state.task,
-          progressSummary,
-          decisions,
-        );
-      },
-    }));
-  }
-  pi.registerTool(createPindieGateOpenTool(runtime, {
-    onStateChange: semanticStateChanged,
-  }));
-  pi.registerTool(createPindieGateResolveTool(runtime, {
-    onStateChange: semanticStateChanged,
-  }));
   if (options.projectMemorySink !== undefined) {
     pi.registerTool(createPindieMemoryCaptureTool({
       sink: options.projectMemorySink,
@@ -2137,8 +2036,6 @@ function registerComposedPindieExtension(
       now: () => new Date(continuityNow()),
     }));
   }
-  pi.registerTool(createPindieGitObserveTool());
-
   pi.registerCommand("efficiency", {
     description: "Show read-only runtime efficiency facts",
     handler: async (args, ctx) => presentation.handleEfficiencyCommand(args, ctx),
@@ -2232,25 +2129,21 @@ function registerComposedPindieExtension(
     trustedStrategyPortfolio = null;
     adaptationRunGeneration = null;
     derivationRunGeneration = null;
-    run.resetStateAuthority();
-    run.resetAgentRun();
-    if (nativeSessionId !== null) handoff.startSession(nativeSessionId);
-    execution.discardRuntime();
-    contextGovernor.reset();
+    core.resetRuntimeForSession(nativeSessionId);
     lastCheckpointCompactionId = null;
 
     try {
       const projectRoot = await resolveProjectRoot(ctx.cwd);
       await run.loadProject(projectRoot);
       const task = run.authoritativeState?.task ?? null;
-      presentation.enterSession(
+      core.enterTaskMetricsSession(
         projectRoot,
         task !== null && !task.completed
           ? taskContractFingerprint(task)
           : null,
       );
     } catch (error) {
-      presentation.taskMetrics.reset();
+      core.resetTaskMetrics();
       markUnavailable(
         `Could not load Pindie State for '${ctx.cwd}': ${errorMessage(error)}`,
       );
@@ -2351,11 +2244,7 @@ function registerComposedPindieExtension(
     trustedStrategyPortfolio = null;
     adaptationRunGeneration = null;
     derivationRunGeneration = null;
-    run.resetStateAuthority();
-    run.resetAgentRun();
-    handoff.shutdownSession();
-    execution.discardRuntime();
-    contextGovernor.reset();
+    core.resetRuntimeForSession(null);
     lastCheckpointCompactionId = null;
     presentation.setStatusContext(null);
   });
@@ -2373,8 +2262,7 @@ function registerComposedPindieExtension(
       // remains eligible for this exact Session and next Run.
       if (derivationRuntime.hasActiveDerivation) derivationRuntime.clear();
       derivationRunGeneration = null;
-      run.resetAgentRun();
-      execution.discardRuntime();
+      core.resetAgentRunBookkeeping();
       if (run.authoritativeState !== null) {
         try {
           await run.refreshAuthoritativeState();
@@ -2386,14 +2274,7 @@ function registerComposedPindieExtension(
       }
       // Refresh precedes all identity snapshots so a new Run always begins from
       // authoritative project State rather than a previous session snapshot.
-      execution.beginEvidenceScope(runtime.externalStateEpoch);
-      run.beginAgentRunFacts();
-      if (taskHandoffEnabled) {
-        handoff.beginAgentRun(
-          ctx.sessionManager.getSessionId(),
-          run.activeAgentRunGeneration!,
-        );
-      }
+      core.beginAgentRunFacts(ctx);
       if (adaptation.hasAttempt && trial.hasTrial) {
         adaptation.clear();
         trial.clear();
@@ -2551,8 +2432,7 @@ function registerComposedPindieExtension(
       presentation.applyRequestedThinkingLevel();
       presentation.clearActivityLingerRefresh();
       presentation.runActivity.start();
-      presentation.startCost(ctx.sessionManager.getEntries());
-      presentation.startTimer(ctx);
+      core.startRunMeasurements(ctx, () => presentation.refreshStatus(ctx));
       const taskAtRunStart = run.authoritativeState?.task ?? null;
       if (
         derivation.ok &&
@@ -2564,12 +2444,12 @@ function registerComposedPindieExtension(
         taskAtRunStart !== null &&
         !taskAtRunStart.completed
       ) {
-        presentation.startRunForTask(
+        core.startRunForTask(
           runtime.projectRoot,
           taskContractFingerprint(taskAtRunStart),
         );
       } else {
-        presentation.startRunWithoutTask();
+        core.startRunWithoutTask();
       }
       presentation.refreshStatus(ctx);
       void options.remoteCompanion?.companion.status(remoteStatusFacts());
@@ -2589,16 +2469,24 @@ function registerComposedPindieExtension(
       trustedStrategyPortfolio = normalTrust.portfolio;
       const state = run.authoritativeState;
       const packetLease = adaptationLease ?? trialLease ?? derivationLease;
-      const staticContract = appendPindieSystemContract(event.systemPrompt);
-      const configuredContract = options.projectMemorySink === undefined
-        ? staticContract
-        : appendPindieWorkMemoryContract(staticContract);
       const promotedContext = packetLease === null
         ? formatPromotedTrustedStrategyPortfolio(trustedStrategyPortfolio)
         : "";
-      const systemPrompt = packetLease === null
-        ? `${configuredContract}${promotedContext === "" ? "" : `\n\n${promotedContext}`}`
-        : `${configuredContract}\n\n${packetLease.renderedPacket}`;
+      const promptContributions = [
+        ...(options.projectMemorySink === undefined
+          ? []
+          : [corePromptContribution(appendPindieWorkMemoryContract(""))]),
+        ...(promotedContext === ""
+          ? []
+          : [corePromptContribution(promotedContext)]),
+        ...(packetLease === null
+          ? []
+          : [corePromptContribution(packetLease.renderedPacket)]),
+      ];
+      const systemPrompt = core.buildSystemPrompt(
+        event.systemPrompt,
+        promptContributions,
+      );
       const unavailableReason = run.stateUnavailableReason ??
         (state === null
           ? "No project State has been loaded for this session."
@@ -2715,118 +2603,6 @@ function registerComposedPindieExtension(
     };
   });
 
-  const settleTaskHandoff = async (
-    ctx: ExtensionContext,
-    settlementGeneration: number | null,
-  ): Promise<void> => {
-    const pending = handoff.pendingHandoff;
-    if (pending === null) return;
-
-    const failClosed = (): void => handoff.clearHandoff();
-    if (
-      settlementGeneration === null ||
-      !run.isAgentRunCurrent(settlementGeneration) ||
-      !handoff.isPendingFor(pending.sourceSessionId, pending.agentRunGeneration)
-    ) {
-      failClosed();
-      return;
-    }
-
-    let currentSessionId: string;
-    try {
-      currentSessionId = ctx.sessionManager.getSessionId();
-      if (ctx.hasPendingMessages()) {
-        failClosed();
-        return;
-      }
-    } catch {
-      failClosed();
-      return;
-    }
-    if (
-      currentSessionId !== pending.sourceSessionId ||
-      handoff.currentSessionId !== pending.sourceSessionId ||
-      runtime.projectRoot === null
-    ) {
-      failClosed();
-      return;
-    }
-
-    try {
-      await run.refreshAuthoritativeState();
-    } catch {
-      failClosed();
-      return;
-    }
-    if (
-      !run.isAgentRunCurrent(settlementGeneration) ||
-      !handoff.isPendingFor(pending.sourceSessionId, pending.agentRunGeneration)
-    ) {
-      failClosed();
-      return;
-    }
-
-    let derivation = run.deriveSnapshot();
-    const state = run.authoritativeState;
-    const task = state?.task ?? null;
-    if (!derivation.ok || derivation.snapshot.authority !== "coherent") {
-      failClosed();
-      return;
-    }
-    const snapshot = derivation.snapshot;
-    if (
-      snapshot.taskStatus !== "active" ||
-      task === null ||
-      task.completed ||
-      task.humanGate !== null ||
-      task.openLoops.blockers.length > 0 ||
-      taskContractFingerprint(task) !== pending.taskFingerprint
-    ) {
-      failClosed();
-      return;
-    }
-
-    try {
-      if (ctx.hasPendingMessages()) {
-        failClosed();
-        return;
-      }
-    } catch {
-      failClosed();
-      return;
-    }
-
-    let checkpoint;
-    try {
-      checkpoint = createTaskContinuity({
-        createdAt: new Date(continuityNow()).toISOString(),
-        taskFingerprint: pending.taskFingerprint,
-        sourceSessionId: pending.sourceSessionId,
-        progressSummary: pending.progressSummary,
-        decisions: pending.decisions,
-      });
-      await continuityStore.save(runtime.projectRoot, checkpoint);
-    } catch (error) {
-      console.warn(`[Pindie] Dropped Task continuity checkpoint: ${errorMessage(error)}`);
-      failClosed();
-      return;
-    }
-    if (committedRolloverPublisher !== null) {
-      try {
-        if (checkpoint.sourceSessionId !== pending.sourceSessionId) {
-          throw new Error("Committed continuity checkpoint Session identity did not match the pending handoff.");
-        }
-        committedRolloverPublisher({
-          sourceSessionId: checkpoint.sourceSessionId,
-          checkpoint,
-        });
-      } catch (error) {
-        console.warn(`[Pindie] Committed Task continuity checkpoint could not reach Host rollover control: ${errorMessage(error)}`);
-      }
-    }
-    failClosed();
-  };
-
   pi.on("agent_end", (event, ctx) => {
     if (
       (adaptationRunGeneration !== null &&
@@ -2887,7 +2663,7 @@ function registerComposedPindieExtension(
   });
 
   pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
-    const effect = classifyToolEffect(event.toolName);
+    const effect = core.classifyToolEffect(event.toolName);
     const isHandoffCall = taskHandoffEnabled &&
       event.toolName === PINDIE_TASK_HANDOFF_TOOL;
     if (isHandoffCall) {
@@ -2979,13 +2755,13 @@ function registerComposedPindieExtension(
     if (effect.requiredCapability === "policy.derive" && derivationActive) {
       capabilities.add("policy.derive");
     }
-    const authorization = authorizeToolEffect(capabilities, effect);
+    const authorization = core.authorizeToolEffect(capabilities, effect);
     if (!authorization.allowed) {
       cancelToolAdmission();
       run.recordDeniedCall(effect);
       return {
         block: true,
-        reason: gatewayDenialReason(
+        reason: coreGatewayDenialReason(
           snapshot,
           authorization.requiredCapability,
         ),
@@ -3152,117 +2928,67 @@ function registerComposedPindieExtension(
     // stale; that obsolete run must not touch or reset this runtime's state.
     const entries = safeSessionEntries(ctx);
     if (!entries) return;
-    if (run.hasActiveAgentRun && !run.claimAgentRunSettlement()) return;
-    const settlementGeneration = run.activeAgentRunGeneration;
-    const isAdaptationRun = settlementGeneration !== null &&
-      adaptationRunGeneration === settlementGeneration;
-    const isDerivationRun = settlementGeneration !== null &&
-      derivationRunGeneration === settlementGeneration;
-    const isTrialRun = settlementGeneration !== null &&
-      trial.isActiveForGeneration(settlementGeneration);
-    adaptation.clear();
-    derivationRuntime.clear();
-    adaptationRunGeneration = null;
-    derivationRunGeneration = null;
 
     presentation.setStatusContext(ctx);
-
-    // Freeze all Experience inputs before clearing Run-scoped Policy, evidence,
-    // and execution bookkeeping. This entire path is best-effort and cannot
-    // become semantic authority.
-    const projectRoot = runtime.projectRoot;
-    let finalDerivation = run.deriveSnapshot();
-    // A Run that only observed may not have crossed the consequential Gateway
-    // preflight. Refresh once at settlement so external State changes still
-    // make the final authority stale rather than producing a false record.
-    if (projectRoot !== null && run.authoritativeState !== null && run.hasActiveAgentRun) {
-      try {
-        await run.refreshAuthoritativeState();
+    let isAdaptationRun = false;
+    let isDerivationRun = false;
+    let isTrialRun = false;
+    const result = await core.settleAgentRun(ctx, entries, {
+      begin: (settlementGeneration) => {
+        isAdaptationRun = settlementGeneration !== null &&
+          adaptationRunGeneration === settlementGeneration;
+        isDerivationRun = settlementGeneration !== null &&
+          derivationRunGeneration === settlementGeneration;
+        isTrialRun = settlementGeneration !== null &&
+          trial.isActiveForGeneration(settlementGeneration);
+        adaptation.clear();
+        derivationRuntime.clear();
+        adaptationRunGeneration = null;
+        derivationRunGeneration = null;
+      },
+      observe: async (facts: CoreSettlementFacts) => {
+        const snapshot = facts.snapshot;
         if (
-          settlementGeneration === null ||
-          !run.isAgentRunCurrent(settlementGeneration)
-        ) return;
-        finalDerivation = run.deriveSnapshot();
-      } catch {
-        // Experience eligibility is fail-closed; preserve normal settlement
-        // semantics and simply omit this record when final authority cannot be
-        // refreshed.
-        finalDerivation = { ok: false, error: "Final authority refresh failed." };
-      }
-    }
-    const finalState = run.authoritativeState;
-    const task = finalState?.task ?? null;
-    const runStartTaskStatus = run.taskStatusAtRunStart;
-    const runStartTaskGoal = run.taskGoalAtRunStart;
-    const executionFacts = run.executionCounters;
-    const policyFacts = run.policyAttribution;
-    const durationMs = presentation.runTimer.finish();
-    const settledCost = presentation.finishCost(entries);
-    presentation.settleTaskRun({
-      durationMs: durationMs ?? 0,
-      cost: settledCost?.cost ?? 0,
+          !isAdaptationRun &&
+          !isDerivationRun &&
+          experienceStore !== null &&
+          facts.settlementGeneration !== null &&
+          isEligibleRunExperience(
+            facts.projectRoot,
+            snapshot,
+            facts.task,
+            facts.execution,
+          ) &&
+          facts.runStartTaskStatus !== null
+        ) {
+          try {
+            const experience = assembleRunExperience({
+              task: facts.task!,
+              runStart: {
+                taskStatus: facts.runStartTaskStatus,
+                taskGoal: facts.runStartTaskGoal,
+              },
+              snapshot,
+              policy: facts.policy,
+              execution: facts.execution,
+              durationMs: facts.durationMs,
+              cost: facts.cost,
+            });
+            await experienceStore.save(facts.projectRoot!, experience);
+          } catch (error) {
+            console.warn(`[Pindie] Dropped Run Experience record: ${errorMessage(error)}`);
+          }
+        }
+
+        // Trial attribution is observed while the final Policy Snapshot is
+        // still frozen. Core clears its authority only after this observer.
+        if (isTrialRun) trial.clear();
+        promotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
+        trustedStrategyPortfolio = null;
+      },
     });
+    if (result.status !== "settled") return;
 
-    if (
-      !isAdaptationRun &&
-      !isDerivationRun &&
-      experienceStore !== null &&
-      settlementGeneration !== null &&
-      run.isAgentRunCurrent(settlementGeneration) &&
-      finalDerivation.ok &&
-      isEligibleRunExperience(
-        projectRoot,
-        finalDerivation.snapshot,
-        task,
-        executionFacts,
-      ) &&
-      runStartTaskStatus !== null
-    ) {
-      try {
-        const experience = assembleRunExperience({
-          task: task!,
-          runStart: {
-            taskStatus: runStartTaskStatus,
-            taskGoal: runStartTaskGoal,
-          },
-          snapshot: finalDerivation.snapshot,
-          policy: policyFacts,
-          execution: executionFacts,
-          durationMs,
-          cost: settledCost?.cost ?? null,
-        });
-        await experienceStore.save(projectRoot!, experience);
-      } catch (error) {
-        console.warn(
-          `[Pindie] Dropped Run Experience record: ${errorMessage(error)}`,
-        );
-      }
-    }
-
-    // Trial attribution is observed above while the final Policy Snapshot is
-    // still available. Clear the one-Run lease only after Experience has had
-    // its complete chance to freeze and persist those inputs.
-    if (isTrialRun) trial.clear();
-    promotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
-    trustedStrategyPortfolio = null;
-
-    if (
-      settlementGeneration !== null &&
-      !run.isAgentRunCurrent(settlementGeneration)
-    ) {
-      if (handoff.pendingHandoff?.agentRunGeneration === settlementGeneration) {
-        handoff.clearHandoff();
-      }
-      return;
-    }
-
-    // Experience is fully frozen and persisted before a staged handoff can
-    // become the latest durable continuity checkpoint.
-    await settleTaskHandoff(ctx, settlementGeneration);
-    handoff.clear();
-
-    execution.discardRuntime();
-    run.resetAgentRun();
     presentation.clearActivityLingerRefresh();
     presentation.runActivity.settle();
     presentation.refreshStatus(ctx);
@@ -3288,6 +3014,7 @@ function registerComposedPindieExtension(
 
   return {
     featureSelection,
+    core,
     runtime,
     reasoning: presentation.reasoning,
     runActivity: presentation.runActivity,
