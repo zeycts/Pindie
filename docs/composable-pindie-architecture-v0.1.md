@@ -1,8 +1,18 @@
 # Composable Pindie Architecture v0.1
 
-Status: authoritative target architecture contract; Slices A–F are not implemented yet.
+Status: implemented architecture contract; Composable Pindie Architecture v0.1 and Slices A–F are complete.
 
-Design baseline: repository HEAD `65deca3` was inspected when this contract was produced. Before implementing any Slice, compare the current HEAD against this contract and report only material mismatches that invalidate the Slice assumptions.
+This document remains the single architecture source of truth for the implemented v0.1 composition boundary. The final implementation uses startup-time explicit feature selection and supported Session/resource reconstruction boundaries; it is not a generic Plugin System.
+
+Final v0.1 selection rules:
+
+- Core always assembles; Self-Improvement (SI), Cross-Project Learning (CPL), Remote, Work Memory, Presentation, and Bundled Skills are selected explicitly at startup.
+- SI, CPL, Bundled Skills, and Presentation preserve their existing defaults; Remote and Work Memory remain conditional on their complete environment or injected transport-independent dependency.
+- SI off implies CPL off; explicitly requesting CPL while SI is off is rejected with a clear diagnostic.
+- CPL workflow and global presentation are absent when CPL is off, but the shared user-global trust-safety read and writer lock remain available to protect local SI trust writes.
+- Feature attach/detach occurs only during startup or an already-supported Session/resource reconstruction boundary; v0.1 has no hot unload.
+
+The compatibility closure verified the final composition matrix, disabled-feature absence, adapter independence, lifecycle boundaries, and final import direction without changing semantic State, Experience, trust artifacts, or schemas.
 
 This contract changes how optional Pindie features are composed. It does **not** redesign Pindie's semantic authority model, Pi ownership, persisted State, Self-Improvement semantics, Cross-Project Learning trust semantics, Remote semantics, Long Task behavior, or Work Memory data contract.
 
@@ -95,7 +105,7 @@ Shared safety/authority validation is not automatically optional merely because 
 
 Removing or disabling a feature must not implicitly migrate, delete, or rewrite existing Candidate, Decision, Experience, Remote routing, Memory, or trust artifacts.
 
-## 4. Target architecture
+## 4. Implemented architecture
 
 ```text
                            Pindie Host
@@ -227,7 +237,7 @@ Disabling Presentation must not disable Task measurement or change Task completi
 
 ### 8.1 One explicit production composition owner
 
-Add:
+The composition root is:
 
 ```text
 src/composition.ts
@@ -235,7 +245,7 @@ src/composition.ts
 
 Existing `extension.ts` entry points remain compatible, but production default construction moves to composition.
 
-Target responsibilities:
+Implemented responsibilities:
 
 ```text
 extension.ts
@@ -493,6 +503,8 @@ SI retains the unified `/trial`, `/trial-review`, `/promote`, and `/reject` comm
 
 **CPL off does not mean global authority ceases to exist.**
 
+This is an intentional compatibility exception, not accidental CPL business I/O: when CPL is disabled, SI may still read the minimum shared user-global trust authority and use the shared user-level writer lock required to make local trust writes safe. Disabling CPL removes CPL workflow and normal global presentation, but it never relaxes these authority constraints.
+
 Local Derived promotion must continue to:
 
 - check conflicting global identity/ID authority;
@@ -539,7 +551,7 @@ Separate pure portfolio identity/manifest rules from storage-loading responsibil
 
 Move base artifact read/validation currently coupled through scope-Trial code into the trust substrate.
 
-Target dependency direction:
+Implemented dependency direction:
 
 ```text
 Candidate / Decision validators
@@ -561,7 +573,7 @@ Do not change fingerprint algorithms, artifact schemas, or historical identity.
 
 ### 13.1 Keep tool declaration facts together at composition time
 
-Current tool classification is spread across several integration points. Move toward one startup declaration per assembled feature containing only existing semantics:
+The final implementation keeps tool registration and classification in the existing Core and feature integration points, assembled only at startup. Each selected integration contributes only its existing semantics:
 
 ```text
 tool definition
@@ -571,7 +583,7 @@ tool definition
 + prompt contribution
 ```
 
-Core uses the assembled declaration table for this startup only.
+The single Core Execution Gateway authorizes the resulting calls for the current Run.
 
 This is **not** a generic runtime registry:
 
@@ -600,13 +612,13 @@ Focused checks should prove at least:
 - removing a feature registration does not prevent Core modules from loading;
 - disabled tools/commands/prompt contributions are absent.
 
-## 14. Expected implementation scope
+## 14. Implemented scope record
 
 This is a bounded migration, not a directory rewrite.
 
-Expected existing areas that may need wiring/ownership changes:
+Implemented ownership and wiring boundaries:
 
-| Existing area | Intended change |
+| Existing area | Implemented boundary |
 | --- | --- |
 | `src/extension.ts` | separate Core wiring from feature wiring; preserve compatibility entry points |
 | `src/host.ts` | pass selection and explicit storage dependencies; append bundled Skills conditionally |
@@ -624,7 +636,7 @@ Expected existing areas that may need wiring/ownership changes:
 | Memory implementation | keep narrow existing interfaces |
 | extension/host/integration tests | add composition isolation and compatibility coverage |
 
-Expected new files should remain few and responsibility-driven, for example:
+The implementation keeps new files few and responsibility-driven:
 
 - `src/composition.ts`;
 - Core integration/ports file(s) only where needed;
@@ -634,9 +646,9 @@ Expected new files should remain few and responsibility-driven, for example:
 
 Do not pre-create `domain/services/runtime/registry` directory hierarchies for every feature.
 
-## 15. Migration plan
+## 15. Implemented Slice record
 
-Implement strictly Slice by Slice. A later Slice must not begin until the previous Slice is reviewed against this contract.
+Composable Pindie Architecture v0.1 was implemented strictly Slice by Slice. Slices A–F are complete and were reviewed against this contract; Slice F is the final compatibility closure.
 
 ### Slice A — Explicit composition and dependency isolation
 
@@ -721,9 +733,9 @@ Done when:
 - fingerprint, artifact schema, and trust identity are unchanged;
 - the verified trust runtime dependency cycle is gone.
 
-### Slice F — Composition compatibility closure
+### Slice F — Composition compatibility closure (complete)
 
-At minimum verify:
+The final verification covered:
 
 ```text
 Core only
@@ -774,16 +786,14 @@ Necessary wiring changes are allowed. They must not become behavior redesigns.
 7. **Equating green tests with removability.** Also test disabled-adapter absence, Core-only import graph, and real/isolated HOME boundaries.
 8. **Overstating configuration scope.** Host feature selection and Pi-native package/resource loading are different layers.
 
-## 18. Review rule
+## 18. Review and maintenance rule
 
-For every Slice implementation:
+For the completed v0.1 implementation:
 
-1. treat this document as the target contract for composability work;
-2. read only the relevant current architecture/behavior/source/tests needed for that Slice;
-3. preserve the Slice boundary and all explicitly unchanged semantics;
-4. add focused tests for the changed contract;
-5. run `pnpm run check`;
-6. report changed files, tests, any contract mismatch, and any unresolved risk;
-7. do not begin the next Slice until the current Slice has been independently reviewed and approved.
+1. treat this document as the current architecture contract for the composability boundary;
+2. preserve the final feature-selection, trust-safety, lifecycle, and dependency-direction invariants;
+3. add focused tests for any explicitly approved compatibility change;
+4. run `pnpm run check` and the relevant isolated composition checks;
+5. do not treat the v0.1 boundary as a Plugin SDK, registry, lifecycle engine, or permission-extension platform.
 
 The purpose of v0.1 is not to make every subsystem look like a plugin. It is to establish a small, testable composition boundary that lets Pindie grow without turning optional features into Core coupling.

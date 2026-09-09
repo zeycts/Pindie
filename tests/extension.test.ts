@@ -1168,6 +1168,108 @@ test("Work Memory policy is absent when no sink is configured", async () => {
   assert.doesNotMatch(before.systemPrompt, /Task completion is not itself a Milestone/);
 });
 
+test("Slice F selected features keep one registration set and rebuild Core authority across reload and shutdown", async () => {
+  let sessionBinds = 0;
+  const remoteSurface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async (_channelId, sessionId) => {
+      sessionBinds += 1;
+      return { threadId: `thread-${sessionId}`, anchorMessageId: "anchor", headerMessageId: null };
+    },
+    send: async () => undefined,
+    updateSessionPresentation: async () => undefined,
+  };
+  const remote = new RemoteCompanion(remoteSurface);
+  const harness = createHarness(
+    [["/repo", activeState("Final composition lifecycle")]],
+    {},
+    {
+      featureSelection: {
+        selfImprovement: true,
+        crossProjectLearning: true,
+        remote: true,
+        workMemory: true,
+        bundledSkills: true,
+        presentation: true,
+      },
+      remoteCompanion: { companion: remote, guildId: "guild" },
+      projectMemorySink: new ExtensionTestMemorySink(),
+    },
+  );
+  const tools = [...harness.api.tools.keys()].sort();
+  const commands = [...harness.api.commands.keys()].sort();
+  const handlers = [...harness.api.handlers.keys()].sort();
+  assert.equal(new Set(tools).size, tools.length);
+  assert.equal(new Set(commands).size, commands.length);
+  assert.equal(new Set(handlers).size, handlers.length);
+  assert.equal(harness.api.tools.has("pindie_memory_capture"), true);
+  assert.equal(harness.api.commands.has("trust-transfer"), true);
+  assert.equal(harness.api.commands.has("efficiency"), true);
+  assert.equal(harness.api.commands.has("reasoning"), true);
+  assert.equal(harness.api.handlers.has("input"), true);
+  assert.equal(harness.api.handlers.has("message_end"), true);
+
+  const entries = [{ id: "u", message: { role: "user", content: "lifecycle" } }];
+  const sessionStart = async (reason: string, sessionId: string): Promise<void> => {
+    await harness.api.handler("session_start")(
+      { type: "session_start", reason },
+      context("/repo", entries, false, sessionId),
+    );
+  };
+  const beforeAgentStart = async (sessionId: string): Promise<{ systemPrompt: string }> =>
+    await harness.api.handler("before_agent_start")(
+      {
+        type: "before_agent_start",
+        prompt: "Continue",
+        systemPrompt: "Pi system prompt",
+        systemPromptOptions: {},
+      },
+      context("/repo", entries, false, sessionId),
+    ) as { systemPrompt: string };
+  const sessionShutdown = async (reason: string, sessionId: string): Promise<void> => {
+    await harness.api.handler("session_shutdown")(
+      { type: "session_shutdown", reason },
+      context("/repo", [], false, sessionId),
+    );
+  };
+
+  await sessionStart("startup", "session-a");
+  const first = await beforeAgentStart("session-a");
+  assert.equal((first.systemPrompt.match(/<PINDIE_WORK_MEMORY_CONTRACT>/g) ?? []).length, 1);
+  assert.equal(remote.activeSessionId, "session-a");
+  assert.equal(harness.integration.runtime.projectRoot, "/repo");
+  assert.equal(harness.integration.runTimer.active, true);
+
+  await sessionShutdown("reload", "session-a");
+  assert.equal(remote.activeSessionId, null);
+  assert.equal(harness.integration.runtime.projectRoot, null);
+  assert.equal(harness.integration.runTimer.active, false);
+  assert.equal(harness.integration.runActivity?.activity, null);
+  assert.equal(harness.integration.trial?.hasTrial, false);
+  assert.equal(harness.integration.derivation?.hasDerivation, false);
+
+  await sessionStart("reload", "session-a");
+  const second = await beforeAgentStart("session-a");
+  assert.equal((second.systemPrompt.match(/<PINDIE_WORK_MEMORY_CONTRACT>/g) ?? []).length, 1);
+  assert.equal(remote.activeSessionId, "session-a");
+  assert.equal(harness.integration.runtime.projectRoot, "/repo");
+
+  await sessionShutdown("new", "session-a");
+  await sessionStart("new", "session-b");
+  const third = await beforeAgentStart("session-b");
+  assert.equal((third.systemPrompt.match(/<PINDIE_WORK_MEMORY_CONTRACT>/g) ?? []).length, 1);
+  assert.equal(remote.activeSessionId, "session-b");
+  assert.equal(harness.integration.runtime.projectRoot, "/repo");
+  assert.equal(sessionBinds, 3);
+  assert.deepEqual([...harness.api.tools.keys()].sort(), tools);
+  assert.deepEqual([...harness.api.commands.keys()].sort(), commands);
+  assert.deepEqual([...harness.api.handlers.keys()].sort(), handlers);
+
+  await sessionShutdown("done", "session-b");
+  assert.equal(remote.activeSessionId, null);
+  assert.equal(harness.integration.runtime.projectRoot, null);
+});
+
 async function startSession(
   harness: ReturnType<typeof createHarness>,
   cwd: string,
@@ -7173,7 +7275,7 @@ test("SI v0.6 /promote creates one immutable Decision and normal Runs explicitly
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 });
 
-test("SI v0.7 local Derived promotion uses the shared writer lock for final strict revalidation and write", async () => {
+test("SI v0.7 CPL-off local Derived promotion uses the shared writer lock for final strict revalidation and write", async () => {
   const candidate = derivedPromotionCandidate(
     "00000000-0000-4000-8000-000000000201",
     "boundary-first",
@@ -7267,7 +7369,7 @@ test("SI v0.7 local Derived promotion uses the shared writer lock for final stri
   assert.match(notices.at(-1)?.message ?? "", /promoted.*explicit normal Policy selection/i);
 });
 
-test("SI v0.7 local Derived promotion fails when a valid global revision owns the logical ID", async () => {
+test("SI v0.7 CPL-off local Derived promotion fails when a valid global revision owns the logical ID", async () => {
   const scope = scopeTrialTestDependencies();
   const globalDecision = promotedGlobalScopeDecision(scope.scopeCandidate);
   const localCandidate = derivedPromotionCandidate(
@@ -7327,7 +7429,7 @@ test("SI v0.7 local Derived promotion fails when a valid global revision owns th
   assert.match(notices.at(-1)?.message ?? "", /Promotion Eligibility|trusted portfolio|already trusted|binding/i);
 });
 
-test("SI v0.7 malformed global authority is presentation-isolated but blocks local Derived promotion", async () => {
+test("SI v0.7 CPL-off malformed global authority is presentation-isolated but blocks local Derived promotion", async () => {
   const localCandidate = derivedPromotionCandidate(
     "00000000-0000-4000-8000-000000000203",
     "malformed-global-check",
@@ -7395,7 +7497,7 @@ test("SI v0.7 malformed global authority is presentation-isolated but blocks loc
   assert.match(promotionNotices.at(-1)?.message ?? "", /trusted Strategy portfolio could not be validated|no trust transition/i);
 });
 
-test("SI v0.7 unrelated local Derived promotion remains valid with coherent global authority", async () => {
+test("SI v0.7 CPL-off unrelated local Derived promotion remains valid with coherent global authority", async () => {
   const candidate = derivedPromotionCandidate(
     "00000000-0000-4000-8000-000000000205",
     "unrelated-local",
