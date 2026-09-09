@@ -127,14 +127,57 @@ test("Slice A never derives feature roots from an injected StateStore", () => {
   );
 });
 
-test("Slice C rejects unsupported SI/CPL disabling and preserves dependency rules", () => {
-  assert.throws(
-    () => composePindieExtension({ featureSelection: { selfImprovement: false } }),
-    /does not support disabling Self-Improvement until Composable Slice D is implemented/,
+test("Slice D allows SI off, derives CPL off, and drops SI dependencies", () => {
+  const roots = {
+    projectsBaseDir: "/tmp/slice-d-projects",
+    globalBaseDir: "/tmp/slice-d-global",
+    remoteRoutingBaseDir: "/tmp/slice-d-remote",
+  } as const;
+  const injectedExperienceStore = new FileRunExperienceStore({ baseDir: "/tmp/not-selected" });
+  const composition = composePindieExtension({
+    featureSelection: { selfImprovement: false },
+    storageRoots: roots,
+    experienceStore: injectedExperienceStore,
+  });
+
+  assert.equal(composition.featureSelection.selfImprovement, false);
+  assert.equal(composition.featureSelection.crossProjectLearning, false);
+  for (const dependency of [
+    "experienceStore",
+    "experienceReader",
+    "crossProjectExperienceReader",
+    "strategyCandidateStore",
+    "strategyCandidateReader",
+    "strategyDerivationCandidateStore",
+    "strategyDerivationCandidateReader",
+    "strategyDecisionStore",
+    "strategyDecisionReader",
+    "strategyDerivationDecisionStore",
+    "strategyDerivationDecisionReader",
+    "strategyTrustScopeCandidateStore",
+    "strategyTrustScopeDecisionStore",
+    "strategyTrustScopeSourceResolver",
+    "strategyTrustScopeWriterLock",
+    "scopeProjectTrustReader",
+  ]) {
+    assert.equal(Object.hasOwn(composition.extensionOptions, dependency), false, dependency);
+  }
+  assert.equal(
+    (composition.extensionOptions.store as FileStateStore).storageBaseDir,
+    roots.projectsBaseDir,
   );
-  assert.throws(
-    () => composePindieExtension({ featureSelection: { crossProjectLearning: false } }),
-    /does not support disabling Cross-Project Learning until Composable Slice E is implemented/,
+  assert.equal(composition.extensionOptions.experienceStore, undefined);
+
+  assert.deepEqual(
+    resolvePindieFeatureSelection({ selfImprovement: false }, {}, {}),
+    {
+      selfImprovement: false,
+      crossProjectLearning: false,
+      remote: false,
+      workMemory: false,
+      bundledSkills: true,
+      presentation: true,
+    },
   );
   assert.throws(
     () => resolvePindieFeatureSelection(
@@ -144,8 +187,16 @@ test("Slice C rejects unsupported SI/CPL disabling and preserves dependency rule
     ),
     /Cross-Project Learning requires Self-Improvement/,
   );
+  assert.throws(
+    () => resolvePindieFeatureSelection(
+      { selfImprovement: true, crossProjectLearning: false },
+      {},
+      {},
+    ),
+    /Slice D composition does not support disabling Cross-Project Learning until Composable Slice E is implemented/,
+  );
 
-  const composition = composeConfiguredPindieExtension(
+  const optionalDisabled = composeConfiguredPindieExtension(
     {
       featureSelection: { remote: false, workMemory: false },
     },
@@ -157,24 +208,40 @@ test("Slice C rejects unsupported SI/CPL disabling and preserves dependency rule
       PINDIE_WORK_MEMORY_DATA_SOURCE_ID: "data-source",
     },
   );
-  assert.equal(composition.featureSelection.remote, false);
-  assert.equal(composition.featureSelection.workMemory, false);
-  assert.equal(composition.extensionOptions.remoteCompanion, undefined);
-  assert.equal(composition.extensionOptions.projectMemorySink, undefined);
+  assert.equal(optionalDisabled.featureSelection.remote, false);
+  assert.equal(optionalDisabled.featureSelection.workMemory, false);
+  assert.equal(optionalDisabled.extensionOptions.remoteCompanion, undefined);
+  assert.equal(optionalDisabled.extensionOptions.projectMemorySink, undefined);
 });
 
-test("Slice C rejects environment-driven SI/CPL disabling", () => {
+test("Slice D resolves environment-driven SI/CPL selection and rejects incompatible combinations", () => {
+  const siOff = composeConfiguredPindieExtension({}, {
+    PINDIE_SELF_IMPROVEMENT_ENABLED: "false",
+  });
+  assert.equal(siOff.featureSelection.selfImprovement, false);
+  assert.equal(siOff.featureSelection.crossProjectLearning, false);
+  assert.equal(Object.hasOwn(siOff.extensionOptions, "experienceStore"), false);
+
+  const bothOff = composeConfiguredPindieExtension({}, {
+    PINDIE_SELF_IMPROVEMENT_ENABLED: "off",
+    PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "no",
+  });
+  assert.equal(bothOff.featureSelection.selfImprovement, false);
+  assert.equal(bothOff.featureSelection.crossProjectLearning, false);
+
   assert.throws(
     () => composeConfiguredPindieExtension({}, {
       PINDIE_SELF_IMPROVEMENT_ENABLED: "false",
+      PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "true",
     }),
-    /does not support disabling Self-Improvement until Composable Slice D is implemented/,
+    /Cross-Project Learning requires Self-Improvement/,
   );
   assert.throws(
     () => composeConfiguredPindieExtension({}, {
+      PINDIE_SELF_IMPROVEMENT_ENABLED: "true",
       PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "false",
     }),
-    /does not support disabling Cross-Project Learning until Composable Slice E is implemented/,
+    /Slice D composition does not support disabling Cross-Project Learning until Composable Slice E is implemented/,
   );
 });
 

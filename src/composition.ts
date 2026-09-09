@@ -178,14 +178,9 @@ export function resolvePindieFeatureSelection(
       "Pindie feature selection is invalid: Cross-Project Learning requires Self-Improvement.",
     );
   }
-  if (!selfImprovement) {
+  if (selfImprovement && !crossProjectLearning) {
     throw new Error(
-      "Slice C composition does not support disabling Self-Improvement until Composable Slice D is implemented.",
-    );
-  }
-  if (!crossProjectLearning) {
-    throw new Error(
-      "Slice C composition does not support disabling Cross-Project Learning until Composable Slice E is implemented.",
+      "Slice D composition does not support disabling Cross-Project Learning until Composable Slice E is implemented.",
     );
   }
 
@@ -277,59 +272,70 @@ export function composePindieExtension(
   const stateStore: PindieStateStore = input.store ?? new FileStateStore({
     baseDir: roots.projectsBaseDir,
   });
-  const experienceStore: RunExperienceStore = input.experienceStore ?? new FileRunExperienceStore({
-    baseDir: roots.projectsBaseDir,
-  });
-  const experienceReader: RunExperienceReader = input.experienceReader ?? new FileRunExperienceReader({
-    baseDir: roots.projectsBaseDir,
-  });
-  const crossProjectExperienceReader = input.crossProjectExperienceReader ??
-    (isProjectReader(experienceReader) ? experienceReader : null);
   const continuityStore: TaskContinuityStore = input.continuityStore ?? new FileTaskContinuityStore({
     baseDir: roots.projectsBaseDir,
   });
 
-  const strategyCandidateStore: StrategyCandidateStore = input.strategyCandidateStore ??
-    new FileStrategyCandidateStore({ baseDir: roots.projectsBaseDir });
-  const strategyCandidateReader: StrategyCandidateReader = input.strategyCandidateReader ??
-    (typeof (strategyCandidateStore as Partial<StrategyCandidateReader>).read === "function"
-      ? strategyCandidateStore as unknown as StrategyCandidateReader
-      : new FileStrategyCandidateStore({ baseDir: roots.projectsBaseDir }));
+  let experienceStore: RunExperienceStore | undefined;
+  let experienceReader: RunExperienceReader | undefined;
+  let crossProjectExperienceReader: RunExperienceProjectReader | undefined;
+  let strategyCandidateStore: StrategyCandidateStore | undefined;
+  let strategyCandidateReader: StrategyCandidateReader | undefined;
+  let strategyDerivationCandidateStore: StrategyDerivationCandidateStore | undefined;
+  let strategyDerivationCandidateReader: StrategyDerivationCandidateReader | undefined;
+  let strategyDecisionStore: StrategyRevisionDecisionStore | undefined;
+  let strategyDecisionReader: StrategyRevisionDecisionReader | undefined;
+  let strategyDerivationDecisionStore: StrategyDerivationDecisionStore | undefined;
+  let strategyDerivationDecisionReader: StrategyDerivationDecisionReader | undefined;
+  let strategyTrustScopeCandidateStore: StrategyTrustScopeCandidateStore | undefined;
+  let strategyTrustScopeDecisionStore: StrategyTrustScopeDecisionStore | undefined;
+  let strategyTrustScopeSourceResolver: StrategyTrustScopeSourceResolver | undefined;
+  let strategyTrustScopeWriterLock: GlobalWriterLock | undefined;
+  let scopeProjectTrustReader: ScopeProjectTrustReader | undefined;
 
-  const strategyDerivationCandidateStore: StrategyDerivationCandidateStore =
-    input.strategyDerivationCandidateStore ??
-    new FileStrategyDerivationCandidateStore({ baseDir: roots.projectsBaseDir });
-  const strategyDerivationCandidateReader: StrategyDerivationCandidateReader =
-    input.strategyDerivationCandidateReader ??
-    (typeof (strategyDerivationCandidateStore as Partial<StrategyDerivationCandidateReader>).read === "function"
-      ? strategyDerivationCandidateStore as unknown as StrategyDerivationCandidateReader
-      : new FileStrategyDerivationCandidateStore({ baseDir: roots.projectsBaseDir }));
+  if (selection.selfImprovement) {
+    experienceStore = input.experienceStore ?? new FileRunExperienceStore({
+      baseDir: roots.projectsBaseDir,
+    });
+    experienceReader = input.experienceReader ?? new FileRunExperienceReader({
+      baseDir: roots.projectsBaseDir,
+    });
+    crossProjectExperienceReader = input.crossProjectExperienceReader ??
+      (isProjectReader(experienceReader) ? experienceReader : undefined);
 
-  const strategyDecisionStore: StrategyRevisionDecisionStore = input.strategyDecisionStore ??
-    new FileStrategyDecisionStore({ baseDir: roots.projectsBaseDir });
-  const strategyDecisionReader: StrategyRevisionDecisionReader = input.strategyDecisionReader ??
-    strategyDecisionStore;
-  const strategyDerivationDecisionStore: StrategyDerivationDecisionStore =
-    input.strategyDerivationDecisionStore ??
-    new FileStrategyDerivationDecisionStore({ baseDir: roots.projectsBaseDir });
-  const strategyDerivationDecisionReader: StrategyDerivationDecisionReader =
-    input.strategyDerivationDecisionReader ?? strategyDerivationDecisionStore;
+    strategyCandidateStore = input.strategyCandidateStore ??
+      new FileStrategyCandidateStore({ baseDir: roots.projectsBaseDir });
+    strategyCandidateReader = input.strategyCandidateReader ??
+      (typeof (strategyCandidateStore as Partial<StrategyCandidateReader>).read === "function"
+        ? strategyCandidateStore as unknown as StrategyCandidateReader
+        : new FileStrategyCandidateStore({ baseDir: roots.projectsBaseDir }));
 
-  const strategyTrustScopeCandidateStore: StrategyTrustScopeCandidateStore =
-    input.strategyTrustScopeCandidateStore ??
-    new FileStrategyTrustScopeCandidateStore({ baseDir: roots.globalBaseDir });
-  const strategyTrustScopeDecisionStore: StrategyTrustScopeDecisionStore =
-    input.strategyTrustScopeDecisionStore ??
-    new FileStrategyTrustScopeDecisionStore({ baseDir: roots.globalBaseDir });
-  const strategyTrustScopeSourceResolver: StrategyTrustScopeSourceResolver =
-    input.strategyTrustScopeSourceResolver ??
-    new FileStrategyTrustScopeSourceResolver({ projectsBaseDir: roots.projectsBaseDir });
-  const strategyTrustScopeWriterLock: GlobalWriterLock =
-    input.strategyTrustScopeWriterLock ?? new FileGlobalWriterLock({
+    strategyDerivationCandidateStore = input.strategyDerivationCandidateStore ??
+      new FileStrategyDerivationCandidateStore({ baseDir: roots.projectsBaseDir });
+    strategyDerivationCandidateReader = input.strategyDerivationCandidateReader ??
+      (typeof (strategyDerivationCandidateStore as Partial<StrategyDerivationCandidateReader>).read === "function"
+        ? strategyDerivationCandidateStore as unknown as StrategyDerivationCandidateReader
+        : new FileStrategyDerivationCandidateStore({ baseDir: roots.projectsBaseDir }));
+
+    strategyDecisionStore = input.strategyDecisionStore ??
+      new FileStrategyDecisionStore({ baseDir: roots.projectsBaseDir });
+    strategyDecisionReader = input.strategyDecisionReader ?? strategyDecisionStore;
+    strategyDerivationDecisionStore = input.strategyDerivationDecisionStore ??
+      new FileStrategyDerivationDecisionStore({ baseDir: roots.projectsBaseDir });
+    strategyDerivationDecisionReader = input.strategyDerivationDecisionReader ?? strategyDerivationDecisionStore;
+
+    strategyTrustScopeCandidateStore = input.strategyTrustScopeCandidateStore ??
+      new FileStrategyTrustScopeCandidateStore({ baseDir: roots.globalBaseDir });
+    strategyTrustScopeDecisionStore = input.strategyTrustScopeDecisionStore ??
+      new FileStrategyTrustScopeDecisionStore({ baseDir: roots.globalBaseDir });
+    strategyTrustScopeSourceResolver = input.strategyTrustScopeSourceResolver ??
+      new FileStrategyTrustScopeSourceResolver({ projectsBaseDir: roots.projectsBaseDir });
+    strategyTrustScopeWriterLock = input.strategyTrustScopeWriterLock ?? new FileGlobalWriterLock({
       baseDir: roots.globalBaseDir,
     });
-  const scopeProjectTrustReader: ScopeProjectTrustReader = input.scopeProjectTrustReader ??
-    new FileScopeProjectTrustReader({ projectsBaseDir: roots.projectsBaseDir });
+    scopeProjectTrustReader = input.scopeProjectTrustReader ??
+      new FileScopeProjectTrustReader({ projectsBaseDir: roots.projectsBaseDir });
+  }
 
   let projectMemorySink: ProjectMemorySink | undefined;
   if (selection.workMemory) {
@@ -373,28 +379,48 @@ export function composePindieExtension(
     projectMemorySink: _inputProjectMemorySink,
     remoteCompanion: _inputRemoteCompanion,
     remoteRoutingStore: _inputRemoteRoutingStore,
+    experienceStore: _inputExperienceStore,
+    experienceReader: _inputExperienceReader,
+    crossProjectExperienceReader: _inputCrossProjectExperienceReader,
+    strategyCandidateStore: _inputStrategyCandidateStore,
+    strategyCandidateReader: _inputStrategyCandidateReader,
+    strategyDerivationCandidateStore: _inputStrategyDerivationCandidateStore,
+    strategyDerivationCandidateReader: _inputStrategyDerivationCandidateReader,
+    strategyDecisionStore: _inputStrategyDecisionStore,
+    strategyDecisionReader: _inputStrategyDecisionReader,
+    strategyDerivationDecisionStore: _inputStrategyDerivationDecisionStore,
+    strategyDerivationDecisionReader: _inputStrategyDerivationDecisionReader,
+    strategyTrustScopeCandidateStore: _inputStrategyTrustScopeCandidateStore,
+    strategyTrustScopeDecisionStore: _inputStrategyTrustScopeDecisionStore,
+    strategyTrustScopeSourceResolver: _inputStrategyTrustScopeSourceResolver,
+    strategyTrustScopeWriterLock: _inputStrategyTrustScopeWriterLock,
+    scopeProjectTrustReader: _inputScopeProjectTrustReader,
     ...inputWithoutOptionalFeatures
   } = input;
   const extensionOptions: PindieExtensionOptions = {
     ...inputWithoutOptionalFeatures,
     store: stateStore,
     continuityStore,
-    experienceStore,
-    experienceReader,
-    crossProjectExperienceReader: crossProjectExperienceReader ?? undefined,
-    strategyCandidateStore,
-    strategyCandidateReader,
-    strategyDerivationCandidateStore,
-    strategyDerivationCandidateReader,
-    strategyDecisionStore,
-    strategyDecisionReader,
-    strategyDerivationDecisionStore,
-    strategyDerivationDecisionReader,
-    strategyTrustScopeCandidateStore,
-    strategyTrustScopeDecisionStore,
-    strategyTrustScopeSourceResolver,
-    strategyTrustScopeWriterLock,
-    scopeProjectTrustReader,
+    ...(selection.selfImprovement
+      ? {
+          experienceStore: experienceStore!,
+          experienceReader: experienceReader!,
+          crossProjectExperienceReader,
+          strategyCandidateStore: strategyCandidateStore!,
+          strategyCandidateReader: strategyCandidateReader!,
+          strategyDerivationCandidateStore: strategyDerivationCandidateStore!,
+          strategyDerivationCandidateReader: strategyDerivationCandidateReader!,
+          strategyDecisionStore: strategyDecisionStore!,
+          strategyDecisionReader: strategyDecisionReader!,
+          strategyDerivationDecisionStore: strategyDerivationDecisionStore!,
+          strategyDerivationDecisionReader: strategyDerivationDecisionReader!,
+          strategyTrustScopeCandidateStore: strategyTrustScopeCandidateStore!,
+          strategyTrustScopeDecisionStore: strategyTrustScopeDecisionStore!,
+          strategyTrustScopeSourceResolver: strategyTrustScopeSourceResolver!,
+          strategyTrustScopeWriterLock: strategyTrustScopeWriterLock!,
+          scopeProjectTrustReader: scopeProjectTrustReader!,
+        }
+      : {}),
     ...(projectMemorySink === undefined ? {} : { projectMemorySink }),
     ...(remoteCompanion === undefined ? {} : { remoteCompanion }),
     ...(remoteRoutingStore === undefined ? {} : { remoteRoutingStore }),

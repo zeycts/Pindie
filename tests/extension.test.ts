@@ -896,7 +896,7 @@ test("Presentation can be disabled without removing Core settlement or SI comman
     [["/repo", activeState()]],
     {},
     {
-      featureSelection: { presentation: false },
+      featureSelection: { selfImprovement: true, presentation: false },
       subscriptionUsageProvider: {
         fetchUsage: async () => {
           usageCalls += 1;
@@ -916,6 +916,10 @@ test("Presentation can be disabled without removing Core settlement or SI comman
     },
   };
 
+  assert.equal(harness.integration.featureSelection.selfImprovement, true);
+  assert.equal(harness.integration.featureSelection.presentation, false);
+  assert.ok(harness.integration.trial);
+  assert.ok(harness.integration.derivation);
   assert.equal(harness.integration.reasoning, null);
   assert.equal(harness.integration.runActivity, null);
   assert.equal(harness.api.commands.has("efficiency"), false);
@@ -942,6 +946,78 @@ test("Presentation can be disabled without removing Core settlement or SI comman
 
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, uiContext);
   assert.equal(harness.integration.runTimer.active, false);
+});
+
+test("Slice D SI off keeps Core tools and Seed Policy without reading SI stores", async () => {
+  const reader = new ExtensionTestExperienceReader();
+  const experienceStore = new ExtensionTestExperienceStore();
+  const harness = createHarness(
+    [["/repo", activeState("Core-only task")]],
+    {},
+    {
+      featureSelection: { selfImprovement: false },
+      experienceReader: reader,
+      experienceStore,
+    },
+  );
+
+  assert.equal(harness.integration.featureSelection.selfImprovement, false);
+  assert.equal(harness.integration.featureSelection.crossProjectLearning, false);
+  assert.equal(harness.integration.trial, null);
+  assert.equal(harness.integration.derivation, null);
+  assert.equal(harness.integration.trustedStrategyPortfolio, null);
+  for (const command of [
+    "experience", "strategies", "trust-transfer", "adapt", "derive",
+    "trial", "trial-review", "promote", "reject",
+  ]) {
+    assert.equal(harness.api.commands.has(command), false, `SI command '${command}' must be absent`);
+  }
+  for (const tool of [
+    "pindie_strategy_candidate_create",
+    "pindie_strategy_derivation_candidate_create",
+  ]) {
+    assert.equal(harness.api.tools.has(tool), false, `SI tool '${tool}' must be absent`);
+  }
+  for (const tool of [
+    "pindie_policy_set",
+    "pindie_task_start",
+    "pindie_gate_open",
+    "pindie_verification_record",
+    "pindie_git_observe",
+  ]) {
+    assert.equal(harness.api.tools.has(tool), true, `Core tool '${tool}' must remain available`);
+  }
+
+  await startSession(harness, "/repo");
+  const before = await harnessBeforeAgentStart(harness);
+  assert.doesNotMatch(before.systemPrompt, /<PINDIE_(?:PROMOTED_STRATEGIES|ADAPTATION_PACKET|DERIVATION_PACKET)>/);
+  assert.deepEqual(reader.roots, []);
+
+  await executeSemanticTool(harness, "pindie_policy_set", "seed-policy", {
+    approach: "direct-action",
+  });
+  assert.equal(harness.integration.policySnapshot?.approach.strategyId, "direct-action");
+  const learned = trialCandidate();
+  await assert.rejects(
+    harness.api.tool("pindie_policy_set").execute(
+      "learned-policy",
+      {
+        approach: {
+          strategyId: learned.target.strategyId,
+          revisionIdentity: learned.candidateId,
+          revisionFingerprint: strategyCandidateSemanticFingerprint(learned),
+        },
+      },
+      undefined,
+      undefined,
+      context("/repo"),
+    ),
+    /Seed Strategy ID/,
+  );
+
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.deepEqual(reader.roots, []);
+  assert.deepEqual(experienceStore.records, []);
 });
 
 test("configured extension composes Memory and Discord options in one registration", () => {
@@ -6056,12 +6132,16 @@ test("SI v0.7 /trial completions unify valid Revision and Derivation Candidates 
   };
   const decisions = testDecisionStore();
   const reader = new ExtensionTestExperienceReader();
+  const emptyScope = emptyScopeAuthority();
   const harness = createHarness([ ["/repo", activeState()] ], {}, {
     experienceReader: reader,
     strategyCandidateReader: revisionReader,
     strategyDerivationCandidateReader: derivationReader,
     strategyDecisionStore: decisions,
     strategyDecisionReader: decisions,
+    strategyTrustScopeCandidateStore: emptyScope.candidateStore,
+    strategyTrustScopeDecisionStore: emptyScope.decisionStore,
+    strategyTrustScopeSourceResolver: emptyScope.sourceResolver,
   });
   await startSession(harness, "/repo");
 
@@ -6429,11 +6509,15 @@ test("SI v0.6 Candidate lifecycle completions are semantic, filtered, and read-o
     unsupportedSchema: 0,
     invalid: 0,
   };
+  const emptyScope = emptyScopeAuthority();
   const harness = createHarness([["/repo", activeState("Candidate completion task")]], {}, {
     experienceReader: reader,
     strategyCandidateReader: candidateReader,
     strategyDecisionStore: decisions,
     strategyDecisionReader: decisions,
+    strategyTrustScopeCandidateStore: emptyScope.candidateStore,
+    strategyTrustScopeDecisionStore: emptyScope.decisionStore,
+    strategyTrustScopeSourceResolver: emptyScope.sourceResolver,
   });
   await startSession(harness, "/repo");
   const stateBefore = structuredClone(harness.integration.runtime.state);
