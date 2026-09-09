@@ -65,6 +65,7 @@ import {
 } from "./strategy-candidates.ts";
 import {
   FileStrategyDerivationCandidateStore,
+  hasExactTrustedStrategySemanticDuplicate,
   validateStrategyDerivationCandidateBinding,
   type StrategyDerivationCandidateReader,
   type StrategyDerivationCandidateStore,
@@ -1800,7 +1801,12 @@ export function registerPindieExtension(
     // proceed with a null current portfolio when trust is unavailable.
     let currentPortfolio: TrustedStrategyPortfolio | null = null;
     try {
-      currentPortfolio = await loadProjectTrustedPortfolio(projectRoot);
+      // Rejection preserves the frozen v0.7 terminal-choice semantics and may
+      // proceed without a current trust projection. Promotion is a trust grant
+      // and therefore never uses the optional-global failure-isolation fallback.
+      currentPortfolio = terminalDecision === "promoted"
+        ? await loadTrustedPortfolio(projectRoot)
+        : await loadProjectTrustedPortfolio(projectRoot);
     } catch (error) {
       if (terminalDecision === "promoted") {
         failure(`trusted Strategy portfolio could not be validated; no trust transition occurred: ${errorMessage(error)}`);
@@ -1836,29 +1842,6 @@ export function registerPindieExtension(
       return;
     }
 
-    // Re-read the current trust boundary immediately before writing a Derived
-    // Decision. The immutable store remains the final duplicate backstop.
-    if (terminalDecision === "promoted") {
-      let latestPortfolio: TrustedStrategyPortfolio;
-      try {
-        latestPortfolio = await loadProjectTrustedPortfolio(projectRoot);
-      } catch (error) {
-        failure(`trusted Strategy portfolio changed or could not be validated; no trust transition occurred: ${errorMessage(error)}`);
-        return;
-      }
-      if (!sameTrustedPortfolioSnapshot(latestPortfolio, currentPortfolio!)) {
-        failure("the trusted Strategy portfolio changed while reviewing the Candidate; no trust transition occurred.");
-        return;
-      }
-      currentPortfolio = latestPortfolio;
-      try {
-        validateStrategyDerivationCandidateBinding(candidate, projectRoot, latestPortfolio);
-      } catch (error) {
-        failure(`Candidate binding changed while reviewing; no trust transition occurred: ${errorMessage(error)}`);
-        return;
-      }
-    }
-
     const trialRecordIds = review.candidateTrialEvidence.eligibleEvaluations
       .slice()
       .sort((left, right) => {
@@ -1874,6 +1857,82 @@ export function registerPindieExtension(
       })
       .slice(0, 1024)
       .map((evaluation) => evaluation.source.recordId);
+
+    if (terminalDecision === "promoted") {
+      // The complete trust mutation boundary is shared with user-global Scope
+      // promotion. The pre-lock review above is only a read-only gate; every
+      // fact that can make this local trust grant illegal is reconstructed
+      // again while the common user-level lock is held.
+      let decision: Awaited<ReturnType<typeof createStrategyDerivationDecision>>;
+      try {
+        decision = await strategyTrustScopeWriterLock.withLock(async () => {
+          if (runtime.projectRoot !== projectRoot || !ctx.isIdle()) {
+            throw new Error("the current project or Agent state changed before the lock-held trust revalidation");
+          }
+
+          const latestCandidateRef = await resolveTrialCandidate({
+            projectRoot,
+            candidateId: requestedId,
+            revisionReader: strategyCandidateReader,
+            derivationReader: strategyDerivationCandidateReader,
+          });
+          if (latestCandidateRef === null || latestCandidateRef.kind !== "derivation") {
+            throw new Error("the exact Derivation Candidate is unavailable or changed before the Decision write");
+          }
+          const latestCandidate = latestCandidateRef.candidate;
+          if (!isDeepStrictEqual(latestCandidate, candidate)) {
+            throw new Error("the exact Derivation Candidate changed while reviewing");
+          }
+
+          const terminal = await readDerivationDecisionForCandidate(projectRoot, latestCandidate);
+          if (terminal !== null) {
+            throw new Error("an immutable terminal Derivation Decision already exists; no replacement Decision was written");
+          }
+
+          // This is deliberately the strict global-aware projection, not the
+          // presentation/runtime fallback. Malformed, ambiguous, unreadable,
+          // or incoherent global authority blocks the local trust transition.
+          const latestPortfolio = await loadTrustedPortfolio(projectRoot);
+          if (!sameTrustedPortfolioSnapshot(latestPortfolio, currentPortfolio!)) {
+            throw new Error("the trusted Strategy portfolio changed while reviewing the Candidate");
+          }
+          validateStrategyDerivationCandidateBinding(
+            latestCandidate,
+            projectRoot,
+            latestPortfolio,
+          );
+          if (trustedLogicalStrategyIds(latestPortfolio).includes(latestCandidate.proposal.strategyId)) {
+            throw new Error("the proposed logical Strategy ID is already trusted in the current portfolio");
+          }
+          if (hasExactTrustedStrategySemanticDuplicate(latestCandidate.proposal, latestPortfolio)) {
+            throw new Error("the proposal is an exact semantic duplicate of a trusted Strategy");
+          }
+          if (!review.promotionEligibility.eligible) {
+            throw new Error("the exact Derivation Promotion Eligibility gate is no longer satisfied");
+          }
+          if (runtime.projectRoot !== projectRoot || !ctx.isIdle()) {
+            throw new Error("the current project or Agent state changed before the Decision write");
+          }
+
+          const promotedDecision = createStrategyDerivationDecision({
+            candidate: latestCandidate,
+            decision: "promoted",
+            trialRecordIds,
+            decidedAt: new Date(continuityNow()).toISOString(),
+          });
+          await strategyDerivationDecisionStore.save(projectRoot, promotedDecision);
+          return promotedDecision;
+        });
+      } catch (error) {
+        failure(`Derived trust revalidation or Decision write failed; no trust transition occurred: ${errorMessage(error)}`);
+        return;
+      }
+      ctx.ui.notify(
+        `Candidate '${requestedId}' promoted for explicit normal Policy selection. The Derived Strategy is selectable but is not a default.`,
+        "info",
+      );
+      return;
+    }
 
     let decision;
     try {
@@ -1895,9 +1954,7 @@ export function registerPindieExtension(
     }
 
     ctx.ui.notify(
-      terminalDecision === "promoted"
-        ? `Candidate '${requestedId}' promoted for explicit normal Policy selection. The Derived Strategy is selectable but is not a default.`
-        : `Candidate '${requestedId}' rejected as a historical hypothesis. Its immutable Derivation Decision preserves ${decision.evidence.trialRecordIds.length} eligible Trial Experience ID${decision.evidence.trialRecordIds.length === 1 ? "" : "s"}.`,
+      `Candidate '${requestedId}' rejected as a historical hypothesis. Its immutable Derivation Decision preserves ${decision.evidence.trialRecordIds.length} eligible Trial Experience ID${decision.evidence.trialRecordIds.length === 1 ? "" : "s"}.`,
       "info",
     );
   };

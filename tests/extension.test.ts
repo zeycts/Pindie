@@ -350,6 +350,63 @@ function derivationTrialCandidate(
   });
 }
 
+function derivedPromotionCandidate(
+  candidateId: string,
+  strategyId: string,
+  basePortfolio = createTrustedStrategyPortfolio(
+    "/repo",
+    createPromotedStrategyRevisionCatalog([]),
+  ),
+): StrategyDerivationCandidateV1 {
+  return createStrategyDerivationCandidate({
+    projectId: basePortfolio.projectId,
+    basePortfolio,
+    candidateId,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    proposal: {
+      strategyId,
+      kind: "approach",
+      summary: `Name the smallest boundary before choosing ${strategyId}.`,
+      useWhen: ["the requested change crosses a meaningful interface"],
+      avoidWhen: ["the correction is already local and clear"],
+      principles: ["make the boundary explicit", "verify the smallest coherent move"],
+      sourceRecordIds: ["derive-one", "derive-two", "derive-three"],
+      hypothesis: `Repeated trusted-policy Runs may expose a missing ${strategyId} abstraction.`,
+    },
+  });
+}
+
+function derivationTrialPolicy(candidate: StrategyDerivationCandidateV1): PolicySnapshot {
+  return createPolicySnapshotFromRevisions({
+    approach: createStrategyRevisionSelection({
+      strategyId: candidate.proposal.strategyId,
+      kind: candidate.proposal.kind,
+      revisionIdentity: candidate.candidateId,
+      revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(candidate),
+      revisionStatusAtRun: "trial",
+      semantics: {
+        summary: candidate.proposal.summary,
+        useWhen: [...candidate.proposal.useWhen],
+        avoidWhen: [...candidate.proposal.avoidWhen],
+        principles: [...candidate.proposal.principles],
+      },
+    }),
+  });
+}
+
+function derivationPromotionRecords(candidate: StrategyDerivationCandidateV1): Array<{
+  readonly recordId: string;
+  readonly experience: RunExperience;
+}> {
+  return [
+    { recordId: "derive-one", experience: commandExperience("source one", createPolicySnapshot({ approach: "direct-action" })) },
+    { recordId: "derive-two", experience: commandExperience("source one", createPolicySnapshot({ approach: "architecture-first" })) },
+    { recordId: "derive-three", experience: commandExperience("source two", createPolicySnapshot({ approach: "explore-first" })) },
+    { recordId: "trial-one", experience: commandExperience("trial one", derivationTrialPolicy(candidate)) },
+    { recordId: "trial-two", experience: commandExperience("trial two", derivationTrialPolicy(candidate)) },
+  ];
+}
+
 function candidatePolicy(
   candidate: StrategyRevisionCandidate,
   status: "trial" | "promoted" = "trial",
@@ -444,7 +501,33 @@ function scopeTrialTestDependencies() {
       promotedDerivedCatalog: sourceCatalog,
     }),
   };
-  return { scopeCandidate, globalCandidateStore, globalDecisionStore, sourceResolver };
+  return {
+    scopeCandidate,
+    globalCandidateStore,
+    globalDecisionStore,
+    sourceResolver,
+    sourceCandidate,
+    sourceDecision,
+    sourceSelection,
+    sourceCatalog,
+  };
+}
+
+function emptyScopeAuthority() {
+  const candidateStore: StrategyTrustScopeCandidateStore = {
+    read: async () => null,
+    readAll: async () => [],
+    save: async () => undefined,
+  };
+  const decisionStore: StrategyTrustScopeDecisionStore = {
+    read: async () => null,
+    readAll: async () => [],
+    save: async () => undefined,
+  };
+  const sourceResolver: StrategyTrustScopeSourceResolver = {
+    resolve: async () => { throw new Error("the empty global authority has no source to resolve"); },
+  };
+  return { candidateStore, decisionStore, sourceResolver };
 }
 
 function promotedGlobalScopeDecision(
@@ -6845,6 +6928,421 @@ test("SI v0.6 /promote creates one immutable Decision and normal Runs explicitly
   assert.equal(harness.integration.policySnapshot?.approach.revisionStatusAtRun, "seed");
   await captureObservationEvidence(harness, "seed-observation-after-promotion");
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("SI v0.7 local Derived promotion uses the shared writer lock for final strict revalidation and write", async () => {
+  const candidate = derivedPromotionCandidate(
+    "00000000-0000-4000-8000-000000000201",
+    "boundary-first",
+  );
+  const records = derivationPromotionRecords(candidate);
+  let lockDepth = 0;
+  let lockCalls = 0;
+  let candidateReadsInsideLock = 0;
+  let decisionReadsInsideLock = 0;
+  let globalReadsInsideLock = 0;
+  let decisionWritesInsideLock = 0;
+  const derivationCandidates = {
+    read: async (_root: string, candidateId: string) => {
+      if (lockDepth > 0) candidateReadsInsideLock += 1;
+      return candidateId === candidate.candidateId ? candidate : null;
+    },
+    readAll: async () => [candidate],
+  };
+  const derivationDecisionMap = new Map<string, StrategyDerivationDecision>();
+  const derivationDecisions = {
+    read: async (_root: string, candidateId: string) => {
+      if (lockDepth > 0) decisionReadsInsideLock += 1;
+      return derivationDecisionMap.get(candidateId) ?? null;
+    },
+    readAll: async () => [...derivationDecisionMap.values()],
+    save: async (_root: string, decision: StrategyDerivationDecision) => {
+      if (lockDepth > 0) decisionWritesInsideLock += 1;
+      if (derivationDecisionMap.has(decision.candidateId)) throw new Error("terminal Decision already exists");
+      derivationDecisionMap.set(decision.candidateId, decision);
+    },
+  };
+  const emptyScope: StrategyTrustScopeCandidateStore = {
+    read: async () => null,
+    readAll: async () => {
+      if (lockDepth > 0) globalReadsInsideLock += 1;
+      return [];
+    },
+    save: async () => undefined,
+  };
+  const emptyScopeDecisions: StrategyTrustScopeDecisionStore = {
+    read: async () => null,
+    readAll: async () => [],
+    save: async () => undefined,
+  };
+  const writerLock = {
+    withLock: async <T>(operation: () => Promise<T>): Promise<T> => {
+      lockCalls += 1;
+      lockDepth += 1;
+      try {
+        return await operation();
+      } finally {
+        lockDepth -= 1;
+      }
+    },
+  };
+  const experienceReader = new ExtensionTestExperienceReader();
+  experienceReader.result = {
+    records,
+    loadedRecords: records.length,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const harness = createHarness([["/repo", activeState("Derived promotion")]], {}, {
+    experienceReader,
+    strategyCandidateReader: { read: async () => null, readAll: async () => [] },
+    strategyDecisionStore: testDecisionStore(),
+    strategyDecisionReader: testDecisionStore(),
+    strategyDerivationCandidateReader: derivationCandidates,
+    strategyDerivationDecisionReader: derivationDecisions,
+    strategyDerivationDecisionStore: derivationDecisions,
+    strategyTrustScopeCandidateStore: emptyScope,
+    strategyTrustScopeDecisionStore: emptyScopeDecisions,
+    strategyTrustScopeSourceResolver: { resolve: async () => { throw new Error("not reached"); } },
+    strategyTrustScopeWriterLock: writerLock,
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  await harness.api.commands.get("promote").handler(candidate.candidateId, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+
+  assert.equal(lockCalls, 1);
+  assert.equal(candidateReadsInsideLock > 0, true);
+  assert.equal(decisionReadsInsideLock > 0, true);
+  assert.equal(globalReadsInsideLock > 0, true);
+  assert.equal(decisionWritesInsideLock, 1);
+  assert.equal(derivationDecisionMap.get(candidate.candidateId)?.decision, "promoted");
+  assert.match(notices.at(-1)?.message ?? "", /promoted.*explicit normal Policy selection/i);
+});
+
+test("SI v0.7 local Derived promotion fails when a valid global revision owns the logical ID", async () => {
+  const scope = scopeTrialTestDependencies();
+  const globalDecision = promotedGlobalScopeDecision(scope.scopeCandidate);
+  const localCandidate = derivedPromotionCandidate(
+    "00000000-0000-4000-8000-000000000202",
+    "boundary-first",
+  );
+  const localDecisions = new Map<string, StrategyDerivationDecision>();
+  const localDecisionStore = {
+    read: async (_root: string, candidateId: string) => localDecisions.get(candidateId) ?? null,
+    readAll: async () => [...localDecisions.values()],
+    save: async (_root: string, decision: StrategyDerivationDecision) => {
+      localDecisions.set(decision.candidateId, decision);
+    },
+  };
+  const globalDecisionStore: StrategyTrustScopeDecisionStore = {
+    read: async (candidateId) => candidateId === globalDecision.candidateId ? globalDecision : null,
+    readAll: async () => [globalDecision],
+    save: async () => { throw new Error("global Decision is immutable in this test"); },
+  };
+  const localCandidates = {
+    read: async (_root: string, candidateId: string) =>
+      candidateId === localCandidate.candidateId ? localCandidate : null,
+    readAll: async () => [localCandidate],
+  };
+  const emptyRevisionReader = { read: async () => null, readAll: async () => [] };
+  const harness = createHarness([["/repo", activeState("Global conflict")]], {}, {
+    experienceReader: Object.assign(new ExtensionTestExperienceReader(), {
+      result: {
+        records: derivationPromotionRecords(localCandidate),
+        loadedRecords: 5,
+        unsupportedSchema: 0,
+        invalid: 0,
+      },
+    }),
+    strategyCandidateReader: emptyRevisionReader,
+    strategyDecisionStore: testDecisionStore(),
+    strategyDecisionReader: testDecisionStore(),
+    strategyDerivationCandidateReader: localCandidates,
+    strategyDerivationDecisionReader: localDecisionStore,
+    strategyDerivationDecisionStore: localDecisionStore,
+    strategyTrustScopeCandidateStore: scope.globalCandidateStore,
+    strategyTrustScopeDecisionStore: globalDecisionStore,
+    strategyTrustScopeSourceResolver: scope.sourceResolver,
+    strategyTrustScopeWriterLock: { withLock: async <T>(operation: () => Promise<T>) => operation() },
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  await harness.api.commands.get("promote").handler(localCandidate.candidateId, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+
+  assert.equal(localDecisions.size, 0);
+  assert.deepEqual(await globalDecisionStore.readAll(), [globalDecision]);
+  assert.match(notices.at(-1)?.message ?? "", /Promotion Eligibility|trusted portfolio|already trusted|binding/i);
+});
+
+test("SI v0.7 malformed global authority is presentation-isolated but blocks local Derived promotion", async () => {
+  const localCandidate = derivedPromotionCandidate(
+    "00000000-0000-4000-8000-000000000203",
+    "malformed-global-check",
+  );
+  const localDecisions = new Map<string, StrategyDerivationDecision>();
+  const localDecisionStore = {
+    read: async (_root: string, candidateId: string) => localDecisions.get(candidateId) ?? null,
+    readAll: async () => [...localDecisions.values()],
+    save: async (_root: string, decision: StrategyDerivationDecision) => {
+      localDecisions.set(decision.candidateId, decision);
+    },
+  };
+  const malformedGlobal: StrategyTrustScopeCandidateStore = {
+    read: async () => null,
+    readAll: async () => { throw new Error("malformed global Scope authority"); },
+    save: async () => undefined,
+  };
+  const emptyGlobalDecisions: StrategyTrustScopeDecisionStore = {
+    read: async () => null,
+    readAll: async () => [],
+    save: async () => undefined,
+  };
+  const candidateReader = {
+    read: async (_root: string, candidateId: string) =>
+      candidateId === localCandidate.candidateId ? localCandidate : null,
+    readAll: async () => [],
+  };
+  const experienceReader = new ExtensionTestExperienceReader();
+  experienceReader.result = {
+    records: derivationPromotionRecords(localCandidate),
+    loadedRecords: 5,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const harness = createHarness([["/repo", activeState("Malformed global authority")]], {}, {
+    experienceReader,
+    strategyCandidateReader: { read: async () => null, readAll: async () => [] },
+    strategyDecisionStore: testDecisionStore(),
+    strategyDecisionReader: testDecisionStore(),
+    strategyDerivationCandidateReader: candidateReader,
+    strategyDerivationDecisionReader: localDecisionStore,
+    strategyDerivationDecisionStore: localDecisionStore,
+    strategyTrustScopeCandidateStore: malformedGlobal,
+    strategyTrustScopeDecisionStore: emptyGlobalDecisions,
+    strategyTrustScopeSourceResolver: { resolve: async () => { throw new Error("global source unavailable"); } },
+  });
+  await startSession(harness, "/repo");
+  const strategyNotices: Array<{ message: string; type: string }> = [];
+  await harness.api.commands.get("strategies").handler("", {
+    ...context("/repo"),
+    ui: { notify: (message: string, type: string) => strategyNotices.push({ message, type }) },
+  });
+  assert.match(strategyNotices.at(-1)?.message ?? "", /Optional user-global layer: unavailable/);
+  assert.match(strategyNotices.at(-1)?.message ?? "", /immutable Seed Strategies remain available/);
+
+  const promotionNotices: Array<{ message: string; type: string }> = [];
+  await harness.api.commands.get("promote").handler(localCandidate.candidateId, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => promotionNotices.push({ message, type }) },
+  });
+  assert.equal(localDecisions.size, 0);
+  assert.match(promotionNotices.at(-1)?.message ?? "", /trusted Strategy portfolio could not be validated|no trust transition/i);
+});
+
+test("SI v0.7 unrelated local Derived promotion remains valid with coherent global authority", async () => {
+  const candidate = derivedPromotionCandidate(
+    "00000000-0000-4000-8000-000000000205",
+    "unrelated-local",
+  );
+  const localDecisions = new Map<string, StrategyDerivationDecision>();
+  const localDecisionStore = {
+    read: async (_root: string, candidateId: string) => localDecisions.get(candidateId) ?? null,
+    readAll: async () => [...localDecisions.values()],
+    save: async (_root: string, decision: StrategyDerivationDecision) => {
+      if (localDecisions.has(decision.candidateId)) throw new Error("terminal Decision already exists");
+      localDecisions.set(decision.candidateId, decision);
+    },
+  };
+  const experienceReader = new ExtensionTestExperienceReader();
+  experienceReader.result = {
+    records: derivationPromotionRecords(candidate),
+    loadedRecords: 5,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const emptyScope = emptyScopeAuthority();
+  const harness = createHarness([["/repo", activeState("Unrelated local promotion")]], {}, {
+    experienceReader,
+    strategyCandidateReader: { read: async () => null, readAll: async () => [] },
+    strategyDecisionStore: testDecisionStore(),
+    strategyDecisionReader: testDecisionStore(),
+    strategyDerivationCandidateReader: {
+      read: async (_root: string, candidateId: string) => candidateId === candidate.candidateId ? candidate : null,
+      readAll: async () => [candidate],
+    },
+    strategyDerivationDecisionReader: localDecisionStore,
+    strategyDerivationDecisionStore: localDecisionStore,
+    strategyTrustScopeCandidateStore: emptyScope.candidateStore,
+    strategyTrustScopeDecisionStore: emptyScope.decisionStore,
+    strategyTrustScopeSourceResolver: emptyScope.sourceResolver,
+    strategyTrustScopeWriterLock: { withLock: async <T>(operation: () => Promise<T>) => operation() },
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  await harness.api.commands.get("promote").handler(candidate.candidateId, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  });
+  assert.equal(localDecisions.get(candidate.candidateId)?.decision, "promoted");
+  assert.match(notices.at(-1)?.message ?? "", /promoted.*explicit normal Policy selection/i);
+});
+
+test("SI v0.7 shared writer lock serializes local and global same-ID trust transitions", async () => {
+  const scope = scopeTrialTestDependencies();
+  const localCandidate = derivedPromotionCandidate(
+    "00000000-0000-4000-8000-000000000204",
+    "boundary-first",
+  );
+  const localDecisions = new Map<string, StrategyDerivationDecision>();
+  const localDecisionStore = {
+    read: async (_root: string, candidateId: string) => localDecisions.get(candidateId) ?? null,
+    readAll: async () => [...localDecisions.values()],
+    save: async (_root: string, decision: StrategyDerivationDecision) => {
+      if (localDecisions.has(decision.candidateId)) throw new Error("terminal Decision already exists");
+      localDecisions.set(decision.candidateId, decision);
+    },
+  };
+  const globalDecisions = new Map<string, StrategyTrustScopeDecisionV1>();
+  let markGlobalSaveEntered!: () => void;
+  let releaseGlobalSave!: () => void;
+  const globalSaveEntered = new Promise<void>((resolve) => { markGlobalSaveEntered = resolve; });
+  const globalSaveRelease = new Promise<void>((resolve) => { releaseGlobalSave = resolve; });
+  let pauseGlobalSave = true;
+  const globalDecisionStore: StrategyTrustScopeDecisionStore = {
+    read: async (candidateId) => globalDecisions.get(candidateId) ?? null,
+    readAll: async () => [...globalDecisions.values()],
+    save: async (decision) => {
+      if (pauseGlobalSave) {
+        pauseGlobalSave = false;
+        markGlobalSaveEntered();
+        await globalSaveRelease;
+      }
+      if (globalDecisions.has(decision.candidateId)) throw new Error("terminal Scope Decision already exists");
+      globalDecisions.set(decision.candidateId, decision);
+    },
+  };
+  const localCandidateReader = {
+    read: async (_root: string, candidateId: string) =>
+      candidateId === localCandidate.candidateId ? localCandidate : null,
+    readAll: async () => [localCandidate],
+  };
+  const emptyRevisionReader = { read: async () => null, readAll: async () => [] };
+  const sourceTrialPolicy = derivationTrialPolicy(scope.sourceCandidate);
+  const sourceProjectId = scope.sourceCandidate.projectId;
+  const localProjectId = getProjectId("/repo");
+  const targetAProjectId = getProjectId("/scope-target-a");
+  const targetBProjectId = getProjectId("/scope-target-b");
+  const targetRecords = new Map<string, readonly { readonly recordId: string; readonly experience: RunExperience }[]>([
+    [targetAProjectId, [{
+      recordId: "11111111-1111-4111-8111-111111111111.json",
+      experience: commandExperience("scope target a", sourceTrialPolicy),
+    }]],
+    [targetBProjectId, [{
+      recordId: "22222222-2222-4222-8222-222222222222.json",
+      experience: commandExperience("scope target b", sourceTrialPolicy),
+    }]],
+  ]);
+  const projectIds = [sourceProjectId, localProjectId, targetAProjectId, targetBProjectId];
+  const crossProjectExperienceReader: RunExperienceProjectReader = {
+    listProjectIds: async () => projectIds,
+    readProjectId: async (projectId) => {
+      const records = targetRecords.get(projectId) ?? [];
+      return {
+        records,
+        loadedRecords: records.length,
+        unsupportedSchema: 0,
+        invalid: 0,
+      };
+    },
+  };
+  const projectTrustReader = {
+    readProjectId: async (projectId: string) => ({
+      projectId,
+      promotedDerived: [...localDecisions.values()]
+        .filter((decision) => decision.decision === "promoted" && decision.projectId === projectId)
+        .map((decision) => ({
+          strategyId: decision.strategy.strategyId,
+          kind: decision.strategy.kind,
+          revisionIdentity: decision.candidateId,
+          revisionFingerprint: decision.candidateFingerprint,
+        })),
+    }),
+  };
+  let lockCalls = 0;
+  let markSecondLockRequested!: () => void;
+  const secondLockRequested = new Promise<void>((resolve) => { markSecondLockRequested = resolve; });
+  let lockTail = Promise.resolve();
+  const sharedWriterLock = {
+    withLock: async <T>(operation: () => Promise<T>): Promise<T> => {
+      lockCalls += 1;
+      if (lockCalls === 2) markSecondLockRequested();
+      const prior = lockTail;
+      let release!: () => void;
+      lockTail = new Promise<void>((resolve) => { release = resolve; });
+      await prior;
+      try {
+        return await operation();
+      } finally {
+        release();
+      }
+    },
+  };
+  const experienceReader = new ExtensionTestExperienceReader();
+  experienceReader.result = {
+    records: derivationPromotionRecords(localCandidate),
+    loadedRecords: 5,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  const harness = createHarness([["/repo", activeState("Serialized trust transitions")]], {}, {
+    experienceReader,
+    crossProjectExperienceReader,
+    scopeProjectTrustReader: projectTrustReader,
+    strategyCandidateReader: emptyRevisionReader,
+    strategyDecisionStore: testDecisionStore(),
+    strategyDecisionReader: testDecisionStore(),
+    strategyDerivationCandidateReader: localCandidateReader,
+    strategyDerivationDecisionReader: localDecisionStore,
+    strategyDerivationDecisionStore: localDecisionStore,
+    strategyTrustScopeCandidateStore: scope.globalCandidateStore,
+    strategyTrustScopeDecisionStore: globalDecisionStore,
+    strategyTrustScopeSourceResolver: scope.sourceResolver,
+    strategyTrustScopeWriterLock: sharedWriterLock,
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  const commandContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+  const promote = harness.api.commands.get("promote");
+  const globalPromotion = promote.handler(`scope:${scope.scopeCandidate.candidateId}`, commandContext);
+  await globalSaveEntered;
+
+  const localPromotion = promote.handler(localCandidate.candidateId, commandContext);
+  await secondLockRequested;
+  assert.equal(localDecisions.size, 0);
+
+  releaseGlobalSave();
+  await globalPromotion;
+  await localPromotion;
+
+  assert.equal(lockCalls, 2);
+  assert.equal(globalDecisions.get(scope.scopeCandidate.candidateId)?.decision, "promoted");
+  assert.equal(localDecisions.size, 0);
+  assert.equal([...globalDecisions.values()].length + localDecisions.size, 1);
+  assert.match(notices.at(-1)?.message ?? "", /Derived trust revalidation|no trust transition/i);
 });
 
 test("SI v0.6 /promote enforces the exact gate while /reject remains explicit and unavailable in normal Policy", async () => {
