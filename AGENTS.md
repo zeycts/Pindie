@@ -7,10 +7,11 @@ Pindie is a personal AI agent for indie development built on the Pi agent harnes
 For architecture or implementation work, use this order:
 
 1. The explicit approved task specification in the current request.
-2. `docs/architecture.md` — current architecture and ownership boundaries.
-3. `docs/remote-companion.md` — authoritative Remote Companion architecture/behavior when the task touches Remote Companion or Discord integration.
-4. `docs/behavior.md` — current semantic and behavioral contract.
-5. Existing source and tests — implemented runtime baseline.
+2. `docs/composable-pindie-architecture-v0.1.md` — authoritative target contract when the task touches Composable Pindie v0.1 or one of its Slices. It is a target architecture, not implemented-current-state documentation.
+3. `docs/architecture.md` — current architecture and ownership boundaries.
+4. `docs/remote-companion.md` — authoritative Remote Companion architecture/behavior when the task touches Remote Companion or Discord integration.
+5. `docs/behavior.md` — current semantic and behavioral contract.
+6. Existing source and tests — implemented runtime baseline.
 
 If those sources conflict, report the contradiction before widening scope. Do not preserve obsolete behavior merely because an older implementation or test encoded it.
 
@@ -55,16 +56,20 @@ Pindie must not implement a second Agent Loop, workflow engine, persisted phase 
 
 For an approved task:
 
-1. Read only the relevant architecture/behavior sections, source, and tests. For Remote Companion work, read `docs/remote-companion.md` before implementation.
+1. Read only the relevant architecture/behavior sections, source, and tests. For Composable Pindie work, read the relevant Slice and invariants in `docs/composable-pindie-architecture-v0.1.md`; for Remote Companion work, read `docs/remote-companion.md` before implementation.
 2. Preserve the requested scope; do not implement adjacent cleanup speculatively.
 3. Add focused tests for changed contracts.
 4. Implement the smallest change that satisfies them.
 5. Preserve unrelated runtime behavior and user work.
 6. Run `pnpm run check` before declaring completion.
 
+For Composable Pindie v0.1, implement strictly one approved Slice at a time. Do not begin the next Slice until the current Slice has been independently reviewed and approved.
+
 ## Maintenance posture
 
-The v0.2 architecture baseline is complete.
+The v0.2 implemented architecture baseline is complete.
+
+`docs/composable-pindie-architecture-v0.1.md` is an approved target migration contract, not evidence that its target boundaries are already implemented. Until a Slice is completed and synchronized into current-state documentation, source/tests plus `docs/architecture.md` remain the implemented-state baseline.
 
 Future architecture changes should be driven by concrete dogfood failures, explicit user goals, or verified incompatibilities with Pi/runtime reality.
 
