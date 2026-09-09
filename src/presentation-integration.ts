@@ -103,13 +103,16 @@ export interface PresentationIntegrationOptions {
   runTimer: RunTimer;
   runCost: RunCostTracker;
   taskMetrics: TaskMetricsTracker;
+  /** Keep SI read-only command compatibility without constructing UI state. */
+  uiEnabled?: boolean;
 }
 
 /** Runtime-only reasoning, activity, efficiency, and status presentation ownership. */
 export class PresentationIntegration {
   private readonly pi: ExtensionAPI;
-  readonly reasoning = new ReasoningController();
-  readonly runActivity: RunActivityTracker;
+  private readonly uiEnabled: boolean;
+  readonly reasoning: ReasoningController | null;
+  readonly runActivity: RunActivityTracker | null;
   readonly runCost: RunCostTracker;
   readonly runTimer: RunTimer;
   readonly taskMetrics: TaskMetricsTracker;
@@ -148,6 +151,14 @@ export class PresentationIntegration {
 
   constructor(pi: ExtensionAPI, options: PresentationIntegrationOptions) {
     this.pi = pi;
+    this.uiEnabled = options.uiEnabled !== false;
+    this.reasoning = this.uiEnabled ? new ReasoningController() : null;
+    this.runActivity = this.uiEnabled
+      ? new RunActivityTracker({
+          now: options.now ?? Date.now,
+          lingerMs: options.activityLingerMs,
+        })
+      : null;
     this.getState = options.getState;
     this.getProjectRoot = options.getProjectRoot;
     this.experienceReader = options.experienceReader;
@@ -180,10 +191,6 @@ export class PresentationIntegration {
     this.runCost = options.runCost;
     this.runTimer = options.runTimer;
     this.taskMetrics = options.taskMetrics;
-    this.runActivity = new RunActivityTracker({
-      now: this.now,
-      lingerMs: options.activityLingerMs,
-    });
     this.scheduleActivityRefresh = (callback, delayMs) =>
       options.scheduleActivityRefresh?.(callback, delayMs) ??
       (setTimeout(callback, delayMs) as ReturnType<typeof setTimeout>);
@@ -194,13 +201,14 @@ export class PresentationIntegration {
   }
 
   setStatusContext(ctx: ExtensionContext | null): void {
-    this.statusContext = ctx;
+    this.statusContext = this.uiEnabled ? ctx : null;
   }
 
   resetTrackers(): void {
+    if (!this.uiEnabled) return;
     this.clearActivityLingerRefresh();
-    this.reasoning.reset(this.pi.getThinkingLevel());
-    this.runActivity.reset();
+    this.reasoning?.reset(this.pi.getThinkingLevel());
+    this.runActivity?.reset();
     // RunCostTracker, RunTimer, and TaskMetricsTracker are Core-owned
     // measurement sources. Presentation only consumes their current facts.
   }
@@ -211,10 +219,12 @@ export class PresentationIntegration {
   }
 
   clearStatus(ctx: ExtensionContext): void {
+    if (!this.uiEnabled) return;
     this.presentStatusBestEffort(ctx, () => undefined);
   }
 
   refreshStatus(ctx = this.statusContext): void {
+    if (!this.uiEnabled) return;
     this.presentStatusBestEffort(ctx, (activeContext) => {
       const runDurationMs = this.runTimer.durationMs;
       const runCost = this.runCost.snapshot(
@@ -235,8 +245,8 @@ export class PresentationIntegration {
           : taskMetrics === null
             ? { scope: "run", ...runMetrics }
             : { scope: "task", ...taskMetrics },
-        reasoningMode: this.reasoning.snapshot.mode,
-        activity: this.runActivity.activity,
+        reasoningMode: this.reasoning?.snapshot.mode ?? null,
+        activity: this.runActivity?.activity ?? null,
         state: this.getState(),
         stateUnavailableReason: this.getStateUnavailableReason(),
         runStale: this.runTimer.active &&
@@ -253,6 +263,7 @@ export class PresentationIntegration {
   }
 
   async refreshSubscriptionUsage(ctx: ExtensionContext): Promise<void> {
+    if (!this.uiEnabled) return;
     if (
       this.lastUsageFetchAt !== null &&
       this.now() - this.lastUsageFetchAt < 5 * 60_000
@@ -270,13 +281,16 @@ export class PresentationIntegration {
   }
 
   applyRequestedThinkingLevel(): void {
-    if (this.reasoning.snapshot.mode === "manual") return;
-    this.pi.setThinkingLevel(this.reasoning.snapshot.requestedLevel);
-    this.reasoning.synchronizeEffective(this.pi.getThinkingLevel());
+    const reasoning = this.reasoning;
+    if (reasoning === null || reasoning.snapshot.mode === "manual") return;
+    this.pi.setThinkingLevel(reasoning.snapshot.requestedLevel);
+    reasoning.synchronizeEffective(this.pi.getThinkingLevel());
   }
 
   reasoningStatus(): string {
-    const { mode, requestedLevel, effectiveLevel } = this.reasoning.snapshot;
+    const snapshot = this.reasoning?.snapshot;
+    if (snapshot === undefined) return "Reasoning presentation is disabled.";
+    const { mode, requestedLevel, effectiveLevel } = snapshot;
     return `Reasoning: ${mode}; requested ${requestedLevel}; effective ${effectiveLevel}.`;
   }
 
@@ -293,8 +307,10 @@ export class PresentationIntegration {
   }
 
   scheduleActivityLingerRefresh(): void {
+    const runActivity = this.runActivity;
+    if (runActivity === null) return;
     this.clearActivityLingerRefresh();
-    const delayMs = this.runActivity.nextPresentationChangeInMs;
+    const delayMs = runActivity.nextPresentationChangeInMs;
     if (delayMs === null) return;
     const generation = this.activityLingerGeneration;
     try {
@@ -309,6 +325,7 @@ export class PresentationIntegration {
   }
 
   startTimer(ctx: ExtensionContext): void {
+    if (!this.uiEnabled) return;
     this.runTimer.start(ctx.hasUI ? () => this.refreshStatus(ctx) : undefined);
   }
 
@@ -362,6 +379,8 @@ export class PresentationIntegration {
     args: string,
     ctx: ExtensionCommandContext,
   ): void {
+    const reasoning = this.reasoning;
+    if (reasoning === null) return;
     if (args.trim()) {
       ctx.ui.notify("Usage: /efficiency", "warning");
       return;
@@ -370,7 +389,7 @@ export class PresentationIntegration {
     const report = formatEfficiencyReport(deriveEfficiencySnapshot({
       entries,
       contextUsage: ctx.getContextUsage(),
-      reasoning: this.reasoning.snapshot,
+      reasoning: reasoning.snapshot,
       runCost: this.runCost.snapshot(entries),
     }));
     ctx.ui.notify(report, "info");
@@ -714,8 +733,10 @@ export class PresentationIntegration {
       if (!selected) return;
       value = selected;
     }
-    if (value === "auto") this.reasoning.setAuto();
-    else if (value === "manual") this.reasoning.setManual();
+    const reasoning = this.reasoning;
+    if (reasoning === null) return;
+    if (value === "auto") reasoning.setAuto();
+    else if (value === "manual") reasoning.setManual();
     else {
       ctx.ui.notify("Usage: /reasoning [auto|manual]", "warning");
       return;
@@ -730,7 +751,7 @@ export class PresentationIntegration {
     toolResults: readonly { toolName: string; isError: boolean }[],
     ctx: ExtensionContext,
   ): void {
-    if (this.reasoning.decideNext(state, toolResults)) {
+    if (this.reasoning?.decideNext(state, toolResults)) {
       this.applyRequestedThinkingLevel();
       this.refreshStatus(ctx);
     }
@@ -740,7 +761,7 @@ export class PresentationIntegration {
     level: Parameters<ReasoningController["synchronizeEffective"]>[0],
     ctx: ExtensionContext,
   ): void {
-    this.reasoning.synchronizeEffective(level);
+    this.reasoning?.synchronizeEffective(level);
     this.refreshStatus(ctx);
   }
 

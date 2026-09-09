@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import test from "node:test";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import {
   composeConfiguredPindieExtension,
@@ -21,6 +23,7 @@ import { FileGlobalWriterLock, FileStateStore } from "../src/store.ts";
 import { getProjectId } from "../src/store.ts";
 
 const projectRoot = "/workspace/composable-pindie";
+const execFileAsync = promisify(execFile);
 
 test("Slice A resolves stable startup defaults and explicit dependency roots", () => {
   assert.deepEqual(
@@ -167,9 +170,61 @@ test("Slice A feature selection preserves dependency rules and explicit adapter 
   assert.equal(composition.extensionOptions.projectMemorySink, undefined);
 });
 
-test("Slice A keeps unsupported independent feature removal explicit", () => {
-  assert.throws(
-    () => composePindieExtension({ featureSelection: { presentation: false } }),
-    /does not support disabling Self-Improvement, Cross-Project Learning, or Presentation yet/,
+test("Slice C accepts independent Presentation selection", () => {
+  const composition = composePindieExtension({
+    featureSelection: { presentation: false },
+  });
+
+  assert.equal(composition.featureSelection.presentation, false);
+});
+
+test("Slice C drops injected Remote routing when Remote is explicitly disabled", () => {
+  const routing = new RemoteRoutingStore({ baseDir: "/tmp/should-not-be-exposed" });
+  const composition = composePindieExtension({
+    featureSelection: { remote: false },
+    remoteRoutingStore: routing,
+  });
+
+  assert.equal(composition.remoteRoutingStore, null);
+  assert.equal(Object.hasOwn(composition.extensionOptions, "remoteRoutingStore"), false);
+  assert.equal(Object.hasOwn(composition.extensionOptions, "remoteCompanion"), false);
+});
+
+test("Slice C does not load disabled Discord or Notion adapters", async () => {
+  const extensionUrl = new URL("../src/extension.ts", import.meta.url).href;
+  const compositionUrl = new URL("../src/composition.ts", import.meta.url).href;
+  const script = `
+    const Module = require("node:module");
+    const originalLoad = Module._load;
+    const forbidden = new Set(["@notionhq/client", "discord.js", "https-proxy-agent", "undici", "ws"]);
+    Module._load = function(request, parent, isMain) {
+      if (forbidden.has(request)) throw new Error("disabled optional dependency loaded: " + request);
+      return originalLoad.call(this, request, parent, isMain);
+    };
+    import(${JSON.stringify(extensionUrl)}).then(() => import(${JSON.stringify(compositionUrl)})).then(({ composeConfiguredPindieExtension }) => {
+      const composition = composeConfiguredPindieExtension(
+        { featureSelection: { remote: false, workMemory: false } },
+        {
+          PINDIE_DISCORD_TOKEN: "token",
+          PINDIE_DISCORD_USER_ID: "123456789012345678",
+          PINDIE_DISCORD_GUILD_ID: "987654321098765432",
+          PINDIE_NOTION_TOKEN: "token",
+          PINDIE_WORK_MEMORY_DATA_SOURCE_ID: "data-source",
+        },
+      );
+      if (composition.remoteRoutingStore !== null || composition.extensionOptions.projectMemorySink !== undefined) {
+        throw new Error("disabled optional feature was composed");
+      }
+      process.stdout.write("ok");
+    }).catch((error) => {
+      console.error(error);
+      process.exitCode = 1;
+    });
+  `;
+  const result = await execFileAsync(
+    process.execPath,
+    ["--experimental-strip-types", "-e", script],
+    { cwd: process.cwd() },
   );
+  assert.equal(result.stdout, "ok");
 });

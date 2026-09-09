@@ -250,8 +250,8 @@ export interface PindieExtensionIntegration {
   readonly featureSelection: PindieFeatureSelection;
   readonly core: CoreIntegration;
   readonly runtime: PindieRuntime;
-  readonly runActivity: RunActivityTracker;
-  readonly reasoning: ReasoningController;
+  readonly runActivity: RunActivityTracker | null;
+  readonly reasoning: ReasoningController | null;
   readonly runCost: RunCostTracker;
   readonly runTimer: RunTimer;
   readonly taskMetrics: TaskMetricsTracker;
@@ -568,6 +568,7 @@ function registerComposedPindieExtension(
     runTimer: core.runTimer,
     runCost: core.runCost,
     taskMetrics: core.taskMetrics,
+    uiEnabled: featureSelection.presentation,
   });
   type LiveRemoteSession = { sessionId: string; ctx: ExtensionContext; generation: number };
   let liveRemoteSession: LiveRemoteSession | null = null;
@@ -602,9 +603,9 @@ function registerComposedPindieExtension(
     return {
       taskGoal: task?.goal ?? null,
       taskStatus: getTaskStatus(runtime.state),
-      activity: presentation.runActivity.activity,
+      activity: presentation.runActivity?.activity ?? null,
       verificationStatus: task ? getVerificationStatus(task) : null,
-      elapsedMs: presentation.runTimer.durationMs,
+      elapsedMs: core.runTimer.durationMs,
       semanticAuthority: run.stateUnavailableReason !== null
         ? "unavailable"
         : run.agentRunIsStale ? "stale" : "coherent",
@@ -2036,10 +2037,12 @@ function registerComposedPindieExtension(
       now: () => new Date(continuityNow()),
     }));
   }
-  pi.registerCommand("efficiency", {
-    description: "Show read-only runtime efficiency facts",
-    handler: async (args, ctx) => presentation.handleEfficiencyCommand(args, ctx),
-  });
+  if (featureSelection.presentation) {
+    pi.registerCommand("efficiency", {
+      description: "Show read-only runtime efficiency facts",
+      handler: async (args, ctx) => presentation.handleEfficiencyCommand(args, ctx),
+    });
+  }
 
   pi.registerCommand("experience", {
     description: "Show read-only Run Experience evidence",
@@ -2102,13 +2105,15 @@ function registerComposedPindieExtension(
     handler: async (args, ctx) => handleStrategyDecisionCommand("rejected", args, ctx),
   });
 
-  pi.registerCommand("reasoning", {
-    description: "Choose who controls thinking level (auto|manual)",
-    getArgumentCompletions: (prefix) => ["auto", "manual"]
-      .filter((value) => value.startsWith(prefix))
-      .map((value) => ({ value, label: value })),
-    handler: async (args, ctx) => presentation.handleReasoningCommand(args, ctx),
-  });
+  if (featureSelection.presentation) {
+    pi.registerCommand("reasoning", {
+      description: "Choose who controls thinking level (auto|manual)",
+      getArgumentCompletions: (prefix) => ["auto", "manual"]
+        .filter((value) => value.startsWith(prefix))
+        .map((value) => ({ value, label: value })),
+      handler: async (args, ctx) => presentation.handleReasoningCommand(args, ctx),
+    });
+  }
 
   pi.on("session_start", async (_event, ctx) => {
     const nativeSessionId = options.remoteCompanion || taskHandoffEnabled
@@ -2428,11 +2433,14 @@ function registerComposedPindieExtension(
         markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
         derivation = run.deriveSnapshot();
       }
-      presentation.reasoning.beforeAgentStart();
+      presentation.reasoning?.beforeAgentStart();
       presentation.applyRequestedThinkingLevel();
       presentation.clearActivityLingerRefresh();
-      presentation.runActivity.start();
-      core.startRunMeasurements(ctx, () => presentation.refreshStatus(ctx));
+      presentation.runActivity?.start();
+      core.startRunMeasurements(
+        ctx,
+        featureSelection.presentation ? () => presentation.refreshStatus(ctx) : undefined,
+      );
       const taskAtRunStart = run.authoritativeState?.task ?? null;
       if (
         derivation.ok &&
@@ -2643,24 +2651,26 @@ function registerComposedPindieExtension(
     );
   });
 
-  pi.on("tool_execution_start", (event, ctx) => {
-    options.remoteCompanion?.companion.recordToolStart(event.toolCallId, event.toolName, event.args);
-    presentation.clearActivityLingerRefresh();
-    presentation.runActivity.toolExecutionStart(
-      event.toolCallId,
-      event.toolName,
-    );
-    presentation.refreshStatus(ctx);
-    void options.remoteCompanion?.companion.status(remoteStatusFacts());
-  });
+  if (featureSelection.presentation || options.remoteCompanion) {
+    pi.on("tool_execution_start", (event, ctx) => {
+      options.remoteCompanion?.companion.recordToolStart(event.toolCallId, event.toolName, event.args);
+      presentation.clearActivityLingerRefresh();
+      presentation.runActivity?.toolExecutionStart(
+        event.toolCallId,
+        event.toolName,
+      );
+      presentation.refreshStatus(ctx);
+      void options.remoteCompanion?.companion.status(remoteStatusFacts());
+    });
 
-  pi.on("tool_execution_end", (event, ctx) => {
-    options.remoteCompanion?.companion.recordToolEnd(event.toolCallId, event.toolName, event.isError);
-    presentation.runActivity.toolExecutionEnd(event.toolCallId);
-    presentation.scheduleActivityLingerRefresh();
-    presentation.refreshStatus(ctx);
-    void options.remoteCompanion?.companion.status(remoteStatusFacts());
-  });
+    pi.on("tool_execution_end", (event, ctx) => {
+      options.remoteCompanion?.companion.recordToolEnd(event.toolCallId, event.toolName, event.isError);
+      presentation.runActivity?.toolExecutionEnd(event.toolCallId);
+      presentation.scheduleActivityLingerRefresh();
+      presentation.refreshStatus(ctx);
+      void options.remoteCompanion?.companion.status(remoteStatusFacts());
+    });
+  }
 
   pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
     const effect = core.classifyToolEffect(event.toolName);
@@ -2910,17 +2920,19 @@ function registerComposedPindieExtension(
     };
   });
 
-  pi.on("turn_end", (event, ctx) => {
-    if (event.toolResults.length === 0) return;
-    const state = runtime.projectRoot === null
-      ? { task: null }
-      : runtime.state;
-    presentation.handleTurnEnd(state, event.toolResults, ctx);
-  });
+  if (featureSelection.presentation) {
+    pi.on("turn_end", (event, ctx) => {
+      if (event.toolResults.length === 0) return;
+      const state = runtime.projectRoot === null
+        ? { task: null }
+        : runtime.state;
+      presentation.handleTurnEnd(state, event.toolResults, ctx);
+    });
 
-  pi.on("thinking_level_select", (event, ctx) => {
-    presentation.synchronizeThinkingLevel(event.level, ctx);
-  });
+    pi.on("thinking_level_select", (event, ctx) => {
+      presentation.synchronizeThinkingLevel(event.level, ctx);
+    });
+  }
 
   pi.on("agent_settled", async (_event, ctx) => {
     // Pi can dispose an old session runner before its in-flight Agent Run reaches
@@ -2990,7 +3002,7 @@ function registerComposedPindieExtension(
     if (result.status !== "settled") return;
 
     presentation.clearActivityLingerRefresh();
-    presentation.runActivity.settle();
+    presentation.runActivity?.settle();
     presentation.refreshStatus(ctx);
     void presentation.refreshSubscriptionUsage(ctx);
     if (options.remoteCompanion) {
