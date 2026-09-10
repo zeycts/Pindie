@@ -118,6 +118,9 @@ class CapturedExtensionAPI {
   readonly handlers = new Map<string, CapturedHandler>();
   readonly tools = new Map<string, any>();
   readonly commands = new Map<string, any>();
+  readonly handlerRegistrations: string[] = [];
+  readonly toolRegistrations: string[] = [];
+  readonly commandRegistrations: string[] = [];
   readonly appliedThinkingLevels: string[] = [];
   readonly sentMessages: unknown[] = [];
   readonly sentUserMessages: unknown[] = [];
@@ -131,17 +134,20 @@ class CapturedExtensionAPI {
   private activeToolNames = [...this.configuredToolNames];
 
   on(eventName: string, handler: CapturedHandler): void {
+    this.handlerRegistrations.push(eventName);
     assert.equal(this.handlers.has(eventName), false);
     this.handlers.set(eventName, handler);
   }
 
   registerTool(tool: { name: string }): void {
+    this.toolRegistrations.push(tool.name);
     this.tools.set(tool.name, tool);
     this.configuredToolNames.add(tool.name);
     this.activeToolNames.push(tool.name);
   }
 
   registerCommand(name: string, command: any): void {
+    this.commandRegistrations.push(name);
     this.commands.set(name, command);
   }
 
@@ -1216,6 +1222,9 @@ test("Slice F selected features keep one registration set and rebuild Core autho
   assert.equal(new Set(tools).size, tools.length);
   assert.equal(new Set(commands).size, commands.length);
   assert.equal(new Set(handlers).size, handlers.length);
+  assert.equal(new Set(harness.api.toolRegistrations).size, harness.api.toolRegistrations.length);
+  assert.equal(new Set(harness.api.commandRegistrations).size, harness.api.commandRegistrations.length);
+  assert.equal(new Set(harness.api.handlerRegistrations).size, harness.api.handlerRegistrations.length);
   assert.equal(harness.api.tools.has("pindie_memory_capture"), true);
   assert.equal(harness.api.commands.has("trust-transfer"), true);
   assert.equal(harness.api.commands.has("efficiency"), true);
@@ -1261,6 +1270,10 @@ test("Slice F selected features keep one registration set and rebuild Core autho
   assert.equal(harness.integration.runActivity?.activity, null);
   assert.equal(harness.integration.trial?.hasTrial, false);
   assert.equal(harness.integration.derivation?.hasDerivation, false);
+  assert.equal(harness.integration.globalDerivation?.hasAttempt, false);
+  assert.equal(harness.api.toolRegistrations.length, tools.length);
+  assert.equal(harness.api.commandRegistrations.length, commands.length);
+  assert.equal(harness.api.handlerRegistrations.length, handlers.length);
 
   await sessionStart("reload", "session-a");
   const second = await beforeAgentStart("session-a");
@@ -1282,6 +1295,9 @@ test("Slice F selected features keep one registration set and rebuild Core autho
   await sessionShutdown("done", "session-b");
   assert.equal(remote.activeSessionId, null);
   assert.equal(harness.integration.runtime.projectRoot, null);
+  assert.equal(harness.integration.trial?.hasTrial, false);
+  assert.equal(harness.integration.derivation?.hasDerivation, false);
+  assert.equal(harness.integration.globalDerivation?.hasAttempt, false);
 });
 
 async function startSession(
@@ -8825,6 +8841,129 @@ test("Slice C Synthesis Trial fails closed when Session reset clears binding dur
   assert.equal(harness.integration.taskMetrics.currentRunBelongsToTask, false);
   assert.equal(harness.experienceStore.records.length, 0);
   assert.equal(harness.api.sentUserMessages.length, 0);
+});
+
+test("Slice E clears pending and active Global Derivation and Synthesis Trial leases across reload and shutdown", async () => {
+  const { candidate } = await makeSynthesisTrialFixture("00000000-0000-4000-8000-00000000004a");
+  const projectA = getProjectId("/slice-e-global-a");
+  const projectB = getProjectId("/slice-e-global-b");
+  const records = new Map<string, readonly { recordId: string; experience: RunExperience }[]>([
+    [projectA, [
+      { recordId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.json", experience: commandExperience("slice e global alpha", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.json", experience: commandExperience("slice e global beta", createPolicySnapshot({ approach: "explore-first" })) },
+    ]],
+    [projectB, [
+      { recordId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc.json", experience: commandExperience("slice e global gamma", createPolicySnapshot({ approach: "direct-action" })) },
+    ]],
+  ]);
+  let pauseFirstScan = true;
+  let markScanEntered!: () => void;
+  let releaseScan!: () => void;
+  const scanEntered = new Promise<void>((resolve) => { markScanEntered = resolve; });
+  const scanPaused = new Promise<void>((resolve) => { releaseScan = resolve; });
+  const crossProjectExperienceReader: RunExperienceProjectReader = {
+    listProjectIds: async () => {
+      if (pauseFirstScan) {
+        pauseFirstScan = false;
+        markScanEntered();
+        await scanPaused;
+      }
+      return [projectA, projectB];
+    },
+    readProjectId: async (projectId) => {
+      const projectRecords = records.get(projectId) ?? [];
+      return { records: projectRecords, loadedRecords: projectRecords.length, unsupportedSchema: 0, invalid: 0 };
+    },
+  };
+  const crossProjectTrustReader: ProjectTrustedStrategyPortfolioReader = {
+    readProjectId: async (projectId) => createTrustedStrategyPortfolioForProjectId(
+      projectId,
+      createPromotedStrategyRevisionCatalog([]),
+    ),
+  };
+  const candidates = new Map([[candidate.candidateId, candidate]]);
+  const synthesisStore: StrategySynthesisCandidateStore = {
+    read: async (candidateId) => candidates.get(candidateId) ?? null,
+    readAll: async () => [...candidates.values()],
+    save: async (value) => { candidates.set(value.candidateId, value); },
+  };
+  const synthesisDecisionStore = {
+    read: async () => null,
+    readAll: async () => [],
+    save: async () => undefined,
+  };
+  const harness = createHarness([["/repo", activeState("Slice E lifecycle")]], {}, {
+    crossProjectExperienceReader,
+    crossProjectTrustReader,
+    strategySynthesisCandidateStore: synthesisStore,
+    strategySynthesisDecisionStore: synthesisDecisionStore,
+  });
+  const commandContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  };
+  await startSession(harness, "/repo");
+  const deriveGlobal = harness.api.commands.get("derive-global");
+  assert.ok(deriveGlobal);
+
+  const pendingGlobal = deriveGlobal.handler("", commandContext);
+  await scanEntered;
+  assert.equal(harness.integration.globalDerivation?.hasPending, true);
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "reload" },
+    context("/repo"),
+  );
+  assert.equal(harness.integration.globalDerivation?.hasAttempt, false);
+  assert.equal(harness.integration.trial?.hasTrial, false);
+  releaseScan();
+  await pendingGlobal;
+  assert.equal(harness.api.sentUserMessages.length, 0);
+
+  await startSession(harness, "/repo", "reload");
+  await deriveGlobal.handler("", commandContext);
+  assert.equal(harness.integration.globalDerivation?.hasPending, true);
+  const globalRun = await harnessBeforeAgentStart(harness);
+  assert.match(globalRun.systemPrompt, /<PINDIE_GLOBAL_DERIVATION_RUN>/);
+  assert.equal(harness.integration.globalDerivation?.hasActive, true);
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "reload-active-global" },
+    context("/repo"),
+  );
+  assert.equal(harness.integration.globalDerivation?.hasAttempt, false);
+  assert.equal(harness.integration.trial?.hasTrial, false);
+
+  await startSession(harness, "/repo", "reload-synthesis");
+  const trial = harness.api.commands.get("trial");
+  assert.ok(trial);
+  const subject = synthesisTrialCommandValue(candidate.candidateId);
+  await trial.handler(subject, commandContext);
+  assert.equal(harness.integration.trial?.hasPendingSynthesisTrial, true);
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "reload-pending-synthesis" },
+    context("/repo"),
+  );
+  assert.equal(harness.integration.trial?.hasTrial, false);
+  assert.equal(harness.integration.globalDerivation?.hasAttempt, false);
+
+  await startSession(harness, "/repo", "reload-synthesis-active");
+  await trial.handler(subject, commandContext);
+  const synthesisRun = await harnessBeforeAgentStart(harness);
+  assert.match(synthesisRun.systemPrompt, /<PINDIE_SYNTHESIS_TRIAL_PACKET>/);
+  assert.equal(harness.integration.trial?.hasActiveSynthesisTrial, true);
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "shutdown-active-synthesis" },
+    context("/repo"),
+  );
+  assert.equal(harness.integration.trial?.hasTrial, false);
+  assert.equal(harness.integration.globalDerivation?.hasAttempt, false);
+
+  await startSession(harness, "/repo", "fresh");
+  const ordinaryRun = await harnessBeforeAgentStart(harness);
+  assert.doesNotMatch(ordinaryRun.systemPrompt, /<PINDIE_(?:GLOBAL_DERIVATION_RUN|SYNTHESIS_TRIAL_PACKET)>/);
+  assert.equal(harness.integration.trial?.hasTrial, false);
+  assert.equal(harness.integration.globalDerivation?.hasAttempt, false);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 });
 
 test("Slice B /derive-global preparation, launch, and Session failures clear reservation without starting a Run", async () => {

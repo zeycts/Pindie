@@ -1,6 +1,6 @@
 # Pindie Cross-Project Learning v0.2 — Strategy Synthesis and Global Validation
 
-Status: authoritative architecture contract; implementation not started.
+Status: authoritative architecture contract; implemented through Slice E.
 
 ## 1. Goal and exact boundary
 
@@ -655,6 +655,13 @@ Verify:
 - docs/AGENTS synchronized to implemented state.
 
 Run isolated-HOME `pnpm run check` and `git diff --check`.
+
+Slice E is implemented and closes the v0.2 compatibility boundary. Production
+composition reuses the selected Synthesis Store instances for SI authority reads,
+while CPL-off keeps the read-only Synthesis trust substrate. Focused composition,
+registration, lifecycle, real-file reconstruction, combined-origin, persisted
+schema/fingerprint, and import-direction tests cover the final boundary. No
+additional Slice F is defined for v0.2.
 
 ## 14. Completion definition
 
