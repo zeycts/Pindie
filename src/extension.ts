@@ -60,7 +60,14 @@ import type {
 import type { StrategyTrustScopeSourceResolver } from "./strategy-trust-scope-resolution.ts";
 import type { ScopeProjectTrustReader } from "./strategy-trust-scope-review.ts";
 import type { ProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safety.ts";
-import type { StrategySynthesisCandidateStore } from "./strategy-synthesis-candidates.ts";
+import type {
+  StrategySynthesisCandidateReader,
+  StrategySynthesisCandidateStore,
+} from "./strategy-synthesis-candidates.ts";
+import type {
+  StrategySynthesisDecisionReader,
+  StrategySynthesisDecisionStore,
+} from "./strategy-synthesis-decisions.ts";
 import {
   emptyPromotedStrategyRevisionCatalog,
   type StrategyRevisionDecisionReader,
@@ -144,7 +151,12 @@ export interface PindieExtensionOptions {
   crossProjectExperienceReader?: RunExperienceProjectReader;
   crossProjectTrustReader?: ProjectTrustedStrategyPortfolioReader;
   scopeProjectTrustReader?: ScopeProjectTrustReader;
+  /** Read-only Synthesis authority used by SI even when CPL is disabled. */
+  strategySynthesisCandidateReader?: StrategySynthesisCandidateReader;
+  strategySynthesisDecisionReader?: StrategySynthesisDecisionReader;
+  /** Mutable Synthesis workflow stores; assembled only when CPL is enabled. */
   strategySynthesisCandidateStore?: StrategySynthesisCandidateStore;
+  strategySynthesisDecisionStore?: StrategySynthesisDecisionStore;
   resolveProjectRoot?: ProjectRootResolver;
   subscriptionUsageProvider?: SubscriptionUsageProvider;
   getStatusWidth?: () => number | undefined;
@@ -301,6 +313,8 @@ function registerComposedPindieExtension(
       strategyTrustScopeDecisionStore,
       strategyTrustScopeSourceResolver,
       strategyTrustScopeWriterLock,
+      strategySynthesisCandidateReader,
+      strategySynthesisDecisionReader,
     } = options;
     if (
       experienceStore === undefined || experienceReader === undefined ||
@@ -309,7 +323,8 @@ function registerComposedPindieExtension(
       strategyDecisionStore === undefined || strategyDecisionReader === undefined ||
       strategyDerivationDecisionStore === undefined || strategyDerivationDecisionReader === undefined ||
       strategyTrustScopeCandidateStore === undefined || strategyTrustScopeDecisionStore === undefined ||
-      strategyTrustScopeSourceResolver === undefined || strategyTrustScopeWriterLock === undefined
+      strategyTrustScopeSourceResolver === undefined || strategyTrustScopeWriterLock === undefined ||
+      strategySynthesisCandidateReader === undefined || strategySynthesisDecisionReader === undefined
     ) {
       throw new Error("Self-Improvement composition is missing an explicit production dependency.");
     }
@@ -334,6 +349,8 @@ function registerComposedPindieExtension(
       strategyTrustScopeDecisionStore,
       strategyTrustScopeSourceResolver,
       strategyTrustScopeWriterLock,
+      strategySynthesisCandidateReader,
+      strategySynthesisDecisionReader,
       now: continuityNow,
     });
   }
@@ -345,7 +362,8 @@ function registerComposedPindieExtension(
       options.crossProjectExperienceReader === undefined ||
       options.crossProjectTrustReader === undefined ||
       options.scopeProjectTrustReader === undefined ||
-      options.strategySynthesisCandidateStore === undefined
+      options.strategySynthesisCandidateStore === undefined ||
+      options.strategySynthesisDecisionStore === undefined
     ) {
       throw new Error("Cross-Project Learning composition is missing an explicit production dependency.");
     }
@@ -357,6 +375,7 @@ function registerComposedPindieExtension(
       crossProjectTrustReader: options.crossProjectTrustReader,
       scopeProjectTrustReader: options.scopeProjectTrustReader,
       strategySynthesisCandidateStore: options.strategySynthesisCandidateStore,
+      strategySynthesisDecisionStore: options.strategySynthesisDecisionStore,
       now: continuityNow,
     });
     selfImprovement.attachCrossProjectLearning(crossProjectLearning.asAttachment());

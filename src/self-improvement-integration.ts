@@ -125,11 +125,14 @@ import type { ToolEffect } from "./execution-semantics.ts";
 import type {
   GlobalWriterLock,
 } from "./store.ts";
+import type { StrategySynthesisCandidateReader } from "./strategy-synthesis-candidates.ts";
+import type { StrategySynthesisDecisionReader } from "./strategy-synthesis-decisions.ts";
 import { createPindieStrategyCandidateTool } from "./tools/strategy-candidate.ts";
 import { createPindieStrategyDerivationCandidateTool } from "./tools/strategy-derivation-candidate.ts";
 
 type ProjectRootGetter = () => string | null;
 type AgentRunGenerationGetter = () => number | null;
+type StrategySynthesisDecisionCommand = "promote" | "reject";
 
 /** Narrow Core facts and lifecycle operations consumed by Self-Improvement. */
 export interface SelfImprovementCorePort {
@@ -202,6 +205,8 @@ export interface SelfImprovementStrategyTrustAccess {
   readonly scopeCandidateStore: StrategyTrustScopeCandidateStore;
   readonly scopeDecisionStore: StrategyTrustScopeDecisionStore;
   readonly scopeSourceResolver: StrategyTrustScopeSourceResolver;
+  readonly synthesisCandidateReader: StrategySynthesisCandidateReader;
+  readonly synthesisDecisionReader: StrategySynthesisDecisionReader;
   readonly writerLock: GlobalWriterLock;
 }
 
@@ -234,6 +239,20 @@ export interface CrossProjectLearningAttachment {
     ctx: ExtensionCommandContext,
   ) => Promise<void>;
   readonly synthesisTrialCommandCompletions: (
+    projectRoot: string,
+    prefix: string,
+  ) => Promise<readonly { readonly value: string; readonly label: string }[]>;
+  readonly handleSynthesisTrialReviewCommand: (
+    candidateId: string,
+    ctx: ExtensionCommandContext,
+  ) => Promise<void>;
+  readonly handleSynthesisDecisionCommand: (
+    terminalDecision: "promoted" | "rejected",
+    args: string,
+    ctx: ExtensionCommandContext,
+  ) => Promise<void>;
+  readonly synthesisReviewCommandCompletions: (
+    command: "trial-review" | StrategySynthesisDecisionCommand,
     projectRoot: string,
     prefix: string,
   ) => Promise<readonly { readonly value: string; readonly label: string }[]>;
@@ -285,6 +304,9 @@ export interface SelfImprovementIntegrationOptions {
   readonly strategyTrustScopeDecisionStore: StrategyTrustScopeDecisionStore;
   readonly strategyTrustScopeSourceResolver: StrategyTrustScopeSourceResolver;
   readonly strategyTrustScopeWriterLock: GlobalWriterLock;
+  /** Read-only Synthesis authority used by SI trust safety even with CPL off. */
+  readonly strategySynthesisCandidateReader: StrategySynthesisCandidateReader;
+  readonly strategySynthesisDecisionReader: StrategySynthesisDecisionReader;
   readonly now?: () => number;
 }
 
@@ -334,6 +356,8 @@ export class SelfImprovementIntegration {
   private readonly strategyTrustScopeDecisionStore: StrategyTrustScopeDecisionStore;
   private readonly strategyTrustScopeSourceResolver: StrategyTrustScopeSourceResolver;
   private readonly strategyTrustScopeWriterLock: GlobalWriterLock;
+  private readonly strategySynthesisCandidateReader: StrategySynthesisCandidateReader;
+  private readonly strategySynthesisDecisionReader: StrategySynthesisDecisionReader;
   private readonly now: () => number;
   private crossProjectLearning: CrossProjectLearningAttachment | null = null;
   private currentPromotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
@@ -358,6 +382,8 @@ export class SelfImprovementIntegration {
     this.strategyTrustScopeDecisionStore = options.strategyTrustScopeDecisionStore;
     this.strategyTrustScopeSourceResolver = options.strategyTrustScopeSourceResolver;
     this.strategyTrustScopeWriterLock = options.strategyTrustScopeWriterLock;
+    this.strategySynthesisCandidateReader = options.strategySynthesisCandidateReader;
+    this.strategySynthesisDecisionReader = options.strategySynthesisDecisionReader;
     this.now = options.now ?? Date.now;
   }
 
@@ -398,6 +424,8 @@ export class SelfImprovementIntegration {
       scopeCandidateStore: this.strategyTrustScopeCandidateStore,
       scopeDecisionStore: this.strategyTrustScopeDecisionStore,
       scopeSourceResolver: this.strategyTrustScopeSourceResolver,
+      synthesisCandidateReader: this.strategySynthesisCandidateReader,
+      synthesisDecisionReader: this.strategySynthesisDecisionReader,
       writerLock: this.strategyTrustScopeWriterLock,
     });
   }
@@ -480,6 +508,8 @@ export class SelfImprovementIntegration {
       scopeCandidateReader: this.strategyTrustScopeCandidateStore,
       scopeDecisionReader: this.strategyTrustScopeDecisionStore,
       scopeSourceResolver: this.strategyTrustScopeSourceResolver,
+      synthesisCandidateReader: this.strategySynthesisCandidateReader,
+      synthesisDecisionReader: this.strategySynthesisDecisionReader,
     });
   }
 
@@ -500,6 +530,7 @@ export class SelfImprovementIntegration {
 
   private async loadNormalTrustedPortfolio(
     projectRoot: string | null,
+    includeUserGlobal = true,
   ): Promise<{
     readonly portfolio: TrustedStrategyPortfolio | null;
     readonly promotedCatalog: PromotedStrategyRevisionCatalog;
@@ -559,17 +590,54 @@ export class SelfImprovementIntegration {
     }
 
     if (this.crossProjectLearning === null) {
-      return this.core.getProjectRoot() === projectRoot
-        ? {
-            portfolio: localPortfolio,
-            promotedCatalog,
-            globalLayer: Object.freeze({ available: true as const }),
-          }
-        : {
-            portfolio: null,
-            promotedCatalog: emptyPromotedStrategyRevisionCatalog(),
-            globalLayer: Object.freeze({ available: true as const }),
-          };
+      if (!includeUserGlobal) {
+        return this.core.getProjectRoot() === projectRoot
+          ? {
+              portfolio: localPortfolio,
+              promotedCatalog,
+              globalLayer: Object.freeze({ available: true as const }),
+            }
+          : {
+              portfolio: null,
+              promotedCatalog: emptyPromotedStrategyRevisionCatalog(),
+              globalLayer: Object.freeze({ available: true as const }),
+            };
+      }
+      try {
+        const completePortfolio = await this.loadTrustedPortfolio(projectRoot);
+        return this.core.getProjectRoot() === projectRoot
+          ? {
+              portfolio: completePortfolio,
+              promotedCatalog,
+              globalLayer: Object.freeze({ available: true as const }),
+            }
+          : {
+              portfolio: null,
+              promotedCatalog: emptyPromotedStrategyRevisionCatalog(),
+              globalLayer: Object.freeze({ available: true as const }),
+            };
+      } catch (error) {
+        console.warn(
+          `[Pindie] User-global trusted Strategy projection unavailable; using project-local trust only: ${errorMessage(error)}`,
+        );
+        return this.core.getProjectRoot() === projectRoot
+          ? {
+              portfolio: localPortfolio,
+              promotedCatalog,
+              globalLayer: Object.freeze({
+                available: false,
+                reason: optionalGlobalUnavailableReason(error),
+              }),
+            }
+          : {
+              portfolio: null,
+              promotedCatalog: emptyPromotedStrategyRevisionCatalog(),
+              globalLayer: Object.freeze({
+                available: false,
+                reason: optionalGlobalUnavailableReason(error),
+              }),
+            };
+      }
     }
 
     try {
@@ -618,7 +686,7 @@ export class SelfImprovementIntegration {
         derivationCandidateReader: this.strategyDerivationCandidateReader,
       });
     } catch (strictError) {
-      const fallback = await this.loadNormalTrustedPortfolio(projectRoot);
+      const fallback = await this.loadNormalTrustedPortfolio(projectRoot, false);
       if (fallback.portfolio !== null) return fallback.portfolio;
       throw strictError;
     }
@@ -628,7 +696,7 @@ export class SelfImprovementIntegration {
     if (this.crossProjectLearning !== null) {
       return this.crossProjectLearning.loadPresentationPortfolio(projectRoot);
     }
-    const loaded = await this.loadNormalTrustedPortfolio(projectRoot);
+    const loaded = await this.loadNormalTrustedPortfolio(projectRoot, false);
     if (loaded.portfolio === null) {
       throw new Error("the current project changed while reading the trusted Strategy portfolio");
     }
@@ -1147,6 +1215,19 @@ export class SelfImprovementIntegration {
     ctx: ExtensionCommandContext,
   ): Promise<void> {
     const requestedId = args.trim();
+    if (requestedId.startsWith("synthesis:")) {
+      if (this.crossProjectLearning === null) {
+        ctx.ui.notify("Pindie could not show Trial review: unknown Candidate subject namespace.", "warning");
+        return;
+      }
+      try {
+        const candidateId = requestedId.slice("synthesis:".length);
+        await this.crossProjectLearning.handleSynthesisTrialReviewCommand(candidateId, ctx);
+      } catch (error) {
+        ctx.ui.notify(`Pindie could not show Synthesis Trial review: ${errorMessage(error)}`, "warning");
+      }
+      return;
+    }
     if (requestedId.startsWith("scope:")) {
       if (this.crossProjectLearning === null) {
         ctx.ui.notify("Pindie could not show Trial review: unknown Candidate subject namespace.", "warning");
@@ -1431,9 +1512,14 @@ export class SelfImprovementIntegration {
       const options = filterTrialReviewCommandOptions(projection, prefix);
       if (this.crossProjectLearning !== null) {
         try {
+          options.push(...await this.crossProjectLearning.synthesisReviewCommandCompletions("trial-review", projectRoot, prefix));
+        } catch {
+          // Synthesis completion is advisory and cannot hide local review options.
+        }
+        try {
           options.push(...await this.crossProjectLearning.scopeCommandCompletions("trial-review", projectRoot, prefix));
         } catch {
-          // Global completion is advisory and cannot hide local review options.
+          // Transfer completion is advisory and cannot hide local review options.
         }
       }
       return options;
@@ -1455,9 +1541,14 @@ export class SelfImprovementIntegration {
       const options = [...projection.options];
       if (this.crossProjectLearning !== null) {
         try {
+          options.push(...await this.crossProjectLearning.synthesisReviewCommandCompletions(command, projectRoot, prefix));
+        } catch {
+          // Synthesis completion is advisory; dispatch repeats all authority checks.
+        }
+        try {
           options.push(...await this.crossProjectLearning.scopeCommandCompletions(command, projectRoot, prefix));
         } catch {
-          // Global completion is advisory; dispatch repeats all authority checks.
+          // Transfer completion is advisory; dispatch repeats all authority checks.
         }
       }
       return options.filter((option) => option.value.startsWith(prefix));
@@ -1481,7 +1572,7 @@ export class SelfImprovementIntegration {
         ? await this.trialCommandCompletions("")
         : command === "trial-review"
           ? await this.trialReviewCommandCompletions("")
-          : (await this.unifiedCandidateCommandProjection(command, projectRoot)).options;
+          : await this.candidateCommandCompletions(command, "");
       if (options !== null && options.length === 0) {
         const message = command === "trial"
           ? "No Candidates are currently available for Trial."
@@ -1625,6 +1716,14 @@ export class SelfImprovementIntegration {
     }
     if (/\s/.test(requestedId)) {
       ctx.ui.notify(`Usage: ${command} <candidate-id> (or scope:<candidate-id>)`, "warning");
+      return;
+    }
+    if (requestedId.startsWith("synthesis:")) {
+      if (this.crossProjectLearning === null) {
+        failure("unknown Candidate subject namespace.");
+        return;
+      }
+      await this.crossProjectLearning.handleSynthesisDecisionCommand(terminalDecision, requestedId, ctx);
       return;
     }
     if (requestedId.startsWith("scope:")) {

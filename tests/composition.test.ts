@@ -20,7 +20,11 @@ import { FileStrategyDerivationDecisionStore } from "../src/strategy-derivation-
 import { FileStrategyTrustScopeCandidateStore } from "../src/strategy-trust-scope-candidates.ts";
 import { FileStrategyTrustScopeDecisionStore } from "../src/strategy-trust-scope-decisions.ts";
 import { FileProjectTrustedStrategyPortfolioReader } from "../src/strategy-trust-safety.ts";
-import { FileStrategySynthesisCandidateStore } from "../src/strategy-synthesis-candidates.ts";
+import {
+  FileStrategySynthesisCandidateReader,
+  FileStrategySynthesisCandidateStore,
+} from "../src/strategy-synthesis-candidates.ts";
+import { FileStrategySynthesisDecisionReader } from "../src/strategy-synthesis-decisions.ts";
 import { RemoteRoutingStore } from "../src/remote-routing.ts";
 import { FileGlobalWriterLock, FileStateStore } from "../src/store.ts";
 import { getProjectId } from "../src/store.ts";
@@ -215,7 +219,10 @@ test("Slice E allows SI-only composition and drops CPL dependencies when disable
     "strategyTrustScopeWriterLock",
     "crossProjectTrustReader",
     "scopeProjectTrustReader",
+    "strategySynthesisCandidateReader",
+    "strategySynthesisDecisionReader",
     "strategySynthesisCandidateStore",
+    "strategySynthesisDecisionStore",
   ]) {
     assert.equal(Object.hasOwn(composition.extensionOptions, dependency), false, dependency);
   }
@@ -231,14 +238,34 @@ test("Slice E allows SI-only composition and drops CPL dependencies when disable
   });
   assert.equal(siOnly.featureSelection.selfImprovement, true);
   assert.equal(siOnly.featureSelection.crossProjectLearning, false);
-  for (const dependency of ["experienceStore", "strategyCandidateStore", "strategyTrustScopeCandidateStore", "strategyTrustScopeWriterLock"]) {
+  for (const dependency of [
+    "experienceStore",
+    "strategyCandidateStore",
+    "strategyTrustScopeCandidateStore",
+    "strategyTrustScopeWriterLock",
+    "strategySynthesisCandidateReader",
+    "strategySynthesisDecisionReader",
+  ]) {
     assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), true, dependency);
   }
+  for (const dependency of [
+    "strategySynthesisCandidateStore",
+    "strategySynthesisDecisionStore",
+  ]) {
+    assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), false, dependency);
+  }
+  assert.equal(
+    siOnly.extensionOptions.strategySynthesisCandidateReader instanceof FileStrategySynthesisCandidateReader,
+    true,
+  );
+  assert.equal(
+    siOnly.extensionOptions.strategySynthesisDecisionReader instanceof FileStrategySynthesisDecisionReader,
+    true,
+  );
   for (const dependency of [
     "crossProjectExperienceReader",
     "crossProjectTrustReader",
     "scopeProjectTrustReader",
-    "strategySynthesisCandidateStore",
   ]) {
     assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), false, dependency);
   }
@@ -312,6 +339,7 @@ test("Slice F protects the final Core/SI/CPL and trust runtime import boundaries
     assert.equal(hasRuntimeImport(coreSource, moduleSpecifier), false, moduleSpecifier);
   }
   assert.equal(hasRuntimeImport(selfImprovementSource, "./cross-project-learning-integration.ts"), false);
+  assert.equal(hasRuntimeImport(selfImprovementSource, "./strategy-synthesis-review.ts"), false);
 
   const cplSelfImprovementImports = importsFrom(
     crossProjectLearningSource,
@@ -466,7 +494,26 @@ test("Slice F assembles the final composition matrix through the production comp
       "crossProjectExperienceReader",
       "crossProjectTrustReader",
       "scopeProjectTrustReader",
+    ]) {
+      assert.equal(
+        Object.hasOwn(composition.extensionOptions, dependency),
+        featureSelection.crossProjectLearning,
+        `${name}: ${dependency}`,
+      );
+    }
+    for (const dependency of [
+      "strategySynthesisCandidateReader",
+      "strategySynthesisDecisionReader",
+    ]) {
+      assert.equal(
+        Object.hasOwn(composition.extensionOptions, dependency),
+        featureSelection.selfImprovement,
+        `${name}: ${dependency}`,
+      );
+    }
+    for (const dependency of [
       "strategySynthesisCandidateStore",
+      "strategySynthesisDecisionStore",
     ]) {
       assert.equal(
         Object.hasOwn(composition.extensionOptions, dependency),

@@ -33,6 +33,7 @@ import {
   strategySynthesisCandidateArtifactFingerprint,
   strategySynthesisCandidateSemanticFingerprint,
 } from "../src/strategy-synthesis-candidates.ts";
+import { createStrategySynthesisDecision } from "../src/strategy-synthesis-decisions.ts";
 import { makeSynthesisTrialFixture } from "./synthesis-trial-fixture.ts";
 
 const TARGET_ROOT = "/synthesis-trial-target";
@@ -170,6 +171,43 @@ test("Synthesis Trial admission revalidates target logical identity and detects 
       candidateReader: candidateReader(first.candidate),
     }),
     /already trusts this logical Strategy ID/i,
+  );
+});
+
+test("terminal Synthesis Decisions close admission, completion, and active-selector revalidation", async () => {
+  const { candidate } = await makeSynthesisTrialFixture("00000000-0000-4000-8000-000000000036");
+  const terminal = createStrategySynthesisDecision({
+    candidate,
+    decision: "rejected",
+    trialRefs: [],
+    decidedAt: "2026-02-06T00:00:00.000Z",
+  });
+  const decisionReader = {
+    read: async (candidateId: string) => candidateId === candidate.candidateId ? terminal : null,
+    readAll: async () => [terminal],
+  };
+  const reader = candidateReader(candidate);
+
+  assert.equal((await listOpenSynthesisTrialCandidates({
+    targetProjectRoot: TARGET_ROOT,
+    targetPortfolio: EMPTY_PORTFOLIO,
+    candidateReader: reader,
+    decisionReader,
+  })).entries.length, 0);
+  await assert.rejects(
+    resolveSynthesisTrialBinding({
+      candidateId: candidate.candidateId,
+      targetProjectRoot: TARGET_ROOT,
+      targetPortfolio: EMPTY_PORTFOLIO,
+      candidateReader: reader,
+      decisionReader,
+    }),
+    /terminal rejected Decision/i,
+  );
+  const binding = createSynthesisTrialBinding(candidate, TARGET_ROOT, EMPTY_PORTFOLIO);
+  await assert.rejects(
+    revalidateSynthesisTrialBinding(binding, EMPTY_PORTFOLIO, reader, decisionReader),
+    /terminal rejected Decision/i,
   );
 });
 

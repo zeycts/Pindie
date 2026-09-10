@@ -38,6 +38,14 @@ import {
   FileStrategyTrustScopeDecisionStore,
   type StrategyTrustScopeDecisionReader,
 } from "./strategy-trust-scope-decisions.ts";
+import {
+  FileStrategySynthesisCandidateReader,
+  type StrategySynthesisCandidateReader,
+} from "./strategy-synthesis-candidates.ts";
+import {
+  FileStrategySynthesisDecisionReader,
+  type StrategySynthesisDecisionReader,
+} from "./strategy-synthesis-decisions.ts";
 import type { StrategyTrustScopeSourceResolver } from "./strategy-trust-scope-resolution.ts";
 import {
   readScopeTrialGlobalArtifacts,
@@ -69,6 +77,9 @@ export interface TrustedStrategyPortfolioLoadDependencies
   readonly scopeCandidateReader?: StrategyTrustScopeCandidateReader;
   readonly scopeDecisionReader?: StrategyTrustScopeDecisionReader;
   readonly scopeSourceResolver?: StrategyTrustScopeSourceResolver;
+  /** User-global Synthesis authority is read even when CPL workflow is off. */
+  readonly synthesisCandidateReader?: StrategySynthesisCandidateReader;
+  readonly synthesisDecisionReader?: StrategySynthesisDecisionReader;
 }
 
 /** Narrow read-only trust access for an already-addressed project namespace. */
@@ -94,6 +105,8 @@ export class FileProjectTrustedStrategyPortfolioReader implements ProjectTrusted
   private readonly derivationCandidateReader: FileStrategyDerivationCandidateStore;
   private readonly globalCandidateReader: FileStrategyTrustScopeCandidateStore;
   private readonly globalDecisionReader: FileStrategyTrustScopeDecisionStore;
+  private readonly synthesisCandidateReader: FileStrategySynthesisCandidateReader;
+  private readonly synthesisDecisionReader: FileStrategySynthesisDecisionReader;
   private readonly sourceResolver: FileStrategyTrustScopeSourceResolver;
 
   constructor(options: FileProjectTrustedStrategyPortfolioReaderOptions = {}) {
@@ -105,6 +118,8 @@ export class FileProjectTrustedStrategyPortfolioReader implements ProjectTrusted
     this.derivationCandidateReader = new FileStrategyDerivationCandidateStore({ baseDir: projectsBaseDir });
     this.globalCandidateReader = new FileStrategyTrustScopeCandidateStore({ baseDir: globalBaseDir });
     this.globalDecisionReader = new FileStrategyTrustScopeDecisionStore({ baseDir: globalBaseDir });
+    this.synthesisCandidateReader = new FileStrategySynthesisCandidateReader({ baseDir: globalBaseDir });
+    this.synthesisDecisionReader = new FileStrategySynthesisDecisionReader({ baseDir: globalBaseDir });
     this.sourceResolver = new FileStrategyTrustScopeSourceResolver({ projectsBaseDir });
   }
 
@@ -128,22 +143,23 @@ export class FileProjectTrustedStrategyPortfolioReader implements ProjectTrusted
         candidateReader: this.globalCandidateReader,
         decisionReader: this.globalDecisionReader,
         sourceResolver: this.sourceResolver,
+        synthesisCandidateReader: this.synthesisCandidateReader,
+        synthesisDecisionReader: this.synthesisDecisionReader,
       }),
     ]);
     return createTrustedStrategyPortfolioForProjectId(
       projectId,
       promotedCatalog,
       promotedDerivedCatalog,
-      globalProjection.entries.map((entry): TrustedPortfolioGlobalEntry => ({
-        sourceProjectId: entry.sourceStrategy.sourceProjectId,
-        selection: entry.selection,
-      })),
+      globalProjection.entries.map((entry): TrustedPortfolioGlobalEntry => entry.origin === "synthesis"
+        ? { origin: "synthesis", sourceProjectIds: [], selection: entry.selection }
+        : { origin: "transfer", sourceProjectId: entry.sourceStrategy!.sourceProjectId, selection: entry.selection }),
     );
   }
 }
 
 function validateScopeDependencies(
-  dependencies: Pick<TrustedStrategyPortfolioLoadDependencies, "scopeCandidateReader" | "scopeDecisionReader" | "scopeSourceResolver">,
+  dependencies: Pick<TrustedStrategyPortfolioLoadDependencies, "scopeCandidateReader" | "scopeDecisionReader" | "scopeSourceResolver" | "synthesisCandidateReader" | "synthesisDecisionReader">,
 ): void {
   const scopeDependencies = [
     dependencies.scopeCandidateReader,
@@ -155,6 +171,16 @@ function validateScopeDependencies(
     scopeDependencies.some((dependency) => dependency === undefined)
   ) {
     throw new Error("User-global trusted Strategy projection dependencies are incomplete.");
+  }
+  const synthesisDependencies = [
+    dependencies.synthesisCandidateReader,
+    dependencies.synthesisDecisionReader,
+  ];
+  if (
+    synthesisDependencies.some((dependency) => dependency !== undefined) &&
+    synthesisDependencies.some((dependency) => dependency === undefined)
+  ) {
+    throw new Error("User-global Synthesis authority dependencies are incomplete.");
   }
 }
 
@@ -235,11 +261,12 @@ export async function loadTrustedStrategyPortfolio(
       candidateReader: dependencies.scopeCandidateReader,
       decisionReader: dependencies.scopeDecisionReader,
       sourceResolver: dependencies.scopeSourceResolver,
+      synthesisCandidateReader: dependencies.synthesisCandidateReader,
+      synthesisDecisionReader: dependencies.synthesisDecisionReader,
     });
-    userGlobalEntries = projection.entries.map((entry): TrustedPortfolioGlobalEntry => ({
-      sourceProjectId: entry.sourceStrategy.sourceProjectId,
-      selection: entry.selection,
-    }));
+    userGlobalEntries = projection.entries.map((entry): TrustedPortfolioGlobalEntry => entry.origin === "synthesis"
+      ? { origin: "synthesis", sourceProjectIds: [], selection: entry.selection }
+      : { origin: "transfer", sourceProjectId: entry.sourceStrategy!.sourceProjectId, selection: entry.selection });
   }
 
   return createTrustedStrategyPortfolio(

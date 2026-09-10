@@ -48,6 +48,8 @@ import {
   strategySelectionRevisionStatus,
 } from "./policy.ts";
 import type { RunExperienceProjectReader } from "./experience-store.ts";
+import type { StrategySynthesisCandidateReader } from "./strategy-synthesis-candidates.ts";
+import type { StrategySynthesisDecisionReader } from "./strategy-synthesis-decisions.ts";
 import {
   deriveStrategyTrustScopeTrialReview,
   type ScopeProjectTrustReader,
@@ -298,6 +300,9 @@ export interface StrategyTrustScopeDecisionCreationDependencies {
   readonly experienceReader?: RunExperienceProjectReader;
   /** Required for promotion's complete local-collision scan. */
   readonly projectTrustReader?: ScopeProjectTrustReader;
+  /** Shared user-global trust safety readers supplied by SI. */
+  readonly synthesisCandidateReader?: StrategySynthesisCandidateReader;
+  readonly synthesisDecisionReader?: StrategySynthesisDecisionReader;
 }
 
 export interface StrategyTrustScopeDecisionCreationResult {
@@ -357,6 +362,8 @@ export async function createStrategyTrustScopeDecisionForHuman(
           sourceResolver: dependencies.sourceResolver,
           experienceReader: dependencies.experienceReader,
           projectTrustReader: dependencies.projectTrustReader,
+          synthesisCandidateReader: dependencies.synthesisCandidateReader,
+          synthesisDecisionReader: dependencies.synthesisDecisionReader,
           currentProjectRoot: input.currentProjectRoot,
         });
       } catch (error) {

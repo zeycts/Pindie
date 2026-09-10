@@ -1033,13 +1033,13 @@ test("Slice E SI off keeps Core tools and Seed Policy without reading SI stores"
   assert.deepEqual(experienceStore.records, []);
 });
 
-test("Slice E SI-only keeps local learning while omitting CPL workflow and global presentation", async () => {
+test("CPL-off keeps local presentation while retaining global trust-safety reads", async () => {
   let globalReads = 0;
   const globalCandidates: StrategyTrustScopeCandidateStore = {
     read: async () => null,
     readAll: async () => {
       globalReads += 1;
-      throw new Error("CPL global namespace must not be read for SI-only presentation");
+      throw new Error("injected global authority is unavailable");
     },
     save: async () => undefined,
   };
@@ -1047,7 +1047,7 @@ test("Slice E SI-only keeps local learning while omitting CPL workflow and globa
     read: async () => null,
     readAll: async () => {
       globalReads += 1;
-      throw new Error("CPL global namespace must not be read for SI-only presentation");
+      throw new Error("injected global authority is unavailable");
     },
     save: async () => undefined,
   };
@@ -1082,13 +1082,14 @@ test("Slice E SI-only keeps local learning while omitting CPL workflow and globa
 
   await startSession(harness, "/repo");
   await harnessBeforeAgentStart(harness, "/repo");
-  assert.equal(globalReads, 0);
+  assert.ok(globalReads > 0);
+  const readsAfterRunStart = globalReads;
   const strategyNotices: Array<{ message: string; type: string }> = [];
   await harness.api.commands.get("strategies").handler("", {
     ...context("/repo"),
     ui: { notify: (message: string, type: string) => strategyNotices.push({ message, type }) },
   });
-  assert.equal(globalReads, 0);
+  assert.equal(globalReads, readsAfterRunStart);
   assert.doesNotMatch(strategyNotices.at(-1)?.message ?? "", /user-global/i);
 
   const trialOptions = await harness.api.commands.get("trial").getArgumentCompletions("");
@@ -1098,7 +1099,7 @@ test("Slice E SI-only keeps local learning while omitting CPL workflow and globa
   });
   assert.equal(harness.integration.policySnapshot?.approach.strategyId, "direct-action");
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
-  assert.equal(globalReads, 0);
+  assert.equal(globalReads, readsAfterRunStart);
 });
 
 test("configured extension composes Memory and Discord options in one registration", () => {

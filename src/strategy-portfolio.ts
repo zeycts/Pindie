@@ -71,7 +71,11 @@ export interface TrustedPortfolioTrustMetadata {
 
 /** A validated exact Derived selection resolved from the user-global layer. */
 export interface TrustedPortfolioGlobalEntry {
-  readonly sourceProjectId: string;
+  /** Transfer-origin provenance; synthesis-origin entries omit this field. */
+  readonly origin?: "transfer" | "synthesis";
+  readonly sourceProjectId?: string;
+  /** Synthesis-origin trust deliberately has no fictitious source project. */
+  readonly sourceProjectIds?: readonly string[];
   readonly selection: StrategyRevisionSelection;
 }
 
@@ -286,12 +290,18 @@ function globalDerivedResolvedEntry(
   entry: TrustedPortfolioGlobalEntry,
 ): TrustedPortfolioResolvedEntry {
   const selection = entry.selection;
+  const origin = entry.origin ?? (entry.sourceProjectId === undefined ? "synthesis" : "transfer");
+  const sourceProjectIds = entry.sourceProjectIds ??
+    (entry.sourceProjectId === undefined ? [] : [entry.sourceProjectId]);
   if (
-    typeof entry.sourceProjectId !== "string" ||
-    !CANONICAL_PROJECT_ID.test(entry.sourceProjectId) ||
     selection.revisionStatusAtRun !== "promoted" ||
     getSeedStrategy(selection.strategyId) !== null ||
-    selection.revisionIdentity === "seed"
+    selection.revisionIdentity === "seed" ||
+    !Array.isArray(sourceProjectIds) ||
+    sourceProjectIds.some((projectId) => typeof projectId !== "string" || !CANONICAL_PROJECT_ID.test(projectId)) ||
+    (origin === "transfer" && sourceProjectIds.length !== 1) ||
+    (origin === "synthesis" && sourceProjectIds.length !== 0) ||
+    (origin !== "transfer" && origin !== "synthesis")
   ) {
     throw new Error("User-global Derived Strategy cannot be resolved into the trusted portfolio.");
   }
@@ -304,7 +314,7 @@ function globalDerivedResolvedEntry(
       revisionFingerprint: selection.revisionFingerprint,
     }),
     semantics: copySemantics(selection.semantics),
-    trust: trustMetadata(["user-global"], [entry.sourceProjectId]),
+    trust: trustMetadata(["user-global"], sourceProjectIds),
   });
 }
 

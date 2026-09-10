@@ -22,6 +22,7 @@ import type {
   StrategySynthesisCandidateRuntimeAccess,
   StrategySynthesisCandidateStore,
 } from "./strategy-synthesis-candidates.ts";
+import type { StrategySynthesisDecisionStore } from "./strategy-synthesis-decisions.ts";
 import type {
   CrossProjectLearningAttachment,
   SelfImprovementLearningAccess,
@@ -55,6 +56,17 @@ import {
   sameScopeTrialBinding,
   type ScopeTrialBinding,
 } from "./strategy-trust-scope-trial.ts";
+import {
+  buildSynthesisDecisionCommandProjection,
+  buildSynthesisTrialReviewCommandProjection,
+  createStrategySynthesisDecisionForHuman,
+  filterSynthesisDecisionCommandOptions,
+  filterSynthesisTrialReviewCommandOptions,
+  formatStrategySynthesisTrialReview,
+  parseSynthesisTrialReviewCommandValue,
+  type StrategySynthesisDecisionCommand,
+  type StrategySynthesisTrialReviewInput,
+} from "./strategy-synthesis-review.ts";
 import {
   createTrustedStrategyPortfolio,
   resolveTrustedPortfolioRevisionSelection,
@@ -112,6 +124,7 @@ export interface CrossProjectLearningIntegrationOptions {
   readonly crossProjectTrustReader: ProjectTrustedStrategyPortfolioReader;
   readonly scopeProjectTrustReader: ScopeProjectTrustReader;
   readonly strategySynthesisCandidateStore: StrategySynthesisCandidateStore;
+  readonly strategySynthesisDecisionStore: StrategySynthesisDecisionStore;
   readonly now?: () => number;
 }
 
@@ -127,6 +140,7 @@ export class CrossProjectLearningIntegration {
   private readonly crossProjectTrustReader: ProjectTrustedStrategyPortfolioReader;
   private readonly scopeProjectTrustReader: ScopeProjectTrustReader;
   private readonly strategySynthesisCandidateStore: StrategySynthesisCandidateStore;
+  private readonly strategySynthesisDecisionStore: StrategySynthesisDecisionStore;
   private readonly now: () => number;
   private pendingGlobalDerivation: {
     readonly attemptId: string;
@@ -148,6 +162,7 @@ export class CrossProjectLearningIntegration {
     this.crossProjectTrustReader = options.crossProjectTrustReader;
     this.scopeProjectTrustReader = options.scopeProjectTrustReader;
     this.strategySynthesisCandidateStore = options.strategySynthesisCandidateStore;
+    this.strategySynthesisDecisionStore = options.strategySynthesisDecisionStore;
     this.now = options.now ?? Date.now;
   }
 
@@ -402,6 +417,7 @@ export class CrossProjectLearningIntegration {
       binding,
       currentPortfolio,
       this.strategySynthesisCandidateStore,
+      this.strategySynthesisDecisionStore,
     );
     if (!sameSynthesisTrialBinding(binding, currentBinding)) {
       throw new Error("the Synthesis Candidate or target trust changed after /trial was armed");
@@ -470,6 +486,7 @@ export class CrossProjectLearningIntegration {
       activeSynthesisTrial,
       currentPortfolio,
       this.strategySynthesisCandidateStore,
+      this.strategySynthesisDecisionStore,
     );
     if (!sameSynthesisTrialBinding(activeSynthesisTrial, currentBinding)) {
       throw new Error("Synthesis Candidate selector is unavailable: the Candidate artifact or target trust changed while the Trial was active.");
@@ -532,8 +549,40 @@ export class CrossProjectLearningIntegration {
       targetProjectRoot: projectRoot,
       targetPortfolio,
       candidateReader: this.strategySynthesisCandidateStore,
+      decisionReader: this.strategySynthesisDecisionStore,
     });
     return filterSynthesisTrialCommandOptions(projection.entries, prefix);
+  }
+
+  private synthesisReviewInput(): Omit<StrategySynthesisTrialReviewInput, "candidate"> {
+    return {
+      candidateReader: this.strategySynthesisCandidateStore,
+      decisionReader: this.strategySynthesisDecisionStore,
+      experienceReader: this.crossProjectExperienceReader,
+      projectTrustReader: this.scopeProjectTrustReader,
+      scopeCandidateReader: this.trust.scopeCandidateStore,
+      scopeDecisionReader: this.trust.scopeDecisionStore,
+      sourceResolver: this.trust.scopeSourceResolver,
+    };
+  }
+
+  async synthesisReviewCommandCompletions(
+    command: "trial-review" | StrategySynthesisDecisionCommand,
+    projectRoot: string,
+    prefix: string,
+  ): Promise<readonly { readonly value: string; readonly label: string }[]> {
+    if (command === "trial-review") {
+      const projection = await buildSynthesisTrialReviewCommandProjection({
+        candidateReader: this.strategySynthesisCandidateStore,
+        decisionReader: this.strategySynthesisDecisionStore,
+      });
+      return filterSynthesisTrialReviewCommandOptions(projection, prefix);
+    }
+    const projection = await buildSynthesisDecisionCommandProjection({
+      ...this.synthesisReviewInput(),
+      command,
+    });
+    return filterSynthesisDecisionCommandOptions(projection, prefix);
   }
 
   async scopeCommandCompletions(
@@ -604,6 +653,8 @@ export class CrossProjectLearningIntegration {
         sourceResolver: this.trust.scopeSourceResolver,
         experienceReader: this.crossProjectExperienceReader,
         projectTrustReader: this.scopeProjectTrustReader,
+        synthesisCandidateReader: this.trust.synthesisCandidateReader,
+        synthesisDecisionReader: this.trust.synthesisDecisionReader,
         currentProjectRoot,
       });
       if (currentProjectRoot !== this.learning.getProjectRoot()) {
@@ -616,6 +667,102 @@ export class CrossProjectLearningIntegration {
       ctx.ui.notify(formatStrategyTrustScopeTrialReview(review), "info");
     } catch (error) {
       ctx.ui.notify(`Pindie could not show Scope Trial review: evidence evaluation failed: ${errorMessage(error)}`, "warning");
+    }
+  }
+
+  async handleSynthesisTrialReviewCommand(
+    candidateValue: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> {
+    let candidateId: string | null;
+    try {
+      candidateId = parseSynthesisTrialReviewCommandValue(`synthesis:${candidateValue}`);
+      if (candidateId === null) throw new Error("Synthesis review subject namespace is invalid.");
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not show Synthesis Trial review: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    let candidate;
+    try {
+      candidate = await this.strategySynthesisCandidateStore.read(candidateId);
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not show Synthesis Trial review: Candidate read failed: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    if (candidate === null) {
+      ctx.ui.notify(`Pindie could not show Synthesis Trial review: Synthesis Candidate '${candidateId}' was not found.`, "warning");
+      return;
+    }
+    const projectRoot = this.learning.getProjectRoot();
+    try {
+      const review = await (await import("./strategy-synthesis-review.ts")).deriveStrategySynthesisTrialReview({
+        ...this.synthesisReviewInput(),
+        candidate,
+        currentProjectRoot: projectRoot,
+      });
+      if (projectRoot !== this.learning.getProjectRoot()) {
+        ctx.ui.notify("Pindie could not show Synthesis Trial review: the current project changed while reading cross-project evidence.", "warning");
+        return;
+      }
+      ctx.ui.notify(formatStrategySynthesisTrialReview(review), "info");
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not show Synthesis Trial review: evidence evaluation failed: ${errorMessage(error)}`, "warning");
+    }
+  }
+
+  async handleSynthesisDecisionCommand(
+    terminalDecision: "promoted" | "rejected",
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> {
+    const requestedValue = args.trim();
+    const verb = terminalDecision === "promoted" ? "promote" : "reject";
+    const command = terminalDecision === "promoted" ? "/promote" : "/reject";
+    if (!requestedValue || /\s/.test(requestedValue)) {
+      ctx.ui.notify(`Usage: ${command} synthesis:<candidate-id>`, "warning");
+      return;
+    }
+    let candidateId: string | null;
+    try {
+      candidateId = parseSynthesisTrialReviewCommandValue(requestedValue);
+      if (candidateId === null) throw new Error("Synthesis Decisions require the namespaced value synthesis:<candidate-id>.");
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not ${verb} Synthesis Candidate: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    const projectRoot = this.learning.getProjectRoot();
+    if (projectRoot === null) {
+      ctx.ui.notify(`Pindie could not ${verb} Synthesis Candidate: no current project root is loaded.`, "warning");
+      return;
+    }
+    if (!ctx.isIdle()) {
+      ctx.ui.notify(`Pindie could not ${verb} Synthesis Candidate: the Agent is busy.`, "warning");
+      return;
+    }
+    try {
+      const result = await createStrategySynthesisDecisionForHuman({
+        candidateId,
+        decision: terminalDecision,
+        decidedAt: new Date(this.now()).toISOString(),
+        currentProjectRoot: projectRoot,
+      }, {
+        ...this.synthesisReviewInput(),
+        writerLock: this.trust.writerLock,
+        decisionStore: this.strategySynthesisDecisionStore,
+      });
+      if (terminalDecision === "promoted") {
+        ctx.ui.notify(
+          `Synthesis Candidate '${candidateId}' promoted: the exact synthesized revision is trusted for explicit normal Policy selection as user-global trust. It is not a default or recommendation; ${result.decision.evidence.trialRefs.length} validated Trial evidence ref(s) were retained for audit provenance.`,
+          "info",
+        );
+      } else {
+        ctx.ui.notify(
+          `Synthesis Candidate '${candidateId}' rejected: no user-global trust was granted. Rejection is a Human trust decision, not experimental falsification.`,
+          "info",
+        );
+      }
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not ${verb} Synthesis Candidate: ${errorMessage(error)}`, "warning");
     }
   }
 
@@ -668,6 +815,8 @@ export class CrossProjectLearningIntegration {
       writerLock: this.trust.writerLock,
       experienceReader: this.crossProjectExperienceReader,
       projectTrustReader: this.scopeProjectTrustReader,
+      synthesisCandidateReader: this.trust.synthesisCandidateReader,
+      synthesisDecisionReader: this.trust.synthesisDecisionReader,
     };
     try {
       const result = await createStrategyTrustScopeDecisionForHuman({
@@ -747,6 +896,7 @@ export class CrossProjectLearningIntegration {
         targetProjectRoot: projectRoot,
         targetPortfolio,
         candidateReader: this.strategySynthesisCandidateStore,
+        decisionReader: this.strategySynthesisDecisionStore,
       });
     } catch (error) {
       ctx.ui.notify(`Pindie could not arm /trial Synthesis Candidate: ${errorMessage(error)}`, "warning");
@@ -767,6 +917,7 @@ export class CrossProjectLearningIntegration {
         targetProjectRoot: projectRoot,
         targetPortfolio: latestPortfolio,
         candidateReader: this.strategySynthesisCandidateStore,
+        decisionReader: this.strategySynthesisDecisionStore,
       });
       if (!sameSynthesisTrialBinding(binding, latestBinding)) {
         throw new Error("the Synthesis Candidate or target trust changed before arming");
@@ -1041,6 +1192,12 @@ export class CrossProjectLearningIntegration {
       handleSynthesisTrialCommand: (args, ctx) => this.handleSynthesisTrialCommand(args, ctx),
       synthesisTrialCommandCompletions: (projectRoot, prefix) =>
         this.synthesisTrialCommandCompletions(projectRoot, prefix),
+      handleSynthesisTrialReviewCommand: (candidateId, ctx) =>
+        this.handleSynthesisTrialReviewCommand(candidateId, ctx),
+      handleSynthesisDecisionCommand: (decision, args, ctx) =>
+        this.handleSynthesisDecisionCommand(decision, args, ctx),
+      synthesisReviewCommandCompletions: (command, projectRoot, prefix) =>
+        this.synthesisReviewCommandCompletions(command, projectRoot, prefix),
       handleScopeTrialCommand: (args, ctx) => this.handleScopeTrialCommand(args, ctx),
       handleScopeTrialReviewCommand: (candidateId, ctx) => this.handleScopeTrialReviewCommand(candidateId, ctx),
       handleScopeDecisionCommand: (decision, args, ctx) => this.handleScopeDecisionCommand(decision, args, ctx),
