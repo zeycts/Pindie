@@ -579,9 +579,14 @@ export async function scanCrossProjectTrialEvidence(
   const extraRefs = [...eligibleRefs]
     .sort(compareCrossProjectExperienceRefs)
     .filter((ref) => !selectedRefSet.has(`${ref.projectId}\0${ref.recordId}\0${ref.recordFingerprint}`));
-  const selectedEvidenceRefs = Object.freeze(
-    [...selectedProjectRefs, ...extraRefs].sort(compareCrossProjectExperienceRefs).slice(0, maxSelectedRefs),
-  );
+  // Reserve one deterministic witness for every eligible project before
+  // filling the remaining bound with extras. Sort only after slicing so the
+  // canonical retained-ref order does not let a high-volume project crowd out
+  // a project that was deliberately represented in the witness set.
+  const retainedEvidenceRefs = [...selectedProjectRefs, ...extraRefs]
+    .slice(0, maxSelectedRefs)
+    .sort(compareCrossProjectExperienceRefs);
+  const selectedEvidenceRefs = Object.freeze(retainedEvidenceRefs);
 
   const freshReads = new Map<string, PreparedProjectExperience>();
   try {

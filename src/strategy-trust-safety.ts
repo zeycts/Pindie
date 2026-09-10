@@ -39,11 +39,11 @@ import {
   type StrategyTrustScopeDecisionReader,
 } from "./strategy-trust-scope-decisions.ts";
 import {
-  FileStrategySynthesisCandidateStore,
+  FileStrategySynthesisCandidateReader,
   type StrategySynthesisCandidateReader,
 } from "./strategy-synthesis-candidates.ts";
 import {
-  FileStrategySynthesisDecisionStore,
+  FileStrategySynthesisDecisionReader,
   type StrategySynthesisDecisionReader,
 } from "./strategy-synthesis-decisions.ts";
 import type { StrategyTrustScopeSourceResolver } from "./strategy-trust-scope-resolution.ts";
@@ -105,8 +105,8 @@ export class FileProjectTrustedStrategyPortfolioReader implements ProjectTrusted
   private readonly derivationCandidateReader: FileStrategyDerivationCandidateStore;
   private readonly globalCandidateReader: FileStrategyTrustScopeCandidateStore;
   private readonly globalDecisionReader: FileStrategyTrustScopeDecisionStore;
-  private readonly synthesisCandidateReader: FileStrategySynthesisCandidateStore;
-  private readonly synthesisDecisionReader: FileStrategySynthesisDecisionStore;
+  private readonly synthesisCandidateReader: FileStrategySynthesisCandidateReader;
+  private readonly synthesisDecisionReader: FileStrategySynthesisDecisionReader;
   private readonly sourceResolver: FileStrategyTrustScopeSourceResolver;
 
   constructor(options: FileProjectTrustedStrategyPortfolioReaderOptions = {}) {
@@ -118,8 +118,8 @@ export class FileProjectTrustedStrategyPortfolioReader implements ProjectTrusted
     this.derivationCandidateReader = new FileStrategyDerivationCandidateStore({ baseDir: projectsBaseDir });
     this.globalCandidateReader = new FileStrategyTrustScopeCandidateStore({ baseDir: globalBaseDir });
     this.globalDecisionReader = new FileStrategyTrustScopeDecisionStore({ baseDir: globalBaseDir });
-    this.synthesisCandidateReader = new FileStrategySynthesisCandidateStore({ baseDir: globalBaseDir });
-    this.synthesisDecisionReader = new FileStrategySynthesisDecisionStore({ baseDir: globalBaseDir });
+    this.synthesisCandidateReader = new FileStrategySynthesisCandidateReader({ baseDir: globalBaseDir });
+    this.synthesisDecisionReader = new FileStrategySynthesisDecisionReader({ baseDir: globalBaseDir });
     this.sourceResolver = new FileStrategyTrustScopeSourceResolver({ projectsBaseDir });
   }
 

@@ -6,6 +6,7 @@ import type {
   RunExperienceReadResult,
   RunExperienceSourceRecord,
 } from "../src/experience-store.ts";
+import { scanCrossProjectTrialEvidence } from "../src/cross-project-trial-validation.ts";
 import {
   assembleRunExperience,
   type RunExperience,
@@ -27,6 +28,7 @@ import {
 } from "../src/strategy-portfolio.ts";
 import {
   createStrategySynthesisDecision,
+  readSynthesisTrustedGlobalArtifacts,
   type StrategySynthesisDecisionReader,
   type StrategySynthesisDecisionStore,
   type StrategySynthesisDecisionV1,
@@ -388,4 +390,184 @@ test("Synthesis rejection is terminal without a Trial gate, while promoted trust
     assert.equal(resolved?.revisionStatusAtRun, "promoted");
     assert.equal(resolved?.revisionIdentity, candidate.candidateId);
   }
+});
+
+test("normal trusted Synthesis reconstruction ignores rejected Candidate authority and fails closed for promoted authority", async () => {
+  const { candidate } = await makeSynthesisTrialFixture("00000000-0000-4000-8000-000000000045");
+  const rejected = createStrategySynthesisDecision({
+    candidate,
+    decision: "rejected",
+    trialRefs: [],
+    decidedAt: "2026-04-03T00:00:00.000Z",
+  });
+  const rejectedArtifacts = await readSynthesisTrustedGlobalArtifacts(
+    {
+      read: async () => ({ malformed: true } as unknown as StrategySynthesisCandidateV1),
+      readAll: async () => [{ malformed: true } as unknown as StrategySynthesisCandidateV1],
+    },
+    {
+      read: async () => rejected,
+      readAll: async () => [rejected],
+    },
+  );
+  assert.deepEqual(rejectedArtifacts.decisions, [rejected]);
+  assert.deepEqual(rejectedArtifacts.candidates, []);
+
+  const promoted = createStrategySynthesisDecision({
+    candidate,
+    decision: "promoted",
+    trialRefs: [
+      {
+        projectId: getProjectId("/synthesis-review-promoted-a"),
+        recordId: TRIAL_RECORD_A,
+        recordFingerprint: `sha256:${"a".repeat(64)}`,
+      },
+      {
+        projectId: getProjectId("/synthesis-review-promoted-b"),
+        recordId: TRIAL_RECORD_B,
+        recordFingerprint: `sha256:${"b".repeat(64)}`,
+      },
+    ],
+    decidedAt: "2026-04-04T00:00:00.000Z",
+  });
+  await assert.rejects(
+    readSynthesisTrustedGlobalArtifacts(
+      {
+        read: async () => ({
+          ...candidate,
+          proposal: { ...candidate.proposal, summary: "corrupted authority" },
+        } as StrategySynthesisCandidateV1),
+        readAll: async () => [],
+      },
+      {
+        read: async () => promoted,
+        readAll: async () => [promoted],
+      },
+    ),
+    /binding|fingerprint/i,
+  );
+});
+
+test("Synthesis promotion fails closed when a terminal Decision appears after its initial scan", async () => {
+  const { candidate } = await makeSynthesisTrialFixture("00000000-0000-4000-8000-000000000046");
+  const discoveryProject = candidate.evidence.sourceRefs[0]!.projectId;
+  const records = new Map<string, readonly RunExperienceSourceRecord[]>([
+    [discoveryProject, [{
+      recordId: TRIAL_RECORD_A,
+      experience: trialExperience(candidate, "race trial one", "2026-05-01T00:00:00.000Z"),
+    }]],
+    [TRIAL_PROJECT_NEW, [{
+      recordId: TRIAL_RECORD_B,
+      experience: trialExperience(candidate, "race trial two", "2026-05-02T00:00:00.000Z"),
+    }]],
+  ]);
+  const fixture = decisionFixture(candidate, records, [discoveryProject, TRIAL_PROJECT_NEW]);
+  const terminal = createStrategySynthesisDecision({
+    candidate,
+    decision: "rejected",
+    trialRefs: [],
+    decidedAt: "2026-05-03T00:00:00.000Z",
+  });
+  let readAllCalls = 0;
+  let saveCalls = 0;
+  const racingStore: StrategySynthesisDecisionStore = {
+    read: async (candidateId) => candidateId === candidate.candidateId ? terminal : null,
+    readAll: async () => {
+      readAllCalls += 1;
+      return readAllCalls === 1 ? [] : [terminal];
+    },
+    save: async () => {
+      saveCalls += 1;
+      throw new Error("unexpected terminal write");
+    },
+  };
+
+  await assert.rejects(
+    createStrategySynthesisDecisionForHuman({
+      candidateId: candidate.candidateId,
+      decision: "promoted",
+      decidedAt: "2026-05-04T00:00:00.000Z",
+    }, {
+      ...fixture.input,
+      decisionReader: racingStore,
+      decisionStore: racingStore,
+      writerLock: fixture.writerLock,
+    }),
+    /Eligibility|terminal|no Decision/i,
+  );
+  assert.equal(saveCalls, 0);
+  assert.equal(fixture.decisions.length, 0);
+  assert.ok(readAllCalls >= 2);
+});
+
+test("shared Trial ref selection preserves one eligible project witness before deterministic extras", async () => {
+  const { candidate } = await makeSynthesisTrialFixture("00000000-0000-4000-8000-000000000047");
+  const projectA = getProjectId("/synthesis-ref-selection-a");
+  const projectB = getProjectId("/synthesis-ref-selection-b");
+  const recordsByProject = new Map<string, readonly RunExperienceSourceRecord[]>([
+    [projectA, [
+      { recordId: "11111111-1111-4111-8111-111111111111.json", experience: trialExperience(candidate, "many A one", "2026-06-01T00:00:00.000Z") },
+      { recordId: "22222222-2222-4222-8222-222222222222.json", experience: trialExperience(candidate, "many A two", "2026-06-02T00:00:00.000Z") },
+      { recordId: "33333333-3333-4333-8333-333333333333.json", experience: trialExperience(candidate, "many A three", "2026-06-03T00:00:00.000Z") },
+    ]],
+    [projectB, [{
+      recordId: "44444444-4444-4444-8444-444444444444.json",
+      experience: trialExperience(candidate, "one B", "2026-06-04T00:00:00.000Z"),
+    }]],
+  ]);
+  const reader = (projectIds: readonly string[], reverseRecords: boolean): RunExperienceProjectReader => ({
+    listProjectIds: async () => [...projectIds],
+    readProjectId: async (projectId) => {
+      const records = [...(recordsByProject.get(projectId) ?? [])];
+      if (reverseRecords) records.reverse();
+      return {
+        records,
+        loadedRecords: records.length,
+        unsupportedSchema: 0,
+        invalid: 0,
+      };
+    },
+  });
+  const subject = {
+    origin: "synthesis" as const,
+    subjectId: candidate.candidateId,
+    strategy: {
+      strategyId: candidate.proposal.strategyId,
+      kind: candidate.proposal.kind,
+      revisionIdentity: candidate.candidateId,
+      revisionFingerprint: strategySynthesisCandidateSemanticFingerprint(candidate),
+      semantics: {
+        summary: candidate.proposal.summary,
+        useWhen: [...candidate.proposal.useWhen],
+        avoidWhen: [...candidate.proposal.avoidWhen],
+        principles: [...candidate.proposal.principles],
+      },
+    },
+    excludedTrialProjectIds: [],
+    minimumTrialRecordedAt: candidate.createdAt,
+  };
+  const first = await scanCrossProjectTrialEvidence({
+    subject,
+    experienceReader: reader([projectB, projectA], false),
+    maxSelectedRefs: 2,
+  });
+  const reordered = await scanCrossProjectTrialEvidence({
+    subject,
+    experienceReader: reader([projectA, projectB], true),
+    maxSelectedRefs: 2,
+  });
+
+  assert.equal(first.selectedEvidenceRefs.length, 2);
+  assert.deepEqual(
+    new Set(first.selectedEvidenceRefs.map((ref) => ref.projectId)),
+    new Set([projectA, projectB]),
+  );
+  assert.deepEqual(
+    new Set(first.selectedEvidenceRefs.map((ref) => ref.recordId)),
+    new Set([
+      "11111111-1111-4111-8111-111111111111.json",
+      "44444444-4444-4444-8444-444444444444.json",
+    ]),
+  );
+  assert.deepEqual(first.selectedEvidenceRefs, reordered.selectedEvidenceRefs);
 });

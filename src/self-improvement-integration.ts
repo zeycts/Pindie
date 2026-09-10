@@ -127,12 +127,12 @@ import type {
 } from "./store.ts";
 import type { StrategySynthesisCandidateReader } from "./strategy-synthesis-candidates.ts";
 import type { StrategySynthesisDecisionReader } from "./strategy-synthesis-decisions.ts";
-import type { StrategySynthesisDecisionCommand } from "./strategy-synthesis-review.ts";
 import { createPindieStrategyCandidateTool } from "./tools/strategy-candidate.ts";
 import { createPindieStrategyDerivationCandidateTool } from "./tools/strategy-derivation-candidate.ts";
 
 type ProjectRootGetter = () => string | null;
 type AgentRunGenerationGetter = () => number | null;
+type StrategySynthesisDecisionCommand = "promote" | "reject";
 
 /** Narrow Core facts and lifecycle operations consumed by Self-Improvement. */
 export interface SelfImprovementCorePort {

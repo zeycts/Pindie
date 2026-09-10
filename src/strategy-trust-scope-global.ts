@@ -5,7 +5,7 @@ import {
   type ScopeTrialGlobalArtifacts,
 } from "./strategy-trust-scope-artifacts.ts";
 import {
-  readSynthesisTrialGlobalArtifacts,
+  readSynthesisTrustedGlobalArtifacts,
   validateStrategySynthesisDecisionBinding,
   type SynthesisTrialGlobalArtifacts,
   type StrategySynthesisDecisionV1,
@@ -230,7 +230,7 @@ function validateSynthesisGlobalArtifacts(
   if (candidateReader === undefined || decisionReader === undefined) {
     return Promise.reject(new Error("User-global Synthesis authority dependencies are incomplete."));
   }
-  return readSynthesisTrialGlobalArtifacts(candidateReader, decisionReader);
+  return readSynthesisTrustedGlobalArtifacts(candidateReader, decisionReader);
 }
 
 /**

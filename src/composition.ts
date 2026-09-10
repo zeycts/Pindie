@@ -71,11 +71,15 @@ import type { PindieExtensionOptions } from "./extension.ts";
 import type { NotionProjectMemoryClient } from "./notion-project-memory.ts";
 import type { ProjectMemorySink } from "./project-memory.ts";
 import {
+  FileStrategySynthesisCandidateReader,
   FileStrategySynthesisCandidateStore,
+  type StrategySynthesisCandidateReader,
   type StrategySynthesisCandidateStore,
 } from "./strategy-synthesis-candidates.ts";
 import {
+  FileStrategySynthesisDecisionReader,
   FileStrategySynthesisDecisionStore,
+  type StrategySynthesisDecisionReader,
   type StrategySynthesisDecisionStore,
 } from "./strategy-synthesis-decisions.ts";
 
@@ -299,6 +303,8 @@ export function composePindieExtension(
   let strategyTrustScopeWriterLock: GlobalWriterLock | undefined;
   let scopeProjectTrustReader: ScopeProjectTrustReader | undefined;
   let crossProjectTrustReader: ProjectTrustedStrategyPortfolioReader | undefined;
+  let strategySynthesisCandidateReader: StrategySynthesisCandidateReader | undefined;
+  let strategySynthesisDecisionReader: StrategySynthesisDecisionReader | undefined;
   let strategySynthesisCandidateStore: StrategySynthesisCandidateStore | undefined;
   let strategySynthesisDecisionStore: StrategySynthesisDecisionStore | undefined;
 
@@ -340,11 +346,14 @@ export function composePindieExtension(
       baseDir: roots.globalBaseDir,
     });
     // Synthesis authority is part of the SI trust-safety substrate, not only
-    // the optional CPL workflow. Construct its readers whenever SI is on.
-    strategySynthesisCandidateStore = input.strategySynthesisCandidateStore ??
-      new FileStrategySynthesisCandidateStore({ baseDir: roots.globalBaseDir });
-    strategySynthesisDecisionStore = input.strategySynthesisDecisionStore ??
-      new FileStrategySynthesisDecisionStore({ baseDir: roots.globalBaseDir });
+    // the optional CPL workflow. SI constructs read-only access here; the
+    // mutable workflow Stores are assembled only when CPL is selected below.
+    strategySynthesisCandidateReader = input.strategySynthesisCandidateReader ??
+      input.strategySynthesisCandidateStore ??
+      new FileStrategySynthesisCandidateReader({ baseDir: roots.globalBaseDir });
+    strategySynthesisDecisionReader = input.strategySynthesisDecisionReader ??
+      input.strategySynthesisDecisionStore ??
+      new FileStrategySynthesisDecisionReader({ baseDir: roots.globalBaseDir });
   }
 
   if (selection.crossProjectLearning) {
@@ -356,6 +365,8 @@ export function composePindieExtension(
     });
     strategySynthesisCandidateStore = input.strategySynthesisCandidateStore ??
       new FileStrategySynthesisCandidateStore({ baseDir: roots.globalBaseDir });
+    strategySynthesisDecisionStore = input.strategySynthesisDecisionStore ??
+      new FileStrategySynthesisDecisionStore({ baseDir: roots.globalBaseDir });
     scopeProjectTrustReader = input.scopeProjectTrustReader ??
       new FileScopeProjectTrustReader({ projectsBaseDir: roots.projectsBaseDir });
     if (crossProjectExperienceReader === undefined) {
@@ -417,6 +428,8 @@ export function composePindieExtension(
     experienceReader: _inputExperienceReader,
     crossProjectExperienceReader: _inputCrossProjectExperienceReader,
     crossProjectTrustReader: _inputCrossProjectTrustReader,
+    strategySynthesisCandidateReader: _inputStrategySynthesisCandidateReader,
+    strategySynthesisDecisionReader: _inputStrategySynthesisDecisionReader,
     strategySynthesisCandidateStore: _inputStrategySynthesisCandidateStore,
     strategySynthesisDecisionStore: _inputStrategySynthesisDecisionStore,
     strategyCandidateStore: _inputStrategyCandidateStore,
@@ -454,8 +467,8 @@ export function composePindieExtension(
           strategyTrustScopeDecisionStore: strategyTrustScopeDecisionStore!,
           strategyTrustScopeSourceResolver: strategyTrustScopeSourceResolver!,
           strategyTrustScopeWriterLock: strategyTrustScopeWriterLock!,
-          strategySynthesisCandidateStore: strategySynthesisCandidateStore!,
-          strategySynthesisDecisionStore: strategySynthesisDecisionStore!,
+          strategySynthesisCandidateReader: strategySynthesisCandidateReader!,
+          strategySynthesisDecisionReader: strategySynthesisDecisionReader!,
         }
       : {}),
     ...(selection.crossProjectLearning

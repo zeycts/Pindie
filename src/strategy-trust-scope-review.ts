@@ -70,6 +70,12 @@ import {
   type ScopeTrialGlobalArtifacts,
 } from "./strategy-trust-safety.ts";
 import {
+  loadUserGlobalTrustedDerivedStrategyProjection,
+  type UserGlobalTrustedDerivedStrategyProjection,
+} from "./strategy-trust-scope-global.ts";
+import type { StrategySynthesisCandidateReader } from "./strategy-synthesis-candidates.ts";
+import type { StrategySynthesisDecisionReader } from "./strategy-synthesis-decisions.ts";
+import {
   STRATEGY_REVISION_DIRECTORY_NAME,
   type ResolvedStrategyTrustScopeSource,
   type StrategyTrustScopeSourceResolver,
@@ -630,6 +636,10 @@ export interface StrategyTrustScopeTrialReviewInput {
   readonly sourceResolver: StrategyTrustScopeSourceResolver;
   readonly experienceReader: RunExperienceProjectReader;
   readonly projectTrustReader: ScopeProjectTrustReader;
+  /** Optional in v0.1-only callers; production CPL supplies both readers so
+   * Scope and Synthesis reviews share the combined global authority view. */
+  readonly synthesisCandidateReader?: StrategySynthesisCandidateReader;
+  readonly synthesisDecisionReader?: StrategySynthesisDecisionReader;
   readonly currentProjectRoot?: string | null;
 }
 
@@ -887,6 +897,8 @@ async function deriveGlobalReviewFacts(
   candidateReader: StrategyTrustScopeCandidateReader,
   decisionReader: StrategyTrustScopeDecisionReader,
   sourceResolver: StrategyTrustScopeSourceResolver,
+  synthesisCandidateReader?: StrategySynthesisCandidateReader,
+  synthesisDecisionReader?: StrategySynthesisDecisionReader,
 ): Promise<GlobalReviewFacts> {
   const reasons: string[] = [];
   let artifacts: GlobalReviewFacts["artifacts"] = null;
@@ -906,41 +918,45 @@ async function deriveGlobalReviewFacts(
   const terminalDecision = artifacts?.decisions.find((decision) => decision.candidateId === candidate.candidateId) ?? null;
   const candidateOpen = candidateInGlobalNamespace && terminalDecision === null;
 
-  const promotedGlobalEntries: StrategyTrustScopeSourceStrategyV1[] = [];
-  const promotedGlobalSourceAuthority: GlobalSourceAuthorityProjection[] = [];
-  const globalIds = new Set<string>();
-  if (artifacts !== null) {
-    for (const decision of artifacts.decisions.filter((item) => item.decision === "promoted")) {
-      const source = decision.sourceStrategy;
-      try {
-        const resolved = await sourceResolver.resolve(source);
-        if (!sameSourceBinding(resolved.sourceStrategy, source)) {
-          throw new Error("promoted Scope Decision source binding changed during resolution");
-        }
-        const resolutionFingerprint = sourceResolutionAuthorityFingerprint(resolved);
-        if (globalIds.has(source.strategyId)) {
-          throw new Error(`multiple valid user-global revisions own logical Strategy ID '${source.strategyId}'`);
-        }
-        globalIds.add(source.strategyId);
-        promotedGlobalEntries.push(source);
-        promotedGlobalSourceAuthority.push(Object.freeze({
-          source: Object.freeze({ ...source }),
-          resolutionFingerprint,
-        }));
-      } catch (error) {
-        reasons.push(`promoted user-global Scope Decision for '${source.strategyId}' could not be freshly resolved: ${errorMessage(error)}`);
-      }
-    }
+  let projection: UserGlobalTrustedDerivedStrategyProjection | null = null;
+  try {
+    projection = await loadUserGlobalTrustedDerivedStrategyProjection({
+      candidateReader,
+      decisionReader,
+      sourceResolver,
+      synthesisCandidateReader,
+      synthesisDecisionReader,
+    });
+  } catch (error) {
+    reasons.push(`combined user-global trust projection could not be completely read: ${errorMessage(error)}`);
   }
-  promotedGlobalEntries.sort((left, right) => compareText(sourceIdentityKey(left), sourceIdentityKey(right)));
-  promotedGlobalSourceAuthority.sort((left, right) => compareText(sourceIdentityKey(left.source), sourceIdentityKey(right.source)));
-  const globalStateComplete = artifacts !== null && reasons.length === 0;
+
+  const promotedGlobalEntries = projection === null
+    ? []
+    : projection.entries
+      .filter((entry) => entry.origin === "transfer")
+      .map((entry) => Object.freeze({ ...entry.sourceStrategy! }));
+  const promotedGlobalSourceAuthority: GlobalSourceAuthorityProjection[] = projection === null
+    ? []
+    : projection.entries
+      .filter((entry) => entry.origin === "transfer")
+      .map((entry) => Object.freeze({
+        source: Object.freeze({ ...entry.sourceStrategy! }),
+        resolutionFingerprint: fingerprintProjection({
+          candidate: entry.candidate,
+          decision: entry.decision,
+          selection: entry.selection,
+        }),
+      }));
+  const globalIds = new Set(projection?.entries.map((entry) => entry.selection.strategyId) ?? []);
+  const globalStateComplete = artifacts !== null && projection !== null && reasons.length === 0;
   const sourceStrategyId = candidate.sourceStrategy.strategyId;
   const globalLogicalIdAvailable = globalStateComplete && !globalIds.has(sourceStrategyId);
   const userGlobalCapacityAvailable = globalStateComplete &&
-    promotedGlobalEntries.length < MAX_USER_GLOBAL_DERIVED_STRATEGIES;
+    (projection?.entries.length ?? MAX_USER_GLOBAL_DERIVED_STRATEGIES) < MAX_USER_GLOBAL_DERIVED_STRATEGIES;
   const authorityFingerprint = fingerprintProjection({
     artifacts,
+    projection,
     candidateInGlobalNamespace,
     candidateOpen,
     terminalDecision,
@@ -1208,6 +1224,8 @@ async function deriveStrategyTrustScopeTrialReviewShared(
       input.candidateReader,
       input.decisionReader,
       input.sourceResolver,
+      input.synthesisCandidateReader,
+      input.synthesisDecisionReader,
     ),
     deriveSourceReviewFacts(candidate, input.sourceResolver),
   ]);
@@ -1285,6 +1303,8 @@ async function deriveStrategyTrustScopeTrialReviewShared(
       input.candidateReader,
       input.decisionReader,
       input.sourceResolver,
+      input.synthesisCandidateReader,
+      input.synthesisDecisionReader,
     ),
     deriveSourceReviewFacts(candidate, input.sourceResolver),
   ]);
@@ -1432,423 +1452,6 @@ async function deriveStrategyTrustScopeTrialReviewShared(
     evidenceScanComplete: evidence.evidenceScanComplete,
     globalStateComplete,
     projectTrustScanComplete: projectTrustAuthorityFresh,
-    promotionEligibility,
-    reasons: promotionReasons,
-  });
-}
-
-async function deriveLegacyStrategyTrustScopeTrialReview(
-  input: StrategyTrustScopeTrialReviewInput,
-): Promise<StrategyTrustScopeTrialReview> {
-  const candidate = validateStrategyTrustScopeCandidateArtifact(
-    input.candidate,
-    input.candidate.candidateId,
-  );
-  const candidateFingerprint = strategyTrustScopeCandidateFingerprint(candidate);
-  const [globalFacts, sourceFacts] = await Promise.all([
-    deriveGlobalReviewFacts(
-      candidate,
-      input.candidateReader,
-      input.decisionReader,
-      input.sourceResolver,
-    ),
-    deriveSourceReviewFacts(candidate, input.sourceResolver),
-  ]);
-  const reasons: string[] = [
-    ...globalFacts.globalStateReasons,
-    ...sourceFacts.reasons,
-  ];
-
-  let projectIds: readonly string[] = [];
-  let evidenceScanComplete = true;
-  let projectTrustScanComplete = true;
-  try {
-    projectIds = validateProjectIdList(await input.experienceReader.listProjectIds());
-  } catch (error) {
-    evidenceScanComplete = false;
-    projectTrustScanComplete = false;
-    reasons.push(`cross-project Experience namespace scan could not be completed: ${errorMessage(error)}`);
-  }
-
-  const firstReads = new Map<string, PreparedProjectExperience>();
-  const trustSnapshots = new Map<string, ScopeProjectTrustSnapshot>();
-  const inventories = new Map<string, MutableInventory>();
-  const selectedFirstByProject = new Map<string, CrossProjectExperienceRefV1>();
-  const selectedExtraRefs: CrossProjectExperienceRefV1[] = [];
-  const source = candidate.sourceStrategy;
-  for (const projectId of projectIds) {
-    let read: RunExperienceReadResult;
-    try {
-      read = validateReadResult(await input.experienceReader.readProjectId(projectId));
-    } catch (error) {
-      evidenceScanComplete = false;
-      reasons.push(`project ${shortIdentity(projectId)} Experience scan failed: ${errorMessage(error)}`);
-      continue;
-    }
-    let prepared: PreparedProjectExperience;
-    try {
-      prepared = prepareProjectExperience(projectId, read, source);
-    } catch (error) {
-      evidenceScanComplete = false;
-      reasons.push(`project ${shortIdentity(projectId)} Experience scan failed: ${errorMessage(error)}`);
-      continue;
-    }
-    firstReads.set(projectId, prepared);
-    if (!prepared.complete) {
-      evidenceScanComplete = false;
-      reasons.push(...prepared.reasons);
-    }
-
-    try {
-      const trust = await input.projectTrustReader.readProjectId(projectId);
-      trustSnapshots.set(projectId, validateScopeProjectTrustSnapshot(trust, projectId));
-    } catch (error) {
-      projectTrustScanComplete = false;
-      reasons.push(`project ${shortIdentity(projectId)} local trust scan failed: ${errorMessage(error)}`);
-    }
-
-    const inventory = createMutableInventory(projectId, source.sourceProjectId);
-    inventories.set(projectId, inventory);
-    for (const matching of prepared.matching) {
-      const evidence = scopeTrialRecordEligibility(
-        projectId,
-        source.sourceProjectId,
-        source,
-        sourceFacts.sourceCandidate,
-        matching.ref,
-        matching.experience,
-        {
-          refResolved: true,
-          sourceBindingValid: sourceFacts.sourceBindingValid,
-          sourceTrustValid: sourceFacts.sourceTrustValid,
-          globalStateComplete: globalFacts.globalStateComplete,
-        },
-      );
-      inventory.matchingRecordCount += 1;
-      if (evidence.eligible) {
-        inventory.eligibleRunCount += 1;
-        if (!selectedFirstByProject.has(projectId)) {
-          selectedFirstByProject.set(projectId, evidence.ref);
-        } else if (selectedExtraRefs.length < MAX_CROSS_PROJECT_EXPERIENCE_REFS) {
-          selectedExtraRefs.push(evidence.ref);
-        }
-      } else {
-        inventory.ineligibleRunCount += 1;
-      }
-      if (inventory.detailRecords.length < MAX_SCOPE_REVIEW_RECORD_DETAILS) {
-        inventory.detailRecords.push(evidence);
-      }
-      inventory.verificationPassedCount += evidence.evaluation.outcome.verificationPassed ? 1 : 0;
-      inventory.completedDuringRunCount += evidence.evaluation.outcome.completedDuringRun ? 1 : 0;
-      inventory.runsWithBlockers += evidence.evaluation.outcome.hasBlockers ? 1 : 0;
-      inventory.runsWithQuestions += evidence.evaluation.outcome.hasQuestions ? 1 : 0;
-      inventory.totalToolErrors += evidence.evaluation.execution.toolErrors;
-      inventory.totalDeniedCalls += evidence.evaluation.execution.deniedCalls;
-    }
-  }
-
-  const selectedProjectRefs = [...selectedFirstByProject.entries()]
-    .sort(([left], [right]) => compareText(left, right))
-    .map(([, ref]) => ref);
-  const selectedRefs = selectedProjectRefs.length <= MAX_CROSS_PROJECT_EXPERIENCE_REFS
-    ? [...selectedProjectRefs, ...selectedExtraRefs
-      .sort(compareCrossProjectExperienceRefs)
-      .filter((ref) => !selectedProjectRefs.some((selected) => compareCrossProjectExperienceRefs(selected, ref) === 0))]
-        .slice(0, MAX_CROSS_PROJECT_EXPERIENCE_REFS)
-    : selectedProjectRefs.slice(0, MAX_CROSS_PROJECT_EXPERIENCE_REFS);
-  const selectedEvidenceRefs = Object.freeze(
-    [...selectedRefs].sort(compareCrossProjectExperienceRefs),
-  );
-
-  // Re-read every enumerated namespace. This makes a changing project set or
-  // changing matching-record snapshot an explicit incomplete review instead
-  // of silently treating a moving read as complete evidence.
-  const freshReads = new Map<string, PreparedProjectExperience>();
-  try {
-    const secondProjectIds = validateProjectIdList(await input.experienceReader.listProjectIds());
-    if (JSON.stringify(secondProjectIds) !== JSON.stringify(projectIds)) {
-      evidenceScanComplete = false;
-      reasons.push("cross-project project namespace set changed during the deterministic scan");
-    }
-    for (const projectId of secondProjectIds) {
-      try {
-        const prepared = prepareProjectExperience(
-          projectId,
-          await input.experienceReader.readProjectId(projectId),
-          source,
-        );
-        freshReads.set(projectId, prepared);
-        const first = firstReads.get(projectId);
-        if (first === undefined || first.matching.length !== prepared.matching.length ||
-          first.matchingDigest !== prepared.matchingDigest ||
-          !prepared.complete) {
-          evidenceScanComplete = false;
-          reasons.push(`project ${shortIdentity(projectId)} matching Experience snapshot changed or is incomplete during review`);
-        }
-      } catch (error) {
-        evidenceScanComplete = false;
-        reasons.push(`project ${shortIdentity(projectId)} fresh Experience resolution failed: ${errorMessage(error)}`);
-      }
-    }
-  } catch (error) {
-    evidenceScanComplete = false;
-    reasons.push(`cross-project fresh namespace scan could not be completed: ${errorMessage(error)}`);
-  }
-
-  const selectedRefResolution = await freshSelectedRefs(
-    selectedEvidenceRefs,
-    freshReads,
-    source,
-    sourceFacts.sourceCandidate,
-    {
-      sourceBindingValid: sourceFacts.sourceBindingValid,
-      sourceTrustValid: sourceFacts.sourceTrustValid,
-      globalStateComplete: globalFacts.globalStateComplete,
-    },
-  );
-  if (!selectedRefResolution.valid) reasons.push(...selectedRefResolution.reasons);
-
-  // Promotion keeps one final, direct read of the complete selected ref set
-  // inside the caller's writer-lock critical section. Compare each selected
-  // project's full matching snapshot with the preceding pass so a changed
-  // record cannot silently satisfy an earlier eligibility decision. This
-  // promotion-boundary evidence reread deliberately precedes the final
-  // authority pass below; otherwise authority could change after its last
-  // freshness check and still be combined with this selected evidence.
-  let boundarySelectedRefResolution: { readonly valid: boolean; readonly reasons: readonly string[] } = {
-    valid: true,
-    reasons: Object.freeze([]),
-  };
-  if (selectedEvidenceRefs.length > 0) {
-    const boundaryReads = new Map<string, PreparedProjectExperience>();
-    const boundaryReasons: string[] = [];
-    const selectedProjectIds = [...new Set(selectedEvidenceRefs.map((ref) => ref.projectId))]
-      .sort(compareText);
-    for (const projectId of selectedProjectIds) {
-      try {
-        const prepared = prepareProjectExperience(
-          projectId,
-          await input.experienceReader.readProjectId(projectId),
-          source,
-        );
-        boundaryReads.set(projectId, prepared);
-        const prior = freshReads.get(projectId);
-        if (prior === undefined || prior.matching.length !== prepared.matching.length ||
-          prior.matchingDigest !== prepared.matchingDigest || !prepared.complete) {
-          evidenceScanComplete = false;
-          boundaryReasons.push(`selected project ${shortIdentity(projectId)} matching Experience snapshot changed or is incomplete at the promotion boundary`);
-        }
-      } catch (error) {
-        evidenceScanComplete = false;
-        boundaryReasons.push(`selected project ${shortIdentity(projectId)} fresh Experience resolution failed at the promotion boundary: ${errorMessage(error)}`);
-      }
-    }
-    const selectedAtBoundary = await freshSelectedRefs(
-      selectedEvidenceRefs,
-      boundaryReads,
-      source,
-      sourceFacts.sourceCandidate,
-      {
-        sourceBindingValid: sourceFacts.sourceBindingValid,
-        sourceTrustValid: sourceFacts.sourceTrustValid,
-        globalStateComplete: globalFacts.globalStateComplete,
-      },
-    );
-    boundarySelectedRefResolution = Object.freeze({
-      valid: boundaryReasons.length === 0 && selectedAtBoundary.valid,
-      reasons: Object.freeze([...boundaryReasons, ...selectedAtBoundary.reasons]),
-    });
-    if (!boundarySelectedRefResolution.valid) reasons.push(...boundarySelectedRefResolution.reasons);
-  }
-
-  // Final authority pass: the Experience scan and selected-ref promotion
-  // boundary remain lock-free, but no eligibility gate may combine their
-  // earlier global/source/trust facts with a later authority state. These
-  // reads are deliberately the last asynchronous authority reconstruction
-  // before synchronous gate assembly.
-  const [finalGlobalFacts, finalSourceFacts] = await Promise.all([
-    deriveGlobalReviewFacts(
-      candidate,
-      input.candidateReader,
-      input.decisionReader,
-      input.sourceResolver,
-    ),
-    deriveSourceReviewFacts(candidate, input.sourceResolver),
-  ]);
-
-  let finalProjectIds: readonly string[] = [];
-  let finalProjectTrustFacts: ProjectTrustScanFacts = {
-    complete: false,
-    snapshots: new Map(),
-    reasons: Object.freeze([]),
-  };
-  try {
-    finalProjectIds = validateProjectIdList(await input.experienceReader.listProjectIds());
-    finalProjectTrustFacts = await readProjectTrustSnapshots(
-      finalProjectIds,
-      input.projectTrustReader,
-    );
-  } catch (error) {
-    reasons.push(`final project-local trust namespace scan could not be completed: ${errorMessage(error)}`);
-  }
-
-  const globalAuthorityFresh = globalFacts.globalStateComplete === finalGlobalFacts.globalStateComplete &&
-    globalFacts.authorityFingerprint === finalGlobalFacts.authorityFingerprint;
-  if (!globalAuthorityFresh) {
-    reasons.push("global Scope Candidate/Decision authority or promoted source resolution changed during review; the read snapshot is not coherent");
-  }
-  if (!finalGlobalFacts.globalStateComplete) reasons.push(...finalGlobalFacts.globalStateReasons);
-
-  const sourceAuthorityFresh = sourceFacts.sourceBindingValid === finalSourceFacts.sourceBindingValid &&
-    sourceFacts.sourceTrustValid === finalSourceFacts.sourceTrustValid &&
-    sourceFacts.authorityFingerprint === finalSourceFacts.authorityFingerprint;
-  if (!sourceAuthorityFresh) {
-    reasons.push("source Strategy binding or project-local promoted trust changed during review; the read snapshot is not coherent");
-  }
-  if (!finalSourceFacts.sourceBindingValid || !finalSourceFacts.sourceTrustValid) {
-    reasons.push(...finalSourceFacts.reasons);
-  }
-
-  const projectTrustAuthorityFresh = projectTrustScanComplete &&
-    finalProjectTrustFacts.complete &&
-    sameProjectIdList(projectIds, finalProjectIds) &&
-    sameProjectTrustProjection(projectIds, trustSnapshots, finalProjectTrustFacts.snapshots);
-  if (!projectTrustAuthorityFresh) {
-    reasons.push("project-local trust namespace set or promoted Derived identity projection changed during review; the collision scan is not coherent");
-    reasons.push(...finalProjectTrustFacts.reasons);
-  }
-  const authoritySnapshotFresh = globalAuthorityFresh &&
-    sourceAuthorityFresh &&
-    projectTrustAuthorityFresh;
-
-  projectTrustScanComplete = projectTrustAuthorityFresh;
-
-  const globalStateComplete = globalFacts.globalStateComplete &&
-    finalGlobalFacts.globalStateComplete &&
-    globalAuthorityFresh;
-  const scopeCandidateOpen = finalGlobalFacts.candidateOpen;
-  const noTerminalScopeDecision = finalGlobalFacts.terminalDecision === null;
-  const sourceBindingValid = sourceFacts.sourceBindingValid &&
-    finalSourceFacts.sourceBindingValid &&
-    sourceAuthorityFresh;
-  const sourceTrustValid = sourceFacts.sourceTrustValid &&
-    finalSourceFacts.sourceTrustValid &&
-    sourceAuthorityFresh;
-  const globalLogicalIdAvailable = finalGlobalFacts.globalLogicalIdAvailable;
-  const userGlobalCapacityAvailable = finalGlobalFacts.userGlobalCapacityAvailable;
-  const promotedGlobalSources = finalGlobalFacts.promotedGlobalEntries;
-  let localConflictFree = projectTrustScanComplete && projectTrustAuthorityFresh;
-  for (const snapshot of trustSnapshots.values()) {
-    for (const entry of snapshot.promotedDerived) {
-      if (entry.strategyId !== source.strategyId) continue;
-      if (!sameTrustEntry(entry, source)) {
-        localConflictFree = false;
-        reasons.push(`project ${shortIdentity(snapshot.projectId)} has a conflicting local revision for logical Strategy ID '${source.strategyId}'`);
-      }
-    }
-  }
-  if (promotedGlobalSources.some((entry) => entry.strategyId === source.strategyId)) {
-    // The current Candidate is not available as a new user-global identity
-    // once a valid global revision already owns its logical ID.
-    reasons.push(`user-global logical Strategy ID '${source.strategyId}' is already owned by a trusted revision`);
-  }
-  if (!localConflictFree) reasons.push("project-local trust conflict or incomplete local trust state prevents a deterministic collision scan");
-  if (!finalGlobalFacts.userGlobalCapacityAvailable && finalGlobalFacts.globalStateComplete) {
-    reasons.push(`user-global Derived Strategy capacity is full at ${MAX_USER_GLOBAL_DERIVED_STRATEGIES}`);
-  }
-  if (!evidenceScanComplete || !projectTrustScanComplete || !globalStateComplete || !authoritySnapshotFresh) {
-    reasons.push("evidence completeness cannot be established from a complete deterministic authority scan");
-  }
-
-  const inventoriesFinal = Object.freeze([...inventories.values()]
-    .sort((left, right) => compareText(left.projectId, right.projectId))
-    .map(finalizeInventory));
-  const matchingRecordCount = inventoriesFinal.reduce((total, inventory) => total + inventory.matchingRecordCount, 0);
-  const eligibleTrialRunCount = inventoriesFinal.reduce((total, inventory) => total + inventory.eligibleRunCount, 0);
-  const ineligibleMatchingRunCount = inventoriesFinal.reduce((total, inventory) => total + inventory.ineligibleRunCount, 0);
-  const eligibleTargetProjectIds = Object.freeze(inventoriesFinal
-    .filter((inventory) => !inventory.sourceProject && inventory.eligibleRunCount > 0)
-    .map((inventory) => inventory.projectId));
-  const distinctEligibleTargetProjectCount = eligibleTargetProjectIds.length;
-  if (eligibleTrialRunCount < 2) reasons.push("at least 2 eligible cross-project Trial Runs are required");
-  if (distinctEligibleTargetProjectCount < 2) reasons.push("at least 2 distinct non-source target projects are required");
-
-  const scopeCandidateValid = true;
-  const proposedTrustScopeValid = candidate.currentTrustScope === "project" &&
-    candidate.proposedTrustScope === "user-global";
-  const noSeedLogicalIdCollision = !SEED_STRATEGIES.some((seed) => seed.id === source.strategyId);
-  const evidenceCompletenessValid = evidenceScanComplete &&
-    projectTrustScanComplete &&
-    globalStateComplete &&
-    authoritySnapshotFresh;
-  const selectedEvidenceRefsValid = selectedRefResolution.valid &&
-    boundarySelectedRefResolution.valid &&
-    authoritySnapshotFresh;
-  if (selectedRefResolution.valid && !authoritySnapshotFresh) {
-    reasons.push("selected evidence refs were validated against an authority snapshot that changed during review");
-  }
-  const reasonsUnique = [...new Set(reasons)];
-  if (!scopeCandidateOpen) reasonsUnique.push(
-    noTerminalScopeDecision
-      ? "Scope Candidate is not available as a fresh open global hypothesis"
-      : "a terminal Scope Decision already exists for this Candidate",
-  );
-  if (!noSeedLogicalIdCollision) reasonsUnique.push("proposed logical Strategy ID collides with an immutable Seed");
-  if (!sourceBindingValid) reasonsUnique.push("source binding is invalid or stale");
-  if (!sourceTrustValid) reasonsUnique.push("source Strategy trust is invalid or stale");
-  if (!globalLogicalIdAvailable) reasonsUnique.push("current user-global logical Strategy ID is unavailable");
-  if (!userGlobalCapacityAvailable) reasonsUnique.push("user-global Derived Strategy capacity is unavailable");
-  if (!selectedEvidenceRefsValid) reasonsUnique.push("the selected evidence reference set is not fully resolvable and eligible");
-  const promotionReasons = Object.freeze([...new Set(reasonsUnique)]);
-  const promotionEligibility: ScopePromotionEligibility = Object.freeze({
-    eligible: scopeCandidateValid && scopeCandidateOpen && noTerminalScopeDecision &&
-      sourceBindingValid && sourceTrustValid && proposedTrustScopeValid &&
-      noSeedLogicalIdCollision && globalLogicalIdAvailable && localConflictFree &&
-      userGlobalCapacityAvailable && evidenceCompletenessValid && selectedEvidenceRefsValid &&
-      eligibleTrialRunCount >= 2 && distinctEligibleTargetProjectCount >= 2,
-    requiredEligibleTrialRunCount: 2,
-    eligibleTrialRunCount,
-    requiredDistinctTargetProjectCount: 2,
-    distinctEligibleTargetProjectCount,
-    scopeCandidateValid,
-    scopeCandidateOpen,
-    noTerminalScopeDecision,
-    sourceBindingValid,
-    sourceStrategyTrustValid: sourceTrustValid,
-    proposedTrustScopeValid,
-    noSeedLogicalIdCollision,
-    globalLogicalIdAvailable,
-    projectLocalConflictFree: localConflictFree,
-    userGlobalCapacityAvailable,
-    evidenceCompletenessValid,
-    selectedEvidenceRefsValid,
-    retainedEligibleRefCount: selectedEvidenceRefs.length,
-    omittedEligibleRefCount: Math.max(0, eligibleTrialRunCount - selectedEvidenceRefs.length),
-    reasons: promotionReasons,
-  });
-
-  const currentProjectIsSource = input.currentProjectRoot === undefined || input.currentProjectRoot === null
-    ? null
-    : getProjectId(input.currentProjectRoot) === source.sourceProjectId;
-  return Object.freeze({
-    candidate,
-    candidateFingerprint,
-    sourceCandidate: sourceFacts.sourceCandidate,
-    currentProjectIsSource,
-    terminalDecision: finalGlobalFacts.terminalDecision,
-    inventories: inventoriesFinal,
-    matchingRecordCount,
-    ineligibleMatchingRunCount,
-    eligibleTrialRunCount,
-    distinctEligibleTargetProjectCount,
-    eligibleTargetProjectIds,
-    selectedEvidenceRefs,
-    omittedEligibleRefCount: Math.max(0, eligibleTrialRunCount - selectedEvidenceRefs.length),
-    sourceTrustValid,
-    sourceBindingValid,
-    evidenceScanComplete,
-    globalStateComplete,
-    projectTrustScanComplete,
     promotionEligibility,
     reasons: promotionReasons,
   });

@@ -463,9 +463,9 @@ function isMissing(error: unknown): boolean {
   return errorCode(error) === "ENOENT";
 }
 
-/** Durable user-global immutable Synthesis Candidate storage. */
-export class FileStrategySynthesisCandidateStore implements StrategySynthesisCandidateStore {
-  private readonly baseDir: string;
+/** Dedicated read-only user-global Synthesis Candidate access. */
+export class FileStrategySynthesisCandidateReader implements StrategySynthesisCandidateReader {
+  protected readonly baseDir: string;
 
   constructor(options: FileStrategySynthesisCandidateStoreOptions = {}) {
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "global");
@@ -518,6 +518,17 @@ export class FileStrategySynthesisCandidateStore implements StrategySynthesisCan
     return Object.freeze(candidates);
   }
 
+  strategySynthesisCandidateDirectory(): string {
+    return join(this.baseDir, STRATEGY_SYNTHESIS_CANDIDATE_DIRECTORY_NAME);
+  }
+
+  candidateDirectory(): string {
+    return this.strategySynthesisCandidateDirectory();
+  }
+}
+
+/** Durable user-global immutable Synthesis Candidate storage. */
+export class FileStrategySynthesisCandidateStore extends FileStrategySynthesisCandidateReader implements StrategySynthesisCandidateStore {
   async save(candidate: StrategySynthesisCandidateV1): Promise<void> {
     const validated = validateStrategySynthesisCandidateArtifact(candidate, candidate.candidateId);
     const directory = this.strategySynthesisCandidateDirectory();
@@ -534,14 +545,7 @@ export class FileStrategySynthesisCandidateStore implements StrategySynthesisCan
       throw new Error(`Could not save Strategy Synthesis Candidate file '${path}': ${errorMessage(error)}`);
     }
   }
-
-  strategySynthesisCandidateDirectory(): string {
-    return join(this.baseDir, STRATEGY_SYNTHESIS_CANDIDATE_DIRECTORY_NAME);
-  }
-
-  candidateDirectory(): string {
-    return this.strategySynthesisCandidateDirectory();
-  }
 }
 
 export { FileStrategySynthesisCandidateStore as FileStrategySynthesisCandidateV1Store };
+export { FileStrategySynthesisCandidateReader as FileStrategySynthesisCandidateV1Reader };

@@ -35,6 +35,10 @@ import {
   type ScopeTrialGlobalArtifacts,
 } from "./strategy-trust-scope-artifacts.ts";
 import {
+  loadUserGlobalTrustedDerivedStrategyProjection,
+  type UserGlobalTrustedDerivedStrategyProjection,
+} from "./strategy-trust-scope-global.ts";
+import {
   validateStrategyTrustScopeSourceStrategy,
   type StrategyTrustScopeCandidateReader,
   type StrategyTrustScopeSourceStrategyV1,
@@ -245,6 +249,46 @@ function transferReaders(input: StrategySynthesisTrialReviewInput): TransferAuth
   };
 }
 
+function emptyScopeAuthorityReaders(): Pick<Required<TransferAuthorityInput>, "scopeCandidateReader" | "scopeDecisionReader" | "sourceResolver"> {
+  return {
+    scopeCandidateReader: {
+      read: async () => null,
+      readAll: async () => [],
+    },
+    scopeDecisionReader: {
+      read: async () => null,
+      readAll: async () => [],
+    },
+    sourceResolver: {
+      resolve: async () => {
+        throw new Error("no transfer-origin authority is configured");
+      },
+    },
+  };
+}
+
+async function readCombinedGlobalProjection(
+  input: StrategySynthesisTrialReviewInput,
+): Promise<UserGlobalTrustedDerivedStrategyProjection> {
+  const transfer = transferReaders(input);
+  const present = [
+    transfer.scopeCandidateReader,
+    transfer.scopeDecisionReader,
+    transfer.sourceResolver,
+  ].filter((value) => value !== undefined).length;
+  if (present !== 0 && present !== 3) {
+    throw new Error("global transfer authority dependencies are incomplete");
+  }
+  const empty = emptyScopeAuthorityReaders();
+  return loadUserGlobalTrustedDerivedStrategyProjection({
+    candidateReader: transfer.scopeCandidateReader ?? empty.scopeCandidateReader,
+    decisionReader: transfer.scopeDecisionReader ?? empty.scopeDecisionReader,
+    sourceResolver: transfer.sourceResolver ?? empty.sourceResolver,
+    synthesisCandidateReader: input.candidateReader,
+    synthesisDecisionReader: input.decisionReader,
+  });
+}
+
 async function deriveSynthesisGlobalReviewFacts(
   candidate: StrategySynthesisCandidateV1,
   input: StrategySynthesisTrialReviewInput,
@@ -282,85 +326,26 @@ async function deriveSynthesisGlobalReviewFacts(
     reasons.push(`global Synthesis artifacts could not be completely read: ${errorMessage(error)}`);
   }
 
-  const transfer = transferReaders(input);
-  let scopeArtifacts: ScopeTrialGlobalArtifacts | null = null;
-  const haveAnyTransferReader = transfer.scopeCandidateReader !== undefined ||
-    transfer.scopeDecisionReader !== undefined || transfer.sourceResolver !== undefined;
-  const haveCompleteTransferReaders = transfer.scopeCandidateReader !== undefined &&
-    transfer.scopeDecisionReader !== undefined && transfer.sourceResolver !== undefined;
-  if (haveAnyTransferReader && !haveCompleteTransferReaders) {
-    reasons.push("global transfer authority dependencies are incomplete");
-  } else if (haveCompleteTransferReaders) {
-    try {
-      scopeArtifacts = await readScopeTrialGlobalArtifacts(
-        transfer.scopeCandidateReader,
-        transfer.scopeDecisionReader,
-      );
-    } catch (error) {
-      reasons.push(`global transfer artifacts could not be completely read: ${errorMessage(error)}`);
-    }
+  let projection: UserGlobalTrustedDerivedStrategyProjection | null = null;
+  try {
+    projection = await readCombinedGlobalProjection(input);
+  } catch (error) {
+    reasons.push(`combined user-global trust projection could not be completely read: ${errorMessage(error)}`);
   }
 
-  const promotedGlobalEntries: GlobalPromotedIdentity[] = [];
-  const logicalIds = new Set<string>();
-  if (scopeArtifacts !== null && transfer.sourceResolver !== undefined) {
-    for (const decision of scopeArtifacts.decisions.filter((item) => item.decision === "promoted")) {
-      try {
-        const resolved = await transfer.sourceResolver.resolve(decision.sourceStrategy);
-        validateTransferSourceResolution(decision.sourceStrategy, resolved);
-        const identity: GlobalPromotedIdentity = Object.freeze({
-          origin: "transfer",
-          strategyId: decision.sourceStrategy.strategyId,
-          kind: decision.sourceStrategy.kind,
-          revisionIdentity: decision.sourceStrategy.revisionIdentity,
-          revisionFingerprint: decision.sourceStrategy.revisionFingerprint,
-          sourceProjectId: decision.sourceStrategy.sourceProjectId,
-        });
-        if (logicalIds.has(identity.strategyId)) {
-          throw new Error(`multiple promoted user-global revisions own logical Strategy ID '${identity.strategyId}'`);
-        }
-        logicalIds.add(identity.strategyId);
-        promotedGlobalEntries.push(identity);
-      } catch (error) {
-        reasons.push(`promoted transfer trust for '${decision.sourceStrategy.strategyId}' could not be freshly resolved: ${errorMessage(error)}`);
-      }
-    }
-  }
-  if (synthesisArtifacts !== null) {
-    for (const decision of synthesisArtifacts.decisions.filter((item) => item.decision === "promoted")) {
-      const promotedCandidate = synthesisArtifacts.candidates.find((item) => item.candidateId === decision.candidateId);
-      if (promotedCandidate === undefined) {
-        reasons.push(`promoted Synthesis Decision '${decision.candidateId}' is missing its immutable Candidate`);
-        continue;
-      }
-      try {
-        const validatedCandidate = validateStrategySynthesisCandidateArtifact(promotedCandidate, decision.candidateId);
-        validateStrategySynthesisDecisionBinding(decision, validatedCandidate);
-        const identity: GlobalPromotedIdentity = Object.freeze({
-          origin: "synthesis",
-          strategyId: validatedCandidate.proposal.strategyId,
-          kind: validatedCandidate.proposal.kind,
-          revisionIdentity: validatedCandidate.candidateId,
-          revisionFingerprint: strategySynthesisCandidateSemanticFingerprint(validatedCandidate),
-        });
-        if (logicalIds.has(identity.strategyId)) {
-          throw new Error(`multiple promoted user-global revisions own logical Strategy ID '${identity.strategyId}'`);
-        }
-        logicalIds.add(identity.strategyId);
-        promotedGlobalEntries.push(identity);
-      } catch (error) {
-        reasons.push(`promoted Synthesis trust for '${decision.candidateId}' is invalid: ${errorMessage(error)}`);
-      }
-    }
-  }
-  promotedGlobalEntries.sort((left, right) => compareText(
-    `${left.strategyId}\0${left.kind}\0${left.revisionIdentity}\0${left.revisionFingerprint}`,
-    `${right.strategyId}\0${right.kind}\0${right.revisionIdentity}\0${right.revisionFingerprint}`,
-  ));
-
+  const promotedGlobalEntries: GlobalPromotedIdentity[] = projection === null
+    ? []
+    : projection.entries.map((entry) => Object.freeze({
+        origin: entry.origin,
+        strategyId: entry.selection.strategyId,
+        kind: entry.selection.kind,
+        revisionIdentity: entry.selection.revisionIdentity,
+        revisionFingerprint: entry.selection.revisionFingerprint,
+        ...(entry.origin === "transfer" ? { sourceProjectId: entry.sourceStrategy?.sourceProjectId } : {}),
+      }));
+  const logicalIds = new Set(promotedGlobalEntries.map((entry) => entry.strategyId));
   const globalStateComplete = candidateBindingValid && synthesisArtifacts !== null &&
-    (!haveAnyTransferReader || (scopeArtifacts !== null && haveCompleteTransferReaders)) &&
-    reasons.length === 0;
+    projection !== null && reasons.length === 0;
   const globalLogicalIdAvailable = globalStateComplete && !logicalIds.has(candidate.proposal.strategyId) &&
     !SEED_STRATEGIES.some((seed) => seed.id === candidate.proposal.strategyId);
   const userGlobalCapacityAvailable = globalStateComplete &&
@@ -369,8 +354,8 @@ async function deriveSynthesisGlobalReviewFacts(
     candidateArtifactFingerprint,
     candidateBindingValid,
     terminalDecision,
-    scopeArtifacts,
     synthesisArtifacts,
+    projection,
     promotedGlobalEntries,
     globalLogicalIdAvailable,
     userGlobalCapacityAvailable,

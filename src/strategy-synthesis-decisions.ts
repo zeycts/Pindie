@@ -280,9 +280,9 @@ function isMissing(error: unknown): boolean {
   return errorCode(error) === "ENOENT";
 }
 
-/** Durable user-global immutable Synthesis Decision storage. */
-export class FileStrategySynthesisDecisionStore implements StrategySynthesisDecisionStore {
-  private readonly baseDir: string;
+/** Dedicated read-only user-global Synthesis Decision access. */
+export class FileStrategySynthesisDecisionReader implements StrategySynthesisDecisionReader {
+  protected readonly baseDir: string;
 
   constructor(options: FileStrategySynthesisDecisionStoreOptions = {}) {
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "global");
@@ -340,6 +340,17 @@ export class FileStrategySynthesisDecisionStore implements StrategySynthesisDeci
     return Object.freeze(decisions);
   }
 
+  strategySynthesisDecisionDirectory(): string {
+    return join(this.baseDir, STRATEGY_SYNTHESIS_DECISION_DIRECTORY_NAME);
+  }
+
+  decisionDirectory(): string {
+    return this.strategySynthesisDecisionDirectory();
+  }
+}
+
+/** Durable user-global immutable Synthesis Decision storage. */
+export class FileStrategySynthesisDecisionStore extends FileStrategySynthesisDecisionReader implements StrategySynthesisDecisionStore {
   async save(decision: StrategySynthesisDecisionV1): Promise<void> {
     const validated = validateStrategySynthesisDecisionArtifact(decision, decision.candidateId);
     const directory = this.strategySynthesisDecisionDirectory();
@@ -362,28 +373,33 @@ export class FileStrategySynthesisDecisionStore implements StrategySynthesisDeci
       throw new Error(`Could not save Strategy Synthesis Decision file '${path}': ${errorMessage(error)}`);
     }
   }
-
-  strategySynthesisDecisionDirectory(): string {
-    return join(this.baseDir, STRATEGY_SYNTHESIS_DECISION_DIRECTORY_NAME);
-  }
-
-  decisionDirectory(): string {
-    return this.strategySynthesisDecisionDirectory();
-  }
 }
 
 export { FileStrategySynthesisDecisionStore as FileStrategySynthesisDecisionV1Store };
+export { FileStrategySynthesisDecisionReader as FileStrategySynthesisDecisionV1Reader };
 
-/** Read terminal Synthesis artifacts without enumerating inactive Candidates. */
+/** Read Synthesis Decisions and only the Candidate authority they promote. */
 export interface SynthesisTrialGlobalArtifacts {
   readonly decisions: readonly StrategySynthesisDecisionV1[];
   readonly candidates: readonly StrategySynthesisCandidateV1[];
 }
 
+function sortSynthesisGlobalArtifacts(
+  decisionsById: ReadonlyMap<string, StrategySynthesisDecisionV1>,
+  candidates: readonly StrategySynthesisCandidateV1[],
+): SynthesisTrialGlobalArtifacts {
+  const decisions = [...decisionsById.values()].sort((left, right) => left.candidateId < right.candidateId ? -1 : left.candidateId > right.candidateId ? 1 : 0);
+  const sortedCandidates = [...candidates].sort((left, right) => left.candidateId < right.candidateId ? -1 : left.candidateId > right.candidateId ? 1 : 0);
+  return Object.freeze({
+    decisions: Object.freeze(decisions),
+    candidates: Object.freeze(sortedCandidates),
+  });
+}
+
 /**
- * The durable global trust projection only needs Candidates referenced by a
- * terminal Decision. A malformed unrelated inactive Candidate therefore does
- * not poison ordinary trust reconstruction.
+ * Strictly read every terminal Decision and every Candidate it references.
+ * Workflow/review callers use this complete view so a malformed terminal
+ * artifact cannot be mistaken for an open Candidate.
  */
 export async function readSynthesisTrialGlobalArtifacts(
   candidateReader: StrategySynthesisCandidateReader,
@@ -407,12 +423,39 @@ export async function readSynthesisTrialGlobalArtifacts(
     decisionsById.set(decision.candidateId, decision);
     candidates.push(validatedCandidate);
   }
-  const decisions = [...decisionsById.values()].sort((left, right) => left.candidateId < right.candidateId ? -1 : left.candidateId > right.candidateId ? 1 : 0);
-  candidates.sort((left, right) => left.candidateId < right.candidateId ? -1 : left.candidateId > right.candidateId ? 1 : 0);
-  return Object.freeze({
-    decisions: Object.freeze(decisions),
-    candidates: Object.freeze(candidates),
-  });
+  return sortSynthesisGlobalArtifacts(decisionsById, candidates);
+}
+
+/**
+ * Reconstruct normal user-global trust without granting inactive/rejected
+ * Candidates any authority. Every Decision is still validated, but only a
+ * promoted Decision causes its Candidate to be loaded and binding-checked.
+ */
+export async function readSynthesisTrustedGlobalArtifacts(
+  candidateReader: StrategySynthesisCandidateReader,
+  decisionReader: StrategySynthesisDecisionReader,
+): Promise<SynthesisTrialGlobalArtifacts> {
+  const rawDecisions = await decisionReader.readAll();
+  if (!Array.isArray(rawDecisions)) throw new Error("Global Synthesis Decision reader returned an invalid collection.");
+  const decisionsById = new Map<string, StrategySynthesisDecisionV1>();
+  const candidates: StrategySynthesisCandidateV1[] = [];
+  for (const rawDecision of rawDecisions) {
+    const decision = validateStrategySynthesisDecisionArtifact(rawDecision, rawDecision.candidateId);
+    if (decisionsById.has(decision.candidateId)) {
+      throw new Error(`Duplicate global Synthesis Decisions exist for '${decision.candidateId}'.`);
+    }
+    decisionsById.set(decision.candidateId, decision);
+    if (decision.decision !== "promoted") continue;
+    const candidate = await candidateReader.read(decision.candidateId);
+    if (candidate === null) {
+      throw new Error(`promoted global Synthesis Decision '${decision.candidateId}' is missing its immutable Candidate.`);
+    }
+    const validatedCandidate = validateStrategySynthesisCandidateArtifact(candidate, decision.candidateId);
+    validateStrategySynthesisDecisionBinding(decision, validatedCandidate);
+    candidates.push(validatedCandidate);
+  }
+  return sortSynthesisGlobalArtifacts(decisionsById, candidates);
 }
 
 export const readStrategySynthesisTrialGlobalArtifacts = readSynthesisTrialGlobalArtifacts;
+export const readStrategySynthesisTrustedGlobalArtifacts = readSynthesisTrustedGlobalArtifacts;

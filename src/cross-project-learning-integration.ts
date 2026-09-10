@@ -417,6 +417,7 @@ export class CrossProjectLearningIntegration {
       binding,
       currentPortfolio,
       this.strategySynthesisCandidateStore,
+      this.strategySynthesisDecisionStore,
     );
     if (!sameSynthesisTrialBinding(binding, currentBinding)) {
       throw new Error("the Synthesis Candidate or target trust changed after /trial was armed");
@@ -485,6 +486,7 @@ export class CrossProjectLearningIntegration {
       activeSynthesisTrial,
       currentPortfolio,
       this.strategySynthesisCandidateStore,
+      this.strategySynthesisDecisionStore,
     );
     if (!sameSynthesisTrialBinding(activeSynthesisTrial, currentBinding)) {
       throw new Error("Synthesis Candidate selector is unavailable: the Candidate artifact or target trust changed while the Trial was active.");
@@ -547,6 +549,7 @@ export class CrossProjectLearningIntegration {
       targetProjectRoot: projectRoot,
       targetPortfolio,
       candidateReader: this.strategySynthesisCandidateStore,
+      decisionReader: this.strategySynthesisDecisionStore,
     });
     return filterSynthesisTrialCommandOptions(projection.entries, prefix);
   }
@@ -650,6 +653,8 @@ export class CrossProjectLearningIntegration {
         sourceResolver: this.trust.scopeSourceResolver,
         experienceReader: this.crossProjectExperienceReader,
         projectTrustReader: this.scopeProjectTrustReader,
+        synthesisCandidateReader: this.trust.synthesisCandidateReader,
+        synthesisDecisionReader: this.trust.synthesisDecisionReader,
         currentProjectRoot,
       });
       if (currentProjectRoot !== this.learning.getProjectRoot()) {
@@ -810,6 +815,8 @@ export class CrossProjectLearningIntegration {
       writerLock: this.trust.writerLock,
       experienceReader: this.crossProjectExperienceReader,
       projectTrustReader: this.scopeProjectTrustReader,
+      synthesisCandidateReader: this.trust.synthesisCandidateReader,
+      synthesisDecisionReader: this.trust.synthesisDecisionReader,
     };
     try {
       const result = await createStrategyTrustScopeDecisionForHuman({
@@ -889,6 +896,7 @@ export class CrossProjectLearningIntegration {
         targetProjectRoot: projectRoot,
         targetPortfolio,
         candidateReader: this.strategySynthesisCandidateStore,
+        decisionReader: this.strategySynthesisDecisionStore,
       });
     } catch (error) {
       ctx.ui.notify(`Pindie could not arm /trial Synthesis Candidate: ${errorMessage(error)}`, "warning");
@@ -909,6 +917,7 @@ export class CrossProjectLearningIntegration {
         targetProjectRoot: projectRoot,
         targetPortfolio: latestPortfolio,
         candidateReader: this.strategySynthesisCandidateStore,
+        decisionReader: this.strategySynthesisDecisionStore,
       });
       if (!sameSynthesisTrialBinding(binding, latestBinding)) {
         throw new Error("the Synthesis Candidate or target trust changed before arming");

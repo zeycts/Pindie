@@ -9,6 +9,11 @@ import {
   type StrategySynthesisCandidateV1,
 } from "./strategy-synthesis-candidates.ts";
 import {
+  validateStrategySynthesisDecisionArtifact,
+  validateStrategySynthesisDecisionBinding,
+  type StrategySynthesisDecisionReader,
+} from "./strategy-synthesis-decisions.ts";
+import {
   createStrategyRevisionSelection,
   type StrategyRevisionSelection,
 } from "./policy.ts";
@@ -373,6 +378,21 @@ export interface SynthesisTrialResolutionInput {
   readonly targetProjectRoot: string;
   readonly targetPortfolio: TrustedStrategyPortfolio;
   readonly candidateReader: StrategySynthesisCandidateReader;
+  /** Terminal Decisions close Trial admission; optional for v0.2 pure-test
+   * callers that have no global Decision namespace. */
+  readonly decisionReader?: StrategySynthesisDecisionReader;
+}
+
+async function assertSynthesisCandidateOpen(
+  candidate: StrategySynthesisCandidateV1,
+  decisionReader: StrategySynthesisDecisionReader | undefined,
+): Promise<void> {
+  if (decisionReader === undefined) return;
+  const rawDecision = await decisionReader.read(candidate.candidateId);
+  if (rawDecision === null) return;
+  const decision = validateStrategySynthesisDecisionArtifact(rawDecision, candidate.candidateId);
+  validateStrategySynthesisDecisionBinding(decision, candidate);
+  throw new Error(`Synthesis Candidate '${candidate.candidateId}' already has a terminal ${decision.decision} Decision.`);
 }
 
 /** Resolve one exact global Synthesis Candidate for a target project. */
@@ -386,8 +406,10 @@ export async function resolveSynthesisTrialBinding(
   if (candidate === null) {
     throw new Error(`Strategy Synthesis Candidate '${input.candidateId}' was not found.`);
   }
+  const validated = validateStrategySynthesisCandidateArtifact(candidate, input.candidateId);
+  await assertSynthesisCandidateOpen(validated, input.decisionReader);
   return createSynthesisTrialBinding(
-    candidate,
+    validated,
     input.targetProjectRoot,
     input.targetPortfolio,
   );
@@ -407,7 +429,7 @@ export interface SynthesisTrialCandidateProjection {
 
 /** Build advisory completion entries; stale/colliding Candidates are omitted. */
 export async function listOpenSynthesisTrialCandidates(
-  input: Pick<SynthesisTrialResolutionInput, "targetProjectRoot" | "targetPortfolio" | "candidateReader">,
+  input: Pick<SynthesisTrialResolutionInput, "targetProjectRoot" | "targetPortfolio" | "candidateReader" | "decisionReader">,
 ): Promise<SynthesisTrialCandidateProjection> {
   const rawCandidates = await input.candidateReader.readAll();
   if (!Array.isArray(rawCandidates)) {
@@ -422,6 +444,7 @@ export async function listOpenSynthesisTrialCandidates(
     }
     ids.add(candidate.candidateId);
     try {
+      await assertSynthesisCandidateOpen(candidate, input.decisionReader);
       const binding = createSynthesisTrialBinding(
         candidate,
         input.targetProjectRoot,
@@ -497,12 +520,14 @@ export async function revalidateSynthesisTrialBinding(
   lease: Pick<SynthesisTrialBinding, "candidate" | "targetProjectRoot" | "targetProjectId">,
   targetPortfolio: TrustedStrategyPortfolio,
   candidateReader: StrategySynthesisCandidateReader,
+  decisionReader?: StrategySynthesisDecisionReader,
 ): Promise<SynthesisTrialBinding> {
   const fresh = await resolveSynthesisTrialBinding({
     candidateId: lease.candidate.candidateId,
     targetProjectRoot: lease.targetProjectRoot,
     targetPortfolio,
     candidateReader,
+    decisionReader,
   });
   if (fresh.targetProjectId !== lease.targetProjectId) {
     throw new Error("Synthesis Trial target project changed while revalidating the active lease.");
