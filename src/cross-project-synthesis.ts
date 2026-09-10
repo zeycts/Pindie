@@ -209,6 +209,9 @@ export interface CrossProjectSynthesisPacket {
   readonly packetFingerprint: string;
 }
 
+/** Slice B's durable receipt name for the already-built Slice A packet. */
+export type CrossProjectDerivationPacketV1 = CrossProjectSynthesisPacket;
+
 export interface CrossProjectSynthesisScanInput {
   readonly experienceReader: RunExperienceProjectReader;
   readonly trustedPortfolioReader: ProjectTrustedStrategyPortfolioReader;
@@ -966,6 +969,61 @@ export function buildCrossProjectSynthesisPacket(
 export const buildCrossProjectSynthesisEvidencePacket = buildCrossProjectSynthesisPacket;
 export const buildCrossProjectSynthesisDiscoveryPacket = buildCrossProjectSynthesisPacket;
 
+/** Deterministic model-facing handle for one shown packet Run. */
+export function crossProjectSynthesisEvidenceHandle(index: number): string {
+  if (!Number.isSafeInteger(index) || index < 0 || index >= MAX_CROSS_PROJECT_SYNTHESIS_PACKET_RUNS) {
+    throw new Error("Cross-project synthesis evidence handle index is out of bounds.");
+  }
+  return `E${index + 1}`;
+}
+
+/** Resolve a canonical model-facing packet evidence handle without I/O. */
+export function crossProjectSynthesisEvidenceHandleIndex(value: unknown): number | null {
+  if (typeof value !== "string" || !/^E[1-9][0-9]*$/u.test(value)) return null;
+  const index = Number(value.slice(1)) - 1;
+  return Number.isSafeInteger(index) && index >= 0 && index < MAX_CROSS_PROJECT_SYNTHESIS_PACKET_RUNS
+    ? index
+    : null;
+}
+
+/** Return the exact qualified ref addressed by a shown packet Run index. */
+export function crossProjectSynthesisPacketEvidenceRef(
+  packet: CrossProjectSynthesisPacket,
+  index: number,
+): CrossProjectExperienceRefV1 {
+  validateCrossProjectSynthesisPacket(packet);
+  const run = packet.evidence.runs[index];
+  if (run === undefined) throw new Error("Cross-project synthesis packet evidence handle is not present.");
+  return Object.freeze({ ...run.sourceRef });
+}
+
+/** Derive a citation-only discovery gate from the frozen packet projections. */
+export function deriveCrossProjectSynthesisCitationSufficiency(
+  packet: CrossProjectSynthesisPacket,
+  refs: readonly CrossProjectExperienceRefV1[],
+): CrossProjectSynthesisSufficiency {
+  validateCrossProjectSynthesisPacket(packet);
+  const citedKeys = new Set(refs.map((ref) => refKey(validateCrossProjectExperienceRefArtifact(ref))));
+  const runs = packet.evidence.runs.filter((run) => citedKeys.has(refKey(run.sourceRef)));
+  const matchedKeys = new Set(runs.map((run) => refKey(run.sourceRef)));
+  const projects = new Set(runs.map((run) => run.sourceRef.projectId));
+  const goals = new Set(runs.map((run) => run.exactTaskGoalDigest));
+  const profiles = new Set(runs.map((run) => run.finalPolicy.policyProfileId));
+  return Object.freeze({
+    version: CROSS_PROJECT_SYNTHESIS_SUFFICIENCY_VERSION,
+    distinctQualifiedExperienceRefCount: matchedKeys.size,
+    distinctProjectIdCount: projects.size,
+    distinctExactTaskGoalCount: goals.size,
+    distinctPolicyEvidenceProfileCount: profiles.size,
+    sufficient: matchedKeys.size >= MIN_CROSS_PROJECT_SYNTHESIS_SOURCE_RECORDS &&
+      projects.size >= MIN_CROSS_PROJECT_SYNTHESIS_PROJECTS &&
+      goals.size >= MIN_CROSS_PROJECT_SYNTHESIS_GOALS &&
+      profiles.size >= MIN_CROSS_PROJECT_SYNTHESIS_POLICY_PROFILES,
+  });
+}
+
+export const deriveCrossProjectSynthesisCandidateSufficiency = deriveCrossProjectSynthesisCitationSufficiency;
+
 function validatePacketSufficiency(
   value: unknown,
   label: string,
@@ -1145,9 +1203,10 @@ export function formatCrossProjectSynthesisPacket(
     "",
     "Shown qualified Experience Runs:",
   );
-  for (const run of packet.evidence.runs) {
+  for (const [index, run] of packet.evidence.runs.entries()) {
     lines.push(
-      `- Source: ${run.sourceRef.projectId}/${run.sourceRef.recordId}`,
+      `- Evidence handle: ${crossProjectSynthesisEvidenceHandle(index)}`,
+      `  Source: ${run.sourceRef.projectId}/${run.sourceRef.recordId}`,
       `  Record fingerprint: ${run.sourceRef.recordFingerprint}`,
       `  Recorded at: ${run.recordedAt}`,
       `  Task goal: ${run.taskGoal}`,

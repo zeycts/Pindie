@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import type {
@@ -5,6 +6,22 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 
+import {
+  buildCrossProjectSynthesisPacket,
+  formatCrossProjectSynthesisPacket,
+  scanCrossProjectSynthesisEvidence,
+  type CrossProjectSynthesisPacket,
+} from "./cross-project-synthesis.ts";
+import type { GlobalDerivationLease } from "./strategy-global-derivation.ts";
+import type { ProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safety.ts";
+import {
+  createPindieStrategySynthesisCandidateTool,
+} from "./tools/strategy-synthesis-candidate.ts";
+import type {
+  StrategySynthesisCandidateRunBinding,
+  StrategySynthesisCandidateRuntimeAccess,
+  StrategySynthesisCandidateStore,
+} from "./strategy-synthesis-candidates.ts";
 import type {
   CrossProjectLearningAttachment,
   SelfImprovementLearningAccess,
@@ -80,7 +97,9 @@ export interface CrossProjectLearningIntegrationOptions {
   readonly learning: SelfImprovementLearningAccess;
   readonly trust: SelfImprovementStrategyTrustAccess;
   readonly crossProjectExperienceReader: RunExperienceProjectReader;
+  readonly crossProjectTrustReader: ProjectTrustedStrategyPortfolioReader;
   readonly scopeProjectTrustReader: ScopeProjectTrustReader;
+  readonly strategySynthesisCandidateStore: StrategySynthesisCandidateStore;
   readonly now?: () => number;
 }
 
@@ -93,24 +112,250 @@ export class CrossProjectLearningIntegration {
   private readonly learning: SelfImprovementLearningAccess;
   private readonly trust: SelfImprovementStrategyTrustAccess;
   private readonly crossProjectExperienceReader: RunExperienceProjectReader;
+  private readonly crossProjectTrustReader: ProjectTrustedStrategyPortfolioReader;
   private readonly scopeProjectTrustReader: ScopeProjectTrustReader;
+  private readonly strategySynthesisCandidateStore: StrategySynthesisCandidateStore;
   private readonly now: () => number;
+  private pendingGlobalDerivation: {
+    readonly attemptId: string;
+    readonly sessionId: string;
+    readonly invocationRoot: string;
+    readonly projectId: string;
+    readonly packet: CrossProjectSynthesisPacket;
+    readonly candidateId: string;
+    readonly createdAt: string;
+  } | null = null;
+  private activeGlobalDerivation: StrategySynthesisCandidateRunBinding | null = null;
+  private globalPublication: "idle" | "publishing" | "published" = "idle";
 
   constructor(options: CrossProjectLearningIntegrationOptions) {
     this.pi = options.pi;
     this.learning = options.learning;
     this.trust = options.trust;
     this.crossProjectExperienceReader = options.crossProjectExperienceReader;
+    this.crossProjectTrustReader = options.crossProjectTrustReader;
     this.scopeProjectTrustReader = options.scopeProjectTrustReader;
+    this.strategySynthesisCandidateStore = options.strategySynthesisCandidateStore;
     this.now = options.now ?? Date.now;
   }
 
   registerCommands(): void {
+    this.pi.registerCommand("derive-global", {
+      description: "Start explicit cross-project Strategy Synthesis discovery",
+      handler: async (args, ctx) => this.handleGlobalDerivationCommand(args, ctx),
+    });
     this.pi.registerCommand("trust-transfer", {
       description: "Propose one project-local promoted Derived Strategy for user-global trust",
       getArgumentCompletions: (prefix) => this.trustTransferCommandCompletions(prefix),
       handler: async (args, ctx) => this.handleTrustTransferCommand(args, ctx),
     });
+  }
+
+  registerTools(): void {
+    this.pi.registerTool(createPindieStrategySynthesisCandidateTool({
+      runtime: this.synthesisCandidateRuntimeAccess(),
+      candidateStore: this.strategySynthesisCandidateStore,
+      getProjectRoot: this.learning.getProjectRoot,
+      getAgentRunGeneration: this.learning.getActiveAgentRunGeneration,
+    }));
+  }
+
+  private synthesisCandidateRuntimeAccess(): StrategySynthesisCandidateRuntimeAccess {
+    return {
+      activeFor: (sessionId, invocationRoot, agentRunGeneration) => {
+        const active = this.activeGlobalDerivation;
+        if (
+          active === null ||
+          agentRunGeneration === null ||
+          active.sessionId !== sessionId ||
+          active.invocationRoot !== invocationRoot ||
+          active.agentRunGeneration !== agentRunGeneration
+        ) return null;
+        return active;
+      },
+      claimPublication: (attemptId) => {
+        const active = this.activeGlobalDerivation;
+        if (
+          active === null ||
+          active.attemptId !== attemptId ||
+          this.globalPublication !== "idle"
+        ) return false;
+        this.globalPublication = "publishing";
+        return true;
+      },
+      releasePublication: (attemptId) => {
+        if (
+          this.activeGlobalDerivation?.attemptId === attemptId &&
+          this.globalPublication === "publishing"
+        ) this.globalPublication = "idle";
+      },
+      completePublication: (attemptId) => {
+        if (
+          this.activeGlobalDerivation?.attemptId !== attemptId ||
+          this.globalPublication !== "publishing"
+        ) return false;
+        this.globalPublication = "published";
+        return true;
+      },
+    };
+  }
+
+  private clearGlobalDerivationPreparation(): void {
+    this.pendingGlobalDerivation = null;
+    this.activeGlobalDerivation = null;
+    this.globalPublication = "idle";
+  }
+
+  /** Abort a pending or active synthesis Run without touching Core State. */
+  abortGlobalDerivationRun(): void {
+    this.clearGlobalDerivationPreparation();
+  }
+
+  /** Bind CPL's frozen packet after SI has bound the generic reservation. */
+  bindGlobalDerivationRun(lease: GlobalDerivationLease): {
+    readonly promptContribution: string;
+  } {
+    const prepared = this.pendingGlobalDerivation;
+    if (
+      prepared === null ||
+      prepared.attemptId !== lease.attemptId ||
+      prepared.sessionId !== lease.sessionId ||
+      prepared.invocationRoot !== lease.invocationRoot ||
+      prepared.projectId !== lease.projectId
+    ) {
+      throw new Error("the frozen cross-project packet is absent or does not match the active Global Derivation reservation");
+    }
+    const active = Object.freeze({
+      ...lease,
+      candidateId: prepared.candidateId,
+      createdAt: prepared.createdAt,
+      packet: prepared.packet,
+    });
+    this.pendingGlobalDerivation = null;
+    this.activeGlobalDerivation = active;
+    this.globalPublication = "idle";
+    return Object.freeze({
+      promptContribution: [
+        formatCrossProjectSynthesisPacket(active.packet),
+        "",
+        "<PINDIE_GLOBAL_DERIVATION_RUN>",
+        "This is one native, read-only cross-project synthesis Run; it is not a project implementation Task.",
+        "The frozen packet above is the complete project evidence supplied to this Run. Do not call project, git, shell, web, trust, memory, Policy, Task, Gate, Verification, or any other tool.",
+        "If a bounded missing-abstraction hypothesis is justified, call only pindie_strategy_synthesis_candidate_create, at most once. Candidate creation is optional.",
+        "The Candidate remains inactive and grants no Trial, Policy, Decision, or Promotion authority.",
+        "</PINDIE_GLOBAL_DERIVATION_RUN>",
+      ].join("\n"),
+    });
+  }
+
+  /** Clear only the exact active synthesis Run at settlement. */
+  settleGlobalDerivationRun(agentRunGeneration: number): void {
+    if (this.activeGlobalDerivation?.agentRunGeneration !== agentRunGeneration) return;
+    this.clearGlobalDerivationPreparation();
+  }
+
+  resetForSession(): void {
+    this.clearGlobalDerivationPreparation();
+  }
+
+  private async handleGlobalDerivationCommand(
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> {
+    if (args.trim() !== "") {
+      ctx.ui.notify("Usage: /derive-global", "warning");
+      return;
+    }
+    const projectRoot = this.learning.getProjectRoot();
+    if (projectRoot === null) {
+      ctx.ui.notify("Pindie could not start /derive-global: no current project root is loaded.", "warning");
+      return;
+    }
+    if (!ctx.isIdle()) {
+      ctx.ui.notify("Pindie could not start /derive-global: the Agent is busy.", "warning");
+      return;
+    }
+
+    let sessionId: string;
+    try {
+      sessionId = ctx.sessionManager.getSessionId();
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not start /derive-global: ${errorMessage(error)}`, "warning");
+      return;
+    }
+
+    // This synchronous reservation is the admission boundary. No cross-project
+    // Experience or trust scan occurs before it succeeds.
+    const admission = this.learning.globalDerivation.reserve(sessionId, projectRoot);
+    if (!admission.allowed) {
+      const reason = admission.reason === "adaptation"
+        ? "an adaptation attempt is already pending or active"
+        : admission.reason === "derivation"
+          ? "a local /derive attempt is already pending or active"
+          : admission.reason === "trial"
+            ? "a Candidate Trial is already pending or active"
+            : "another /derive-global attempt is already pending or active";
+      ctx.ui.notify(`Pindie could not start /derive-global: ${reason}.`, "warning");
+      return;
+    }
+    const reservation = admission.reservation;
+    try {
+      const scan = await scanCrossProjectSynthesisEvidence({
+        experienceReader: this.crossProjectExperienceReader,
+        trustedPortfolioReader: this.crossProjectTrustReader,
+      });
+      if (
+        !this.learning.globalDerivation.isCurrent(reservation) ||
+        ctx.sessionManager.getSessionId() !== sessionId ||
+        this.learning.getProjectRoot() !== projectRoot ||
+        !ctx.isIdle()
+      ) throw new Error("the current Session, project, Agent state, or Global Derivation reservation changed while scanning evidence");
+
+      const packet = buildCrossProjectSynthesisPacket({
+        scan,
+        capturedAt: new Date(this.now()).toISOString(),
+      });
+      if (
+        !this.learning.globalDerivation.isCurrent(reservation) ||
+        ctx.sessionManager.getSessionId() !== sessionId ||
+        this.learning.getProjectRoot() !== projectRoot ||
+        !ctx.isIdle()
+      ) throw new Error("the current Session, project, Agent state, or Global Derivation reservation changed before launch");
+
+      const candidateId = randomUUID().toLowerCase();
+      const createdAt = new Date(this.now()).toISOString();
+      this.pendingGlobalDerivation = Object.freeze({
+        attemptId: reservation.attemptId,
+        sessionId,
+        invocationRoot: projectRoot,
+        projectId: reservation.projectId,
+        packet,
+        candidateId,
+        createdAt,
+      });
+      try {
+        this.pi.sendUserMessage(
+          "Begin the explicitly requested cross-project Strategy Synthesis discovery Run. Use only the frozen Cross-Project Synthesis Packet supplied for this Run. Candidate creation is optional missing-abstraction hypothesis generation, not project implementation work.",
+        );
+      } catch (error) {
+        this.clearGlobalDerivationPreparation();
+        this.learning.globalDerivation.cancel();
+        throw error;
+      }
+      ctx.ui.notify(
+        `Cross-project Strategy Synthesis Run started with ${packet.evidence.eligibleRunCount} eligible Runs from ${packet.inventory.projectCount} project namespace${packet.inventory.projectCount === 1 ? "" : "s"}. Candidate creation is optional.`,
+        "info",
+      );
+    } catch (error) {
+      this.clearGlobalDerivationPreparation();
+      this.learning.globalDerivation.cancel();
+      const message = errorMessage(error);
+      if (/insufficient/i.test(message)) {
+        ctx.ui.notify(`Pindie could not start /derive-global: discovery evidence is insufficient; no Agent Run was started.`, "warning");
+      } else {
+        ctx.ui.notify(`Pindie could not start /derive-global: ${message}`, "warning");
+      }
+    }
   }
 
   async validatePendingScopeTrial(binding: ScopeTrialBinding): Promise<void> {
@@ -411,6 +656,10 @@ export class CrossProjectLearningIntegration {
       ctx.ui.notify("Pindie could not arm /trial Scope Candidate: a Strategy Derivation attempt is already pending or active.", "warning");
       return;
     }
+    if (this.learning.hasGlobalDerivationAttempt()) {
+      ctx.ui.notify("Pindie could not arm /trial Scope Candidate: a Global Derivation attempt is already pending or active.", "warning");
+      return;
+    }
 
     const sessionId = ctx.sessionManager.getSessionId();
     let targetPortfolio: TrustedStrategyPortfolio;
@@ -465,7 +714,7 @@ export class CrossProjectLearningIntegration {
       ctx.ui.notify("Pindie could not arm /trial Scope Candidate: the current project or Agent state changed before arming.", "warning");
       return;
     }
-    if (this.learning.trial.hasTrial || this.learning.hasAdaptationAttempt() || this.learning.hasDerivationAttempt()) {
+    if (this.learning.trial.hasTrial || this.learning.hasAdaptationAttempt() || this.learning.hasDerivationAttempt() || this.learning.hasGlobalDerivationAttempt()) {
       ctx.ui.notify("Pindie could not arm /trial Scope Candidate: another Self-Improvement attempt or Candidate Trial is already pending or active.", "warning");
       return;
     }
@@ -590,6 +839,10 @@ export class CrossProjectLearningIntegration {
   /** Keep the attachment shape explicit and limited to SI-owned ports. */
   asAttachment(): CrossProjectLearningAttachment {
     return {
+      bindGlobalDerivationRun: (lease) => this.bindGlobalDerivationRun(lease),
+      abortGlobalDerivationRun: () => this.abortGlobalDerivationRun(),
+      settleGlobalDerivationRun: (generation) => this.settleGlobalDerivationRun(generation),
+      resetForSession: () => this.resetForSession(),
       validatePendingScopeTrial: (binding) => this.validatePendingScopeTrial(binding),
       resolveScopeRevisionSelector: (lease, selector, kind, sessionId, generation) =>
         this.resolveScopeRevisionSelector(lease, selector, kind, sessionId, generation),

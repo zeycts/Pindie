@@ -52,6 +52,10 @@ import {
   type StrategyTrustScopeSourceResolver,
 } from "./strategy-trust-scope-resolution.ts";
 import {
+  FileProjectTrustedStrategyPortfolioReader,
+  type ProjectTrustedStrategyPortfolioReader,
+} from "./strategy-trust-safety.ts";
+import {
   FileScopeProjectTrustReader,
   type ScopeProjectTrustReader,
 } from "./strategy-trust-scope-review.ts";
@@ -66,6 +70,10 @@ import {
 import type { PindieExtensionOptions } from "./extension.ts";
 import type { NotionProjectMemoryClient } from "./notion-project-memory.ts";
 import type { ProjectMemorySink } from "./project-memory.ts";
+import {
+  FileStrategySynthesisCandidateStore,
+  type StrategySynthesisCandidateStore,
+} from "./strategy-synthesis-candidates.ts";
 
 const require = createRequire(import.meta.url);
 
@@ -286,6 +294,8 @@ export function composePindieExtension(
   let strategyTrustScopeSourceResolver: StrategyTrustScopeSourceResolver | undefined;
   let strategyTrustScopeWriterLock: GlobalWriterLock | undefined;
   let scopeProjectTrustReader: ScopeProjectTrustReader | undefined;
+  let crossProjectTrustReader: ProjectTrustedStrategyPortfolioReader | undefined;
+  let strategySynthesisCandidateStore: StrategySynthesisCandidateStore | undefined;
 
   if (selection.selfImprovement) {
     experienceStore = input.experienceStore ?? new FileRunExperienceStore({
@@ -329,6 +339,12 @@ export function composePindieExtension(
   if (selection.crossProjectLearning) {
     crossProjectExperienceReader = input.crossProjectExperienceReader ??
       (experienceReader !== undefined && isProjectReader(experienceReader) ? experienceReader : undefined);
+    crossProjectTrustReader = input.crossProjectTrustReader ?? new FileProjectTrustedStrategyPortfolioReader({
+      projectsBaseDir: roots.projectsBaseDir,
+      globalBaseDir: roots.globalBaseDir,
+    });
+    strategySynthesisCandidateStore = input.strategySynthesisCandidateStore ??
+      new FileStrategySynthesisCandidateStore({ baseDir: roots.globalBaseDir });
     scopeProjectTrustReader = input.scopeProjectTrustReader ??
       new FileScopeProjectTrustReader({ projectsBaseDir: roots.projectsBaseDir });
     if (crossProjectExperienceReader === undefined) {
@@ -389,6 +405,8 @@ export function composePindieExtension(
     experienceStore: _inputExperienceStore,
     experienceReader: _inputExperienceReader,
     crossProjectExperienceReader: _inputCrossProjectExperienceReader,
+    crossProjectTrustReader: _inputCrossProjectTrustReader,
+    strategySynthesisCandidateStore: _inputStrategySynthesisCandidateStore,
     strategyCandidateStore: _inputStrategyCandidateStore,
     strategyCandidateReader: _inputStrategyCandidateReader,
     strategyDerivationCandidateStore: _inputStrategyDerivationCandidateStore,
@@ -429,7 +447,9 @@ export function composePindieExtension(
     ...(selection.crossProjectLearning
       ? {
           crossProjectExperienceReader: crossProjectExperienceReader!,
+          crossProjectTrustReader: crossProjectTrustReader!,
           scopeProjectTrustReader: scopeProjectTrustReader!,
+          strategySynthesisCandidateStore: strategySynthesisCandidateStore!,
         }
       : {}),
     ...(projectMemorySink === undefined ? {} : { projectMemorySink }),

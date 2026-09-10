@@ -59,6 +59,8 @@ import type {
 } from "./strategy-trust-scope-decisions.ts";
 import type { StrategyTrustScopeSourceResolver } from "./strategy-trust-scope-resolution.ts";
 import type { ScopeProjectTrustReader } from "./strategy-trust-scope-review.ts";
+import type { ProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safety.ts";
+import type { StrategySynthesisCandidateStore } from "./strategy-synthesis-candidates.ts";
 import {
   emptyPromotedStrategyRevisionCatalog,
   type StrategyRevisionDecisionReader,
@@ -74,6 +76,7 @@ import type {
 } from "./strategy-portfolio.ts";
 import type { TrialRuntime } from "./strategy-trial.ts";
 import type { DerivationRuntime } from "./strategy-derivation.ts";
+import type { GlobalDerivationRuntime } from "./strategy-global-derivation.ts";
 import type { RemoteCompanion, RemotePi, RemoteStatusFacts } from "./remote-companion.ts";
 import type { DiscordRemote } from "./discord-remote.ts";
 import type { RemoteRoutingStore } from "./remote-routing.ts";
@@ -139,7 +142,9 @@ export interface PindieExtensionOptions {
   strategyTrustScopeSourceResolver?: StrategyTrustScopeSourceResolver;
   strategyTrustScopeWriterLock?: GlobalWriterLock;
   crossProjectExperienceReader?: RunExperienceProjectReader;
+  crossProjectTrustReader?: ProjectTrustedStrategyPortfolioReader;
   scopeProjectTrustReader?: ScopeProjectTrustReader;
+  strategySynthesisCandidateStore?: StrategySynthesisCandidateStore;
   resolveProjectRoot?: ProjectRootResolver;
   subscriptionUsageProvider?: SubscriptionUsageProvider;
   getStatusWidth?: () => number | undefined;
@@ -176,6 +181,7 @@ export interface PindieExtensionIntegration {
   readonly contextGovernor: CoreIntegration["contextGovernor"];
   readonly trial: TrialRuntime | null;
   readonly derivation: DerivationRuntime | null;
+  readonly globalDerivation: GlobalDerivationRuntime | null;
   readonly promotedStrategyRevisionCatalog: PromotedStrategyRevisionCatalog;
   /** Runtime-derived Seeds plus valid promoted Seed/Derived trust entries. */
   readonly trustedStrategyPortfolio: TrustedStrategyPortfolio | null;
@@ -335,7 +341,12 @@ function registerComposedPindieExtension(
     if (selfImprovement === null) {
       throw new Error("Cross-Project Learning requires Self-Improvement.");
     }
-    if (options.crossProjectExperienceReader === undefined || options.scopeProjectTrustReader === undefined) {
+    if (
+      options.crossProjectExperienceReader === undefined ||
+      options.crossProjectTrustReader === undefined ||
+      options.scopeProjectTrustReader === undefined ||
+      options.strategySynthesisCandidateStore === undefined
+    ) {
       throw new Error("Cross-Project Learning composition is missing an explicit production dependency.");
     }
     crossProjectLearning = new CrossProjectLearningIntegration({
@@ -343,7 +354,9 @@ function registerComposedPindieExtension(
       learning: selfImprovement.learningAccess,
       trust: selfImprovement.strategyTrustAccess,
       crossProjectExperienceReader: options.crossProjectExperienceReader,
+      crossProjectTrustReader: options.crossProjectTrustReader,
       scopeProjectTrustReader: options.scopeProjectTrustReader,
+      strategySynthesisCandidateStore: options.strategySynthesisCandidateStore,
       now: continuityNow,
     });
     selfImprovement.attachCrossProjectLearning(crossProjectLearning.asAttachment());
@@ -499,6 +512,7 @@ function registerComposedPindieExtension(
       : (selector, kind, ctx) => selfImprovement!.resolveRevisionSelector(selector, kind, ctx),
   });
   selfImprovement?.registerTools();
+  crossProjectLearning?.registerTools();
 
   if (options.projectMemorySink !== undefined) {
     pi.registerTool(createPindieMemoryCaptureTool({
@@ -675,6 +689,7 @@ function registerComposedPindieExtension(
             adaptationLease: null,
             trialLease: null,
             derivationLease: null,
+            globalDerivationLease: null,
             promptContributions: [] as readonly string[],
           }
         : await selfImprovement.prepareAgentRun(ctx);
@@ -699,6 +714,7 @@ function registerComposedPindieExtension(
         selfImprovementRun.adaptationLease === null &&
         selfImprovementRun.trialLease === null &&
         selfImprovementRun.derivationLease === null &&
+        selfImprovementRun.globalDerivationLease === null &&
         runtime.projectRoot !== null &&
         taskAtRunStart !== null &&
         !taskAtRunStart.completed
@@ -743,6 +759,7 @@ function registerComposedPindieExtension(
         ),
       };
     } catch (error) {
+      selfImprovement?.abortGlobalDerivationRun();
       throw error;
     }
   });
@@ -920,7 +937,7 @@ function registerComposedPindieExtension(
       if (isHandoffCall) handoff.cancelHandoffReservation(event.toolCallId);
       else handoff.cancelNormalToolCall(event.toolCallId);
     };
-    const selfImprovementRestriction = selfImprovement?.restrictToolCall(effect) ?? null;
+    const selfImprovementRestriction = selfImprovement?.restrictToolCall(effect, event.toolName) ?? null;
     if (selfImprovementRestriction !== null) {
       cancelToolAdmission();
       run.recordDeniedCall(effect);
@@ -965,11 +982,12 @@ function registerComposedPindieExtension(
     const snapshot = derivation.snapshot;
     const adaptationActive = selfImprovement?.isAdaptationRunActive === true;
     const derivationActive = selfImprovement?.isDerivationRunActive === true;
+    const globalDerivationActive = selfImprovement?.isGlobalDerivationRunActive === true;
     const capabilities = new Set<PindieCapability>(deriveCapabilities(snapshot));
     if (effect.requiredCapability === "policy.adapt" && adaptationActive) {
       capabilities.add("policy.adapt");
     }
-    if (effect.requiredCapability === "policy.derive" && derivationActive) {
+    if (effect.requiredCapability === "policy.derive" && (derivationActive || globalDerivationActive)) {
       capabilities.add("policy.derive");
     }
     const authorization = core.authorizeToolEffect(capabilities, effect);
@@ -1191,6 +1209,7 @@ function registerComposedPindieExtension(
     contextGovernor,
     trial: selfImprovement?.trial ?? null,
     derivation: selfImprovement?.derivation ?? null,
+    globalDerivation: selfImprovement?.globalDerivation ?? null,
     get promotedStrategyRevisionCatalog() {
       return selfImprovement?.promotedStrategyRevisionCatalog ?? emptyPromotedStrategyRevisionCatalog();
     },
