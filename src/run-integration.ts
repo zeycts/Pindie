@@ -128,12 +128,12 @@ export class RunIntegration {
     this.unavailableReason = null;
   }
 
-  async loadProject(projectRoot: string): Promise<void> {
-    await this.runtime.load(projectRoot);
+  async loadProject(projectRoot: string, signal?: AbortSignal): Promise<void> {
+    await this.runtime.load(projectRoot, signal);
   }
 
-  async refreshAuthoritativeState(): Promise<boolean> {
-    return this.runtime.refresh();
+  async refreshAuthoritativeState(signal?: AbortSignal): Promise<boolean> {
+    return this.runtime.refresh(signal);
   }
 
   markUnavailable(reason: string): void {

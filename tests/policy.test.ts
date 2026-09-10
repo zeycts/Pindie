@@ -14,6 +14,7 @@ import {
 } from "../src/policy.ts";
 import { SEED_STRATEGIES } from "../src/strategies.ts";
 import { createPindiePolicySetTool } from "../src/tools/policy.ts";
+import { PINDIE_TOOL_LIVENESS_TIMEOUT_MS } from "../src/liveness.ts";
 
 const REVISION_ID = "00000000-0000-4000-8000-000000000001";
 const REVISION_FINGERPRINT = `sha256:${"1".repeat(64)}`;
@@ -201,6 +202,59 @@ test("SI02 policy declaration tool is optional, structured, and replaces the cur
   assert.equal(snapshots.at(-1)?.approach.id, "explore-first");
   assert.deepEqual(snapshots.at(-1)?.modifiers, []);
   assert.notEqual(snapshots[0], snapshots[1]);
+});
+
+test("pindie_policy_set bounds a hanging revision resolver and never installs its late result", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const declared: PolicySnapshot[] = [];
+  let markStarted!: () => void;
+  let resolveRevision!: (selection: ReturnType<typeof revisionSelection>) => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const tool = createPindiePolicySetTool({
+    onPolicySet: (snapshot) => declared.push(snapshot),
+    resolveRevisionSelector: async () => {
+      markStarted();
+      return new Promise((resolve) => { resolveRevision = resolve; });
+    },
+  });
+  const execution = (tool.execute as any)("hung", {
+    approach: {
+      strategyId: "architecture-first",
+      revisionIdentity: REVISION_ID,
+      revisionFingerprint: REVISION_FINGERPRINT,
+    },
+  });
+  await started;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+  await assert.rejects(execution, /Policy resolution timed out/);
+  assert.deepEqual(declared, []);
+
+  resolveRevision(revisionSelection());
+  await Promise.resolve();
+  assert.deepEqual(declared, []);
+});
+
+test("pindie_policy_set uses the caller AbortSignal to cancel resolution", async () => {
+  const controller = new AbortController();
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const tool = createPindiePolicySetTool({
+    onPolicySet: () => assert.fail("aborted Policy resolution must not install a Snapshot"),
+    resolveRevisionSelector: async () => {
+      markStarted();
+      return new Promise(() => {});
+    },
+  });
+  const execution = (tool.execute as any)("aborted", {
+    approach: {
+      strategyId: "architecture-first",
+      revisionIdentity: REVISION_ID,
+      revisionFingerprint: REVISION_FINGERPRINT,
+    },
+  }, controller.signal);
+  await started;
+  controller.abort();
+  await assert.rejects(execution, /Policy resolution was aborted/);
 });
 
 test("SI02 policy keeps Seed Strategies in the stable contract and declares current Policy in its tool result", async () => {

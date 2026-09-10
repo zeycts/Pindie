@@ -122,6 +122,12 @@ import {
 import { PINDIE_TASK_HANDOFF_TOOL } from "./task-handoff-runtime.ts";
 import type { SubscriptionUsageProvider } from "./subscription-usage.ts";
 import { createPindieMemoryCaptureTool } from "./tools/memory.ts";
+import {
+  PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+  PindieLivenessAbortError,
+  PindieLivenessTimeoutError,
+  runBoundedOperation,
+} from "./liveness.ts";
 
 type ProjectRootResolver = (cwd: string) => Promise<string>;
 
@@ -981,8 +987,28 @@ function registerComposedPindieExtension(
       runtime.projectRoot !== null
     ) {
       try {
-        if (await run.refreshAuthoritativeState()) semanticStateChanged();
+        if (await runBoundedOperation({
+          label: "Authoritative State refresh",
+          timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+          run: (signal) => run.refreshAuthoritativeState(signal),
+        })) semanticStateChanged();
       } catch (error) {
+        if (
+          error instanceof PindieLivenessTimeoutError ||
+          error instanceof PindieLivenessAbortError
+        ) {
+          cancelToolAdmission();
+          run.recordDeniedCall(effect);
+          markUnavailable(
+            `Could not refresh Pindie State before consequential work: ${error.message}`,
+          );
+          return {
+            block: true,
+            reason: error instanceof PindieLivenessTimeoutError
+              ? "Pindie blocked this call: authoritative State refresh timed out; semantic authority is unavailable for this Run."
+              : "Pindie blocked this call: authoritative State refresh was aborted; semantic authority is unavailable for this Run.",
+          };
+        }
         markUnavailable(
           `Could not refresh Pindie State before consequential work: ${errorMessage(error)}`,
         );

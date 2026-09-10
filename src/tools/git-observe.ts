@@ -144,6 +144,9 @@ export async function runGitObservation(
   invocation: GitObservationInvocation,
   spawnGit: typeof spawn = spawn,
 ): Promise<GitObservationResult> {
+  if (invocation.signal?.aborted) {
+    return Promise.reject(new Error("Git observation was cancelled."));
+  }
   return new Promise((resolve, reject) => {
     const collector = new BoundedOutput(invocation.maxOutputBytes, invocation.maxOutputLines);
     let settled = false;
@@ -168,7 +171,14 @@ export async function runGitObservation(
       if (terminationCause !== undefined) return;
       terminationCause = cause;
       child.kill("SIGTERM");
-      killEscalation = setTimeout(() => child.kill("SIGKILL"), 250);
+      killEscalation = setTimeout(() => {
+        child.kill("SIGKILL");
+        settle(() => reject(
+          cause === "timeout"
+            ? new Error(`Git observation timed out after ${invocation.timeoutMs / 1000}s.`)
+            : new Error("Git observation was cancelled."),
+        ));
+      }, 250);
     };
     const abort = () => terminate("abort");
     const timeout = setTimeout(() => terminate("timeout"), invocation.timeoutMs);

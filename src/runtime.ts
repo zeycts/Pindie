@@ -15,11 +15,19 @@ export class PindieStateConflictError extends Error {
   }
 }
 
+export class PindieRuntimeStaleAuthorityError extends Error {
+  constructor() {
+    super("Pindie State read completed after its runtime authority context was invalidated.");
+    this.name = "PindieRuntimeStaleAuthorityError";
+  }
+}
+
 export class PindieRuntime {
   private readonly store: PindieStateStore;
   private currentProjectRoot: string | null = null;
   private currentState: PindieState = EMPTY_STATE;
   private currentExternalStateEpoch = 0;
+  private authorityGeneration = 0;
 
   constructor(store: PindieStateStore) { this.store = store; }
   get state(): PindieState { return this.currentState; }
@@ -27,21 +35,26 @@ export class PindieRuntime {
   get externalStateEpoch(): number { return this.currentExternalStateEpoch; }
 
   unload(): void {
+    this.authorityGeneration += 1;
     this.currentProjectRoot = null;
     this.currentState = EMPTY_STATE;
     this.currentExternalStateEpoch = 0;
   }
 
-  async load(projectRoot: string): Promise<void> {
+  async load(projectRoot: string, signal?: AbortSignal): Promise<void> {
     this.unload();
-    const state = await this.store.load(projectRoot);
+    const generation = this.authorityGeneration;
+    const state = await this.store.load(projectRoot, signal);
+    this.assertCurrentAuthority(null, generation, signal);
     this.currentProjectRoot = projectRoot;
     this.currentState = state;
   }
 
-  async refresh(): Promise<boolean> {
+  async refresh(signal?: AbortSignal): Promise<boolean> {
     const projectRoot = this.requireProjectRoot();
-    const latest = await this.store.load(projectRoot);
+    const generation = this.authorityGeneration;
+    const latest = await this.store.load(projectRoot, signal);
+    this.assertCurrentAuthority(projectRoot, generation, signal);
     return this.adoptExternal(latest);
   }
 
@@ -73,6 +86,20 @@ export class PindieRuntime {
     this.currentState = latest;
     this.currentExternalStateEpoch += 1;
     return true;
+  }
+
+  private assertCurrentAuthority(
+    projectRoot: string | null,
+    generation: number,
+    signal?: AbortSignal,
+  ): void {
+    if (
+      signal?.aborted ||
+      generation !== this.authorityGeneration ||
+      this.currentProjectRoot !== projectRoot
+    ) {
+      throw new PindieRuntimeStaleAuthorityError();
+    }
   }
 
   private requireProjectRoot(): string {
