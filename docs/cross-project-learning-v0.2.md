@@ -1,6 +1,6 @@
 # Pindie Cross-Project Learning v0.2 — Strategy Synthesis and Global Validation
 
-Status: proposed architecture contract; implementation not started.
+Status: authoritative architecture contract; implementation not started.
 
 ## 1. Goal and exact boundary
 
@@ -20,9 +20,9 @@ Human Decision
 user-global trust for the same exact revision
 ```
 
-v0.2 closes a different structural gap: some reusable knowledge may be visible only when Experience from several projects is considered together. No individual project may contain enough evidence to derive the Strategy locally, so v0.1 has nothing to transfer.
+v0.2 closes the complementary gap: reusable knowledge may be visible only when Experience from several projects is considered together. No individual project may contain enough evidence to derive the Strategy locally, so v0.1 has nothing to transfer.
 
-v0.2 therefore implements an end-to-end **Strategy Synthesis** path:
+v0.2 implements the complete human-triggered learning lifecycle:
 
 ```text
 project A Experience
@@ -41,21 +41,24 @@ Human promoted | rejected Decision
         ↓
 if promoted:
 user-global trusted Strategy
+        ↓
+explicit reuse in later projects
 ```
 
-The lifecycle is complete in v0.2. A generated hypothesis is not the endpoint.
+A repository that stops at `Experience → inactive hypothesis` has implemented cross-project derivation, not Cross-Project Learning v0.2.
 
-v0.2 remains **human-triggered**:
+v0.2 remains explicit:
 
-- `/derive-global` explicitly asks Pindie to synthesize a new Strategy hypothesis;
-- `/trial synthesis:<candidate-id>` explicitly starts each Trial;
+- `/derive-global` asks Pindie to synthesize a new Strategy hypothesis;
+- `/trial synthesis:<candidate-id>` starts each real-project Trial;
+- `/trial-review synthesis:<candidate-id>` shows factual cross-project validation;
 - `/promote synthesis:<candidate-id>` or `/reject synthesis:<candidate-id>` is Human-owned.
 
-Automatic/background detection of when to derive or Trial belongs to a later Autonomous Learning design. v0.2 must not create a learning scheduler, queue, second Agent Loop, or automatic trust transition.
+Autonomous triggering, autonomous Trial selection, and automatic trust decisions remain outside v0.2.
 
 ## 2. Authority ladder
 
-Keep discovery, experimentation, and trust as separate authority levels:
+Discovery, experimentation, and trust are distinct authority levels:
 
 ```text
 Experience
@@ -78,16 +81,16 @@ Promoted user-global Strategy
 
 Required invariants:
 
-1. Derivation evidence can justify proposing a hypothesis; it cannot make the hypothesis trusted.
-2. Trial evidence can make a Candidate eligible for Human review; it cannot promote the Candidate by itself.
+1. Discovery evidence may justify proposing a hypothesis; it cannot make that hypothesis trusted.
+2. Trial evidence may make a Candidate eligible for Human review; it cannot promote it automatically.
 3. Only an immutable Human `promoted` Decision grants user-global trust.
-4. Candidate creation must not require trust-transition locking or pretend it is a global authority write.
-5. **Discovery provenance is not Promotion authority.** The original derivation Experience may later disappear without invalidating a Candidate or an already-completed Trial. Promotion depends on the immutable Candidate, fresh eligible Trial evidence, current trust-safety facts, and the Human Decision.
-6. Strategy identity, evidence provenance, Trial status, and trust scope remain distinct concepts.
+4. Candidate creation is not a trust transition and does not use the user-global trust writer lock.
+5. **Discovery provenance is not Promotion authority.** Promotion depends on the immutable Candidate, fresh eligible Trial evidence, current trust-safety facts, and the Human Decision. Old discovery Experience may later disappear without invalidating the Candidate.
+6. Strategy identity, evidence provenance, Trial status, and trust scope remain distinct.
 
-## 3. Two origins, one cross-project validation path
+## 3. Two origins, one validation mechanism
 
-v0.1 and v0.2 produce user-global Strategies from different origins:
+v0.1 and v0.2 create user-global knowledge from different origins:
 
 ```text
 A. Transfer origin                         B. Synthesis origin
@@ -111,25 +114,14 @@ StrategyTrustScopeCandidateV1              StrategySynthesisCandidateV1
                    user-global trust
 ```
 
-Do **not** replace the existing Scope Candidate with a generic Candidate schema.
+Do not replace existing Scope artifacts with a generic Candidate/Decision framework.
 
-The origins retain different validity rules:
+The two origins keep distinct validity rules:
 
-- **Transfer** must continue to prove that the exact source project-local Derived revision still exists and remains promoted. The source project is not a valid target project for the v0.1 trust-transfer Trial gate.
-- **Synthesis** has no source trusted Strategy. It proves only that its own immutable Candidate and derivation receipt are valid. Any project, including a project that contributed derivation Experience, may later be a Trial project.
+- **Transfer** must continue to prove that its exact source project-local Derived revision exists and remains promoted. The source project remains excluded from v0.1 target-project Trial evidence.
+- **Synthesis** has no source trusted Strategy. Its authority before promotion is only its own immutable Candidate identity. A project that contributed discovery Experience may later be a Trial project.
 
-The shared validation layer owns only facts common to both origins:
-
-- exact Trial-revision matching;
-- project-local Experience resolution;
-- Trial evidence eligibility;
-- deterministic selected evidence refs;
-- eligible Trial Run count;
-- distinct Trial project count;
-- current user-global logical-ID/capacity safety;
-- current project-local logical-ID conflict scan.
-
-Use a small runtime-only normalized subject, not a persisted generic framework. Conceptually:
+Extract only genuinely common validation facts into a small runtime/pure projection. Conceptually:
 
 ```ts
 interface CrossProjectTrialSubject {
@@ -146,53 +138,75 @@ interface CrossProjectTrialSubject {
 }
 ```
 
-Exact names may follow existing source conventions. This value is a pure validation projection. It is not a new durable artifact, registry, service locator, or universal Candidate API.
+This is not persisted and is not a registry, service locator, universal Candidate API, or plugin point.
+
+Shared cross-project validation may own only:
+
+- exact Trial-revision matching;
+- project-local Experience resolution;
+- Trial evidence eligibility;
+- deterministic selected Trial refs;
+- eligible Trial Run count;
+- distinct Trial project count;
+- current user-global logical-ID/capacity safety;
+- current project-local logical-ID conflict scan.
+
+Origin-specific Candidate/source validity stays in origin-specific wrappers.
 
 ## 4. Cross-project discovery
 
 ### 4.1 `/derive-global`
 
-CPL owns one new explicit command:
+CPL owns one new no-argument command:
 
 ```text
 /derive-global
 ```
 
-It has no arguments in v0.2. SI and CPL must both be enabled.
+SI and CPL must both be selected.
 
 The command:
 
-1. reserves the existing SI slow-path admission slot before asynchronous preparation;
-2. reads project-local Experience across known Pindie project namespaces;
-3. reconstructs each contributing project's exact trusted Policy facts;
-4. deterministically selects a bounded cross-project evidence packet;
-5. if the packet is sufficient, starts one native Pi Agent Run;
-6. allows the model to create zero or one immutable Synthesis Candidate;
-7. releases the slow-path lease at settlement.
+1. establishes one SI-owned cross-project derivation reservation before asynchronous preparation;
+2. rejects admission while `/adapt`, local `/derive`, or any Candidate Trial is pending/active;
+3. reads project-local Experience across known Pindie project namespaces;
+4. reconstructs the exact trusted Policy facts required to qualify each source Run;
+5. deterministically selects a bounded cross-project packet;
+6. if sufficient, requests one native Pi Agent Run;
+7. allows zero or one Synthesis Candidate write;
+8. keeps that Run read-only and excluded from ordinary Experience/continuation until settlement.
 
-`/derive-global` does not create or change a Task. The Run produces no ordinary Run Experience and no project-work continuation, matching existing `/adapt` and `/derive` learning-run exclusion semantics.
+The reservation may extend the current SI derivation/slow-path runtime narrowly; current main does not contain a generic reusable slow-path slot, so implementation must not pretend one already exists or introduce a general workflow scheduler.
 
-It shares mutual exclusion with `/adapt`, local `/derive`, local Candidate Trial, Derivation Trial, and Scope Trial. Do not create a second scheduler or Agent Loop.
+`/derive-global` creates or changes no Task and does not create a second Agent Loop or Session.
 
 ### 4.2 Eligible discovery Experience
 
 Reuse schema-v4 Experience and existing evaluation primitives.
 
-A Run may enter the discovery pool only when:
+A Run enters the discovery pool only when:
 
-- its project namespace and Experience artifact are valid;
+- project namespace and Experience artifact are valid;
 - `RunEvaluation.attributionEligible` is true;
-- it has a final Policy with strictly positive continuous final-Policy exposure;
-- every final selection resolves exactly to `seed` or currently `promoted` trust in that Run's owning project;
-- no final selection has `revisionStatusAtRun = trial`.
+- final Policy exists with strictly positive continuous final-Policy exposure;
+- every final selection resolves exactly to `seed` or currently `promoted` trust in the Run's owning project;
+- no final selection has `revisionStatusAtRun = "trial"`.
 
-Do not require Verification pass or completed Task. Failed, blocked, unfinished, denied-call, or errorful Runs remain factual evidence if the trust/exposure requirements hold.
+Do not require Verification pass or Task completion. Failed, blocked, unfinished, denied-call, or errorful Runs remain factual evidence if the trust/exposure rules hold.
 
-Do not infer success, quality, causality, or usefulness from prose or outcome facts.
+Do not infer success, quality, causality, usefulness, or superiority from prose or outcome facts.
 
-### 4.3 Sufficiency gate
+Use existing `CrossProjectExperienceRefV1` as durable source identity:
 
-The discovery admission gate is deliberately weaker than the later Promotion gate because its only output is an inactive hypothesis:
+```text
+(projectId, recordId, recordFingerprint)
+```
+
+A bare record UUID is never cross-project identity.
+
+### 4.3 Discovery sufficiency
+
+The discovery gate answers only whether it is worth asking the model for a missing-abstraction hypothesis:
 
 ```text
 distinct qualified Experience refs >= 3
@@ -201,29 +215,28 @@ distinct exact Task goals            >= 2
 distinct Policy evidence profiles    >= 2
 ```
 
-This means only: enough diverse factual evidence exists to ask whether a missing abstraction may exist.
-
 It is not statistical confidence, proof of generality, or evidence for trust.
 
-### 4.4 Bounded deterministic packet
+### 4.4 Deterministic bounded packet
 
 Show at most 8 Runs and at most 2 Runs from one project.
 
-Selection must be deterministic and must guarantee that a sufficient pool produces a sufficient shown witness. Prefer diversity of represented project, exact Task goal, Policy profile, and factual outcome signature; never rank outcomes as better/worse.
+Selection must be deterministic and guarantee that a sufficient pool can produce a sufficient shown witness. Prefer factual diversity of represented project, exact Task goal, Policy profile, and outcome signature; never rank outcomes as better or worse.
 
-The packet contains only bounded factual projections:
+The packet contains bounded factual projections only:
 
-- qualified `CrossProjectExperienceRefV1` identities;
-- Run timestamp and exact-goal binding plus bounded display goal;
+- qualified source refs;
+- timestamp and exact-goal binding plus bounded display goal;
 - final exact Policy selections and exposure facts;
 - Verification/completion/blocker/question/Gate/tool-error/denial facts;
-- the exact trusted Strategy comparison context supplied to the model.
+- bounded trusted Strategy comparison context supplied to the model;
+- deterministic selection/sufficiency facts and packet fingerprint.
 
 No transcript, tool-result body, source file, Skill body, or unbounded Experience history enters the packet.
 
 ### 4.5 Packet-only synthesis Run
 
-The frozen packet is the complete factual project evidence supplied to the model for synthesis.
+The frozen packet is the complete project evidence supplied to the model for synthesis.
 
 During `/derive-global`, allow only:
 
@@ -234,11 +247,11 @@ pindie_strategy_synthesis_candidate_create
 
 Deny live project/git observation, shell/bash, project mutation, Policy declaration, Task/Gate/Verification/Memory tools, existing Candidate tools, trust writes, and unknown tools.
 
-This keeps the Candidate's durable receipt aligned with the factual project evidence actually supplied for derivation. The receipt does not claim to capture the model's pretrained/general knowledge.
+This keeps durable derivation provenance aligned with the factual project evidence the model actually received. The receipt does not claim to capture pretrained/general model knowledge.
 
-## 5. Synthesis Candidate
+## 5. Strategy Synthesis Candidate
 
-Add a dedicated immutable user-global hypothesis artifact. Do not overload `StrategyDerivationCandidateV1` or `StrategyTrustScopeCandidateV1`.
+Add one dedicated immutable user-global hypothesis artifact:
 
 ```text
 ~/.pindie/global/
@@ -246,7 +259,7 @@ Add a dedicated immutable user-global hypothesis artifact. Do not overload `Stra
     <candidate-id>.json
 ```
 
-Proposed shape:
+The v1 exact-field semantic contract is:
 
 ```ts
 interface StrategySynthesisCandidateV1 {
@@ -270,37 +283,53 @@ interface StrategySynthesisCandidateV1 {
 }
 ```
 
-The exact schema may be tightened during implementation, but the semantics above are fixed.
+No additional durable fields may be introduced by an implementation Slice without an explicit contract correction.
 
 Rules:
 
-- the Harness owns `candidateId`, `createdAt`, packet/receipt, fingerprints, and source-ref identity;
-- the model supplies only proposal semantics, hypothesis text, and a cited subset of packet refs;
-- cited refs must themselves satisfy the full discovery gate;
-- at most one Candidate may be created by one `/derive-global` Run;
-- the Candidate is inactive and cannot enter normal Policy resolution;
-- it has no target projects, Trial counters, trust status, confidence score, ranking, mutable evidence list, or promotion flag.
+- Harness owns `candidateId`, `createdAt`, the frozen receipt, canonicalization, and fingerprints;
+- model supplies only proposal semantics, hypothesis text, and a cited subset of packet refs;
+- cited refs must belong to the packet and independently satisfy the discovery gate;
+- one `/derive-global` Run may create at most one Candidate;
+- Candidate is inactive and unavailable to normal Policy resolution;
+- Candidate has no target projects, Trial counters, trust status, confidence, rank, score, mutable evidence, or promotion flag;
+- strict exact-field validation and immutable create-without-replacement storage apply.
 
-Keep two fingerprints conceptually distinct:
+Define two new fingerprints without altering existing algorithms:
 
-- **Strategy semantic fingerprint**: binds the exact proposal semantics used by Trial/Policy identity;
-- **artifact/receipt fingerprint**: binds the immutable Candidate occurrence and derivation provenance for audit.
+```text
+Strategy semantic fingerprint
+  = deterministic hash of exact proposal identity + semantics
+  = Trial/Policy revision fingerprint
 
-Do not change existing fingerprint algorithms.
+Candidate artifact fingerprint
+  = deterministic hash of the complete immutable Candidate artifact
+  = Candidate/Decision provenance binding
+```
 
-### 5.1 Candidate creation is not a trust write
+The Candidate's `candidateId` is its future Trial `revisionIdentity`.
 
-Candidate creation does **not** take the user-global trust writer lock.
+### 5.1 Candidate creation is authority-free
 
-At packet construction, Pindie strictly validates the selected source Experience and comparison context. At Candidate creation it verifies only the live Run/Session/lease, exact tool identity, cited-ref membership/sufficiency, and proposal validity against the frozen packet.
+Candidate creation does not take the user-global writer lock.
 
-The Candidate stores the exact historical receipt the model saw. It does not re-read all source Experience or require trusted portfolios to remain byte-identical before saving the inactive hypothesis.
+Before the model Run, source Experience and comparison context are strictly validated while constructing the packet. At Candidate creation, Pindie validates:
 
-If a trusted logical-ID/semantic duplicate was already present in the frozen comparison context, Candidate creation rejects it as a non-missing abstraction. A new conflict that appears after packet capture is harmless at this authority level and is handled before Trial/Promotion.
+- live Session/root/generation and exact global-derivation reservation;
+- exact allowed creation tool;
+- exact frozen packet binding;
+- cited-ref membership, uniqueness, and discovery sufficiency;
+- proposal schema/bounds;
+- logical-ID and exact semantic duplication against the frozen comparison context;
+- at-most-one publication for the active attempt.
+
+Do not require discovery source Experience or discovery-time portfolios to remain live/unchanged at Candidate publication. The frozen receipt is historical provenance, not trust authority.
+
+A conflict created after packet capture is harmless at Candidate authority level and is handled before Trial/Promotion.
 
 ## 6. Synthesis Trial
 
-A Synthesis Candidate becomes testable through the existing unified Trial surface:
+Synthesis Candidates use the existing unified command family:
 
 ```text
 /trial synthesis:<candidate-id>
@@ -311,9 +340,9 @@ A Synthesis Candidate becomes testable through the existing unified Trial surfac
 
 Do not add a second Trial command family.
 
-### 6.1 Shared TrialRuntime
+### 6.1 Extend the existing TrialRuntime
 
-Extend the existing single `TrialRuntime` pending/active slot with one fixed Synthesis Trial lease variant. Do not create `CrossProjectTrialRuntime`.
+Add one fixed Synthesis lease variant to the existing single pending/active `TrialRuntime`. Do not create `CrossProjectTrialRuntime`.
 
 A Synthesis Trial lease binds:
 
@@ -321,31 +350,36 @@ A Synthesis Trial lease binds:
 - target project root/project ID;
 - Candidate ID;
 - Candidate semantic fingerprint;
+- exact Candidate semantics;
 - exact `StrategyRevisionSelection` with `revisionStatusAtRun = "trial"`;
 - one Agent Run generation.
 
-The Candidate's `candidateId` is its trial `revisionIdentity`; its Strategy semantic fingerprint is the `revisionFingerprint`.
-
 The model may use or decline the Candidate. Merely receiving the Trial packet creates no Candidate attribution.
 
-### 6.2 Target project eligibility
+### 6.2 Trial admission
 
-Any real project may be a Synthesis Trial target, including projects whose historical Experience contributed to derivation.
+Before arming a Synthesis Trial:
 
-Derivation and Trial evidence remain separate because qualifying Trial Experience must:
+- Candidate must be valid and have no terminal Synthesis Decision;
+- current target project must be loaded and idle;
+- no other Trial or SI derivation/adaptation slow path may be pending/active;
+- current complete target trusted portfolio must not contain a conflicting trusted revision under the proposed logical Strategy ID;
+- exact Candidate semantic identity/fingerprint must still validate.
 
-- be recorded after Candidate creation;
-- contain the exact Synthesis Candidate trial revision in the final Policy;
-- have positive final-Policy exposure;
-- resolve to the exact Candidate semantics/fingerprint.
+A derivation-source project may be a Synthesis Trial target.
 
-A target project with a conflicting trusted revision under the same logical Strategy ID is not a valid Trial target. Do not create local/global precedence rules to make the experiment fit.
+Qualifying Synthesis Trial Experience must:
 
-The overlap between derivation-source projects and Trial projects is displayed in review as factual context, not used as a hard independence score.
+- be recorded no earlier than Candidate creation;
+- contain the exact Synthesis Candidate revision in final Policy with status `trial`;
+- have strictly positive final-Policy exposure;
+- match Candidate ID, semantic fingerprint, kind, logical ID, and immutable semantics exactly.
+
+Discovery Experience cannot satisfy the Trial gate by itself.
 
 ## 7. Shared cross-project Trial validation
 
-v0.2 should extract only the genuinely common validation logic currently embedded in the v0.1 Scope review path.
+Extract only common pure/factual logic from the existing v0.1 Scope review path.
 
 Keep origin-specific wrappers:
 
@@ -356,41 +390,39 @@ Strategy Trust Transfer Review
   + shared global promotion safety
 
 Strategy Synthesis Review
-  = synthesis-candidate validity
+  = synthesis-Candidate validity
   + shared cross-project Trial evidence
   + shared global promotion safety
 ```
 
-Do not replace the two artifact families with a generic persisted Candidate/Decision union.
-
-### 7.1 Shared Trial evidence gate
-
-For both origins, the minimum deterministic gate remains:
+For both origins, the minimum deterministic Trial gate remains:
 
 ```text
 eligible Trial Runs >= 2
 distinct eligible Trial projects >= 2
 ```
 
-For transfer, preserve the existing rule that the source project is excluded from target-project evidence.
+For transfer, preserve the source-project exclusion. For synthesis, no project is excluded merely because it contributed discovery evidence.
 
-For synthesis, no project is excluded merely because it contributed derivation evidence.
+This gate means only that enough real cross-project Trial evidence exists for a Human trust decision. It is not proof of superiority or statistical validation.
 
-This gate means only that enough real cross-project Trial evidence exists for a Human trust decision. It is not statistical validation or proof of superiority.
+Use `CrossProjectExperienceRefV1` and exact direct re-resolution. Selected refs are deterministic and bounded.
 
-Trial review continues to show factual outcomes and bounded reasons. No score/reward/ranking system is added.
+Synthesis review should display, as factual context:
 
-### 7.2 Trial evidence identity
+- eligible/selected Trial Run counts;
+- distinct Trial projects;
+- bounded outcome facts;
+- discovery-source project IDs;
+- Trial project IDs;
+- overlap and newly represented Trial projects;
+- current global/local trust-safety blockers.
 
-Use `CrossProjectExperienceRefV1` and direct exact re-resolution.
-
-An eligible Synthesis Trial Run must match the exact Candidate revision identity, fingerprint, semantics, `trial` status, and positive exposure. Old derivation source Experience cannot satisfy this by itself.
-
-Selected Trial refs are deterministic and stored in the terminal Decision for audit provenance.
+Overlap is presentation context, not a confidence score or hard independence rule.
 
 ## 8. Synthesis Decision and Promotion
 
-Add a second immutable user-global terminal artifact:
+Add one immutable terminal artifact family:
 
 ```text
 ~/.pindie/global/
@@ -398,12 +430,13 @@ Add a second immutable user-global terminal artifact:
     <candidate-id>.json
 ```
 
-Proposed semantics:
+The v1 exact-field semantic contract is:
 
 ```ts
 interface StrategySynthesisDecisionV1 {
   schemaVersion: 1;
   candidateId: string;
+  candidateArtifactFingerprint: string;
   candidateSemanticFingerprint: string;
   decidedAt: string;
   decision: "promoted" | "rejected";
@@ -413,44 +446,47 @@ interface StrategySynthesisDecisionV1 {
 }
 ```
 
-A rejection may be written for an open valid Candidate without satisfying the Trial Promotion gate. Rejection means only that no user-global trust is granted.
+The artifact fingerprint binds the exact immutable Candidate including its historical derivation receipt. The semantic fingerprint separately binds the exact revision that Trial and Policy use.
 
-Promotion is a real trust transition and therefore runs under the existing shared user-global writer lock.
+A rejection may be written for any open valid Candidate without satisfying the promotion Trial gate. It grants no trust. Rejection may retain zero Trial refs.
 
-Inside the lock, promotion must re-read and validate:
+Promotion is a trust transition and runs under the existing shared user-global writer lock.
 
-1. exact immutable Synthesis Candidate and absence of prior terminal Decision;
-2. selected Trial Experience refs and their current fingerprints;
-3. full shared Trial evidence gate (`>=2` Runs, `>=2` projects);
-4. Seed logical-ID collision safety;
-5. existing user-global logical-ID collision safety across **both transfer and synthesis origins**;
-6. complete project-local conflicting Derived logical-ID scan;
-7. combined user-global Derived Strategy capacity;
-8. Candidate semantic fingerprint and Decision binding.
+Inside the lock, promotion must freshly validate:
 
-Only then may the immutable `promoted` Synthesis Decision be published.
+1. exact Candidate and both Candidate fingerprints;
+2. absence of a prior terminal Synthesis Decision;
+3. selected Trial refs and current record fingerprints;
+4. full shared Trial evidence gate (`>=2` Runs, `>=2` projects);
+5. Seed logical-ID collision safety;
+6. user-global logical-ID collision safety across transfer and synthesis origins;
+7. complete project-local conflicting Derived logical-ID scan;
+8. combined user-global Derived Strategy capacity;
+9. Decision binding and immutable no-replacement publication.
 
-### 8.1 Discovery provenance is historical at Promotion
+Only then may `promoted` be persisted.
 
-Promotion must **not** require the original derivation source Experience to still exist or the discovery-time trusted portfolios to remain current.
+### 8.1 Historical discovery receipt
 
-The immutable Candidate receipt answers:
+Promotion must not require original discovery Experience to remain present or discovery-time trusted portfolios to remain current.
 
-> Why was this Strategy proposed?
+```text
+Candidate receipt answers:
+Why was this Strategy proposed?
 
-Fresh Trial refs and current trust-safety reads answer:
-
-> Is this exact Strategy now eligible for user-global trust?
+Fresh Trial refs + current trust safety answer:
+Is this exact Strategy eligible for user-global trust now?
+```
 
 Do not conflate those questions.
 
 ## 9. User-global trust convergence
 
-After promotion, transfer-origin and synthesis-origin Strategies are behaviorally equivalent normal user-global trusted Derived Strategies.
+After promotion, transfer-origin and synthesis-origin Strategies are behaviorally equivalent normal user-global trusted Derived Strategies:
 
 ```text
 transfer Scope Decision ───────┐
-                               ├→ current user-global trust projection
+                               ├→ user-global trust projection
 synthesis promoted Decision ───┘
                                       ↓
                            TrustedStrategyPortfolio
@@ -459,29 +495,22 @@ synthesis promoted Decision ───┘
 Both are:
 
 - exact immutable Derived Strategy revisions;
-- `revisionStatusAtRun = "promoted"` when selected normally;
+- selected normally with `revisionStatusAtRun = "promoted"`;
 - explicitly selectable by exact Policy selector;
 - advisory cognitive Policy only;
 - never default or automatically recommended.
 
-Their provenance remains different and inspectable through their origin-specific artifacts.
+Their provenance remains origin-specific.
 
-### 9.1 Preserve portfolio identity semantics
+Do not change `TRUSTED_PORTFOLIO_FINGERPRINT_VERSION` or project-local persisted artifacts.
 
-Do not change `TRUSTED_PORTFOLIO_FINGERPRINT_VERSION` or persisted project-local artifacts.
-
-Evolve only the runtime user-global entry representation as needed so a trusted global Strategy may have:
-
-- one transfer source project; or
-- no single source project for a synthesized Strategy.
-
-The canonical portfolio manifest continues to fingerprint Strategy identity facts, not trust provenance. Runtime `sourceProjectIds` may be empty for synthesis-origin trust.
+The runtime user-global entry representation may evolve narrowly into an origin-aware union so transfer entries retain one source project while synthesis entries have no fictitious source project. The canonical portfolio manifest continues to fingerprint Strategy identity facts, not trust provenance. Runtime `sourceProjectIds` may be empty for synthesis-origin trust.
 
 `MAX_USER_GLOBAL_DERIVED_STRATEGIES` applies to the combined promoted set from both origins.
 
-## 10. Trust-safety and Composable boundary
+## 10. Trust safety and Composable boundary
 
-Preserve the completed Composable Pindie architecture:
+Preserve:
 
 ```text
 Core  ✗→ SI implementation
@@ -490,159 +519,149 @@ SI    ✗→ CPL implementation
 CPL    → narrow SI learning/trial/trust ports
 ```
 
-`composition.ts` selects and wires; it does not absorb learning logic.
+`composition.ts` selects/wires only.
 
-CPL-off continues to mean:
+CPL-off removes CPL workflow:
 
 - no `/trust-transfer`;
 - no `/derive-global`;
-- no Scope/Synthesis Trial workflow registration;
-- no cross-project Experience scan;
+- no Scope/Synthesis Trial workflow handlers;
+- no cross-project discovery scan;
 - no CPL packet injection;
-- no CPL write workflow.
+- no new CPL workflow writes.
 
-But CPL-off must **not** make existing user-global trust disappear from safety validation.
+But disabling CPL must never weaken durable global authority safety.
 
-Once synthesis promotion exists, the shared SI trust-safety substrate must include promoted Synthesis Decisions in global logical-ID/collision reconstruction even when CPL workflow is disabled, just as it already retains v0.1 global trust safety.
+Once synthesis promotion exists, shared SI trust-safety reconstruction must include relevant promoted/rejected Synthesis artifacts in collision/authority validation even when CPL workflow is disabled, exactly as existing v0.1 global trust safety remains enforceable without the CPL workflow.
 
-Important failure isolation:
+Failure isolation:
 
-- an unrelated corrupt inactive Synthesis Candidate must not poison ordinary global trust reconstruction;
-- a promoted/rejected Decision that references a missing, corrupt, or mismatched Candidate fails the relevant global authority reconstruction closed;
-- malformed relevant user-global authority may make the optional global layer unavailable, while ordinary Core/project-local SI remains usable according to existing fallback boundaries.
+- unrelated corrupt inactive Synthesis Candidate does not poison ordinary global trust reconstruction;
+- a promoted Decision with missing/corrupt/mismatched Candidate fails relevant user-global authority reconstruction closed;
+- malformed relevant global authority may make the optional global layer unavailable while existing Core/project-local SI fallback semantics remain intact.
 
-Do not add a Plugin SDK, DI framework, event bus, generic lifecycle engine, Candidate registry, or persisted feature-selection state.
+Do not add a Plugin SDK, DI framework, event bus, lifecycle engine, Candidate registry, persisted feature-selection state, second Skill runtime, or second Agent Loop.
 
 ## 11. Lifecycle and failure boundaries
 
-Runtime-only `/derive-global` and Synthesis Trial leases are cleared by the same supported boundaries as existing SI/CPL leases:
+Runtime-only `/derive-global` and Synthesis Trial permissions clear on the same supported boundaries as existing SI/CPL leases:
 
 - Session replacement;
-- same-Session resource reload where current runtime is rebuilt;
+- supported same-Session runtime/resource reconstruction;
 - project-root change;
 - shutdown;
 - abort/settlement;
 - stale Agent Run generation.
 
-Candidate and Decision artifacts are durable and never reconstructed from conversation history.
+Candidate and Decision artifacts are durable and are never reconstructed from conversation text or compaction summaries.
 
-Required failure behavior:
+Required failures:
 
 - insufficient discovery evidence → no model Run, no Candidate;
-- model proposes nothing → valid `/derive-global` outcome, no Candidate;
-- stale `/derive-global` Session/generation → no Candidate write;
-- malformed Synthesis Candidate → no Trial/Decision for that Candidate;
-- missing old derivation source files after Candidate creation → historical receipt remains inspectable; this alone does not block Trial/Promotion;
+- model proposes nothing → valid outcome, no Candidate;
+- stale `/derive-global` binding → no Candidate write;
+- malformed/terminal Synthesis Candidate → no Trial;
+- missing old discovery sources after Candidate creation → receipt remains inspectable and Trial may continue;
 - stale/missing selected Trial refs → Promotion fails closed;
-- global/local logical-ID conflict → Promotion fails closed;
-- ambiguous global write → reconcile the same Candidate/Decision identity; never silently create another terminal authority artifact;
-- no failure mutates `PindieState`, Task/Gate/Verification authority, Experience schema, or Pi Session ownership.
+- target/global/local logical-ID conflict → relevant Trial or Promotion fails closed;
+- ambiguous immutable write → reconcile the same preallocated identity; never create a second terminal authority artifact;
+- no failure mutates `PindieState`, Task/Gate/Verification truth, Experience schema, or Pi Session ownership.
 
 ## 12. Explicitly unchanged behavior
 
 v0.2 does not change:
 
 - CPL v0.1 Scope Candidate/Decision schemas or transfer semantics;
-- the existing v0.1 source-project trust requirement;
+- v0.1 source-project trust requirement and source-project Trial exclusion;
 - local `/adapt` and `/derive` semantics;
-- local Revision/Derivation Candidate schemas, Trial semantics, and Decisions;
+- local Revision/Derivation Candidate schemas, Trial semantics, or Decisions;
 - Experience schema-v4;
 - Task/Gate/Verification/Reducer/State semantics;
-- Execution Gateway and mutation freshness;
+- Execution Gateway and project-mutation freshness;
+- existing Strategy fingerprint algorithms;
 - Remote, Work Memory, Presentation, Bundled Skills, Long Task Runtime, or continuation;
-- Pi's native Agent Loop and Session ownership;
+- Pi native Agent Loop and Session ownership;
 - model weights;
-- trusted Strategy default/recommendation behavior.
+- default/recommendation behavior of trusted Strategies.
 
 No data migration is introduced.
 
 ## 13. Implementation slices
 
-Implement only after this architecture is approved. Each Slice is independently reviewed before the next begins.
+Each Slice is reviewed before the next starts.
 
 ### Slice A — Cross-project synthesis evidence and packet
 
-Build the pure discovery substrate only:
+Implement only the discovery substrate:
 
+- namespace-addressed complete trust reads required to qualify foreign-project Experience;
 - qualified multi-project Experience scan;
-- strict owning-project trust resolution;
-- deterministic `3 records / 2 projects / 2 goals / 2 profiles` sufficiency;
-- max-8 / max-2-per-project selection;
-- frozen packet + rendering;
-- packet fingerprint and bounded comparison context.
+- deterministic `3 records / 2 projects / 2 goals / 2 profiles` gate;
+- deterministic max-8 / max-2-per-project witness selection;
+- bounded frozen synthesis packet, rendering, and packet fingerprint;
+- focused malformed/duplicate/stale evidence behavior.
 
-No `/derive-global` command and no Candidate store yet.
+No `/derive-global`, Candidate store, Trial, Decision, or trust projection.
 
-Done when focused tests prove deterministic selection, project/record identity correctness, malformed evidence/trust behavior, bounds, and no change to existing local Derivation or v0.1 CPL.
+Done when focused tests prove:
+
+- same bare record ID in different projects stays distinct;
+- wrong/missing fingerprint cannot resolve as evidence;
+- discovery eligibility matches section 4.2;
+- one project never suffices and a valid 3-record/2-project witness can;
+- input ordering does not change packet output;
+- a high-volume project cannot dominate the shown packet;
+- packet bounds and comparison context are enforced;
+- current local `/derive`, CPL v0.1, trust safety, and portfolio fingerprints remain unchanged.
 
 ### Slice B — Synthesis Candidate and `/derive-global`
 
-Add:
+Add the strict Candidate store/fingerprints, creation tool, explicit command lifecycle, narrow SI reservation, packet-only Run restriction, and Experience/continuation exclusion.
 
-- `StrategySynthesisCandidateV1` strict immutable store/fingerprints;
-- `pindie_strategy_synthesis_candidate_create`;
-- explicit `/derive-global` lifecycle;
-- SI slow-path mutual exclusion/generation binding;
-- packet-only tool restriction;
-- no ordinary Experience/continuation for the learning Run.
+Candidate creation remains authority-free and uses no trust writer lock.
 
-Candidate creation remains authority-free and does not use the global trust writer lock.
-
-Done when one explicit command can create zero or one inactive Candidate and nothing in Policy/Trial/Trust can yet consume it.
+Done when one explicit command can create zero or one inactive Candidate and no normal Policy/Trial/Trust path can yet consume it.
 
 ### Slice C — Synthesis Trial
 
-Extend the existing unified Trial system with `synthesis:<candidate-id>`:
+Extend the existing unified `TrialRuntime` and unified Candidate commands with `synthesis:<candidate-id>`.
 
-- one new fixed Trial lease variant in the existing `TrialRuntime`;
-- exact Candidate trial selection;
-- target-project conflict validation;
-- prompt packet;
-- unified command completion/dispatch;
-- normal schema-v4 Experience attribution.
+Add exact Trial selection, target conflict validation, Synthesis Trial packet, normal schema-v4 Experience attribution, and lifecycle invalidation.
 
-Do not implement promotion yet.
+Do not implement Synthesis Promotion yet.
 
-Done when a Synthesis Candidate can be explicitly Trialed in multiple real projects, while all existing Revision/Derivation/Scope Trial semantics remain compatible and mutually exclusive.
+### Slice D — Shared validation, Human Decision, and global trust
 
-### Slice D — Shared cross-project validation, Human Decision, and global trust
+Extract the minimum common cross-project Trial evidence/global promotion-safety logic from the existing Scope review path while retaining origin-specific wrappers and artifacts.
 
-Extract the minimum common Trial-evidence and global-promotion-safety logic from the existing v0.1 Scope review path without replacing its artifact model.
+Add Synthesis review, strict Decision artifacts, `/promote`/`/reject synthesis:<id>`, lock-protected fresh Promotion, combined transfer+synthesis collision/capacity safety, and synthesis-origin user-global trust projection.
 
-Add:
-
-- Synthesis Trial review;
-- `StrategySynthesisDecisionV1`;
-- `/promote synthesis:<id>` and `/reject synthesis:<id>`;
-- lock-protected fresh Promotion revalidation;
-- combined transfer+synthesis global collision/capacity checks;
-- synthesized user-global trust projection.
-
-Done when both origins pass through shared factual validation but retain origin-specific validity, and a promoted synthesis revision is exactly selectable as normal user-global Policy.
+Done when both origins reuse common factual validation without becoming a generic Candidate framework, and a promoted Synthesis revision is exactly selectable as normal user-global Policy.
 
 ### Slice E — Composition and compatibility closure
 
-Close the matrix and documentation:
+Verify:
 
 - Core only;
 - SI only;
 - SI + CPL;
 - default full composition;
-- CPL off with existing transfer/synthesis global authority still enforced for safety;
+- CPL-off workflow absence with global transfer+synthesis trust safety retained;
 - Session replacement/reload/shutdown;
+- no duplicate registrations/leases;
 - architecture import-direction guards;
-- existing v0.1 transfer behavior unchanged;
+- existing v0.1 transfer and local SI behavior unchanged;
 - no State/Experience migration;
-- authoritative docs/AGENTS synchronization.
+- docs/AGENTS synchronized to implemented state.
 
-`HOME=$(mktemp -d) pnpm run check` and `git diff --check` must pass.
+Run isolated-HOME `pnpm run check` and `git diff --check`.
 
-## 14. v0.2 completion definition
+## 14. Completion definition
 
-Cross-Project Learning v0.2 is complete only when the following real loop exists:
+v0.2 is complete only when this real loop exists:
 
 ```text
-Distributed project Experience
+distributed project Experience
         ↓
 new Strategy hypothesis
         ↓
@@ -654,22 +673,20 @@ Human trust decision
         ↓
 user-global trusted Strategy
         ↓
-available for explicit reuse in later projects
+explicit reuse in later projects
 ```
-
-A repository that only reaches `Experience → inactive hypothesis` has implemented cross-project derivation, not Cross-Project Learning v0.2.
 
 ## 15. Deferred work
 
-Explicitly outside v0.2:
+Outside v0.2:
 
-- autonomous/background triggering of synthesis;
-- autonomous choice of Trial targets;
+- autonomous/background synthesis triggering;
+- autonomous Trial-target choice;
 - automatic promotion/rejection;
-- strategy ranking, reward, confidence, or quality scores;
-- semantic clustering/embeddings/vector search;
+- ranking, reward, confidence, or quality scores;
+- embeddings/vector search/semantic clustering;
 - repository-portable project identity;
-- model weight updates;
+- model-weight updates;
 - generic learning/plugin frameworks.
 
-A later Autonomous Learning phase may decide *when* to invoke the already-complete v0.2 lifecycle. It must not silently take over the Human trust decision without a separate approved authority design.
+A later Autonomous Learning phase may decide **when** to invoke this complete lifecycle. It must not silently take over Human trust decisions without a separate approved authority design.
