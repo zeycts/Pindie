@@ -142,6 +142,16 @@ test("Slice A resolves stable startup defaults and explicit dependency roots", (
     (composition.extensionOptions.strategySynthesisCandidateStore as FileStrategySynthesisCandidateStore).candidateDirectory(),
     join(roots.globalBaseDir, "strategy-synthesis-candidates"),
   );
+  assert.equal(
+    composition.extensionOptions.strategySynthesisCandidateReader,
+    composition.extensionOptions.strategySynthesisCandidateStore,
+    "SI and CPL must share the production Synthesis Candidate authority reader/store",
+  );
+  assert.equal(
+    composition.extensionOptions.strategySynthesisDecisionReader,
+    composition.extensionOptions.strategySynthesisDecisionStore,
+    "SI and CPL must share the production Synthesis Decision authority reader/store",
+  );
 });
 
 test("Slice A gives configured Remote an explicit routing root", () => {
@@ -519,6 +529,18 @@ test("Slice F assembles the final composition matrix through the production comp
         Object.hasOwn(composition.extensionOptions, dependency),
         featureSelection.crossProjectLearning,
         `${name}: ${dependency}`,
+      );
+    }
+    if (featureSelection.crossProjectLearning) {
+      assert.equal(
+        composition.extensionOptions.strategySynthesisCandidateReader,
+        composition.extensionOptions.strategySynthesisCandidateStore,
+        `${name}: shared Synthesis Candidate reader/store`,
+      );
+      assert.equal(
+        composition.extensionOptions.strategySynthesisDecisionReader,
+        composition.extensionOptions.strategySynthesisDecisionStore,
+        `${name}: shared Synthesis Decision reader/store`,
       );
     }
     assert.equal(

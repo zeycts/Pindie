@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+
+import { composePindieExtension } from "../src/composition.ts";
 
 import {
   assembleRunExperience,
@@ -62,12 +67,19 @@ import type { SemanticSnapshot } from "../src/semantics.ts";
 import type { PindieState } from "../src/state.ts";
 import {
   createStrategySynthesisDecision,
+  FileStrategySynthesisDecisionStore,
   type StrategySynthesisDecisionReader,
   type StrategySynthesisDecisionV1,
 } from "../src/strategy-synthesis-decisions.ts";
-import type { StrategySynthesisCandidateReader } from "../src/strategy-synthesis-candidates.ts";
+import {
+  FileStrategySynthesisCandidateStore,
+  strategySynthesisCandidateArtifactFingerprint,
+  strategySynthesisCandidateSemanticFingerprint,
+  type StrategySynthesisCandidateReader,
+} from "../src/strategy-synthesis-candidates.ts";
 import { makeSynthesisTrialFixture } from "./synthesis-trial-fixture.ts";
 import { deriveStrategySynthesisTrialReview } from "../src/strategy-synthesis-review.ts";
+import { loadUserGlobalTrustedDerivedStrategyProjection } from "../src/strategy-trust-scope-global.ts";
 
 const SOURCE_ROOT = "/slice-d-source";
 const TARGET_A_ROOT = "/slice-d-target-a";
@@ -285,6 +297,103 @@ test("promoted user-global trust reconstructs after restart without historical T
     loadUserGlobalTrustedDerivedStrategyProjection(malformed),
     /binding|Candidate|source/i,
   );
+});
+
+test("Slice E CPL-off reconstructs promoted Synthesis trust from real files and isolates Candidate corruption", async (t) => {
+  const baseDir = await mkdtemp(join(tmpdir(), "pindie-slice-e-global-"));
+  t.after(() => rm(baseDir, { recursive: true, force: true }));
+  const projectsBaseDir = join(baseDir, "projects");
+  const globalBaseDir = join(baseDir, "global");
+  const composition = composePindieExtension({
+    featureSelection: { selfImprovement: true, crossProjectLearning: false },
+    storageRoots: {
+      projectsBaseDir,
+      globalBaseDir,
+      remoteRoutingBaseDir: join(baseDir, "remote"),
+    },
+  }, { env: {} });
+  assert.equal(composition.featureSelection.crossProjectLearning, false);
+  assert.equal(composition.extensionOptions.strategySynthesisCandidateStore, undefined);
+
+  const { candidate } = await makeSynthesisTrialFixture(
+    "00000000-0000-4000-8000-00000000006a",
+    { strategyId: "slice-e-real-file-synthesis" },
+  );
+  const decision = createStrategySynthesisDecision({
+    candidate,
+    decision: "promoted",
+    trialRefs: [
+      reference(getProjectId("/slice-e-trial-a"), RECORD_A, "a"),
+      reference(getProjectId("/slice-e-trial-b"), RECORD_B, "b"),
+    ],
+    decidedAt: "2026-08-20T00:00:00.000Z",
+  });
+  const candidateStore = new FileStrategySynthesisCandidateStore({ baseDir: globalBaseDir });
+  const decisionStore = new FileStrategySynthesisDecisionStore({ baseDir: globalBaseDir });
+  await candidateStore.save(candidate);
+  await decisionStore.save(decision);
+
+  const candidatePath = join(candidateStore.candidateDirectory(), `${candidate.candidateId}.json`);
+  const decisionPath = join(decisionStore.decisionDirectory(), `${decision.candidateId}.json`);
+  const candidateText = await readFile(candidatePath, "utf8");
+  const persistedCandidate = JSON.parse(candidateText) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(persistedCandidate).sort(), [
+    "candidateId",
+    "candidateType",
+    "createdAt",
+    "derivationReceipt",
+    "evidence",
+    "hypothesis",
+    "proposal",
+    "schemaVersion",
+  ]);
+  const persistedDecision = JSON.parse(await readFile(decisionPath, "utf8")) as Record<string, unknown>;
+  assert.equal(persistedDecision.schemaVersion, 1);
+  assert.equal(persistedDecision.candidateArtifactFingerprint, strategySynthesisCandidateArtifactFingerprint(candidate));
+  assert.equal(persistedDecision.candidateSemanticFingerprint, strategySynthesisCandidateSemanticFingerprint(candidate));
+
+  const emptyScope = {
+    candidateReader: { read: async () => null, readAll: async () => [] },
+    decisionReader: { read: async () => null, readAll: async () => [] },
+    sourceResolver: { resolve: async () => { throw new Error("no Scope authority in this test"); } },
+  };
+  const readProjection = () => loadUserGlobalTrustedDerivedStrategyProjection({
+    candidateReader: emptyScope.candidateReader,
+    decisionReader: emptyScope.decisionReader,
+    sourceResolver: emptyScope.sourceResolver,
+    synthesisCandidateReader: composition.extensionOptions.strategySynthesisCandidateReader!,
+    synthesisDecisionReader: composition.extensionOptions.strategySynthesisDecisionReader!,
+  });
+
+  await mkdir(candidateStore.candidateDirectory(), { recursive: true });
+  const unrelatedCandidateId = "00000000-0000-4000-8000-00000000006b";
+  await writeFile(
+    join(candidateStore.candidateDirectory(), `${unrelatedCandidateId}.json`),
+    "{\"schemaVersion\":1}\n",
+    "utf8",
+  );
+  const reconstructed = await readProjection();
+  assert.equal(reconstructed.entries.length, 1);
+  assert.equal(reconstructed.entries[0]?.origin, "synthesis");
+  assert.deepEqual(reconstructed.entries[0]?.sourceProjectIds, []);
+  assert.equal(reconstructed.selections[0]?.revisionIdentity, candidate.candidateId);
+
+  await rm(candidatePath);
+  await assert.rejects(readProjection(), /missing.*Candidate/i);
+  await writeFile(candidatePath, candidateText, "utf8");
+
+  await writeFile(candidatePath, "{\"schemaVersion\":1}\n", "utf8");
+  await assert.rejects(readProjection(), /invalid|fields|Candidate/i);
+  await writeFile(candidatePath, candidateText, "utf8");
+
+  const mismatched = await makeSynthesisTrialFixture(
+    candidate.candidateId,
+    { strategyId: candidate.proposal.strategyId, summary: "A mismatched persisted revision." },
+  );
+  await writeFile(candidatePath, `${JSON.stringify(mismatched.candidate, null, 2)}\n`, "utf8");
+  await assert.rejects(readProjection(), /binding|fingerprint|mismatch/i);
+  await writeFile(candidatePath, candidateText, "utf8");
+  assert.equal((await readProjection()).entries.length, 1);
 });
 
 test("TrustedStrategyPortfolio deduplicates exact global/local identity, rejects conflicts, and derives bounds", () => {
@@ -596,6 +705,86 @@ test("Scope promotion rejects changed boundary evidence without writing, while r
   assert.equal(result.decision.decision, "rejected");
   assert.deepEqual(result.decision.evidence.trialRefs, []);
   assert.equal(rejected.saved.length, 1);
+});
+
+test("Slice E transfer and Synthesis origins coexist in one normal global trust projection", async () => {
+  const scope = decisionFixture();
+  const scopeDecision = createStrategyTrustScopeDecision({
+    candidate: scope.fixture.scopeCandidate,
+    decision: "promoted",
+    trialRefs: [
+      reference(getProjectId(TARGET_A_ROOT), RECORD_A, "a"),
+      reference(getProjectId(TARGET_B_ROOT), RECORD_B, "b"),
+    ],
+    decidedAt: "2026-07-10T00:00:00.000Z",
+  });
+  const synthesis = await makeSynthesisTrialFixture(
+    "00000000-0000-4000-8000-000000000050",
+    { strategyId: "slice-e-independent-synthesis" },
+  );
+  const synthesisDecision = createStrategySynthesisDecision({
+    candidate: synthesis.candidate,
+    decision: "promoted",
+    trialRefs: [
+      reference(getProjectId("/slice-e-synthesis-trial-a"), RECORD_A, "c"),
+      reference(getProjectId("/slice-e-synthesis-trial-b"), RECORD_B, "d"),
+    ],
+    decidedAt: "2026-07-11T00:00:00.000Z",
+  });
+  const scopeAuthority = scopeAuthorityReaders([scope.fixture], [scopeDecision]);
+  const synthesisAuthority = synthesisAuthorityReaders([synthesis.candidate], [synthesisDecision]);
+  const projection = await loadUserGlobalTrustedDerivedStrategyProjection({
+    candidateReader: scopeAuthority.candidateReader,
+    decisionReader: scopeAuthority.decisionReader,
+    sourceResolver: scopeAuthority.sourceResolver,
+    synthesisCandidateReader: synthesisAuthority.candidateReader,
+    synthesisDecisionReader: synthesisAuthority.decisionReader,
+  });
+  assert.deepEqual(
+    projection.entries.map((entry) => entry.origin).sort(),
+    ["synthesis", "transfer"],
+  );
+  const transfer = projection.entries.find((entry) => entry.origin === "transfer")!;
+  const synthesized = projection.entries.find((entry) => entry.origin === "synthesis")!;
+  const portfolio = createTrustedStrategyPortfolio(
+    TARGET_A_ROOT,
+    createPromotedStrategyRevisionCatalog([]),
+    undefined,
+    [
+      {
+        origin: "transfer",
+        sourceProjectId: transfer.sourceProjectIds[0]!,
+        selection: transfer.selection,
+      },
+      {
+        origin: "synthesis",
+        sourceProjectIds: [],
+        selection: synthesized.selection,
+      },
+    ],
+  );
+  const transferEntry = portfolio.resolvedEntries.find((entry) => entry.manifest.strategyId === transfer.selection.strategyId)!;
+  const synthesisEntry = portfolio.resolvedEntries.find((entry) => entry.manifest.strategyId === synthesized.selection.strategyId)!;
+  assert.deepEqual(transferEntry.trust?.origins, ["user-global"]);
+  assert.deepEqual(transferEntry.trust?.sourceProjectIds, [transfer.sourceProjectIds[0]]);
+  assert.deepEqual(synthesisEntry.trust?.origins, ["user-global"]);
+  assert.deepEqual(synthesisEntry.trust?.sourceProjectIds, []);
+  assert.equal(
+    resolveTrustedPortfolioRevisionSelection({
+      strategyId: transfer.selection.strategyId,
+      revisionIdentity: transfer.selection.revisionIdentity,
+      revisionFingerprint: transfer.selection.revisionFingerprint,
+    }, portfolio, transfer.selection.kind)?.revisionStatusAtRun,
+    "promoted",
+  );
+  assert.equal(
+    resolveTrustedPortfolioRevisionSelection({
+      strategyId: synthesized.selection.strategyId,
+      revisionIdentity: synthesized.selection.revisionIdentity,
+      revisionFingerprint: synthesized.selection.revisionFingerprint,
+    }, portfolio, synthesized.selection.kind)?.revisionStatusAtRun,
+    "promoted",
+  );
 });
 
 test("Scope and Synthesis reviews share bidirectional global logical-ID safety", async () => {

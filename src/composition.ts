@@ -308,6 +308,16 @@ export function composePindieExtension(
   let strategySynthesisCandidateStore: StrategySynthesisCandidateStore | undefined;
   let strategySynthesisDecisionStore: StrategySynthesisDecisionStore | undefined;
 
+  // The mutable Synthesis Stores are also the read-only SI authority readers
+  // when CPL is selected. Reuse the exact production instances so the two
+  // feature boundaries cannot silently observe different global namespaces.
+  if (selection.crossProjectLearning) {
+    strategySynthesisCandidateStore = input.strategySynthesisCandidateStore ??
+      new FileStrategySynthesisCandidateStore({ baseDir: roots.globalBaseDir });
+    strategySynthesisDecisionStore = input.strategySynthesisDecisionStore ??
+      new FileStrategySynthesisDecisionStore({ baseDir: roots.globalBaseDir });
+  }
+
   if (selection.selfImprovement) {
     experienceStore = input.experienceStore ?? new FileRunExperienceStore({
       baseDir: roots.projectsBaseDir,
@@ -349,9 +359,11 @@ export function composePindieExtension(
     // the optional CPL workflow. SI constructs read-only access here; the
     // mutable workflow Stores are assembled only when CPL is selected below.
     strategySynthesisCandidateReader = input.strategySynthesisCandidateReader ??
+      strategySynthesisCandidateStore ??
       input.strategySynthesisCandidateStore ??
       new FileStrategySynthesisCandidateReader({ baseDir: roots.globalBaseDir });
     strategySynthesisDecisionReader = input.strategySynthesisDecisionReader ??
+      strategySynthesisDecisionStore ??
       input.strategySynthesisDecisionStore ??
       new FileStrategySynthesisDecisionReader({ baseDir: roots.globalBaseDir });
   }
@@ -363,10 +375,6 @@ export function composePindieExtension(
       projectsBaseDir: roots.projectsBaseDir,
       globalBaseDir: roots.globalBaseDir,
     });
-    strategySynthesisCandidateStore = input.strategySynthesisCandidateStore ??
-      new FileStrategySynthesisCandidateStore({ baseDir: roots.globalBaseDir });
-    strategySynthesisDecisionStore = input.strategySynthesisDecisionStore ??
-      new FileStrategySynthesisDecisionStore({ baseDir: roots.globalBaseDir });
     scopeProjectTrustReader = input.scopeProjectTrustReader ??
       new FileScopeProjectTrustReader({ projectsBaseDir: roots.projectsBaseDir });
     if (crossProjectExperienceReader === undefined) {

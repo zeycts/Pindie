@@ -97,7 +97,7 @@ For an approved task:
 
 Composable Pindie Architecture v0.1 is complete through final Slice F. Preserve its final feature-selection, trust-safety, lifecycle, and dependency-direction invariants.
 
-Cross-Project Learning v0.2 is approved for implementation only through the Slices defined in `docs/cross-project-learning-v0.2.md`. Complete and review one Slice before starting the next. Do not skip ahead to Autonomous Learning.
+Cross-Project Learning v0.2 is implemented through the Slices defined in `docs/cross-project-learning-v0.2.md`, through final Slice E. Preserve its completed human-triggered lifecycle and do not add a Slice F or skip ahead to Autonomous Learning.
 
 ## Maintenance posture
 
@@ -105,7 +105,7 @@ The existing implemented Pindie architecture baseline and the Composable Pindie 
 
 `docs/composable-pindie-architecture-v0.1.md` records the implemented final composition boundary and remains the single architecture source of truth for that boundary. Source/tests and the synchronized architecture guidance remain the implemented-state baseline.
 
-`docs/cross-project-learning-v0.2.md` is an approved forward contract, not yet an implemented-state claim. Until its Slices land, existing v0.1 source/tests remain runtime truth where v0.2 has not yet been implemented.
+`docs/cross-project-learning-v0.2.md` records the implemented v0.2 architecture through Slice E and remains the authoritative contract for that boundary. Source/tests and the synchronized guidance are the implemented-state baseline; existing v0.1 source/tests remain compatibility truth where v0.2 explicitly preserves them.
 
 Future architecture changes should be driven by concrete dogfood failures, explicit user goals, or verified incompatibilities with Pi/runtime reality, not by speculative cleanup.
 
