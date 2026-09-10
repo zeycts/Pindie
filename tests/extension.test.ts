@@ -86,6 +86,7 @@ import {
 } from "../src/strategy-derivation-decisions.ts";
 import { getProjectId } from "../src/store.ts";
 import type { PindieStateStore, TaskContinuityStore } from "../src/store.ts";
+import { PINDIE_TOOL_LIVENESS_TIMEOUT_MS } from "../src/liveness.ts";
 import type { TaskContinuityV1 } from "../src/task-continuity.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
 import {
@@ -3361,6 +3362,28 @@ test("H10 completed task allows pindie_task_start", async () => {
     ),
     undefined,
   );
+});
+
+test("consequential tool admission bounds authoritative State refresh and fails closed", async (t) => {
+  const harness = createHarness([["/repo", activeState("Bounded refresh")]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  const pending = harness.store.pauseNextLoad();
+
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const admission = callGuard(harness, toolCall("edit", {}, "hung-refresh-edit"));
+  await pending.entered;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+
+  const result = await admission;
+  assertBlocked(result, /authoritative State refresh timed out; semantic authority is unavailable for this Run/i);
+  assert.match(harness.integration.stateUnavailableReason ?? "", /timed out/i);
+  assert.equal(harness.integration.runtime.projectRoot, null);
+  assert.deepEqual(harness.integration.runtime.state, EMPTY_STATE);
+
+  pending.release();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(harness.integration.runtime.state, EMPTY_STATE);
 });
 
 test("H11 unavailable Pindie State blocks consequential tools", async () => {

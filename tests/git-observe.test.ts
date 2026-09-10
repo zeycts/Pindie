@@ -161,12 +161,21 @@ test("SO-T20-T21 timeout and AbortSignal terminate and settle a Git child", asyn
     assert.deepEqual(observation.killSignals, ["SIGTERM"]);
   });
 
-  await t.test("an already-aborted signal controls the result", async (t) => {
+  await t.test("an already-aborted signal controls the result without spawning termination", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const observation = start(1_000, true);
     observation.child.emit("close", null);
     await assert.rejects(observation.promise, /cancelled/);
-    assert.deepEqual(observation.killSignals, ["SIGTERM"]);
+    assert.deepEqual(observation.killSignals, []);
+  });
+
+  await t.test("SIGKILL establishes a hard settlement boundary without close", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const observation = start(5);
+    t.mock.timers.tick(5);
+    t.mock.timers.tick(250);
+    await assert.rejects(observation.promise, /timed out/);
+    assert.deepEqual(observation.killSignals, ["SIGTERM", "SIGKILL"]);
   });
 
   await t.test("abort remains authoritative when timeout fires before close", async (t) => {

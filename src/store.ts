@@ -30,7 +30,7 @@ export class StateLockBusyError extends Error {
 }
 
 export interface PindieStateStore {
-  load(projectRoot: string): Promise<PindieState>;
+  load(projectRoot: string, signal?: AbortSignal): Promise<PindieState>;
   save(projectRoot: string, state: PindieState): Promise<void>;
   withProjectLock<T>(projectRoot: string, operation: () => Promise<T>): Promise<T>;
 }
@@ -157,11 +157,11 @@ export class FileStateStore implements PindieStateStore {
     return this.baseDir;
   }
 
-  async load(projectRoot: string): Promise<PindieState> {
+  async load(projectRoot: string, signal?: AbortSignal): Promise<PindieState> {
     const statePath = this.statePath(projectRoot);
     let contents: string;
     try {
-      contents = await readFile(statePath, "utf8");
+      contents = await readFile(statePath, { encoding: "utf8", signal });
     } catch (error) {
       if (isMissingFile(error)) return EMPTY_STATE;
       throw new Error(`Could not read Pindie State file '${statePath}': ${errorMessage(error)}`);

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { PindieRuntime } from "../src/runtime.ts";
+import {
+  PindieRuntime,
+  PindieRuntimeStaleAuthorityError,
+} from "../src/runtime.ts";
 import { EMPTY_STATE, type PindieState } from "../src/state.ts";
 import type { PindieStateStore } from "../src/store.ts";
 
@@ -24,6 +27,43 @@ class FakeStateStore implements PindieStateStore {
     if (this.beforeSave) await this.beforeSave();
     if (this.saveError) throw this.saveError;
     this.loadState = state;
+  }
+
+  async withProjectLock<T>(_projectRoot: string, operation: () => Promise<T>): Promise<T> {
+    return operation();
+  }
+}
+
+class DeferredLoadStore implements PindieStateStore {
+  state: PindieState = EMPTY_STATE;
+  private readonly pending: Array<{
+    readonly started: () => void;
+    readonly promise: Promise<PindieState>;
+  }> = [];
+
+  deferLoad(): {
+    started: Promise<void>;
+    resolve: (state: PindieState) => void;
+  } {
+    let markStarted!: () => void;
+    let resolve!: (state: PindieState) => void;
+    const started = new Promise<void>((settle) => { markStarted = settle; });
+    const promise = new Promise<PindieState>((settle) => { resolve = settle; });
+    this.pending.push({ started: markStarted, promise });
+    return { started, resolve };
+  }
+
+  async load(_projectRoot: string, _signal?: AbortSignal): Promise<PindieState> {
+    const next = this.pending.shift();
+    if (next !== undefined) {
+      next.started();
+      return next.promise;
+    }
+    return this.state;
+  }
+
+  async save(_projectRoot: string, state: PindieState): Promise<void> {
+    this.state = state;
   }
 
   async withProjectLock<T>(_projectRoot: string, operation: () => Promise<T>): Promise<T> {
@@ -184,6 +224,67 @@ test("PSC-R01-R04 refresh preserves equal identity, adopts external State, and p
   await assert.rejects(runtime.refresh(), /unreadable/);
   assert.equal(runtime.state, adopted);
   assert.equal(runtime.externalStateEpoch, 1);
+});
+
+test("runtime rejects a late refresh after unload without adopting stale State", async () => {
+  const store = new DeferredLoadStore();
+  const runtime = new PindieRuntime(store);
+  await runtime.load("/workspace/pindie");
+  const pending = store.deferLoad();
+  const refresh = runtime.refresh();
+  await pending.started;
+
+  runtime.unload();
+  pending.resolve({
+    task: {
+      goal: "Stale task",
+      constraints: [],
+      successCriteria: [{ id: "c1", description: "Must not be adopted" }],
+      openLoops: { blockers: [], questions: [], nextIntent: null },
+      verification: { stale: false, checks: [] },
+      humanGate: null,
+      completed: false,
+    },
+  });
+
+  await assert.rejects(
+    refresh,
+    (error: unknown) => error instanceof PindieRuntimeStaleAuthorityError,
+  );
+  assert.equal(runtime.projectRoot, null);
+  assert.deepEqual(runtime.state, EMPTY_STATE);
+});
+
+test("overlapping project loads can only commit the latest authority generation", async () => {
+  const store = new DeferredLoadStore();
+  const runtime = new PindieRuntime(store);
+  const first = store.deferLoad();
+  const firstLoad = runtime.load("/workspace/project-a");
+  await first.started;
+  const second = store.deferLoad();
+  const secondLoad = runtime.load("/workspace/project-b");
+  await second.started;
+
+  second.resolve({ task: null });
+  await secondLoad;
+  first.resolve({
+    task: {
+      goal: "Stale project A task",
+      constraints: [],
+      successCriteria: [{ id: "c1", description: "Must not be adopted" }],
+      openLoops: { blockers: [], questions: [], nextIntent: null },
+      verification: { stale: false, checks: [] },
+      humanGate: null,
+      completed: false,
+    },
+  });
+
+  await assert.rejects(
+    firstLoad,
+    (error: unknown) => error instanceof PindieRuntimeStaleAuthorityError,
+  );
+  assert.equal(runtime.projectRoot, "/workspace/project-b");
+  assert.deepEqual(runtime.state, { task: null });
 });
 
 test("PSC-D02-D03 stale semantic events adopt authority and conflict without overwrite", async () => {

@@ -8,6 +8,10 @@ import {
   type StrategyRevisionSelection,
   type StrategyRevisionSelector,
 } from "../policy.ts";
+import {
+  PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+  runBoundedOperation,
+} from "../liveness.ts";
 
 const RevisionSelector = Type.Object(
   {
@@ -78,13 +82,18 @@ export function createPindiePolicySetTool(
     description: "Optionally declare or replace the current Agent Run's cognitive Policy Snapshot. Use this only when a named Strategy materially guides the current work or the current approach meaningfully changes; do not call merely to populate metadata.",
     parameters: PolicySetParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const snapshot = await createPolicySnapshotForRunAsync(
-        params,
-        options.resolveRevisionSelector === undefined
-          ? undefined
-          : (selector, kind) => options.resolveRevisionSelector!(selector, kind, ctx),
-      );
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const snapshot = await runBoundedOperation({
+        label: "Policy resolution",
+        timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+        signal,
+        run: async () => createPolicySnapshotForRunAsync(
+          params,
+          options.resolveRevisionSelector === undefined
+            ? undefined
+            : (selector, kind) => options.resolveRevisionSelector!(selector, kind, ctx),
+        ),
+      });
       options.onPolicySet(snapshot);
       return result(snapshot);
     },
