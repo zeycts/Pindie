@@ -14,12 +14,14 @@ import {
   strategyDerivationCandidateSemanticFingerprint,
   validateStrategyDerivationCandidateArtifact,
   validateStrategyDerivationCandidateBinding,
+  validateStrategyDerivationCandidateProjectIdBinding,
   type StrategyDerivationCandidateReader,
   type StrategyDerivationCandidateV1,
 } from "./strategy-derivation-candidates.ts";
 import { MAX_PROMOTED_DERIVED_STRATEGIES } from "./strategy-portfolio.ts";
 import type {
   StrategyCandidateReader,
+  StrategyRevisionCandidate,
 } from "./strategy-candidates.ts";
 import {
   SEED_STRATEGIES,
@@ -286,9 +288,23 @@ export function validateStrategyDerivationDecisionProjectBinding(
   decision: StrategyDerivationDecisionV1,
   projectRoot: string,
 ): StrategyDerivationDecisionV1 {
+  return validateStrategyDerivationDecisionProjectIdBinding(
+    decision,
+    getProjectId(projectRoot),
+  );
+}
+
+/** Validate a Derivation Decision against a canonical project namespace without constructing a root. */
+export function validateStrategyDerivationDecisionProjectIdBinding(
+  decision: StrategyDerivationDecisionV1,
+  projectId: string,
+): StrategyDerivationDecisionV1 {
+  if (typeof projectId !== "string" || !CANONICAL_PROJECT_ID.test(projectId)) {
+    return invalidBinding("projectId must be a canonical project identity.");
+  }
   const validated = validateStrategyDerivationDecisionArtifact(decision, decision.candidateId);
-  if (validated.projectId !== getProjectId(projectRoot)) {
-    return invalidBinding("Decision projectId does not match the current project.");
+  if (validated.projectId !== projectId) {
+    return invalidBinding("Decision projectId does not match the addressed project namespace.");
   }
   return validated;
 }
@@ -360,14 +376,15 @@ export class FileStrategyDerivationDecisionStore implements StrategyDerivationDe
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "projects");
   }
 
-  async read(projectRoot: string, candidateId: string): Promise<StrategyDerivationDecisionV1 | null> {
+  private async readFromDirectory(
+    directory: string,
+    projectId: string,
+    candidateId: string,
+  ): Promise<StrategyDerivationDecisionV1 | null> {
     if (!isCanonicalStrategyDerivationCandidateId(candidateId)) {
       throw new Error("Cannot read Strategy Derivation Decision: candidateId must be a canonical lowercase UUID-v4.");
     }
-    const decisionPath = join(
-      this.strategyDerivationDecisionDirectory(projectRoot),
-      `${candidateId}.json`,
-    );
+    const decisionPath = join(directory, `${candidateId}.json`);
     let contents: string;
     try {
       contents = await readFile(decisionPath, "utf8");
@@ -382,17 +399,19 @@ export class FileStrategyDerivationDecisionStore implements StrategyDerivationDe
       throw new Error(`Could not read Pindie Strategy Derivation Decision file '${decisionPath}': invalid JSON (${errorMessage(error)}).`);
     }
     try {
-      return validateStrategyDerivationDecisionProjectBinding(
+      return validateStrategyDerivationDecisionProjectIdBinding(
         validateStrategyDerivationDecisionArtifact(parsed, candidateId),
-        projectRoot,
+        projectId,
       );
     } catch (error) {
       throw new Error(`Could not read Pindie Strategy Derivation Decision file '${decisionPath}': ${errorMessage(error)}`);
     }
   }
 
-  async readAll(projectRoot: string): Promise<readonly StrategyDerivationDecisionV1[]> {
-    const directory = this.strategyDerivationDecisionDirectory(projectRoot);
+  private async readAllFromDirectory(
+    directory: string,
+    projectId: string,
+  ): Promise<readonly StrategyDerivationDecisionV1[]> {
     let entries;
     try {
       entries = await readdir(directory, { withFileTypes: true });
@@ -405,13 +424,54 @@ export class FileStrategyDerivationDecisionStore implements StrategyDerivationDe
       .filter((item) => item.isFile() && CANONICAL_DECISION_FILE.test(item.name))
       .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)) {
       const candidateId = entry.name.slice(0, -".json".length);
-      const decision = await this.read(projectRoot, candidateId);
+      const decision = await this.readFromDirectory(directory, projectId, candidateId);
       if (decision === null) {
         throw new Error(`Could not read Pindie Strategy Derivation Decision file '${join(directory, entry.name)}': artifact disappeared while reading.`);
       }
       decisions.push(decision);
     }
     return Object.freeze(decisions);
+  }
+
+  async read(projectRoot: string, candidateId: string): Promise<StrategyDerivationDecisionV1 | null> {
+    if (!isCanonicalStrategyDerivationCandidateId(candidateId)) {
+      throw new Error("Cannot read Strategy Derivation Decision: candidateId must be a canonical lowercase UUID-v4.");
+    }
+    return this.readFromDirectory(
+      this.strategyDerivationDecisionDirectory(projectRoot),
+      getProjectId(projectRoot),
+      candidateId,
+    );
+  }
+
+  /** Read one Derivation Decision directly from a canonical project namespace. */
+  async readProjectId(projectId: string, candidateId: string): Promise<StrategyDerivationDecisionV1 | null> {
+    if (!CANONICAL_PROJECT_ID.test(projectId)) {
+      throw new Error("Cannot read Strategy Derivation Decision: projectId must be canonical.");
+    }
+    return this.readFromDirectory(
+      this.strategyDerivationDecisionDirectoryForProjectId(projectId),
+      projectId,
+      candidateId,
+    );
+  }
+
+  async readAll(projectRoot: string): Promise<readonly StrategyDerivationDecisionV1[]> {
+    return this.readAllFromDirectory(
+      this.strategyDerivationDecisionDirectory(projectRoot),
+      getProjectId(projectRoot),
+    );
+  }
+
+  /** Read every Derivation Decision directly from a canonical project namespace. */
+  async readAllProjectId(projectId: string): Promise<readonly StrategyDerivationDecisionV1[]> {
+    if (!CANONICAL_PROJECT_ID.test(projectId)) {
+      throw new Error("Cannot read Strategy Derivation Decisions: projectId must be canonical.");
+    }
+    return this.readAllFromDirectory(
+      this.strategyDerivationDecisionDirectoryForProjectId(projectId),
+      projectId,
+    );
   }
 
   async save(projectRoot: string, decision: StrategyDerivationDecisionV1): Promise<void> {
@@ -439,11 +499,14 @@ export class FileStrategyDerivationDecisionStore implements StrategyDerivationDe
   }
 
   strategyDerivationDecisionDirectory(projectRoot: string): string {
-    return join(
-      this.baseDir,
-      getProjectId(projectRoot),
-      STRATEGY_DERIVATION_DECISION_DIRECTORY_NAME,
-    );
+    return this.strategyDerivationDecisionDirectoryForProjectId(getProjectId(projectRoot));
+  }
+
+  strategyDerivationDecisionDirectoryForProjectId(projectId: string): string {
+    if (!CANONICAL_PROJECT_ID.test(projectId)) {
+      throw new Error("Strategy Derivation Decision namespace requires a canonical project identity.");
+    }
+    return join(this.baseDir, projectId, STRATEGY_DERIVATION_DECISION_DIRECTORY_NAME);
   }
 }
 
@@ -601,6 +664,70 @@ export async function loadPromotedDerivedStrategyCatalog(
     const candidate = await candidateReader.read(projectRoot, decision.candidateId);
     if (candidate === null) throw new Error(`Decision '${decision.candidateId}' is missing its immutable Derivation Candidate artifact.`);
     const validatedCandidate = validateStrategyDerivationCandidateBinding(candidate, projectRoot);
+    const validatedDecision = validateStrategyDerivationDecisionBinding(decision, validatedCandidate);
+    if (validatedDecision.decision !== "promoted") continue;
+    const selection = createStrategyRevisionSelection({
+      strategyId: validatedCandidate.proposal.strategyId,
+      kind: validatedCandidate.proposal.kind,
+      revisionIdentity: validatedCandidate.candidateId,
+      revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(validatedCandidate),
+      revisionStatusAtRun: "promoted",
+      semantics: {
+        summary: validatedCandidate.proposal.summary,
+        useWhen: [...validatedCandidate.proposal.useWhen],
+        avoidWhen: [...validatedCandidate.proposal.avoidWhen],
+        principles: [...validatedCandidate.proposal.principles],
+      },
+    });
+    promoted.push({ candidate: validatedCandidate, decision: validatedDecision, selection });
+  }
+  return createPromotedDerivedStrategyCatalog(promoted);
+}
+
+/** Reconstruct promoted Derived identities from a project namespace without a root. */
+export async function loadPromotedDerivedStrategyCatalogByProjectId(
+  projectId: string,
+  decisionReader: {
+    readAllProjectId(projectId: string): Promise<readonly StrategyDerivationDecisionV1[]>;
+  },
+  candidateReader: {
+    readProjectId(projectId: string, candidateId: string): Promise<StrategyDerivationCandidateV1 | null>;
+  },
+  revisionCandidateReader?: {
+    readProjectId(projectId: string, candidateId: string): Promise<StrategyRevisionCandidate | null>;
+  },
+): Promise<PromotedDerivedStrategyCatalog> {
+  if (!CANONICAL_PROJECT_ID.test(projectId)) {
+    throw new Error("Strategy Derivation portfolio reads require a canonical project identity.");
+  }
+  const rawDecisions = await decisionReader.readAllProjectId(projectId);
+  if (!Array.isArray(rawDecisions)) throw new Error("Strategy Derivation Decision reader returned an invalid collection.");
+  const decisions: StrategyDerivationDecisionV1[] = [];
+  const candidateIds = new Set<string>();
+  for (const rawDecision of rawDecisions) {
+    const decision = validateStrategyDerivationDecisionProjectIdBinding(
+      validateStrategyDerivationDecisionArtifact(rawDecision),
+      projectId,
+    );
+    if (candidateIds.has(decision.candidateId)) throw new Error("Duplicate or conflicting Derivation Decisions were found.");
+    candidateIds.add(decision.candidateId);
+    decisions.push(decision);
+  }
+
+  if (revisionCandidateReader !== undefined) {
+    for (const candidateId of candidateIds) {
+      const revision = await revisionCandidateReader.readProjectId(projectId, candidateId);
+      if (revision !== null) {
+        throw new Error("Candidate ID is ambiguous: both Revision and Derivation Candidate stores contain it.");
+      }
+    }
+  }
+
+  const promoted: PromotedDerivedStrategy[] = [];
+  for (const decision of decisions) {
+    const candidate = await candidateReader.readProjectId(projectId, decision.candidateId);
+    if (candidate === null) throw new Error(`Decision '${decision.candidateId}' is missing its immutable Derivation Candidate artifact.`);
+    const validatedCandidate = validateStrategyDerivationCandidateProjectIdBinding(candidate, projectId);
     const validatedDecision = validateStrategyDerivationDecisionBinding(decision, validatedCandidate);
     if (validatedDecision.decision !== "promoted") continue;
     const selection = createStrategyRevisionSelection({

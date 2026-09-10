@@ -436,15 +436,30 @@ export function validateStrategyDerivationCandidateBinding(
   projectRoot: string,
   currentPortfolio?: TrustedStrategyPortfolio,
 ): StrategyDerivationCandidateV1 {
+  return validateStrategyDerivationCandidateProjectIdBinding(
+    candidate,
+    getProjectId(projectRoot),
+    currentPortfolio,
+  );
+}
+
+/** Validate a Derived Candidate against a canonical project namespace without constructing a root. */
+export function validateStrategyDerivationCandidateProjectIdBinding(
+  candidate: StrategyDerivationCandidateV1,
+  projectId: string,
+  currentPortfolio?: TrustedStrategyPortfolio,
+): StrategyDerivationCandidateV1 {
+  if (typeof projectId !== "string" || !CANONICAL_PROJECT_ID.test(projectId)) {
+    return invalidBinding("projectId must be a canonical project identity.");
+  }
   let validated: StrategyDerivationCandidateV1;
   try {
     validated = validateStrategyDerivationCandidateArtifact(candidate, candidate.candidateId);
   } catch (error) {
     return invalidBinding(errorMessage(error));
   }
-  const projectId = getProjectId(projectRoot);
   if (validated.projectId !== projectId) {
-    return invalidBinding("Candidate projectId does not match the current project.");
+    return invalidBinding("Candidate projectId does not match the addressed project namespace.");
   }
   if (currentPortfolio !== undefined && !sameTrustedPortfolioSnapshot(
     {
@@ -528,17 +543,15 @@ export class FileStrategyDerivationCandidateStore implements StrategyDerivationC
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "projects");
   }
 
-  async read(
-    projectRoot: string,
+  private async readFromDirectory(
+    directory: string,
+    projectId: string,
     candidateId: string,
   ): Promise<StrategyDerivationCandidateV1 | null> {
     if (!CANONICAL_CANDIDATE_ID.test(candidateId)) {
       throw new Error("Cannot read Strategy Derivation Candidate: candidateId must be a canonical lowercase UUID-v4.");
     }
-    const candidatePath = join(
-      this.strategyDerivationCandidateDirectory(projectRoot),
-      `${candidateId}.json`,
-    );
+    const candidatePath = join(directory, `${candidateId}.json`);
     let contents: string;
     try {
       contents = await readFile(candidatePath, "utf8");
@@ -554,14 +567,16 @@ export class FileStrategyDerivationCandidateStore implements StrategyDerivationC
     }
     try {
       const candidate = validateStrategyDerivationCandidateArtifact(parsed, candidateId);
-      return validateStrategyDerivationCandidateBinding(candidate, projectRoot);
+      return validateStrategyDerivationCandidateProjectIdBinding(candidate, projectId);
     } catch (error) {
       throw new Error(`Could not read Pindie Strategy Derivation Candidate file '${candidatePath}': ${errorMessage(error)}`);
     }
   }
 
-  async readAll(projectRoot: string): Promise<readonly StrategyDerivationCandidateV1[]> {
-    const directory = this.strategyDerivationCandidateDirectory(projectRoot);
+  private async readAllFromDirectory(
+    directory: string,
+    projectId: string,
+  ): Promise<readonly StrategyDerivationCandidateV1[]> {
     let entries;
     try {
       entries = await readdir(directory, { withFileTypes: true });
@@ -574,13 +589,63 @@ export class FileStrategyDerivationCandidateStore implements StrategyDerivationC
       .filter((item) => item.isFile() && CANONICAL_CANDIDATE_FILE.test(item.name))
       .sort((left, right) => compareText(left.name, right.name))) {
       const candidateId = entry.name.slice(0, -".json".length);
-      const candidate = await this.read(projectRoot, candidateId);
+      const candidate = await this.readFromDirectory(directory, projectId, candidateId);
       if (candidate === null) {
         throw new Error(`Could not read Pindie Strategy Derivation Candidate file '${join(directory, entry.name)}': artifact disappeared while reading.`);
       }
       candidates.push(candidate);
     }
     return Object.freeze(candidates);
+  }
+
+  async read(
+    projectRoot: string,
+    candidateId: string,
+  ): Promise<StrategyDerivationCandidateV1 | null> {
+    if (!CANONICAL_CANDIDATE_ID.test(candidateId)) {
+      throw new Error("Cannot read Strategy Derivation Candidate: candidateId must be a canonical lowercase UUID-v4.");
+    }
+    return this.readFromDirectory(
+      this.strategyDerivationCandidateDirectory(projectRoot),
+      getProjectId(projectRoot),
+      candidateId,
+    );
+  }
+
+  /** Read one Derived Candidate directly from a canonical project namespace. */
+  async readProjectId(
+    projectId: string,
+    candidateId: string,
+  ): Promise<StrategyDerivationCandidateV1 | null> {
+    if (!CANONICAL_PROJECT_ID.test(projectId)) {
+      throw new Error("Cannot read Strategy Derivation Candidate: projectId must be canonical.");
+    }
+    if (!CANONICAL_CANDIDATE_ID.test(candidateId)) {
+      throw new Error("Cannot read Strategy Derivation Candidate: candidateId must be a canonical lowercase UUID-v4.");
+    }
+    return this.readFromDirectory(
+      this.strategyDerivationCandidateDirectoryForProjectId(projectId),
+      projectId,
+      candidateId,
+    );
+  }
+
+  async readAll(projectRoot: string): Promise<readonly StrategyDerivationCandidateV1[]> {
+    return this.readAllFromDirectory(
+      this.strategyDerivationCandidateDirectory(projectRoot),
+      getProjectId(projectRoot),
+    );
+  }
+
+  /** Read every Derived Candidate directly from a canonical project namespace. */
+  async readAllProjectId(projectId: string): Promise<readonly StrategyDerivationCandidateV1[]> {
+    if (!CANONICAL_PROJECT_ID.test(projectId)) {
+      throw new Error("Cannot read Strategy Derivation Candidates: projectId must be canonical.");
+    }
+    return this.readAllFromDirectory(
+      this.strategyDerivationCandidateDirectoryForProjectId(projectId),
+      projectId,
+    );
   }
 
   async save(projectRoot: string, candidate: StrategyDerivationCandidateV1): Promise<void> {
@@ -608,11 +673,14 @@ export class FileStrategyDerivationCandidateStore implements StrategyDerivationC
   }
 
   strategyDerivationCandidateDirectory(projectRoot: string): string {
-    return join(
-      this.baseDir,
-      getProjectId(projectRoot),
-      STRATEGY_DERIVATION_CANDIDATE_DIRECTORY_NAME,
-    );
+    return this.strategyDerivationCandidateDirectoryForProjectId(getProjectId(projectRoot));
+  }
+
+  strategyDerivationCandidateDirectoryForProjectId(projectId: string): string {
+    if (!CANONICAL_PROJECT_ID.test(projectId)) {
+      throw new Error("Strategy Derivation Candidate namespace requires a canonical project identity.");
+    }
+    return join(this.baseDir, projectId, STRATEGY_DERIVATION_CANDIDATE_DIRECTORY_NAME);
   }
 }
 

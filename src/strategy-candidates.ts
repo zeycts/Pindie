@@ -82,6 +82,7 @@ export interface FileStrategyCandidateStoreOptions {
 
 const CANONICAL_CANDIDATE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CANONICAL_CANDIDATE_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/;
+const CANONICAL_PROJECT_ID = /^[0-9a-f]{64}$/;
 const CANDIDATE_FIELDS = [
   "schemaVersion",
   "candidateId",
@@ -466,8 +467,8 @@ export class FileStrategyCandidateStore implements StrategyCandidateStore, Strat
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "projects");
   }
 
-  async read(
-    projectRoot: string,
+  private async readFromDirectory(
+    directory: string,
     candidateId: string,
   ): Promise<StrategyRevisionCandidate | null> {
     // Validate before constructing the Candidate file path. Do not normalize
@@ -475,10 +476,7 @@ export class FileStrategyCandidateStore implements StrategyCandidateStore, Strat
     if (!isCanonicalStrategyCandidateId(candidateId)) {
       throw new Error("Cannot read Strategy Revision Candidate: candidateId must be a canonical lowercase UUID-v4.");
     }
-    const candidatePath = join(
-      this.strategyCandidateDirectory(projectRoot),
-      `${candidateId}.json`,
-    );
+    const candidatePath = join(directory, `${candidateId}.json`);
     let contents: string;
     try {
       contents = await readFile(candidatePath, "utf8");
@@ -506,8 +504,9 @@ export class FileStrategyCandidateStore implements StrategyCandidateStore, Strat
     }
   }
 
-  async readAll(projectRoot: string): Promise<readonly StrategyRevisionCandidate[]> {
-    const directory = this.strategyCandidateDirectory(projectRoot);
+  private async readAllFromDirectory(
+    directory: string,
+  ): Promise<readonly StrategyRevisionCandidate[]> {
     let entries;
     try {
       entries = await readdir(directory, { withFileTypes: true });
@@ -523,7 +522,7 @@ export class FileStrategyCandidateStore implements StrategyCandidateStore, Strat
       .filter((candidate) => candidate.isFile() && CANONICAL_CANDIDATE_FILE.test(candidate.name))
       .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)) {
       const candidateId = entry.name.slice(0, -".json".length);
-      const candidate = await this.read(projectRoot, candidateId);
+      const candidate = await this.readFromDirectory(directory, candidateId);
       if (candidate === null) {
         throw new Error(
           `Could not read Pindie Strategy Revision Candidate file '${join(directory, entry.name)}': the artifact disappeared while reading.`,
@@ -532,6 +531,42 @@ export class FileStrategyCandidateStore implements StrategyCandidateStore, Strat
       candidates.push(candidate);
     }
     return Object.freeze(candidates);
+  }
+
+  async read(
+    projectRoot: string,
+    candidateId: string,
+  ): Promise<StrategyRevisionCandidate | null> {
+    if (!isCanonicalStrategyCandidateId(candidateId)) {
+      throw new Error("Cannot read Strategy Revision Candidate: candidateId must be a canonical lowercase UUID-v4.");
+    }
+    return this.readFromDirectory(this.strategyCandidateDirectory(projectRoot), candidateId);
+  }
+
+  /** Read one Candidate directly from a canonical project namespace. */
+  async readProjectId(
+    projectId: string,
+    candidateId: string,
+  ): Promise<StrategyRevisionCandidate | null> {
+    if (!CANONICAL_PROJECT_ID.test(projectId)) {
+      throw new Error("Cannot read Strategy Revision Candidate: projectId must be canonical.");
+    }
+    if (!isCanonicalStrategyCandidateId(candidateId)) {
+      throw new Error("Cannot read Strategy Revision Candidate: candidateId must be a canonical lowercase UUID-v4.");
+    }
+    return this.readFromDirectory(this.strategyCandidateDirectoryForProjectId(projectId), candidateId);
+  }
+
+  async readAll(projectRoot: string): Promise<readonly StrategyRevisionCandidate[]> {
+    return this.readAllFromDirectory(this.strategyCandidateDirectory(projectRoot));
+  }
+
+  /** Read every Candidate directly from a canonical project namespace. */
+  async readAllProjectId(projectId: string): Promise<readonly StrategyRevisionCandidate[]> {
+    if (!CANONICAL_PROJECT_ID.test(projectId)) {
+      throw new Error("Cannot read Strategy Revision Candidates: projectId must be canonical.");
+    }
+    return this.readAllFromDirectory(this.strategyCandidateDirectoryForProjectId(projectId));
   }
 
   async save(projectRoot: string, candidate: StrategyRevisionCandidate): Promise<void> {
@@ -562,10 +597,13 @@ export class FileStrategyCandidateStore implements StrategyCandidateStore, Strat
   }
 
   strategyCandidateDirectory(projectRoot: string): string {
-    return join(
-      this.baseDir,
-      getProjectId(projectRoot),
-      STRATEGY_CANDIDATE_DIRECTORY_NAME,
-    );
+    return this.strategyCandidateDirectoryForProjectId(getProjectId(projectRoot));
+  }
+
+  strategyCandidateDirectoryForProjectId(projectId: string): string {
+    if (!CANONICAL_PROJECT_ID.test(projectId)) {
+      throw new Error("Strategy Revision Candidate namespace requires a canonical project identity.");
+    }
+    return join(this.baseDir, projectId, STRATEGY_CANDIDATE_DIRECTORY_NAME);
   }
 }
