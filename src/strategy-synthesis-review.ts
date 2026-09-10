@@ -491,17 +491,10 @@ function deriveLocalConflict(
   projectTrust: ProjectTrustFacts,
 ): { readonly conflictFree: boolean; readonly reasons: readonly string[] } {
   const reasons: string[] = [];
-  const fingerprint = strategySynthesisCandidateSemanticFingerprint(candidate);
   for (const snapshot of projectTrust.snapshots.values()) {
     for (const entry of snapshot.promotedDerived) {
       if (entry.strategyId !== candidate.proposal.strategyId) continue;
-      if (
-        entry.kind !== candidate.proposal.kind ||
-        entry.revisionIdentity !== candidate.candidateId ||
-        entry.revisionFingerprint !== fingerprint
-      ) {
-        reasons.push(`project ${shortIdentity(snapshot.projectId)} has a conflicting local revision for logical Strategy ID '${candidate.proposal.strategyId}'`);
-      }
+      reasons.push(`project ${shortIdentity(snapshot.projectId)} owns logical Strategy ID '${candidate.proposal.strategyId}' in project-local promoted Derived trust`);
     }
   }
   return Object.freeze({

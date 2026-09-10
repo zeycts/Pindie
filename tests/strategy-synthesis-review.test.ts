@@ -46,7 +46,10 @@ import {
 import {
   loadUserGlobalTrustedDerivedStrategyProjection,
 } from "../src/strategy-trust-scope-global.ts";
-import type { ScopeProjectTrustReader } from "../src/strategy-trust-scope-review.ts";
+import type {
+  ScopeProjectTrustReader,
+  ScopeProjectTrustSnapshot,
+} from "../src/strategy-trust-scope-review.ts";
 import type { StrategyTrustScopeSourceResolver } from "../src/strategy-trust-scope-resolution.ts";
 import type { GlobalWriterLock } from "../src/store.ts";
 import { makeSynthesisTrialFixture } from "./synthesis-trial-fixture.ts";
@@ -136,6 +139,7 @@ function reviewFixture(
   records: ReadonlyMap<string, readonly RunExperienceSourceRecord[]>,
   projectIds: readonly string[],
   decisions: readonly StrategySynthesisDecisionV1[] = [],
+  projectTrustByProject: ReadonlyMap<string, ScopeProjectTrustSnapshot["promotedDerived"]> = new Map(),
 ) {
   const candidateReader: StrategySynthesisCandidateReader = {
     read: async (candidateId) => candidateId === candidate.candidateId ? candidate : null,
@@ -158,7 +162,10 @@ function reviewFixture(
     },
   };
   const projectTrustReader: ScopeProjectTrustReader = {
-    readProjectId: async (projectId) => ({ projectId, promotedDerived: [] }),
+    readProjectId: async (projectId) => ({
+      projectId,
+      promotedDerived: projectTrustByProject.get(projectId) ?? [],
+    }),
   };
   return {
     candidateReader,
@@ -241,6 +248,7 @@ test("Synthesis review validates exact Trial evidence and shows discovery overla
   const review = await deriveStrategySynthesisTrialReview(fixture.input);
 
   assert.equal(review.promotionEligibility.eligible, true);
+  assert.equal(review.promotionEligibility.projectLocalConflictFree, true);
   assert.equal(review.eligibleTrialRunCount, 2);
   assert.equal(review.distinctEligibleTrialProjectCount, 2);
   assert.deepEqual(review.discoverySourceProjectIds, [
@@ -251,6 +259,80 @@ test("Synthesis review validates exact Trial evidence and shows discovery overla
   assert.equal(review.selectedEvidenceRefs.length, 2);
   assert.equal(review.selectedEvidenceRefsValid, true);
   assert.equal(review.evidenceScanComplete, true);
+});
+
+test("Synthesis Promotion rejects a project-local owner with a different revision", async () => {
+  const { candidate } = await makeSynthesisTrialFixture("00000000-0000-4000-8000-000000000048");
+  const discoveryProject = candidate.evidence.sourceRefs[0]!.projectId;
+  const records = new Map<string, readonly RunExperienceSourceRecord[]>([
+    [discoveryProject, [{
+      recordId: TRIAL_RECORD_A,
+      experience: trialExperience(candidate, "local collision trial one", "2026-07-01T00:00:00.000Z"),
+    }]],
+    [TRIAL_PROJECT_NEW, [{
+      recordId: TRIAL_RECORD_B,
+      experience: trialExperience(candidate, "local collision trial two", "2026-07-02T00:00:00.000Z"),
+    }]],
+  ]);
+  const localOwner: ScopeProjectTrustSnapshot["promotedDerived"][number] = {
+    strategyId: candidate.proposal.strategyId,
+    kind: candidate.proposal.kind,
+    revisionIdentity: "different-promoted-revision",
+    revisionFingerprint: `sha256:${"d".repeat(64)}`,
+  };
+  const fixture = reviewFixture(
+    candidate,
+    records,
+    [discoveryProject, TRIAL_PROJECT_NEW],
+    [],
+    new Map([[discoveryProject, [localOwner]]]),
+  );
+
+  const review = await deriveStrategySynthesisTrialReview(fixture.input);
+
+  assert.equal(review.promotionEligibility.eligible, false);
+  assert.equal(review.promotionEligibility.projectLocalConflictFree, false);
+  assert.match(
+    review.reasons.join(" "),
+    new RegExp(`project ${discoveryProject.slice(0, 8)} owns logical Strategy ID '${candidate.proposal.strategyId}'`),
+  );
+});
+
+test("Synthesis Promotion rejects a project-local owner with the exact candidate revision", async () => {
+  const { candidate } = await makeSynthesisTrialFixture("00000000-0000-4000-8000-000000000049");
+  const discoveryProject = candidate.evidence.sourceRefs[0]!.projectId;
+  const records = new Map<string, readonly RunExperienceSourceRecord[]>([
+    [discoveryProject, [{
+      recordId: TRIAL_RECORD_A,
+      experience: trialExperience(candidate, "exact local collision trial one", "2026-08-01T00:00:00.000Z"),
+    }]],
+    [TRIAL_PROJECT_NEW, [{
+      recordId: TRIAL_RECORD_B,
+      experience: trialExperience(candidate, "exact local collision trial two", "2026-08-02T00:00:00.000Z"),
+    }]],
+  ]);
+  const exactLocalOwner: ScopeProjectTrustSnapshot["promotedDerived"][number] = {
+    strategyId: candidate.proposal.strategyId,
+    kind: candidate.proposal.kind,
+    revisionIdentity: candidate.candidateId,
+    revisionFingerprint: strategySynthesisCandidateSemanticFingerprint(candidate),
+  };
+  const fixture = reviewFixture(
+    candidate,
+    records,
+    [discoveryProject, TRIAL_PROJECT_NEW],
+    [],
+    new Map([[discoveryProject, [exactLocalOwner]]]),
+  );
+
+  const review = await deriveStrategySynthesisTrialReview(fixture.input);
+
+  assert.equal(review.promotionEligibility.eligible, false);
+  assert.equal(review.promotionEligibility.projectLocalConflictFree, false);
+  assert.match(
+    review.reasons.join(" "),
+    new RegExp(`project ${discoveryProject.slice(0, 8)} owns logical Strategy ID '${candidate.proposal.strategyId}'`),
+  );
 });
 
 test("Synthesis Human Decisions are terminal, lock-protected, and reconcile an ambiguous immutable promotion write", async () => {
