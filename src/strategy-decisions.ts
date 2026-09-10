@@ -81,6 +81,7 @@ export interface FileStrategyDecisionStoreOptions {
 
 const CANONICAL_FINGERPRINT = /^sha256:[0-9a-f]{64}$/;
 const CANONICAL_DECISION_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/;
+const CANONICAL_PROJECT_ID = /^[0-9a-f]{64}$/;
 const DECISION_FIELDS = [
   "schemaVersion",
   "candidateId",
@@ -315,17 +316,14 @@ export class FileStrategyDecisionStore implements StrategyRevisionDecisionStore 
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "projects");
   }
 
-  async read(
-    projectRoot: string,
+  private async readFromDirectory(
+    directory: string,
     candidateId: string,
   ): Promise<StrategyRevisionDecision | null> {
     if (!isCanonicalStrategyCandidateId(candidateId)) {
       throw new Error("Cannot read Strategy Revision Decision: candidateId must be a canonical lowercase UUID-v4.");
     }
-    const decisionPath = join(
-      this.strategyDecisionDirectory(projectRoot),
-      `${candidateId}.json`,
-    );
+    const decisionPath = join(directory, `${candidateId}.json`);
     let contents: string;
     try {
       contents = await readFile(decisionPath, "utf8");
@@ -353,8 +351,9 @@ export class FileStrategyDecisionStore implements StrategyRevisionDecisionStore 
     }
   }
 
-  async readAll(projectRoot: string): Promise<readonly StrategyRevisionDecision[]> {
-    const directory = this.strategyDecisionDirectory(projectRoot);
+  private async readAllFromDirectory(
+    directory: string,
+  ): Promise<readonly StrategyRevisionDecision[]> {
     let entries;
     try {
       entries = await readdir(directory, { withFileTypes: true });
@@ -370,7 +369,7 @@ export class FileStrategyDecisionStore implements StrategyRevisionDecisionStore 
       .filter((candidate) => candidate.isFile() && CANONICAL_DECISION_FILE.test(candidate.name))
       .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)) {
       const candidateId = entry.name.slice(0, -".json".length);
-      const decision = await this.read(projectRoot, candidateId);
+      const decision = await this.readFromDirectory(directory, candidateId);
       if (decision === null) {
         throw new Error(
           `Could not read Pindie Strategy Revision Decision file '${join(directory, entry.name)}': the artifact disappeared while reading.`,
@@ -379,6 +378,42 @@ export class FileStrategyDecisionStore implements StrategyRevisionDecisionStore 
       decisions.push(decision);
     }
     return Object.freeze(decisions);
+  }
+
+  async read(
+    projectRoot: string,
+    candidateId: string,
+  ): Promise<StrategyRevisionDecision | null> {
+    if (!isCanonicalStrategyCandidateId(candidateId)) {
+      throw new Error("Cannot read Strategy Revision Decision: candidateId must be a canonical lowercase UUID-v4.");
+    }
+    return this.readFromDirectory(this.strategyDecisionDirectory(projectRoot), candidateId);
+  }
+
+  /** Read one Decision directly from a canonical project namespace. */
+  async readProjectId(
+    projectId: string,
+    candidateId: string,
+  ): Promise<StrategyRevisionDecision | null> {
+    if (!CANONICAL_PROJECT_ID.test(projectId)) {
+      throw new Error("Cannot read Strategy Revision Decision: projectId must be canonical.");
+    }
+    if (!isCanonicalStrategyCandidateId(candidateId)) {
+      throw new Error("Cannot read Strategy Revision Decision: candidateId must be a canonical lowercase UUID-v4.");
+    }
+    return this.readFromDirectory(this.strategyDecisionDirectoryForProjectId(projectId), candidateId);
+  }
+
+  async readAll(projectRoot: string): Promise<readonly StrategyRevisionDecision[]> {
+    return this.readAllFromDirectory(this.strategyDecisionDirectory(projectRoot));
+  }
+
+  /** Read every Decision directly from a canonical project namespace. */
+  async readAllProjectId(projectId: string): Promise<readonly StrategyRevisionDecision[]> {
+    if (!CANONICAL_PROJECT_ID.test(projectId)) {
+      throw new Error("Cannot read Strategy Revision Decisions: projectId must be canonical.");
+    }
+    return this.readAllFromDirectory(this.strategyDecisionDirectoryForProjectId(projectId));
   }
 
   async save(projectRoot: string, decision: StrategyRevisionDecision): Promise<void> {
@@ -415,11 +450,14 @@ export class FileStrategyDecisionStore implements StrategyRevisionDecisionStore 
   }
 
   strategyDecisionDirectory(projectRoot: string): string {
-    return join(
-      this.baseDir,
-      getProjectId(projectRoot),
-      STRATEGY_DECISION_DIRECTORY_NAME,
-    );
+    return this.strategyDecisionDirectoryForProjectId(getProjectId(projectRoot));
+  }
+
+  strategyDecisionDirectoryForProjectId(projectId: string): string {
+    if (!CANONICAL_PROJECT_ID.test(projectId)) {
+      throw new Error("Strategy Revision Decision namespace requires a canonical project identity.");
+    }
+    return join(this.baseDir, projectId, STRATEGY_DECISION_DIRECTORY_NAME);
   }
 }
 
@@ -524,12 +562,10 @@ export function emptyPromotedStrategyRevisionCatalog(): PromotedStrategyRevision
  * revision. Any trust read/binding failure rejects the whole catalog so normal
  * Policy availability safely falls back to immutable Seeds.
  */
-export async function loadPromotedStrategyRevisionCatalog(
-  projectRoot: string,
-  decisionReader: StrategyRevisionDecisionReader,
-  candidateReader: StrategyCandidateReader,
+async function loadPromotedStrategyRevisionCatalogFromSources(
+  rawDecisions: readonly StrategyRevisionDecision[],
+  readCandidate: (candidateId: string) => Promise<StrategyRevisionCandidate | null>,
 ): Promise<PromotedStrategyRevisionCatalog> {
-  const rawDecisions = await decisionReader.readAll(projectRoot);
   if (!Array.isArray(rawDecisions)) {
     throw new Error("Strategy Revision Decision reader returned an invalid collection.");
   }
@@ -546,7 +582,7 @@ export async function loadPromotedStrategyRevisionCatalog(
 
   const entries: PromotedStrategyRevision[] = [];
   for (const decision of decisions) {
-    const candidate = await candidateReader.read(projectRoot, decision.candidateId);
+    const candidate = await readCandidate(decision.candidateId);
     if (candidate === null) {
       throw new Error(`Decision '${decision.candidateId}' is missing its immutable Candidate artifact.`);
     }
@@ -566,6 +602,36 @@ export async function loadPromotedStrategyRevisionCatalog(
     });
   }
   return createPromotedStrategyRevisionCatalog(entries);
+}
+
+export async function loadPromotedStrategyRevisionCatalog(
+  projectRoot: string,
+  decisionReader: StrategyRevisionDecisionReader,
+  candidateReader: StrategyCandidateReader,
+): Promise<PromotedStrategyRevisionCatalog> {
+  return loadPromotedStrategyRevisionCatalogFromSources(
+    await decisionReader.readAll(projectRoot),
+    (candidateId) => candidateReader.read(projectRoot, candidateId),
+  );
+}
+
+/** Reconstruct promoted Seed revisions from a project namespace without a root. */
+export async function loadPromotedStrategyRevisionCatalogByProjectId(
+  projectId: string,
+  decisionReader: {
+    readAllProjectId(projectId: string): Promise<readonly StrategyRevisionDecision[]>;
+  },
+  candidateReader: {
+    readProjectId(projectId: string, candidateId: string): Promise<StrategyRevisionCandidate | null>;
+  },
+): Promise<PromotedStrategyRevisionCatalog> {
+  if (!CANONICAL_PROJECT_ID.test(projectId)) {
+    throw new Error("Strategy Revision portfolio reads require a canonical project identity.");
+  }
+  return loadPromotedStrategyRevisionCatalogFromSources(
+    await decisionReader.readAllProjectId(projectId),
+    (candidateId) => candidateReader.readProjectId(projectId, candidateId),
+  );
 }
 
 /** Render only the bounded promoted portfolio for normal model-facing context. */

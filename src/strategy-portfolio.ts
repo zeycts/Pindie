@@ -336,14 +336,16 @@ export function trustedPortfolioFingerprint(
 export const computeTrustedPortfolioFingerprint = trustedPortfolioFingerprint;
 export const projectTrustedPortfolioFingerprint = trustedPortfolioFingerprint;
 
-/** Construct the current trusted portfolio from immutable trust projections. */
-export function createTrustedStrategyPortfolio(
-  projectRoot: string,
+/** Construct the current trusted portfolio from an already-addressed project namespace. */
+export function createTrustedStrategyPortfolioForProjectId(
+  projectId: string,
   promotedCatalog: PromotedStrategyRevisionCatalog,
   promotedDerivedCatalog: PromotedDerivedStrategyCatalog = emptyPromotedDerivedStrategyCatalog(),
   userGlobalEntries: readonly TrustedPortfolioGlobalEntry[] = [],
 ): TrustedStrategyPortfolio {
-  const projectId = getProjectId(projectRoot);
+  if (!CANONICAL_PROJECT_ID.test(projectId)) {
+    throw new Error("Trusted Strategy portfolio requires a canonical project identity.");
+  }
   if (userGlobalEntries.length > MAX_USER_GLOBAL_DERIVED_STRATEGIES) {
     throw new Error(`User-global Derived Strategy capacity exceeds ${MAX_USER_GLOBAL_DERIVED_STRATEGIES}.`);
   }
@@ -412,6 +414,21 @@ export function createTrustedStrategyPortfolio(
     entries,
     resolvedEntries: Object.freeze(resolved),
   });
+}
+
+/** Construct the current trusted portfolio from a canonical project root. */
+export function createTrustedStrategyPortfolio(
+  projectRoot: string,
+  promotedCatalog: PromotedStrategyRevisionCatalog,
+  promotedDerivedCatalog: PromotedDerivedStrategyCatalog = emptyPromotedDerivedStrategyCatalog(),
+  userGlobalEntries: readonly TrustedPortfolioGlobalEntry[] = [],
+): TrustedStrategyPortfolio {
+  return createTrustedStrategyPortfolioForProjectId(
+    getProjectId(projectRoot),
+    promotedCatalog,
+    promotedDerivedCatalog,
+    userGlobalEntries,
+  );
 }
 
 export const buildTrustedStrategyPortfolio = createTrustedStrategyPortfolio;

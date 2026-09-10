@@ -1,29 +1,54 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import {
+  FileStrategyDecisionStore,
   loadPromotedStrategyRevisionCatalog,
+  loadPromotedStrategyRevisionCatalogByProjectId,
   type PromotedStrategyRevisionCatalog,
   type StrategyRevisionDecisionReader,
 } from "./strategy-decisions.ts";
 import {
+  FileStrategyDerivationDecisionStore,
   emptyPromotedDerivedStrategyCatalog,
   loadPromotedDerivedStrategyCatalog,
+  loadPromotedDerivedStrategyCatalogByProjectId,
   type PromotedDerivedStrategyCatalog,
   type StrategyDerivationDecisionReader,
 } from "./strategy-derivation-decisions.ts";
 import {
   createTrustedStrategyPortfolio,
+  createTrustedStrategyPortfolioForProjectId,
   type TrustedPortfolioGlobalEntry,
   type TrustedStrategyPortfolio,
 } from "./strategy-portfolio.ts";
-import type { StrategyCandidateReader } from "./strategy-candidates.ts";
-import type { StrategyDerivationCandidateReader } from "./strategy-derivation-candidates.ts";
-import type { StrategyTrustScopeCandidateReader } from "./strategy-trust-scope-candidates.ts";
-import type { StrategyTrustScopeDecisionReader } from "./strategy-trust-scope-decisions.ts";
+import {
+  FileStrategyCandidateStore,
+  type StrategyCandidateReader,
+} from "./strategy-candidates.ts";
+import {
+  FileStrategyDerivationCandidateStore,
+  type StrategyDerivationCandidateReader,
+} from "./strategy-derivation-candidates.ts";
+import {
+  FileStrategyTrustScopeCandidateStore,
+  type StrategyTrustScopeCandidateReader,
+} from "./strategy-trust-scope-candidates.ts";
+import {
+  FileStrategyTrustScopeDecisionStore,
+  type StrategyTrustScopeDecisionReader,
+} from "./strategy-trust-scope-decisions.ts";
 import type { StrategyTrustScopeSourceResolver } from "./strategy-trust-scope-resolution.ts";
 import {
   readScopeTrialGlobalArtifacts,
   validateStrategyTrustScopeGlobalArtifacts,
   type ScopeTrialGlobalArtifacts,
 } from "./strategy-trust-scope-artifacts.ts";
+import { FileStrategyTrustScopeSourceResolver } from "./strategy-trust-scope-resolution.ts";
+import {
+  loadUserGlobalTrustedDerivedStrategyProjection,
+} from "./strategy-trust-scope-global.ts";
+import { isCanonicalStrategyTrustScopeProjectId } from "./strategy-trust-scope-candidates.ts";
 
 export { readScopeTrialGlobalArtifacts, validateStrategyTrustScopeGlobalArtifacts };
 export type { ScopeTrialGlobalArtifacts };
@@ -44,6 +69,77 @@ export interface TrustedStrategyPortfolioLoadDependencies
   readonly scopeCandidateReader?: StrategyTrustScopeCandidateReader;
   readonly scopeDecisionReader?: StrategyTrustScopeDecisionReader;
   readonly scopeSourceResolver?: StrategyTrustScopeSourceResolver;
+}
+
+/** Narrow read-only trust access for an already-addressed project namespace. */
+export interface ProjectTrustedStrategyPortfolioReader {
+  readProjectId(projectId: string): Promise<TrustedStrategyPortfolio>;
+}
+
+export interface FileProjectTrustedStrategyPortfolioReaderOptions {
+  /** User-local project namespace root, normally ~/.pindie/projects. */
+  projectsBaseDir?: string;
+  /** User-global trust namespace root, normally ~/.pindie/global. */
+  globalBaseDir?: string;
+}
+
+/**
+ * Reconstruct complete current trust by project ID. This reader never calls a
+ * root-based loader with a project hash and never fabricates a repository root.
+ */
+export class FileProjectTrustedStrategyPortfolioReader implements ProjectTrustedStrategyPortfolioReader {
+  private readonly revisionDecisionReader: FileStrategyDecisionStore;
+  private readonly revisionCandidateReader: FileStrategyCandidateStore;
+  private readonly derivationDecisionReader: FileStrategyDerivationDecisionStore;
+  private readonly derivationCandidateReader: FileStrategyDerivationCandidateStore;
+  private readonly globalCandidateReader: FileStrategyTrustScopeCandidateStore;
+  private readonly globalDecisionReader: FileStrategyTrustScopeDecisionStore;
+  private readonly sourceResolver: FileStrategyTrustScopeSourceResolver;
+
+  constructor(options: FileProjectTrustedStrategyPortfolioReaderOptions = {}) {
+    const projectsBaseDir = options.projectsBaseDir ?? join(homedir(), ".pindie", "projects");
+    const globalBaseDir = options.globalBaseDir ?? join(homedir(), ".pindie", "global");
+    this.revisionDecisionReader = new FileStrategyDecisionStore({ baseDir: projectsBaseDir });
+    this.revisionCandidateReader = new FileStrategyCandidateStore({ baseDir: projectsBaseDir });
+    this.derivationDecisionReader = new FileStrategyDerivationDecisionStore({ baseDir: projectsBaseDir });
+    this.derivationCandidateReader = new FileStrategyDerivationCandidateStore({ baseDir: projectsBaseDir });
+    this.globalCandidateReader = new FileStrategyTrustScopeCandidateStore({ baseDir: globalBaseDir });
+    this.globalDecisionReader = new FileStrategyTrustScopeDecisionStore({ baseDir: globalBaseDir });
+    this.sourceResolver = new FileStrategyTrustScopeSourceResolver({ projectsBaseDir });
+  }
+
+  async readProjectId(projectId: string): Promise<TrustedStrategyPortfolio> {
+    if (!isCanonicalStrategyTrustScopeProjectId(projectId)) {
+      throw new Error("Trusted Strategy portfolio reads require a canonical project identity.");
+    }
+    const [promotedCatalog, promotedDerivedCatalog, globalProjection] = await Promise.all([
+      loadPromotedStrategyRevisionCatalogByProjectId(
+        projectId,
+        this.revisionDecisionReader,
+        this.revisionCandidateReader,
+      ),
+      loadPromotedDerivedStrategyCatalogByProjectId(
+        projectId,
+        this.derivationDecisionReader,
+        this.derivationCandidateReader,
+        this.revisionCandidateReader,
+      ),
+      loadUserGlobalTrustedDerivedStrategyProjection({
+        candidateReader: this.globalCandidateReader,
+        decisionReader: this.globalDecisionReader,
+        sourceResolver: this.sourceResolver,
+      }),
+    ]);
+    return createTrustedStrategyPortfolioForProjectId(
+      projectId,
+      promotedCatalog,
+      promotedDerivedCatalog,
+      globalProjection.entries.map((entry): TrustedPortfolioGlobalEntry => ({
+        sourceProjectId: entry.sourceStrategy.sourceProjectId,
+        selection: entry.selection,
+      })),
+    );
+  }
 }
 
 function validateScopeDependencies(
