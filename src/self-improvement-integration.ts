@@ -27,6 +27,13 @@ import {
   buildAdaptationPacket,
 } from "./strategy-adaptation.ts";
 import {
+  GlobalDerivationRuntime,
+  PINDIE_STRATEGY_SYNTHESIS_CANDIDATE_CREATE_TOOL,
+  type GlobalDerivationLease,
+  type GlobalDerivationReservation,
+  type GlobalDerivationReservationResult,
+} from "./strategy-global-derivation.ts";
+import {
   DerivationRuntime,
   buildDerivationPacket,
 } from "./strategy-derivation.ts";
@@ -151,11 +158,22 @@ export interface SelfImprovementTrialAccess {
 }
 
 /** SI learning facts and the one Trial lease CPL is allowed to use. */
+export interface SelfImprovementGlobalDerivationAccess {
+  readonly reserve: (
+    sessionId: string,
+    invocationRoot: string,
+  ) => GlobalDerivationReservationResult;
+  readonly isCurrent: (reservation: GlobalDerivationReservation) => boolean;
+  readonly cancel: () => void;
+}
+
 export interface SelfImprovementLearningAccess {
   readonly getProjectRoot: ProjectRootGetter;
   readonly getActiveAgentRunGeneration: AgentRunGenerationGetter;
   readonly hasAdaptationAttempt: () => boolean;
   readonly hasDerivationAttempt: () => boolean;
+  readonly hasGlobalDerivationAttempt: () => boolean;
+  readonly globalDerivation: SelfImprovementGlobalDerivationAccess;
   readonly trial: SelfImprovementTrialAccess;
 }
 
@@ -171,6 +189,12 @@ export interface SelfImprovementStrategyTrustAccess {
 
 /** Startup attachment points supplied by the optional CPL integration. */
 export interface CrossProjectLearningAttachment {
+  readonly bindGlobalDerivationRun: (lease: GlobalDerivationLease) => {
+    readonly promptContribution: string;
+  };
+  readonly abortGlobalDerivationRun: () => void;
+  readonly settleGlobalDerivationRun: (agentRunGeneration: number) => void;
+  readonly resetForSession: () => void;
   readonly validatePendingScopeTrial: (binding: ScopeTrialBinding) => Promise<void>;
   readonly resolveScopeRevisionSelector: (
     lease: ScopeTrialLease,
@@ -234,6 +258,7 @@ export interface SelfImprovementRunPreparation {
   readonly adaptationLease: ReturnType<AdaptationRuntime["bind"]>;
   readonly trialLease: TrialLease | DerivationTrialLease | ScopeTrialLease | null;
   readonly derivationLease: ReturnType<DerivationRuntime["bind"]>;
+  readonly globalDerivationLease: GlobalDerivationLease | null;
   readonly promptContributions: readonly string[];
 }
 
@@ -257,6 +282,7 @@ export class SelfImprovementIntegration {
   readonly adaptation = new AdaptationRuntime();
   readonly trial = new TrialRuntime();
   readonly derivation = new DerivationRuntime();
+  readonly globalDerivation = new GlobalDerivationRuntime();
 
   private readonly pi: ExtensionAPI;
   private readonly core: SelfImprovementCorePort;
@@ -314,6 +340,14 @@ export class SelfImprovementIntegration {
       getActiveAgentRunGeneration: this.core.getActiveAgentRunGeneration,
       hasAdaptationAttempt: () => this.adaptation.hasAttempt,
       hasDerivationAttempt: () => this.derivation.hasDerivation,
+      hasGlobalDerivationAttempt: () => this.globalDerivation.hasAttempt,
+      globalDerivation: Object.freeze({
+        reserve: (sessionId: string, invocationRoot: string): GlobalDerivationReservationResult =>
+          this.reserveGlobalDerivation(sessionId, invocationRoot),
+        isCurrent: (reservation: GlobalDerivationReservation): boolean =>
+          this.globalDerivation.isCurrent(reservation),
+        cancel: () => this.globalDerivation.clear(),
+      }),
       trial: this.trial,
     });
   }
@@ -352,26 +386,55 @@ export class SelfImprovementIntegration {
     return generation !== null && this.derivationRunGeneration === generation;
   }
 
+  get isGlobalDerivationRunActive(): boolean {
+    const generation = this.core.getActiveAgentRunGeneration();
+    return generation !== null && this.globalDerivation.isActiveForGeneration(generation);
+  }
+
   isSelfImprovementRunForGeneration(generation: number | null): boolean {
     return generation !== null && (
       this.adaptationRunGeneration === generation ||
-      this.derivationRunGeneration === generation
+      this.derivationRunGeneration === generation ||
+      this.globalDerivation.isActiveForGeneration(generation)
     );
   }
 
   hasPacketForGeneration(generation: number): boolean {
     return this.adaptation.isActiveForGeneration(generation) ||
-      this.derivation.isActiveForGeneration(generation);
+      this.derivation.isActiveForGeneration(generation) ||
+      this.globalDerivation.isActiveForGeneration(generation);
   }
 
   resetForSession(): void {
+    this.crossProjectLearning?.resetForSession();
     this.adaptation.clear();
     this.trial.clear();
     this.derivation.clear();
+    this.globalDerivation.clear();
     this.currentPromotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
     this.currentTrustedStrategyPortfolio = null;
     this.adaptationRunGeneration = null;
     this.derivationRunGeneration = null;
+  }
+
+  private reserveGlobalDerivation(
+    sessionId: string,
+    invocationRoot: string,
+  ): GlobalDerivationReservationResult {
+    if (this.adaptation.hasAttempt) return { allowed: false, reason: "adaptation" };
+    if (this.derivation.hasDerivation) return { allowed: false, reason: "derivation" };
+    if (this.trial.hasTrial) return { allowed: false, reason: "trial" };
+    if (this.globalDerivation.hasAttempt) return { allowed: false, reason: "global-derivation" };
+    const reservation = this.globalDerivation.reserve(sessionId, invocationRoot);
+    return reservation === null
+      ? { allowed: false, reason: "global-derivation" }
+      : { allowed: true, reservation };
+  }
+
+  /** Abort a failed global preparation without touching Core State. */
+  abortGlobalDerivationRun(): void {
+    this.crossProjectLearning?.abortGlobalDerivationRun();
+    this.globalDerivation.clear();
   }
 
   private async loadTrustedPortfolio(projectRoot: string): Promise<TrustedStrategyPortfolio> {
@@ -657,8 +720,10 @@ export class SelfImprovementIntegration {
   ): Promise<SelfImprovementRunPreparation> {
     const trialWasArmed = this.trial.hasTrial;
     const derivationWasArmed = this.derivation.hasDerivation;
+    const globalDerivationWasArmed = this.globalDerivation.hasAttempt;
     let trialBound = false;
     let derivationBound = false;
+    let globalDerivationBound = false;
     try {
       if (this.trial.hasActiveTrial) this.trial.clear();
       if (this.derivation.hasActiveDerivation) this.derivation.clear();
@@ -672,11 +737,23 @@ export class SelfImprovementIntegration {
         this.resetForSession();
         throw new Error("Pindie rejected this Agent Run: an Adaptation Packet and Derivation Packet cannot coexist.");
       }
+      if (this.adaptation.hasAttempt && this.globalDerivation.hasAttempt) {
+        this.resetForSession();
+        throw new Error("Pindie rejected this Agent Run: an Adaptation Packet and Global Derivation Packet cannot coexist.");
+      }
       if (this.trial.hasTrial && this.derivation.hasDerivation) {
         this.trial.clear();
         this.derivation.clear();
         this.derivationRunGeneration = null;
         throw new Error("Pindie rejected this Agent Run: a Trial Packet and Derivation Packet cannot coexist.");
+      }
+      if (this.trial.hasTrial && this.globalDerivation.hasAttempt) {
+        this.resetForSession();
+        throw new Error("Pindie rejected this Agent Run: a Trial Packet and Global Derivation Packet cannot coexist.");
+      }
+      if (this.derivation.hasDerivation && this.globalDerivation.hasAttempt) {
+        this.resetForSession();
+        throw new Error("Pindie rejected this Agent Run: a Derivation Packet and Global Derivation Packet cannot coexist.");
       }
 
       let adaptationLease = null;
@@ -765,20 +842,71 @@ export class SelfImprovementIntegration {
         this.derivationRunGeneration = derivationLease.agentRunGeneration;
       }
 
+      let globalDerivationLease: GlobalDerivationLease | null = null;
+      let globalPromptContribution: string | null = null;
+      if (this.globalDerivation.hasActive) {
+        throw new Error("Pindie rejected this Agent Run: a previous Global Derivation Run is still active and has not settled.");
+      }
+      if (
+        adaptationLease === null &&
+        trialLease === null &&
+        derivationLease === null &&
+        this.globalDerivation.hasPending
+      ) {
+        const sessionId = ctx.sessionManager.getSessionId();
+        const invocationRoot = this.core.getProjectRoot();
+        const reservation = this.globalDerivation.pendingReservation;
+        if (
+          reservation === null ||
+          invocationRoot === null ||
+          reservation.sessionId !== sessionId ||
+          reservation.invocationRoot !== invocationRoot
+        ) {
+          this.globalDerivation.clear();
+          throw new Error("Pindie rejected this Agent Run: the pending Global Derivation reservation is stale or no longer addresses the current Session/project.");
+        }
+        globalDerivationLease = this.globalDerivation.bind(
+          reservation,
+          sessionId,
+          invocationRoot,
+          this.core.getActiveAgentRunGeneration()!,
+        );
+        if (globalDerivationLease === null) {
+          this.globalDerivation.clear();
+          throw new Error("Pindie rejected this Agent Run: the pending Global Derivation reservation could not bind to the current Session/project.");
+        }
+        globalDerivationBound = true;
+        try {
+          if (this.crossProjectLearning === null) {
+            throw new Error("Cross-Project Learning is disabled");
+          }
+          globalPromptContribution = this.crossProjectLearning.bindGlobalDerivationRun(
+            globalDerivationLease,
+          ).promptContribution;
+        } catch (error) {
+          this.crossProjectLearning?.abortGlobalDerivationRun();
+          this.globalDerivation.clear();
+          throw new Error(`Pindie rejected this Agent Run: the Global Derivation packet could not bind: ${errorMessage(error)}`);
+        }
+      }
+
       const packetLease = adaptationLease ?? trialLease ?? derivationLease;
+      const restrictedRun = packetLease !== null || globalDerivationLease !== null;
       const normalTrust = await this.loadNormalTrustedPortfolio(this.core.getProjectRoot());
       this.currentPromotedStrategyRevisionCatalog = normalTrust.promotedCatalog;
       this.currentTrustedStrategyPortfolio = normalTrust.portfolio;
-      const promotedContext = packetLease === null
+      const promotedContext = !restrictedRun
         ? formatPromotedTrustedStrategyPortfolio(this.trustedStrategyPortfolio)
         : "";
       return {
         adaptationLease,
         trialLease,
         derivationLease,
+        globalDerivationLease,
         promptContributions: Object.freeze([
           ...(promotedContext === "" ? [] : [promotedContext]),
           ...(packetLease === null ? [] : [packetLease.renderedPacket]),
+          ...(globalPromptContribution === null ? [] : [globalPromptContribution]),
         ]),
       };
     } catch (error) {
@@ -787,36 +915,58 @@ export class SelfImprovementIntegration {
         this.derivation.clear();
         this.derivationRunGeneration = null;
       }
+      if (globalDerivationWasArmed || globalDerivationBound) {
+        this.abortGlobalDerivationRun();
+      }
       throw error;
     }
   }
 
-  restrictToolCall(effect: ToolEffect): string | null {
+  restrictToolCall(effect: ToolEffect, toolName?: string): string | null {
     const adaptationActive = this.isAdaptationRunActive;
     const derivationActive = this.isDerivationRunActive;
+    const globalDerivationActive = this.isGlobalDerivationRunActive;
+    if (globalDerivationActive) {
+      if (
+        toolName === PINDIE_STRATEGY_SYNTHESIS_CANDIDATE_CREATE_TOOL &&
+        effect.requiredCapability === "policy.derive"
+      ) return null;
+      return "Pindie blocked this call: a Global Derivation Run is packet-only and permits only the exact Strategy Synthesis Candidate creation tool.";
+    }
     if (!adaptationActive && !derivationActive) return null;
-    const allowedCapability = derivationActive ? "policy.derive" : "policy.adapt";
+    if (derivationActive) {
+      if (
+        effect.requiredCapability === "observe.project" ||
+        effect.requiredCapability === "observe.git" ||
+        toolName === "pindie_strategy_derivation_candidate_create"
+      ) return null;
+      return "Pindie blocked this call: a Derivation Run is read-only and only permits observation or the active Derivation Candidate tool.";
+    }
     if (
       effect.requiredCapability === "observe.project" ||
       effect.requiredCapability === "observe.git" ||
-      effect.requiredCapability === allowedCapability
+      toolName === "pindie_strategy_candidate_create"
     ) return null;
-    return derivationActive
-      ? "Pindie blocked this call: a Derivation Run is read-only and only permits observation or the active Derivation Candidate tool."
-      : "Pindie blocked this call: an adaptation Run is read-only and only permits observation or the active Candidate tool.";
+    return "Pindie blocked this call: an adaptation Run is read-only and only permits observation or the active Candidate tool.";
   }
 
   createSettlementObserver(): CoreSettlementObserver {
     let isAdaptationRun = false;
     let isDerivationRun = false;
+    let isGlobalDerivationRun = false;
     let isTrialRun = false;
     return {
       begin: (settlementGeneration) => {
         isAdaptationRun = settlementGeneration !== null && this.adaptationRunGeneration === settlementGeneration;
         isDerivationRun = settlementGeneration !== null && this.derivationRunGeneration === settlementGeneration;
+        isGlobalDerivationRun = settlementGeneration !== null && this.globalDerivation.isActiveForGeneration(settlementGeneration);
         isTrialRun = settlementGeneration !== null && this.trial.isActiveForGeneration(settlementGeneration);
+        if (isGlobalDerivationRun && settlementGeneration !== null) {
+          this.crossProjectLearning?.settleGlobalDerivationRun(settlementGeneration);
+        }
         this.adaptation.clear();
         this.derivation.clear();
+        this.globalDerivation.clear();
         this.adaptationRunGeneration = null;
         this.derivationRunGeneration = null;
       },
@@ -824,6 +974,7 @@ export class SelfImprovementIntegration {
         if (
           !isAdaptationRun &&
           !isDerivationRun &&
+          !isGlobalDerivationRun &&
           this.experienceStore !== null &&
           facts.settlementGeneration !== null &&
           isEligibleRunExperience(
@@ -1296,6 +1447,10 @@ export class SelfImprovementIntegration {
       ctx.ui.notify("Pindie could not start /adapt: a Strategy Derivation attempt is already pending or active.", "warning");
       return;
     }
+    if (this.globalDerivation.hasAttempt) {
+      ctx.ui.notify("Pindie could not start /adapt: a Global Derivation attempt is already pending or active.", "warning");
+      return;
+    }
     const target = getSeedStrategy(requestedId);
     if (target === null) {
       ctx.ui.notify(`Pindie could not start /adapt: '${requestedId}' is not a valid Seed Strategy ID.`, "warning");
@@ -1344,6 +1499,10 @@ export class SelfImprovementIntegration {
     }
     if (this.derivation.hasDerivation) {
       ctx.ui.notify("Pindie could not start /adapt: a Strategy Derivation attempt is already pending or active.", "warning");
+      return;
+    }
+    if (this.globalDerivation.hasAttempt) {
+      ctx.ui.notify("Pindie could not start /adapt: a Global Derivation attempt is already pending or active.", "warning");
       return;
     }
     if (!this.adaptation.establish(sessionId, target, packet)) {
@@ -1752,6 +1911,10 @@ export class SelfImprovementIntegration {
       ctx.ui.notify("Pindie could not arm /trial: a Strategy Derivation attempt is already pending or active.", "warning");
       return;
     }
+    if (this.globalDerivation.hasAttempt) {
+      ctx.ui.notify("Pindie could not arm /trial: a Global Derivation attempt is already pending or active.", "warning");
+      return;
+    }
 
     const sessionId = ctx.sessionManager.getSessionId();
     let candidateRef;
@@ -1816,6 +1979,10 @@ export class SelfImprovementIntegration {
     }
     if (this.derivation.hasDerivation) {
       ctx.ui.notify("Pindie could not arm /trial: a Strategy Derivation attempt is already pending or active.", "warning");
+      return;
+    }
+    if (this.globalDerivation.hasAttempt) {
+      ctx.ui.notify("Pindie could not arm /trial: a Global Derivation attempt is already pending or active.", "warning");
       return;
     }
     if (candidateRef.kind === "derivation") {
@@ -1890,6 +2057,10 @@ export class SelfImprovementIntegration {
       ctx.ui.notify("Pindie could not start /derive: another derivation attempt is already pending or active.", "warning");
       return;
     }
+    if (this.globalDerivation.hasAttempt) {
+      ctx.ui.notify("Pindie could not start /derive: a Global Derivation attempt is already pending or active.", "warning");
+      return;
+    }
 
     let sessionId: string;
     try {
@@ -1938,7 +2109,7 @@ export class SelfImprovementIntegration {
       ctx.ui.notify("Pindie could not start /derive: the current Session, project, or Agent state changed while reading evidence.", "warning");
       return;
     }
-    if (this.adaptation.hasAttempt || this.trial.hasTrial || this.derivation.hasDerivation) {
+    if (this.adaptation.hasAttempt || this.trial.hasTrial || this.derivation.hasDerivation || this.globalDerivation.hasAttempt) {
       ctx.ui.notify("Pindie could not start /derive: another Self-Improvement attempt became active while reading evidence.", "warning");
       return;
     }

@@ -19,6 +19,8 @@ import { FileStrategyDerivationCandidateStore } from "../src/strategy-derivation
 import { FileStrategyDerivationDecisionStore } from "../src/strategy-derivation-decisions.ts";
 import { FileStrategyTrustScopeCandidateStore } from "../src/strategy-trust-scope-candidates.ts";
 import { FileStrategyTrustScopeDecisionStore } from "../src/strategy-trust-scope-decisions.ts";
+import { FileProjectTrustedStrategyPortfolioReader } from "../src/strategy-trust-safety.ts";
+import { FileStrategySynthesisCandidateStore } from "../src/strategy-synthesis-candidates.ts";
 import { RemoteRoutingStore } from "../src/remote-routing.ts";
 import { FileGlobalWriterLock, FileStateStore } from "../src/store.ts";
 import { getProjectId } from "../src/store.ts";
@@ -131,6 +133,11 @@ test("Slice A resolves stable startup defaults and explicit dependency roots", (
     (composition.extensionOptions.strategyTrustScopeWriterLock as FileGlobalWriterLock).storageBaseDir,
     roots.globalBaseDir,
   );
+  assert.equal(composition.extensionOptions.crossProjectTrustReader instanceof FileProjectTrustedStrategyPortfolioReader, true);
+  assert.equal(
+    (composition.extensionOptions.strategySynthesisCandidateStore as FileStrategySynthesisCandidateStore).candidateDirectory(),
+    join(roots.globalBaseDir, "strategy-synthesis-candidates"),
+  );
 });
 
 test("Slice A gives configured Remote an explicit routing root", () => {
@@ -206,7 +213,9 @@ test("Slice E allows SI-only composition and drops CPL dependencies when disable
     "strategyTrustScopeDecisionStore",
     "strategyTrustScopeSourceResolver",
     "strategyTrustScopeWriterLock",
+    "crossProjectTrustReader",
     "scopeProjectTrustReader",
+    "strategySynthesisCandidateStore",
   ]) {
     assert.equal(Object.hasOwn(composition.extensionOptions, dependency), false, dependency);
   }
@@ -225,7 +234,12 @@ test("Slice E allows SI-only composition and drops CPL dependencies when disable
   for (const dependency of ["experienceStore", "strategyCandidateStore", "strategyTrustScopeCandidateStore", "strategyTrustScopeWriterLock"]) {
     assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), true, dependency);
   }
-  for (const dependency of ["crossProjectExperienceReader", "scopeProjectTrustReader"]) {
+  for (const dependency of [
+    "crossProjectExperienceReader",
+    "crossProjectTrustReader",
+    "scopeProjectTrustReader",
+    "strategySynthesisCandidateStore",
+  ]) {
     assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), false, dependency);
   }
 
@@ -448,7 +462,12 @@ test("Slice F assembles the final composition matrix through the production comp
         `${name}: ${dependency}`,
       );
     }
-    for (const dependency of ["crossProjectExperienceReader", "scopeProjectTrustReader"]) {
+    for (const dependency of [
+      "crossProjectExperienceReader",
+      "crossProjectTrustReader",
+      "scopeProjectTrustReader",
+      "strategySynthesisCandidateStore",
+    ]) {
       assert.equal(
         Object.hasOwn(composition.extensionOptions, dependency),
         featureSelection.crossProjectLearning,

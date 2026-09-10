@@ -44,7 +44,10 @@ import {
   strategyDerivationCandidateSemanticFingerprint,
   type StrategyDerivationCandidateV1,
 } from "../src/strategy-derivation-candidates.ts";
-import { createTrustedStrategyPortfolio } from "../src/strategy-portfolio.ts";
+import {
+  createTrustedStrategyPortfolio,
+  createTrustedStrategyPortfolioForProjectId,
+} from "../src/strategy-portfolio.ts";
 import { RemoteCompanion, type RemoteSurface } from "../src/remote-companion.ts";
 import {
   EMPTY_STATE,
@@ -95,6 +98,11 @@ import {
   type StrategyTrustScopeDecisionV1,
 } from "../src/strategy-trust-scope-decisions.ts";
 import type { StrategyTrustScopeSourceResolver } from "../src/strategy-trust-scope-resolution.ts";
+import type { ProjectTrustedStrategyPortfolioReader } from "../src/strategy-trust-safety.ts";
+import type {
+  StrategySynthesisCandidateStore,
+  StrategySynthesisCandidateV1,
+} from "../src/strategy-synthesis-candidates.ts";
 
 type CapturedHandler = (
   event: Record<string, unknown>,
@@ -2092,6 +2100,7 @@ test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
     "pindie_policy_set",
     "pindie_strategy_candidate_create",
     "pindie_strategy_derivation_candidate_create",
+    "pindie_strategy_synthesis_candidate_create",
     "pindie_task_complete",
     "pindie_task_progress",
     "pindie_task_refine",
@@ -2124,7 +2133,7 @@ test("Remote-enabled wiring observes public input without altering Pindie tools"
   const sent: string[] = [];
   const surface: RemoteSurface = { ensureProject: async () => ({ channelId: "channel" }), ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }), send: async (_thread, event) => { sent.push(event.text); }, updateSessionPresentation: async () => undefined };
   const { api } = createHarness([], {}, { remoteCompanion: { companion: new RemoteCompanion(surface), guildId: "guild" } });
-  assert.ok(api.handlers.has("input")); assert.ok(api.handlers.has("message_end")); assert.equal(api.tools.size, 12);
+  assert.ok(api.handlers.has("input")); assert.ok(api.handlers.has("message_end")); assert.equal(api.tools.size, 13);
   await api.handler("session_start")({ type: "session_start", reason: "startup" }, context("/repo", [{ id: "u", message: { role: "user", content: "hello" } }]));
   assert.ok(Array.isArray(sent));
 });
@@ -8214,4 +8223,223 @@ test("Scope Trial handoff commits normally and automatic rollover does not inher
   } finally {
     release();
   }
+});
+
+test("Slice B /derive-global admits once, binds one packet-only Run, and settles without Task Experience or continuation", async () => {
+  const projectA = getProjectId("/global-synthesis-a");
+  const projectB = getProjectId("/global-synthesis-b");
+  const records = new Map<string, readonly { recordId: string; experience: RunExperience }[]>([
+    [projectA, [
+      { recordId: "11111111-1111-4111-8111-111111111111.json", experience: commandExperience("global goal alpha", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "22222222-2222-4222-8222-222222222222.json", experience: commandExperience("global goal beta", createPolicySnapshot({ approach: "explore-first" })) },
+    ]],
+    [projectB, [
+      { recordId: "33333333-3333-4333-8333-333333333333.json", experience: commandExperience("global goal gamma", createPolicySnapshot({ approach: "direct-action" })) },
+    ]],
+  ]);
+  let listCalls = 0;
+  let markListed!: () => void;
+  let releaseList!: () => void;
+  const listed = new Promise<void>((resolve) => { markListed = resolve; });
+  const listRelease = new Promise<void>((resolve) => { releaseList = resolve; });
+  const crossProjectExperienceReader: RunExperienceProjectReader = {
+    listProjectIds: async () => {
+      listCalls += 1;
+      markListed();
+      await listRelease;
+      return [projectA, projectB];
+    },
+    readProjectId: async (projectId) => {
+      const projectRecords = records.get(projectId) ?? [];
+      return { records: projectRecords, loadedRecords: projectRecords.length, unsupportedSchema: 0, invalid: 0 };
+    },
+  };
+  const crossProjectTrustReader: ProjectTrustedStrategyPortfolioReader = {
+    readProjectId: async (projectId) => createTrustedStrategyPortfolioForProjectId(
+      projectId,
+      createPromotedStrategyRevisionCatalog([]),
+    ),
+  };
+  const candidates: StrategySynthesisCandidateV1[] = [];
+  const strategySynthesisCandidateStore: StrategySynthesisCandidateStore = {
+    read: async (candidateId) => candidates.find((candidate) => candidate.candidateId === candidateId) ?? null,
+    readAll: async () => [...candidates],
+    save: async (candidate) => { candidates.push(candidate); },
+  };
+  const harness = createHarness([["/repo", activeState("Global synthesis task")]], {}, {
+    crossProjectExperienceReader,
+    crossProjectTrustReader,
+    strategySynthesisCandidateStore,
+  });
+  await startSession(harness, "/repo");
+  const notices: Array<{ message: string; type: string }> = [];
+  const commandContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+  const command = harness.api.commands.get("derive-global");
+  assert.ok(command);
+  const first = command.handler("", commandContext);
+  await listed;
+  assert.equal(listCalls, 1);
+  await command.handler("", commandContext);
+  assert.match(notices.at(-1)?.message ?? "", /another \/derive-global attempt is already pending or active/i);
+  assert.equal(listCalls, 1);
+  releaseList();
+  await first;
+  assert.equal(harness.api.sentUserMessages.length, 1);
+  assert.equal(harness.integration.globalDerivation?.hasPending, true);
+
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+  const runStart = await harnessBeforeAgentStart(harness);
+  assert.match(runStart.systemPrompt, /<PINDIE_CROSS_PROJECT_SYNTHESIS_PACKET>/);
+  assert.match(runStart.systemPrompt, /<PINDIE_GLOBAL_DERIVATION_RUN>/);
+  assert.equal(harness.integration.taskMetrics.currentRunBelongsToTask, false);
+  assert.equal(harness.integration.globalDerivation?.hasActive, true);
+  const blocked = [
+    ["read", /Global Derivation Run is packet-only/],
+    ["edit", /Global Derivation Run is packet-only/],
+    ["custom_tool", /Global Derivation Run is packet-only/],
+    ["pindie_policy_set", /Global Derivation Run is packet-only/],
+    ["pindie_strategy_derivation_candidate_create", /Global Derivation Run is packet-only/],
+  ] as const;
+  for (const [toolName, reason] of blocked) {
+    assertBlocked(await callGuard(harness, toolCall(toolName, {}, `global-block-${toolName}`)), reason);
+  }
+
+  const input = {
+    strategyId: "global-boundary",
+    kind: "approach",
+    summary: "Compare bounded project evidence before choosing a reusable abstraction.",
+    useWhen: ["related work spans multiple project namespaces"],
+    avoidWhen: ["one local correction already explains the problem"],
+    principles: ["keep comparisons factual", "verify the smallest coherent hypothesis"],
+    evidenceHandles: ["E1", "E2", "E3"],
+    hypothesis: "Distributed trusted-policy evidence may expose a reusable boundary.",
+  };
+  await executeSemanticTool(harness, "pindie_strategy_synthesis_candidate_create", "global-candidate", input);
+  assert.equal(candidates.length, 1);
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  await assert.rejects(
+    harness.api.tool("pindie_strategy_synthesis_candidate_create").execute("global-duplicate", input, undefined, undefined, context("/repo")),
+    /already published or is publishing/i,
+  );
+  assert.equal(candidates.length, 1);
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.deepEqual(harness.api.sentMessages, []);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(harness.integration.globalDerivation?.hasAttempt, false);
+  assert.equal(harness.integration.trial?.hasTrial, false);
+  assert.equal(harness.experienceStore.records.length, 0);
+
+  const ordinaryRun = await harnessBeforeAgentStart(harness);
+  assert.doesNotMatch(ordinaryRun.systemPrompt, /<PINDIE_GLOBAL_DERIVATION_RUN>/);
+  assertBlocked(
+    await callGuard(harness, toolCall("pindie_strategy_synthesis_candidate_create", input, "global-after-settlement")),
+    /requires a live explicit \/derive Run/i,
+  );
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("Slice B /derive-global preparation, launch, and Session failures clear reservation without starting a Run", async () => {
+  const projectA = getProjectId("/global-failure-a");
+  const projectB = getProjectId("/global-failure-b");
+  const validRecords = new Map<string, readonly { recordId: string; experience: RunExperience }[]>([
+    [projectA, [
+      { recordId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.json", experience: commandExperience("failure goal alpha", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.json", experience: commandExperience("failure goal beta", createPolicySnapshot({ approach: "explore-first" })) },
+    ]],
+    [projectB, [
+      { recordId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc.json", experience: commandExperience("failure goal gamma", createPolicySnapshot({ approach: "direct-action" })) },
+    ]],
+  ]);
+  const makeReader = (records: ReadonlyMap<string, readonly { recordId: string; experience: RunExperience }[]>, pause = false): RunExperienceProjectReader => {
+    let entered = false;
+    return {
+      listProjectIds: async () => [projectA, projectB],
+      readProjectId: async (projectId) => {
+        if (pause && !entered) {
+          entered = true;
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+        const projectRecords = records.get(projectId) ?? [];
+        return { records: projectRecords, loadedRecords: projectRecords.length, unsupportedSchema: 0, invalid: 0 };
+      },
+    };
+  };
+  const trust: ProjectTrustedStrategyPortfolioReader = {
+    readProjectId: async (projectId) => createTrustedStrategyPortfolioForProjectId(projectId, createPromotedStrategyRevisionCatalog([])),
+  };
+  const candidates: StrategySynthesisCandidateV1[] = [];
+  const store: StrategySynthesisCandidateStore = {
+    read: async () => null,
+    readAll: async () => [],
+    save: async (candidate) => { candidates.push(candidate); },
+  };
+  const empty = new Map<string, readonly { recordId: string; experience: RunExperience }[]>();
+  const insufficient = createHarness([["/repo", activeState("insufficient")]], {}, {
+    crossProjectExperienceReader: makeReader(empty),
+    crossProjectTrustReader: trust,
+    strategySynthesisCandidateStore: store,
+  });
+  await startSession(insufficient, "/repo");
+  const insufficientNotices: string[] = [];
+  await insufficient.api.commands.get("derive-global").handler("", {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string) => insufficientNotices.push(message) },
+  });
+  assert.match(insufficientNotices.at(-1) ?? "", /insufficient.*no Agent Run was started/i);
+  assert.equal(insufficient.integration.globalDerivation?.hasAttempt, false);
+  assert.equal(insufficient.api.sentUserMessages.length, 0);
+
+  const launch = createHarness([["/repo", activeState("launch failure")]], {}, {
+    crossProjectExperienceReader: makeReader(validRecords),
+    crossProjectTrustReader: trust,
+    strategySynthesisCandidateStore: store,
+  });
+  await startSession(launch, "/repo");
+  (launch.api as any).sendUserMessage = () => { throw new Error("native launch failed"); };
+  await launch.api.commands.get("derive-global").handler("", {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  assert.equal(launch.integration.globalDerivation?.hasAttempt, false);
+  assert.equal(launch.api.sentUserMessages.length, 0);
+
+  let release!: () => void;
+  const paused = new Promise<void>((resolve) => { release = resolve; });
+  let markEntered!: () => void;
+  const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+  const sessionReader: RunExperienceProjectReader = {
+    listProjectIds: async () => {
+      markEntered();
+      await paused;
+      return [projectA, projectB];
+    },
+    readProjectId: async (projectId) => {
+      const projectRecords = validRecords.get(projectId) ?? [];
+      return { records: projectRecords, loadedRecords: projectRecords.length, unsupportedSchema: 0, invalid: 0 };
+    },
+  };
+  const session = createHarness([["/repo", activeState("Session failure")]], {}, {
+    crossProjectExperienceReader: sessionReader,
+    crossProjectTrustReader: trust,
+    strategySynthesisCandidateStore: store,
+  });
+  await startSession(session, "/repo");
+  const pending = session.api.commands.get("derive-global").handler("", {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  await entered;
+  await session.api.handler("session_shutdown")({ type: "session_shutdown", reason: "reload" }, context("/repo"));
+  release();
+  await pending;
+  assert.equal(session.integration.globalDerivation?.hasAttempt, false);
+  assert.equal(session.api.sentUserMessages.length, 0);
+  assert.equal(session.experienceStore.records.length, 0);
 });
