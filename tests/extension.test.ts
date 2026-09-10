@@ -99,10 +99,13 @@ import {
 } from "../src/strategy-trust-scope-decisions.ts";
 import type { StrategyTrustScopeSourceResolver } from "../src/strategy-trust-scope-resolution.ts";
 import type { ProjectTrustedStrategyPortfolioReader } from "../src/strategy-trust-safety.ts";
-import type {
-  StrategySynthesisCandidateStore,
-  StrategySynthesisCandidateV1,
+import {
+  strategySynthesisCandidateSemanticFingerprint,
+  type StrategySynthesisCandidateStore,
+  type StrategySynthesisCandidateV1,
 } from "../src/strategy-synthesis-candidates.ts";
+import { makeSynthesisTrialFixture } from "./synthesis-trial-fixture.ts";
+import { synthesisTrialCommandValue } from "../src/strategy-synthesis-trial.ts";
 
 type CapturedHandler = (
   event: Record<string, unknown>,
@@ -8388,6 +8391,186 @@ test("Slice B /derive-global admits once, binds one packet-only Run, and settles
     /requires a live explicit \/derive Run/i,
   );
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("Slice C Synthesis Trial uses one normal Task Run, attributes only exact selection, and settles cleanly", async () => {
+  const { candidate } = await makeSynthesisTrialFixture("00000000-0000-4000-8000-000000000041");
+  const candidates = new Map([[candidate.candidateId, candidate]]);
+  const synthesisStore: StrategySynthesisCandidateStore = {
+    read: async (candidateId) => candidates.get(candidateId) ?? null,
+    readAll: async () => [...candidates.values()],
+    save: async (value) => { candidates.set(value.candidateId, value); },
+  };
+  const localCandidates = {
+    read: async () => null,
+    readAll: async () => [],
+    save: async () => undefined,
+  };
+  const localDerivationCandidates = {
+    read: async () => null,
+    readAll: async () => [],
+    save: async () => undefined,
+  };
+  const decisions = testDecisionStore();
+  const derivationDecisions = testDerivationDecisionReader();
+  const emptyScope = emptyScopeAuthority();
+  const crossProjectExperienceReader: RunExperienceProjectReader = {
+    listProjectIds: async () => [],
+    readProjectId: async () => ({ records: [], loadedRecords: 0, unsupportedSchema: 0, invalid: 0 }),
+  };
+  const crossProjectTrustReader: ProjectTrustedStrategyPortfolioReader = {
+    readProjectId: async (projectId) => createTrustedStrategyPortfolioForProjectId(
+      projectId,
+      createPromotedStrategyRevisionCatalog([]),
+    ),
+  };
+  const harness = createHarness([["/repo", activeState("Synthesis Trial task")]], {}, {
+    crossProjectExperienceReader,
+    crossProjectTrustReader,
+    strategySynthesisCandidateStore: synthesisStore,
+    strategyCandidateStore: localCandidates,
+    strategyCandidateReader: localCandidates,
+    strategyDerivationCandidateStore: localDerivationCandidates,
+    strategyDerivationCandidateReader: localDerivationCandidates,
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+    strategyDerivationDecisionStore: derivationDecisions,
+    strategyDerivationDecisionReader: derivationDecisions,
+    strategyTrustScopeCandidateStore: emptyScope.candidateStore,
+    strategyTrustScopeDecisionStore: emptyScope.decisionStore,
+    strategyTrustScopeSourceResolver: emptyScope.sourceResolver,
+  });
+  await startSession(harness, "/repo");
+  const command = harness.api.commands.get("trial");
+  assert.ok(command);
+  const subject = synthesisTrialCommandValue(candidate.candidateId);
+  const completion = await command.getArgumentCompletions("");
+  assert.ok(completion?.some((option: { value: string }) => option.value === subject));
+
+  const notices: Array<{ message: string; type: string }> = [];
+  const commandContext = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+  await command.handler(subject, commandContext);
+  assert.equal(harness.integration.trial?.hasPendingSynthesisTrial, true);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+
+  const firstRun = await harnessBeforeAgentStart(harness);
+  assert.match(firstRun.systemPrompt, /<PINDIE_SYNTHESIS_TRIAL_PACKET>/);
+  assert.equal(harness.integration.trial?.hasActiveSynthesisTrial, true);
+  // Synthesis Trial is a normal project Run, not the read-only local Trial path.
+  assert.equal(harness.integration.taskMetrics.currentRunBelongsToTask, true);
+  assert.equal(await callGuard(harness, toolCall("read", { path: "src/index.ts" }, "synthesis-read")), undefined);
+  assert.equal(await callGuard(harness, toolCall("edit", { path: "src/index.ts" }, "synthesis-edit")), undefined);
+
+  await captureObservationEvidence(harness, "synthesis-no-selection");
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(harness.integration.trial?.hasTrial, false);
+  assert.equal(harness.experienceStore.records.length, 1);
+  assert.equal(harness.experienceStore.records[0]!.experience.policy.finalSnapshot, null);
+  assert.equal(JSON.stringify(harness.experienceStore.records[0]!.experience).includes("candidateId"), false);
+
+  // A second explicit command is required; merely receiving the packet made no attribution.
+  await command.handler(subject, commandContext);
+  const secondRun = await harnessBeforeAgentStart(harness);
+  assert.match(secondRun.systemPrompt, /<PINDIE_SYNTHESIS_TRIAL_PACKET>/);
+  const active = harness.integration.trial!.activeSynthesisTrial!;
+  const selector = {
+    strategyId: active.revisionSelection.strategyId,
+    revisionIdentity: active.revisionSelection.revisionIdentity,
+    revisionFingerprint: active.revisionSelection.revisionFingerprint,
+  };
+  await executeSemanticTool(harness, "pindie_policy_set", "synthesis-policy", {
+    approach: selector,
+    modifiers: ["minimal-change"],
+  });
+  const evidence = await captureObservationEvidence(harness, "synthesis-selected");
+  await executeSemanticTool(harness, "pindie_verification_record", "synthesis-verification", {
+    check: { name: "synthesis check", status: "passed", covers: ["c1"], evidenceRefs: [evidence.ref] },
+  });
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+
+  assert.equal(harness.integration.trial?.hasTrial, false);
+  assert.equal(harness.experienceStore.records.length, 2);
+  const selected = harness.experienceStore.records[1]!.experience;
+  const finalApproach = selected.policy.finalSnapshot?.approach;
+  assert.equal(finalApproach?.strategyId, candidate.proposal.strategyId);
+  assert.equal(finalApproach?.revisionIdentity, candidate.candidateId);
+  assert.equal(finalApproach?.revisionFingerprint, strategySynthesisCandidateSemanticFingerprint(candidate));
+  assert.equal(finalApproach?.revisionStatusAtRun, "trial");
+  assert.deepEqual(finalApproach?.semantics, {
+    summary: candidate.proposal.summary,
+    useWhen: candidate.proposal.useWhen,
+    avoidWhen: candidate.proposal.avoidWhen,
+    principles: candidate.proposal.principles,
+  });
+  assert.equal(selected.outcome.verificationStatus, "passed");
+  assert.equal(JSON.stringify(selected).includes("candidateId"), false);
+  assert.equal(notices.at(-1)?.type, "info");
+
+  await beginAgentRun(harness);
+  assert.doesNotMatch(
+    (await harnessBeforeAgentStart(harness)).systemPrompt,
+    /<PINDIE_SYNTHESIS_TRIAL_PACKET>/,
+  );
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("Slice C Synthesis Trial clears fail-closed when the Candidate changes before Run binding", async () => {
+  const original = await makeSynthesisTrialFixture("00000000-0000-4000-8000-000000000042");
+  const changed = await makeSynthesisTrialFixture(original.candidate.candidateId, {
+    summary: "The immutable Synthesis Candidate changed after arming.",
+  });
+  let current = original.candidate;
+  const synthesisStore: StrategySynthesisCandidateStore = {
+    read: async (candidateId) => candidateId === current.candidateId ? current : null,
+    readAll: async () => [current],
+    save: async () => undefined,
+  };
+  const localCandidates = { read: async () => null, readAll: async () => [], save: async () => undefined };
+  const localDerivationCandidates = { read: async () => null, readAll: async () => [], save: async () => undefined };
+  const decisions = testDecisionStore();
+  const derivationDecisions = testDerivationDecisionReader();
+  const emptyScope = emptyScopeAuthority();
+  const harness = createHarness([["/repo", activeState("stale Synthesis Trial")]], {}, {
+    crossProjectExperienceReader: {
+      listProjectIds: async () => [],
+      readProjectId: async () => ({ records: [], loadedRecords: 0, unsupportedSchema: 0, invalid: 0 }),
+    },
+    crossProjectTrustReader: {
+      readProjectId: async (projectId) => createTrustedStrategyPortfolioForProjectId(
+        projectId,
+        createPromotedStrategyRevisionCatalog([]),
+      ),
+    },
+    strategySynthesisCandidateStore: synthesisStore,
+    strategyCandidateStore: localCandidates,
+    strategyCandidateReader: localCandidates,
+    strategyDerivationCandidateStore: localDerivationCandidates,
+    strategyDerivationCandidateReader: localDerivationCandidates,
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+    strategyDerivationDecisionStore: derivationDecisions,
+    strategyDerivationDecisionReader: derivationDecisions,
+    strategyTrustScopeCandidateStore: emptyScope.candidateStore,
+    strategyTrustScopeDecisionStore: emptyScope.decisionStore,
+    strategyTrustScopeSourceResolver: emptyScope.sourceResolver,
+  });
+  await startSession(harness, "/repo");
+  await harness.api.commands.get("trial").handler(synthesisTrialCommandValue(original.candidate.candidateId), {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  current = changed.candidate;
+  await assert.rejects(
+    harnessBeforeAgentStart(harness),
+    /stale|changed|Candidate/i,
+  );
+  assert.equal(harness.integration.trial?.hasTrial, false);
+  assert.equal(harness.experienceStore.records.length, 0);
 });
 
 test("Slice B /derive-global preparation, launch, and Session failures clear reservation without starting a Run", async () => {

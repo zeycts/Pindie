@@ -163,6 +163,124 @@ export function buildDerivationTrialPacket(
 
 export const createDerivationTrialPacket = buildDerivationTrialPacket;
 
+/** Structural Synthesis Trial packet supplied by the CPL-owned binding. */
+export interface SynthesisTrialPacket {
+  readonly candidateType: "cross-project-synthesis";
+  readonly candidateId: string;
+  readonly candidateSemanticFingerprint: string;
+  readonly target: {
+    readonly projectId: string;
+  };
+  readonly proposal: {
+    readonly strategyId: string;
+    readonly kind: "approach" | "modifier";
+    readonly summary: string;
+    readonly useWhen: readonly string[];
+    readonly avoidWhen: readonly string[];
+    readonly principles: readonly string[];
+  };
+  readonly hypothesis: string;
+  readonly selector: StrategyRevisionSelector;
+  readonly trustBoundary: string;
+}
+
+/** Structural Candidate snapshot used by the SI-owned unified lease. */
+export interface SynthesisTrialCandidateSnapshot {
+  readonly candidateId: string;
+  readonly createdAt: string;
+  readonly proposal: SynthesisTrialPacket["proposal"];
+  readonly hypothesis: string;
+}
+
+/** Narrow CPL-to-SI binding; semantic construction remains CPL-owned. */
+export interface SynthesisTrialBinding {
+  readonly candidateType: "cross-project-synthesis";
+  readonly candidate: SynthesisTrialCandidateSnapshot;
+  readonly candidateSemanticFingerprint: string;
+  readonly candidateArtifactFingerprint: string;
+  readonly targetProjectRoot: string;
+  readonly targetProjectId: string;
+  readonly revisionSelection: StrategyRevisionSelection;
+  readonly packet: SynthesisTrialPacket;
+  readonly renderedPacket: string;
+}
+
+function synthesisCandidateRevisionSemantics(
+  candidate: SynthesisTrialCandidateSnapshot,
+): StrategyRevisionSelection["semantics"] {
+  return {
+    summary: candidate.proposal.summary,
+    useWhen: [...candidate.proposal.useWhen],
+    avoidWhen: [...candidate.proposal.avoidWhen],
+    principles: [...candidate.proposal.principles],
+  };
+}
+
+function isSynthesisTrialLease(
+  lease: StoredTrialLease,
+): lease is SynthesisTrialLease {
+  return "candidateType" in lease && lease.candidateType === "cross-project-synthesis";
+}
+
+function synthesisCandidateSemantics(
+  candidate: SynthesisTrialCandidateSnapshot,
+): SynthesisTrialPacket["proposal"] {
+  return {
+    strategyId: candidate.proposal.strategyId,
+    kind: candidate.proposal.kind,
+    summary: candidate.proposal.summary,
+    useWhen: [...candidate.proposal.useWhen],
+    avoidWhen: [...candidate.proposal.avoidWhen],
+    principles: [...candidate.proposal.principles],
+  };
+}
+
+function validateSynthesisTrialBinding(
+  input: SynthesisTrialBinding,
+): SynthesisTrialBinding {
+  if (
+    input.candidateType !== "cross-project-synthesis" ||
+    input.candidate === null ||
+    typeof input.candidate.candidateId !== "string" ||
+    input.candidate.candidateId.trim() === "" ||
+    typeof input.candidateArtifactFingerprint !== "string" ||
+    input.candidateArtifactFingerprint.trim() === "" ||
+    typeof input.candidateSemanticFingerprint !== "string" ||
+    input.candidateSemanticFingerprint.trim() === "" ||
+    typeof input.targetProjectRoot !== "string" ||
+    input.targetProjectRoot.trim() === "" ||
+    typeof input.targetProjectId !== "string" ||
+    input.targetProjectId.trim() === ""
+  ) throw new Error("Synthesis Trial binding is malformed.");
+  const selection = input.revisionSelection;
+  if (
+    selection.revisionStatusAtRun !== "trial" ||
+    selection.strategyId !== input.candidate.proposal.strategyId ||
+    selection.kind !== input.candidate.proposal.kind ||
+    selection.revisionIdentity !== input.candidate.candidateId ||
+    selection.revisionFingerprint !== input.candidateSemanticFingerprint ||
+    !isDeepStrictEqual(selection.semantics, synthesisCandidateRevisionSemantics(input.candidate))
+  ) throw new Error("Synthesis Trial binding selection is not the exact Candidate trial revision.");
+  if (
+    input.packet.candidateType !== "cross-project-synthesis" ||
+    input.packet.candidateId !== input.candidate.candidateId ||
+    input.packet.candidateSemanticFingerprint !== input.candidateSemanticFingerprint ||
+    input.packet.target.projectId !== input.targetProjectId ||
+    !isDeepStrictEqual(input.packet.proposal, synthesisCandidateSemantics(input.candidate)) ||
+    input.packet.selector.strategyId !== selection.strategyId ||
+    input.packet.selector.revisionIdentity !== selection.revisionIdentity ||
+    input.packet.selector.revisionFingerprint !== selection.revisionFingerprint ||
+    typeof input.renderedPacket !== "string" ||
+    input.renderedPacket.trim() === ""
+  ) throw new Error("Synthesis Trial binding packet is malformed or not exact.");
+  return input;
+}
+
+export interface SynthesisTrialLease extends SynthesisTrialBinding {
+  readonly sessionId: string;
+  readonly agentRunGeneration: number | null;
+}
+
 function renderList(lines: string[], label: string, values: readonly string[]): void {
   lines.push(
     `${label}:`,
@@ -292,7 +410,7 @@ export interface ScopeTrialLease extends ScopeTrialBinding {
   readonly agentRunGeneration: number | null;
 }
 
-type StoredTrialLease = TrialLease | DerivationTrialLease | ScopeTrialLease;
+type StoredTrialLease = TrialLease | DerivationTrialLease | ScopeTrialLease | SynthesisTrialLease;
 
 function isDerivationTrialLease(
   lease: StoredTrialLease,
@@ -349,20 +467,30 @@ export class TrialRuntime {
     return this.active !== null && isScopeTrialLease(this.active);
   }
 
-  /** Existing v0.6 view; null when the shared lease is a Derivation Trial. */
+  get hasPendingSynthesisTrial(): boolean {
+    return this.pending !== null && isSynthesisTrialLease(this.pending);
+  }
+
+  get hasActiveSynthesisTrial(): boolean {
+    return this.active !== null && isSynthesisTrialLease(this.active);
+  }
+
+  /** Existing v0.6 view; null when the shared lease is a non-Revision Trial. */
   get pendingTrial(): TrialLease | null {
     return this.pending !== null &&
         !isDerivationTrialLease(this.pending) &&
-        !isScopeTrialLease(this.pending)
+        !isScopeTrialLease(this.pending) &&
+        !isSynthesisTrialLease(this.pending)
       ? this.pending
       : null;
   }
 
-  /** Existing v0.6 view; null when the shared lease is a Derivation Trial. */
+  /** Existing v0.6 view; null when the shared lease is a non-Revision Trial. */
   get activeTrial(): TrialLease | null {
     return this.active !== null &&
         !isDerivationTrialLease(this.active) &&
-        !isScopeTrialLease(this.active)
+        !isScopeTrialLease(this.active) &&
+        !isSynthesisTrialLease(this.active)
       ? this.active
       : null;
   }
@@ -387,6 +515,18 @@ export class TrialRuntime {
 
   get activeScopeTrial(): ScopeTrialLease | null {
     return this.active !== null && isScopeTrialLease(this.active)
+      ? this.active
+      : null;
+  }
+
+  get pendingSynthesisTrial(): SynthesisTrialLease | null {
+    return this.pending !== null && isSynthesisTrialLease(this.pending)
+      ? this.pending
+      : null;
+  }
+
+  get activeSynthesisTrial(): SynthesisTrialLease | null {
+    return this.active !== null && isSynthesisTrialLease(this.active)
       ? this.active
       : null;
   }
@@ -451,12 +591,28 @@ export class TrialRuntime {
     return true;
   }
 
+  /** Establish the shared runtime lease for one validated Synthesis Trial. */
+  establishSynthesis(
+    sessionId: string,
+    binding: SynthesisTrialBinding,
+  ): boolean {
+    if (sessionId.trim() === "" || this.hasTrial) return false;
+    const validated = validateSynthesisTrialBinding(binding);
+    this.pending = Object.freeze({
+      sessionId,
+      ...validated,
+      agentRunGeneration: null,
+    });
+    return true;
+  }
+
   /** Bind an existing v0.6 Revision Trial without changing its lease shape. */
   bind(sessionId: string, agentRunGeneration: number): TrialLease | null {
     if (
       this.pending === null ||
       isDerivationTrialLease(this.pending) ||
       isScopeTrialLease(this.pending) ||
+      isSynthesisTrialLease(this.pending) ||
       this.active !== null ||
       this.pending.sessionId !== sessionId ||
       !Number.isSafeInteger(agentRunGeneration) ||
@@ -512,6 +668,27 @@ export class TrialRuntime {
     return this.active;
   }
 
+  /** Bind the shared pending lease when it contains a Synthesis Candidate. */
+  bindSynthesis(
+    sessionId: string,
+    agentRunGeneration: number,
+  ): SynthesisTrialLease | null {
+    if (
+      this.pending === null ||
+      !isSynthesisTrialLease(this.pending) ||
+      this.active !== null ||
+      this.pending.sessionId !== sessionId ||
+      !Number.isSafeInteger(agentRunGeneration) ||
+      agentRunGeneration < 0
+    ) return null;
+    this.active = Object.freeze({
+      ...this.pending,
+      agentRunGeneration,
+    });
+    this.pending = null;
+    return this.active;
+  }
+
   isActiveForGeneration(agentRunGeneration: number | null): boolean {
     return this.active !== null &&
       agentRunGeneration !== null &&
@@ -526,6 +703,7 @@ export class TrialRuntime {
       this.active === null ||
       isDerivationTrialLease(this.active) ||
       isScopeTrialLease(this.active) ||
+      isSynthesisTrialLease(this.active) ||
       sessionId === null ||
       agentRunGeneration === null ||
       this.active.sessionId !== sessionId ||
@@ -556,6 +734,21 @@ export class TrialRuntime {
     if (
       this.active === null ||
       !isScopeTrialLease(this.active) ||
+      sessionId === null ||
+      agentRunGeneration === null ||
+      this.active.sessionId !== sessionId ||
+      this.active.agentRunGeneration !== agentRunGeneration
+    ) return null;
+    return this.active;
+  }
+
+  activeSynthesisFor(
+    sessionId: string | null,
+    agentRunGeneration: number | null,
+  ): SynthesisTrialLease | null {
+    if (
+      this.active === null ||
+      !isSynthesisTrialLease(this.active) ||
       sessionId === null ||
       agentRunGeneration === null ||
       this.active.sessionId !== sessionId ||
@@ -606,6 +799,40 @@ export class TrialRuntime {
       throw new Error("Scope Candidate revision selector does not match the active Scope Trial.");
     }
     return strategyRevisionSelectionFromScopeTrial(candidate);
+  }
+
+  /** Resolve only the exact active Synthesis Candidate selector. */
+  resolveSynthesisSelector(
+    sessionId: string | null,
+    agentRunGeneration: number | null,
+    selector: unknown,
+    kind: "approach" | "modifier",
+    currentCandidate?: SynthesisTrialCandidateSnapshot,
+  ): StrategyRevisionSelection {
+    const lease = this.activeSynthesisFor(sessionId, agentRunGeneration);
+    if (lease === null) {
+      throw new Error("Synthesis Candidate revision selector is unavailable without an active Synthesis Trial for this Agent Run.");
+    }
+    if (!isStrategyRevisionSelector(selector)) {
+      throw new Error("Synthesis Candidate revision selector is malformed or not the exact selector from the active Synthesis Trial Packet.");
+    }
+    const candidate = currentCandidate ?? lease.candidate;
+    if (!isDeepStrictEqual(candidate, lease.candidate)) {
+      throw new Error("Synthesis Candidate artifact changed after the Trial lease was activated.");
+    }
+    validateSynthesisTrialBinding({ ...lease, candidate });
+    if (
+      candidate.proposal.kind !== kind ||
+      selector.strategyId !== lease.revisionSelection.strategyId ||
+      selector.revisionIdentity !== lease.candidate.candidateId ||
+      selector.revisionFingerprint !== lease.candidateSemanticFingerprint
+    ) {
+      if (candidate.proposal.kind !== kind) {
+        throw new Error(`Synthesis Candidate revision selector has the wrong ${kind} role for the active Candidate.`);
+      }
+      throw new Error("Synthesis Candidate revision selector does not match the active Synthesis Trial.");
+    }
+    return lease.revisionSelection;
   }
 
   /** Resolve only the exact active v0.6 Candidate selector. */

@@ -66,7 +66,19 @@ import { emptyPromotedStrategyRevisionCatalog } from "./strategy-decisions.ts";
 import type {
   StrategyTrustScopeCandidateV1,
 } from "./strategy-trust-scope-candidates.ts";
-import type { ScopeTrialLease } from "./strategy-trial.ts";
+import type {
+  ScopeTrialLease,
+  SynthesisTrialBinding,
+  SynthesisTrialLease,
+} from "./strategy-trial.ts";
+import {
+  filterSynthesisTrialCommandOptions,
+  listOpenSynthesisTrialCandidates,
+  parseSynthesisTrialCommandValue,
+  resolveSynthesisTrialBinding,
+  revalidateSynthesisTrialBinding,
+  sameSynthesisTrialBinding,
+} from "./strategy-synthesis-trial.ts";
 import type {
   CandidateCommandName,
 } from "./strategy-candidate-commands.ts";
@@ -379,6 +391,23 @@ export class CrossProjectLearningIntegration {
     }
   }
 
+  async validatePendingSynthesisTrial(binding: SynthesisTrialBinding): Promise<void> {
+    const projectRoot = this.learning.getProjectRoot();
+    if (projectRoot === null) throw new Error("no current project root is loaded");
+    if (projectRoot !== binding.targetProjectRoot) {
+      throw new Error("the target project changed after the Synthesis Trial was armed");
+    }
+    const currentPortfolio = await this.trust.loadTrustedPortfolio(projectRoot);
+    const currentBinding = await revalidateSynthesisTrialBinding(
+      binding,
+      currentPortfolio,
+      this.strategySynthesisCandidateStore,
+    );
+    if (!sameSynthesisTrialBinding(binding, currentBinding)) {
+      throw new Error("the Synthesis Candidate or target trust changed after /trial was armed");
+    }
+  }
+
   async resolveScopeRevisionSelector(
     activeScopeTrial: ScopeTrialLease,
     selector: StrategyRevisionSelector,
@@ -422,6 +451,45 @@ export class CrossProjectLearningIntegration {
     return resolved;
   }
 
+  async resolveSynthesisRevisionSelector(
+    activeSynthesisTrial: SynthesisTrialLease,
+    selector: StrategyRevisionSelector,
+    kind: "approach" | "modifier",
+    sessionId: string,
+    agentRunGeneration: number | null,
+  ): Promise<StrategyRevisionSelection> {
+    const projectRoot = this.learning.getProjectRoot();
+    if (projectRoot === null) {
+      throw new Error("Synthesis Candidate selector is unavailable: no current target project root is loaded.");
+    }
+    if (projectRoot !== activeSynthesisTrial.targetProjectRoot) {
+      throw new Error("Synthesis Candidate selector is unavailable: the target project changed while the Trial was active.");
+    }
+    const currentPortfolio = await this.trust.loadTrustedPortfolio(projectRoot);
+    const currentBinding = await revalidateSynthesisTrialBinding(
+      activeSynthesisTrial,
+      currentPortfolio,
+      this.strategySynthesisCandidateStore,
+    );
+    if (!sameSynthesisTrialBinding(activeSynthesisTrial, currentBinding)) {
+      throw new Error("Synthesis Candidate selector is unavailable: the Candidate artifact or target trust changed while the Trial was active.");
+    }
+    if (selector.revisionIdentity === activeSynthesisTrial.candidate.candidateId) {
+      return this.learning.trial.resolveSynthesisSelector(
+        sessionId,
+        agentRunGeneration,
+        selector,
+        kind,
+        currentBinding.candidate,
+      );
+    }
+    const resolved = resolveTrustedPortfolioRevisionSelection(selector, currentPortfolio, kind);
+    if (resolved === null) {
+      throw new Error("Candidate revision selector is unavailable without the exact active Synthesis Candidate Trial or a trusted revision in the current project catalog, or it has the wrong role.");
+    }
+    return resolved;
+  }
+
   async loadPresentationPortfolio(
     projectRoot: string,
   ): Promise<TrustedStrategyPortfolioPresentation> {
@@ -453,6 +521,19 @@ export class CrossProjectLearningIntegration {
         }),
       });
     }
+  }
+
+  async synthesisTrialCommandCompletions(
+    projectRoot: string,
+    prefix: string,
+  ): Promise<readonly { readonly value: string; readonly label: string }[]> {
+    const targetPortfolio = await this.trust.loadTrustedPortfolio(projectRoot);
+    const projection = await listOpenSynthesisTrialCandidates({
+      targetProjectRoot: projectRoot,
+      targetPortfolio,
+      candidateReader: this.strategySynthesisCandidateStore,
+    });
+    return filterSynthesisTrialCommandOptions(projection.entries, prefix);
   }
 
   async scopeCommandCompletions(
@@ -609,6 +690,114 @@ export class CrossProjectLearningIntegration {
     } catch (error) {
       failure(errorMessage(error));
     }
+  }
+
+  async handleSynthesisTrialCommand(
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> {
+    const requestedValue = args.trim();
+    if (!requestedValue || /\s/.test(requestedValue)) {
+      ctx.ui.notify("Usage: /trial synthesis:<candidate-id>", "warning");
+      return;
+    }
+    let candidateId: string | null;
+    try {
+      candidateId = parseSynthesisTrialCommandValue(requestedValue);
+      if (candidateId === null) {
+        ctx.ui.notify("Pindie could not arm /trial: Synthesis Trials require the synthesis:<candidate-id> subject namespace.", "warning");
+        return;
+      }
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not arm /trial Synthesis Candidate: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    const projectRoot = this.learning.getProjectRoot();
+    if (projectRoot === null) {
+      ctx.ui.notify("Pindie could not arm /trial Synthesis Candidate: no current project root is loaded.", "warning");
+      return;
+    }
+    if (!ctx.isIdle()) {
+      ctx.ui.notify("Pindie could not arm /trial Synthesis Candidate: the Agent is busy.", "warning");
+      return;
+    }
+    if (this.learning.trial.hasTrial) {
+      ctx.ui.notify("Pindie could not arm /trial Synthesis Candidate: another Candidate Trial is already pending or active.", "warning");
+      return;
+    }
+    if (this.learning.hasAdaptationAttempt()) {
+      ctx.ui.notify("Pindie could not arm /trial Synthesis Candidate: an adaptation attempt is already pending or active.", "warning");
+      return;
+    }
+    if (this.learning.hasDerivationAttempt()) {
+      ctx.ui.notify("Pindie could not arm /trial Synthesis Candidate: a Strategy Derivation attempt is already pending or active.", "warning");
+      return;
+    }
+    if (this.learning.hasGlobalDerivationAttempt()) {
+      ctx.ui.notify("Pindie could not arm /trial Synthesis Candidate: a Global Derivation attempt is already pending or active.", "warning");
+      return;
+    }
+
+    const sessionId = ctx.sessionManager.getSessionId();
+    let binding: SynthesisTrialBinding;
+    try {
+      const targetPortfolio = await this.trust.loadTrustedPortfolio(projectRoot);
+      binding = await resolveSynthesisTrialBinding({
+        candidateId,
+        targetProjectRoot: projectRoot,
+        targetPortfolio,
+        candidateReader: this.strategySynthesisCandidateStore,
+      });
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not arm /trial Synthesis Candidate: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    if (
+      ctx.sessionManager.getSessionId() !== sessionId ||
+      this.learning.getProjectRoot() !== projectRoot ||
+      !ctx.isIdle()
+    ) {
+      ctx.ui.notify("Pindie could not arm /trial Synthesis Candidate: the current Session, project, or Agent state changed while reading the binding.", "warning");
+      return;
+    }
+    try {
+      const latestPortfolio = await this.trust.loadTrustedPortfolio(projectRoot);
+      const latestBinding = await resolveSynthesisTrialBinding({
+        candidateId,
+        targetProjectRoot: projectRoot,
+        targetPortfolio: latestPortfolio,
+        candidateReader: this.strategySynthesisCandidateStore,
+      });
+      if (!sameSynthesisTrialBinding(binding, latestBinding)) {
+        throw new Error("the Synthesis Candidate or target trust changed before arming");
+      }
+      binding = latestBinding;
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not arm /trial Synthesis Candidate: fresh binding validation failed: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    if (
+      ctx.sessionManager.getSessionId() !== sessionId ||
+      this.learning.getProjectRoot() !== projectRoot ||
+      !ctx.isIdle() ||
+      this.learning.trial.hasTrial ||
+      this.learning.hasAdaptationAttempt() ||
+      this.learning.hasDerivationAttempt() ||
+      this.learning.hasGlobalDerivationAttempt()
+    ) {
+      ctx.ui.notify("Pindie could not arm /trial Synthesis Candidate: the current project, Agent, or Self-Improvement state changed before arming.", "warning");
+      return;
+    }
+    try {
+      if (!this.learning.trial.establishSynthesis(sessionId, binding)) {
+        ctx.ui.notify("Pindie could not arm /trial Synthesis Candidate: another Candidate Trial is already pending or active.", "warning");
+        return;
+      }
+    } catch (error) {
+      ctx.ui.notify(`Pindie could not arm /trial Synthesis Candidate: invalid binding: ${errorMessage(error)}`, "warning");
+      return;
+    }
+    ctx.ui.notify(`Synthesis Trial armed for the next Agent Run (Synthesis Candidate ${candidateId}).`, "info");
   }
 
   async handleScopeTrialCommand(
@@ -844,8 +1033,14 @@ export class CrossProjectLearningIntegration {
       settleGlobalDerivationRun: (generation) => this.settleGlobalDerivationRun(generation),
       resetForSession: () => this.resetForSession(),
       validatePendingScopeTrial: (binding) => this.validatePendingScopeTrial(binding),
+      validatePendingSynthesisTrial: (binding) => this.validatePendingSynthesisTrial(binding),
       resolveScopeRevisionSelector: (lease, selector, kind, sessionId, generation) =>
         this.resolveScopeRevisionSelector(lease, selector, kind, sessionId, generation),
+      resolveSynthesisRevisionSelector: (lease, selector, kind, sessionId, generation) =>
+        this.resolveSynthesisRevisionSelector(lease, selector, kind, sessionId, generation),
+      handleSynthesisTrialCommand: (args, ctx) => this.handleSynthesisTrialCommand(args, ctx),
+      synthesisTrialCommandCompletions: (projectRoot, prefix) =>
+        this.synthesisTrialCommandCompletions(projectRoot, prefix),
       handleScopeTrialCommand: (args, ctx) => this.handleScopeTrialCommand(args, ctx),
       handleScopeTrialReviewCommand: (candidateId, ctx) => this.handleScopeTrialReviewCommand(candidateId, ctx),
       handleScopeDecisionCommand: (decision, args, ctx) => this.handleScopeDecisionCommand(decision, args, ctx),

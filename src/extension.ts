@@ -708,11 +708,14 @@ function registerComposedPindieExtension(
         featureSelection.presentation ? () => presentation.refreshStatus(ctx) : undefined,
       );
       const taskAtRunStart = run.authoritativeState?.task ?? null;
+      const synthesisTrialRun = selfImprovementRun.trialLease !== null &&
+        "candidateType" in selfImprovementRun.trialLease &&
+        selfImprovementRun.trialLease.candidateType === "cross-project-synthesis";
       if (
         derivation.ok &&
         derivation.snapshot.authority === "coherent" &&
         selfImprovementRun.adaptationLease === null &&
-        selfImprovementRun.trialLease === null &&
+        (selfImprovementRun.trialLease === null || synthesisTrialRun) &&
         selfImprovementRun.derivationLease === null &&
         selfImprovementRun.globalDerivationLease === null &&
         runtime.projectRoot !== null &&
