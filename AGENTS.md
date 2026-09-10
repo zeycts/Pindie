@@ -101,7 +101,7 @@ Cross-Project Learning v0.2 is approved for implementation only through the Slic
 
 ## Maintenance posture
 
-The v0.2 implemented architecture baseline and the Composable Pindie v0.1 migration through Slice F are complete.
+The existing implemented Pindie architecture baseline and the Composable Pindie v0.1 migration through Slice F are complete.
 
 `docs/composable-pindie-architecture-v0.1.md` records the implemented final composition boundary and remains the single architecture source of truth for that boundary. Source/tests and the synchronized architecture guidance remain the implemented-state baseline.
 
