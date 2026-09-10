@@ -10,8 +10,8 @@ import {
   renderCurrentPindieTaskProgress,
   renderCurrentPindieVerificationRecord,
 } from "../context.ts";
-import { PindieStateConflictError, type PindieRuntime } from "../runtime.ts";
-import { StateLockBusyError } from "../store.ts";
+import type { PindieRuntime } from "../runtime.ts";
+import { dispatchOrThrow } from "./semantic-dispatch.ts";
 import { getTaskStatus, type PindieState, type VerificationCheck } from "../state.ts";
 import {
   assertTaskContinuityContent,
@@ -154,6 +154,7 @@ export interface PindieTaskToolOptions {
   onTaskRefined?: (state: PindieState) => void;
   onTaskCompleted?: (state: PindieState) => ConsumptionMetrics | null;
   onStateChange?: () => void;
+  onMutationUncertain?: (reason: string) => void;
 }
 
 export interface PindieTaskHandoffToolOptions extends PindieTaskToolOptions {
@@ -167,34 +168,6 @@ export interface PindieTaskHandoffToolOptions extends PindieTaskToolOptions {
 
 export interface PindieVerificationToolOptions extends PindieTaskToolOptions {
   resolveEvidence: VerificationEvidenceResolver;
-}
-
-async function dispatchOrThrow(
-  runtime: PindieRuntime,
-  event: PindieEvent,
-  onStateChange?: () => void,
-): Promise<PindieState> {
-  let result;
-  try {
-    result = await runtime.dispatch(event);
-  } catch (error) {
-    if (error instanceof PindieStateConflictError) {
-      onStateChange?.();
-      throw new Error("Pindie project State changed externally; the latest authoritative State was adopted. Return control and begin a new Agent Run before reconciling this semantic action.");
-    }
-    if (error instanceof StateLockBusyError) {
-      throw new Error("Another Pindie process currently owns this project's State lock. Retry shortly.");
-    }
-    throw error;
-  }
-  if (!result.ok) {
-    throw new Error(
-      `Pindie transition rejected (${result.error.code}): ${result.error.message}`,
-    );
-  }
-
-  onStateChange?.();
-  return runtime.state;
 }
 
 function result(
@@ -350,7 +323,7 @@ export function createPindieTaskStartTool(
     description: "Start a Task when there is no current Task or begin new work after the previous Task is completed.",
     parameters: TaskDefinitionParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       assertTaskDefinitionInput("pindie_task_start", params);
       const metricsBaseline = options.captureTaskMetricsBaseline?.();
       const state = await dispatchOrThrow(runtime, {
@@ -359,7 +332,7 @@ export function createPindieTaskStartTool(
         constraints: params.constraints ?? [],
         successCriteria: params.successCriteria,
         nextIntent: params.nextIntent ?? null,
-      }, options.onStateChange);
+      }, signal, options);
       if (metricsBaseline) options.onTaskEpochStarted?.(state, metricsBaseline);
       return result(
         "Current task started.",
@@ -380,7 +353,7 @@ export function createPindieTaskReplaceTool(
     description: "Replace a different unfinished current Task. Do not use this for a completed Task; use pindie_task_start instead.",
     parameters: TaskDefinitionParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       assertTaskDefinitionInput("pindie_task_replace", params);
       const metricsBaseline = options.captureTaskMetricsBaseline?.();
       const state = await dispatchOrThrow(runtime, {
@@ -389,7 +362,7 @@ export function createPindieTaskReplaceTool(
         constraints: params.constraints ?? [],
         successCriteria: params.successCriteria,
         nextIntent: params.nextIntent ?? null,
-      }, options.onStateChange);
+      }, signal, options);
       if (metricsBaseline) options.onTaskEpochStarted?.(state, metricsBaseline);
       return result(
         "Current unfinished task replaced.",
@@ -410,7 +383,7 @@ export function createPindieTaskRefineTool(
     description: "Refine one or more fields in the current Task contract.",
     parameters: TaskRefinementParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       if (
         params.goal === undefined &&
         params.constraints === undefined &&
@@ -428,7 +401,7 @@ export function createPindieTaskRefineTool(
           ? {}
           : { successCriteria: params.successCriteria }),
       };
-      const state = await dispatchOrThrow(runtime, event, options.onStateChange);
+      const state = await dispatchOrThrow(runtime, event, signal, options);
       options.onTaskRefined?.(state);
       return result(
         "Task contract refined.",
@@ -449,7 +422,7 @@ export function createPindieTaskProgressTool(
     description: "Record the current Task blockers, questions, and continuation intent.",
     parameters: TaskProgressParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       if (!Array.isArray(params.blockers) || !Array.isArray(params.questions)) {
         throw new Error(
           "Invalid pindie_task_progress input: blockers and questions are required.",
@@ -460,7 +433,7 @@ export function createPindieTaskProgressTool(
         blockers: params.blockers,
         questions: params.questions,
         nextIntent: params.nextIntent ?? null,
-      }, options.onStateChange);
+      }, signal, options);
       return result(
         "Open loops updated.",
         state,
@@ -480,7 +453,7 @@ export function createPindieTaskHandoffTool(
     description: "Stage a bounded working-memory handoff at the current unfinished Task frontier.",
     parameters: TaskHandoffParameters,
     executionMode: "sequential",
-    async execute(toolCallId, params) {
+    async execute(toolCallId, params, signal) {
       assertTaskHandoffInput(params);
       const currentTask = runtime.state.task;
       if (currentTask === null || getTaskStatus(runtime.state) !== "active") {
@@ -491,7 +464,7 @@ export function createPindieTaskHandoffTool(
         blockers: [...currentTask.openLoops.blockers],
         questions: [...currentTask.openLoops.questions],
         nextIntent: params.nextIntent,
-      }, options.onStateChange);
+      }, signal, options);
       options.onHandoffStaged(
         toolCallId,
         state,
@@ -518,7 +491,7 @@ export function createPindieVerificationRecordTool(
     description: "Record one current verification check and its criterion coverage.",
     parameters: VerificationRecordParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       assertVerificationRecordInput(params);
       const evidence = options.resolveEvidence(params.check.evidenceRefs);
       const check: VerificationCheck = {
@@ -530,7 +503,7 @@ export function createPindieVerificationRecordTool(
       const state = await dispatchOrThrow(runtime, {
         type: "record_verification",
         check,
-      }, options.onStateChange);
+      }, signal, options);
       return result(
         `Verification check '${params.check.name}' recorded.`,
         state,
@@ -550,7 +523,7 @@ export function createPindieTaskCompleteTool(
     description: "Complete the current Task and render its outcome summary.",
     parameters: TaskCompleteParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       if (params.summary.trim() === "") {
         throw new Error(
           "Invalid pindie_task_complete input: non-empty summary is required.",
@@ -559,7 +532,8 @@ export function createPindieTaskCompleteTool(
       const state = await dispatchOrThrow(
         runtime,
         { type: "complete_task" },
-        options.onStateChange,
+        signal,
+        options,
       );
       const taskMetrics = options.onTaskCompleted?.(state) ?? null;
       return result(

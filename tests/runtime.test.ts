@@ -4,7 +4,13 @@ import test from "node:test";
 import {
   PindieRuntime,
   PindieRuntimeStaleAuthorityError,
+  PindieSemanticMutationPendingError,
+  PindieStateMutationUncertainError,
 } from "../src/runtime.ts";
+import {
+  PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+  PindieLivenessAbortError,
+} from "../src/liveness.ts";
 import { EMPTY_STATE, type PindieState } from "../src/state.ts";
 import type { PindieStateStore } from "../src/store.ts";
 
@@ -71,12 +77,68 @@ class DeferredLoadStore implements PindieStateStore {
   }
 }
 
+class DeferredSaveStore implements PindieStateStore {
+  state: PindieState = EMPTY_STATE;
+  readonly loads: string[] = [];
+  readonly saves: PindieState[] = [];
+  readonly saveStarted: Promise<void>;
+  readonly saveFinished: Promise<void>;
+  private readonly commitBeforePending: boolean;
+  private readonly saveError: Error | null;
+  private resolveSaveStarted!: () => void;
+  private resolveSaveFinished!: () => void;
+  private resolvePendingSave!: () => void;
+  private rejectPendingSave!: (error: Error) => void;
+
+  constructor(options: { commitBeforePending: boolean; saveError?: Error | null }) {
+    this.commitBeforePending = options.commitBeforePending;
+    this.saveError = options.saveError ?? null;
+    this.saveStarted = new Promise((resolve) => { this.resolveSaveStarted = resolve; });
+    this.saveFinished = new Promise((resolve) => { this.resolveSaveFinished = resolve; });
+    this.pendingSave = new Promise<void>((resolve, reject) => {
+      this.resolvePendingSave = resolve;
+      this.rejectPendingSave = reject;
+    });
+  }
+
+  private readonly pendingSave: Promise<void>;
+
+  releaseSave(): void {
+    if (this.saveError === null) this.resolvePendingSave();
+    else this.rejectPendingSave(this.saveError);
+  }
+
+  async load(projectRoot: string, _signal?: AbortSignal): Promise<PindieState> {
+    this.loads.push(projectRoot);
+    return structuredClone(this.state);
+  }
+
+  async save(_projectRoot: string, state: PindieState): Promise<void> {
+    this.saves.push(state);
+    if (this.commitBeforePending) this.state = structuredClone(state);
+    this.resolveSaveStarted();
+    try {
+      await this.pendingSave;
+    } finally {
+      this.resolveSaveFinished();
+    }
+  }
+
+  async withProjectLock<T>(_projectRoot: string, operation: () => Promise<T>): Promise<T> {
+    return operation();
+  }
+}
+
 const START_EVENT = {
   type: "start_task" as const,
   goal: "Add Pindie tools",
   constraints: [],
   successCriteria: ["Tools mutate State through the Runtime"],
 };
+
+function nextTurn(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 test("R01 load stores State and the active project root", async () => {
   const store = new FakeStateStore();
@@ -336,4 +398,120 @@ test("unload clears transient Runtime context without persistence", async () => 
   assert.deepEqual(runtime.state, EMPTY_STATE);
   assert.deepEqual(store.saves, []);
   await assert.rejects(runtime.dispatch(START_EVENT), /load.*before dispatch/i);
+});
+
+test("dispatchBounded reports an uncertain mutation at its deadline and fences new authority", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const store = new DeferredSaveStore({ commitBeforePending: true });
+  const runtime = new PindieRuntime(store);
+  await runtime.load("/workspace/pindie");
+
+  const dispatch = runtime.dispatchBounded(START_EVENT);
+  await store.saveStarted;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+
+  await assert.rejects(
+    dispatch,
+    (error: unknown) => error instanceof PindieStateMutationUncertainError,
+  );
+  const loadCount = store.loads.length;
+  await assert.rejects(
+    runtime.load("/workspace/other"),
+    (error: unknown) => error instanceof PindieSemanticMutationPendingError,
+  );
+  await assert.rejects(
+    runtime.refresh(),
+    (error: unknown) => error instanceof PindieSemanticMutationPendingError,
+  );
+  await assert.rejects(
+    runtime.dispatch(START_EVENT),
+    (error: unknown) => error instanceof PindieSemanticMutationPendingError,
+  );
+  assert.equal(store.loads.length, loadCount);
+
+  runtime.unload();
+  store.releaseSave();
+  await store.saveFinished;
+  await nextTurn();
+  assert.equal(runtime.projectRoot, null);
+  assert.deepEqual(runtime.state, EMPTY_STATE);
+
+  await runtime.load("/workspace/pindie");
+  assert.deepEqual(runtime.state, store.state);
+});
+
+test("late failed semantic mutation is consumed and does not restore authority", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const lateError = new Error("late durable failure");
+  const store = new DeferredSaveStore({ commitBeforePending: false, saveError: lateError });
+  const runtime = new PindieRuntime(store);
+  await runtime.load("/workspace/pindie");
+
+  const dispatch = runtime.dispatchBounded(START_EVENT);
+  await store.saveStarted;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+  await assert.rejects(dispatch, PindieStateMutationUncertainError);
+  runtime.unload();
+
+  let unhandled = false;
+  const onUnhandled = (reason: unknown): void => {
+    if (reason === lateError) unhandled = true;
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    store.releaseSave();
+    await store.saveFinished;
+    await nextTurn();
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+  assert.equal(unhandled, false);
+  await runtime.load("/workspace/pindie");
+  assert.deepEqual(runtime.state, EMPTY_STATE);
+});
+
+test("an abort before dispatch starts does not fence or poison authority", async () => {
+  const store = new FakeStateStore();
+  const runtime = new PindieRuntime(store);
+  await runtime.load("/workspace/pindie");
+  const controller = new AbortController();
+  controller.abort();
+  const loadsBefore = store.loads.length;
+
+  await assert.rejects(
+    runtime.dispatchBounded(START_EVENT, controller.signal),
+    (error: unknown) => error instanceof PindieLivenessAbortError,
+  );
+  assert.equal(store.loads.length, loadsBefore);
+  assert.deepEqual(store.saves, []);
+
+  const result = await runtime.dispatchBounded(START_EVENT);
+  assert.equal(result.ok, true);
+});
+
+test("an abort after dispatch starts fences authority until late settlement", async () => {
+  const store = new DeferredSaveStore({ commitBeforePending: true });
+  const runtime = new PindieRuntime(store);
+  await runtime.load("/workspace/pindie");
+  const controller = new AbortController();
+  const dispatch = runtime.dispatchBounded(START_EVENT, controller.signal);
+  await store.saveStarted;
+
+  controller.abort();
+  await assert.rejects(
+    dispatch,
+    (error: unknown) => error instanceof PindieStateMutationUncertainError,
+  );
+  await assert.rejects(
+    runtime.dispatch(START_EVENT),
+    (error: unknown) => error instanceof PindieSemanticMutationPendingError,
+  );
+
+  runtime.unload();
+  store.releaseSave();
+  await store.saveFinished;
+  await nextTurn();
+  assert.equal(runtime.projectRoot, null);
+  await runtime.load("/workspace/pindie");
+  assert.deepEqual(runtime.state, store.state);
 });

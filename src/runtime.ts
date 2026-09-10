@@ -1,5 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 
+import {
+  PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+  PindieLivenessAbortError,
+  PindieLivenessTimeoutError,
+  runBoundedOperation,
+} from "./liveness.ts";
 import { EMPTY_STATE, type PindieState } from "./state.ts";
 import type { PindieStateStore } from "./store.ts";
 import {
@@ -22,12 +28,27 @@ export class PindieRuntimeStaleAuthorityError extends Error {
   }
 }
 
+export class PindieStateMutationUncertainError extends Error {
+  constructor() {
+    super("Pindie semantic State mutation timed out/was aborted. Durable State outcome is currently uncertain; semantic authority is unavailable for this Run.");
+    this.name = "PindieStateMutationUncertainError";
+  }
+}
+
+export class PindieSemanticMutationPendingError extends Error {
+  constructor() {
+    super("Pindie semantic State mutation is still pending. Durable State outcome remains uncertain; semantic authority is unavailable until that mutation settles.");
+    this.name = "PindieSemanticMutationPendingError";
+  }
+}
+
 export class PindieRuntime {
   private readonly store: PindieStateStore;
   private currentProjectRoot: string | null = null;
   private currentState: PindieState = EMPTY_STATE;
   private currentExternalStateEpoch = 0;
   private authorityGeneration = 0;
+  private pendingSemanticMutation: Promise<void> | null = null;
 
   constructor(store: PindieStateStore) { this.store = store; }
   get state(): PindieState { return this.currentState; }
@@ -42,6 +63,7 @@ export class PindieRuntime {
   }
 
   async load(projectRoot: string, signal?: AbortSignal): Promise<void> {
+    this.assertNoPendingSemanticMutation();
     this.unload();
     const generation = this.authorityGeneration;
     const state = await this.store.load(projectRoot, signal);
@@ -51,6 +73,7 @@ export class PindieRuntime {
   }
 
   async refresh(signal?: AbortSignal): Promise<boolean> {
+    this.assertNoPendingSemanticMutation();
     const projectRoot = this.requireProjectRoot();
     const generation = this.authorityGeneration;
     const latest = await this.store.load(projectRoot, signal);
@@ -58,25 +81,68 @@ export class PindieRuntime {
     return this.adoptExternal(latest);
   }
 
-  async dispatch(event: PindieEvent): Promise<TransitionResult> {
+  async dispatch(event: PindieEvent, signal?: AbortSignal): Promise<TransitionResult> {
+    this.assertNoPendingSemanticMutation();
     const projectRoot = this.requireProjectRoot();
+    const generation = this.authorityGeneration;
     const expectedState = this.currentState;
+    signal?.throwIfAborted();
     return this.store.withProjectLock(projectRoot, async () => {
-      const latestState = await this.store.load(projectRoot);
+      this.assertCurrentAuthority(projectRoot, generation, signal);
+      const latestState = await this.store.load(projectRoot, signal);
+      this.assertCurrentAuthority(projectRoot, generation, signal);
       if (!isDeepStrictEqual(latestState, expectedState)) {
         this.adoptExternal(latestState);
         if (event.type !== "invalidate_verification") throw new PindieStateConflictError();
-        return this.reduceSavePublish(projectRoot, latestState, event);
+        return this.reduceSavePublish(projectRoot, generation, latestState, event, signal);
       }
-      return this.reduceSavePublish(projectRoot, expectedState, event);
-    });
+      return this.reduceSavePublish(projectRoot, generation, expectedState, event, signal);
+    }, signal);
   }
 
-  private async reduceSavePublish(projectRoot: string, state: PindieState, event: PindieEvent): Promise<TransitionResult> {
+  async dispatchBounded(event: PindieEvent, signal?: AbortSignal): Promise<TransitionResult> {
+    this.assertNoPendingSemanticMutation();
+    let mutationStarted = false;
+    let mutation: Promise<TransitionResult> | null = null;
+    try {
+      return await runBoundedOperation({
+        label: "Pindie semantic State mutation",
+        timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+        signal,
+        run: (innerSignal) => {
+          mutationStarted = true;
+          const operation = this.dispatch(event, innerSignal);
+          mutation = operation;
+          return operation;
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof PindieLivenessTimeoutError ||
+        error instanceof PindieLivenessAbortError
+      ) {
+        if (!mutationStarted || mutation === null) throw error;
+        this.installSemanticMutationFence(mutation);
+        throw new PindieStateMutationUncertainError();
+      }
+      throw error;
+    }
+  }
+
+  private async reduceSavePublish(
+    projectRoot: string,
+    generation: number,
+    state: PindieState,
+    event: PindieEvent,
+    signal?: AbortSignal,
+  ): Promise<TransitionResult> {
+    this.assertCurrentAuthority(projectRoot, generation, signal);
     const result = reduceState(state, event);
     if (!result.ok) return result;
     if (result.state === state) return result;
-    await this.store.save(projectRoot, result.state);
+    this.assertCurrentAuthority(projectRoot, generation, signal);
+    await this.store.save(projectRoot, result.state, signal);
+    this.assertCurrentAuthority(projectRoot, generation, signal);
     this.currentState = result.state;
     return result;
   }
@@ -86,6 +152,25 @@ export class PindieRuntime {
     this.currentState = latest;
     this.currentExternalStateEpoch += 1;
     return true;
+  }
+
+  private installSemanticMutationFence(operation: Promise<TransitionResult>): void {
+    const fence = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.pendingSemanticMutation = fence;
+    void fence.finally(() => {
+      if (this.pendingSemanticMutation === fence) {
+        this.pendingSemanticMutation = null;
+      }
+    });
+  }
+
+  private assertNoPendingSemanticMutation(): void {
+    if (this.pendingSemanticMutation !== null) {
+      throw new PindieSemanticMutationPendingError();
+    }
   }
 
   private assertCurrentAuthority(

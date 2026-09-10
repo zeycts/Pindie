@@ -10,6 +10,13 @@ import type {
 import {
   createCoreIntegration,
 } from "../src/core-integration.ts";
+import {
+  PindieSemanticMutationPendingError,
+  PindieStateMutationUncertainError,
+} from "../src/runtime.ts";
+import {
+  PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+} from "../src/liveness.ts";
 import { EMPTY_STATE, getVerificationStatus, type PindieState } from "../src/state.ts";
 import type {
   PindieStateStore,
@@ -29,6 +36,36 @@ class MemoryStateStore implements PindieStateStore {
 
   async withProjectLock<T>(_projectRoot: string, operation: () => Promise<T>): Promise<T> {
     return operation();
+  }
+}
+
+class DeferredCoreSaveStore extends MemoryStateStore {
+  readonly saveStarted: Promise<void>;
+  readonly saveFinished: Promise<void>;
+  private resolveSaveStarted!: () => void;
+  private resolveSaveFinished!: () => void;
+  private resolvePending!: () => void;
+  private readonly pending: Promise<void>;
+
+  constructor() {
+    super();
+    this.saveStarted = new Promise((resolve) => { this.resolveSaveStarted = resolve; });
+    this.saveFinished = new Promise((resolve) => { this.resolveSaveFinished = resolve; });
+    this.pending = new Promise((resolve) => { this.resolvePending = resolve; });
+  }
+
+  releaseSave(): void {
+    this.resolvePending();
+  }
+
+  async save(_projectRoot: string, state: PindieState): Promise<void> {
+    this.state = structuredClone(state);
+    this.resolveSaveStarted();
+    try {
+      await this.pending;
+    } finally {
+      this.resolveSaveFinished();
+    }
   }
 }
 
@@ -123,6 +160,48 @@ test("Core-only assembly owns base Task, Gateway, verification/Gate, and Seed Po
     },
   });
   assert.equal(getVerificationStatus(core.runtime.state.task!), "passed");
+});
+
+test("Core Task tools fail closed and mark authority unavailable on uncertain mutation", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const store = new DeferredCoreSaveStore();
+  const core = createCoreIntegration({
+    store,
+    continuityStore,
+    taskHandoffEnabled: false,
+  });
+  const tools = new Map<string, any>();
+  await core.runtime.load("/core-only");
+  core.registerTools(coreApi(tools));
+
+  const execution = tools.get("pindie_task_start").execute("start", {
+    goal: "Bound semantic State mutation",
+    successCriteria: ["Authority fails closed when persistence is uncertain"],
+  });
+  await store.saveStarted;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+
+  await assert.rejects(
+    execution,
+    (error: unknown) => {
+      assert.ok(error instanceof PindieStateMutationUncertainError);
+      assert.match(error.message, /outcome is currently uncertain/i);
+      assert.match(error.message, /semantic authority is unavailable/i);
+      return true;
+    },
+  );
+  assert.equal(core.runtime.projectRoot, null);
+  assert.match(core.run.stateUnavailableReason ?? "", /outcome is currently uncertain/i);
+  await assert.rejects(
+    core.runtime.load("/core-only"),
+    (error: unknown) => error instanceof PindieSemanticMutationPendingError,
+  );
+
+  store.releaseSave();
+  await store.saveFinished;
+  await new Promise((resolve) => setImmediate(resolve));
+  await core.runtime.load("/core-only");
+  assert.equal(core.runtime.state.task?.goal, "Bound semantic State mutation");
 });
 
 test("Core-only authorization ignores caller-provided capability injection", async () => {
