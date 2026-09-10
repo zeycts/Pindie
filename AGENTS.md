@@ -7,11 +7,13 @@ Pindie is a personal AI agent for indie development built on the Pi agent harnes
 For architecture or implementation work, use this order:
 
 1. The explicit approved task specification in the current request.
-2. `docs/composable-pindie-architecture-v0.1.md` — authoritative implemented architecture contract when the task touches Composable Pindie v0.1 or its completed Slices A–F. It is the current source of truth for the final composition boundary and its invariants.
-3. `docs/architecture.md` — current architecture and ownership boundaries.
-4. `docs/remote-companion.md` — authoritative Remote Companion architecture/behavior when the task touches Remote Companion or Discord integration.
-5. `docs/behavior.md` — current semantic and behavioral contract.
-6. Existing source and tests — implemented runtime baseline.
+2. `docs/cross-project-learning-v0.2.md` — authoritative architecture contract when the task touches Cross-Project Learning v0.2 Strategy Synthesis, Synthesis Trial/Decision, shared cross-project validation, or synthesis-origin user-global trust.
+3. `docs/cross-project-learning-v0.1.md` — authoritative implemented contract for Cross-Project Strategy Trust Transfer. Preserve its Scope Candidate/source-project semantics unless v0.2 explicitly extends shared validation around them.
+4. `docs/composable-pindie-architecture-v0.1.md` — authoritative implemented architecture contract for the final composition boundary and its Slices A–F.
+5. `docs/architecture.md` — current architecture and ownership boundaries.
+6. `docs/remote-companion.md` — authoritative Remote Companion architecture/behavior when the task touches Remote Companion or Discord integration.
+7. `docs/behavior.md` — current semantic and behavioral contract.
+8. Existing source and tests — implemented runtime baseline.
 
 If those sources conflict, report the contradiction before widening scope. Do not preserve obsolete behavior merely because an older implementation or test encoded it.
 
@@ -52,18 +54,50 @@ Pindie must not implement a second Agent Loop, workflow engine, persisted phase 
 - Historical runtime probes are filtered from future model context.
 - Remote Companion, when enabled, is an external projection/control surface over the current native Pi Session. Discord routing metadata may persist external IDs/delivery cursor only; it must not become semantic State, conversation truth, a second Session, or a second message queue.
 
+## Cross-Project Learning boundary
+
+Cross-Project Learning has two distinct knowledge origins:
+
+```text
+v0.1 Trust Transfer
+project-local promoted Strategy
+→ Scope Candidate
+→ cross-project Trial/review
+→ Human Decision
+→ user-global trust
+
+v0.2 Strategy Synthesis
+multi-project Experience
+→ Synthesis Candidate
+→ cross-project Trial/review
+→ Human Decision
+→ user-global trust
+```
+
+Preserve these rules:
+
+- v0.1 transfers an already-trusted exact project-local revision; v0.2 synthesizes a new untrusted hypothesis from distributed Experience.
+- Scope Candidate and Synthesis Candidate remain distinct immutable artifact families.
+- Reuse only the common cross-project Trial evidence and global promotion-safety facts; do not introduce a persisted generic Candidate framework.
+- Discovery evidence never grants trust. Synthesis Candidate authority is none until explicit Trial; only Human promotion grants user-global trust.
+- Synthesis discovery provenance is historical audit context, not Promotion authority. Promotion revalidates fresh Trial evidence and current trust safety.
+- Transfer-origin and synthesis-origin promoted Strategies converge only at the normal user-global trusted Policy projection.
+- Autonomous/background triggering is outside v0.2.
+
 ## Development workflow
 
 For an approved task:
 
-1. Read only the relevant architecture/behavior sections, source, and tests. For Composable Pindie work, read the relevant Slice and invariants in `docs/composable-pindie-architecture-v0.1.md`; for Remote Companion work, read `docs/remote-companion.md` before implementation.
+1. Read only the relevant architecture/behavior sections, source, and tests. For CPL v0.2 work, read `docs/cross-project-learning-v0.2.md` first and preserve the implemented v0.1 transfer contract. For Composable Pindie work, read the relevant Slice and invariants in `docs/composable-pindie-architecture-v0.1.md`; for Remote Companion work, read `docs/remote-companion.md` before implementation.
 2. Preserve the requested scope; do not implement adjacent cleanup speculatively.
 3. Add focused tests for changed contracts.
 4. Implement the smallest change that satisfies them.
 5. Preserve unrelated runtime behavior and user work.
 6. Run `pnpm run check` before declaring completion.
 
-Composable Pindie Architecture v0.1 is complete through final Slice F. Preserve its final feature-selection, trust-safety, lifecycle, and dependency-direction invariants; do not begin post-v0.1 architecture work without a new approved task.
+Composable Pindie Architecture v0.1 is complete through final Slice F. Preserve its final feature-selection, trust-safety, lifecycle, and dependency-direction invariants.
+
+Cross-Project Learning v0.2 is approved for implementation only through the Slices defined in `docs/cross-project-learning-v0.2.md`. Complete and review one Slice before starting the next. Do not skip ahead to Autonomous Learning.
 
 ## Maintenance posture
 
@@ -71,6 +105,8 @@ The v0.2 implemented architecture baseline and the Composable Pindie v0.1 migrat
 
 `docs/composable-pindie-architecture-v0.1.md` records the implemented final composition boundary and remains the single architecture source of truth for that boundary. Source/tests and the synchronized architecture guidance remain the implemented-state baseline.
 
-Future architecture changes should be driven by concrete dogfood failures, explicit user goals, or verified incompatibilities with Pi/runtime reality, not by speculative post-v0.1 cleanup.
+`docs/cross-project-learning-v0.2.md` is an approved forward contract, not yet an implemented-state claim. Until its Slices land, existing v0.1 source/tests remain runtime truth where v0.2 has not yet been implemented.
+
+Future architecture changes should be driven by concrete dogfood failures, explicit user goals, or verified incompatibilities with Pi/runtime reality, not by speculative cleanup.
 
 Do not create new architectural milestones or refactor established ownership boundaries merely for additional cleanup.
