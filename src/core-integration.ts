@@ -244,6 +244,10 @@ export class CoreIntegration {
       this.notifySemanticStateChanged();
       options.onSemanticStateChange?.();
     };
+    const onMutationUncertain = (reason: string): void => {
+      this.markAuthorityUnavailable(reason);
+      options.onSemanticStateChange?.();
+    };
     const taskToolOptions = {
       captureTaskMetricsBaseline: (): ConsumptionMetrics => this.currentRunMetrics(),
       onTaskEpochStarted: (state: PindieState, baseline: ConsumptionMetrics) => {
@@ -271,6 +275,7 @@ export class CoreIntegration {
         return result;
       },
       onStateChange: onSemanticStateChange,
+      onMutationUncertain,
     };
 
     pi.registerTool(createPindiePolicySetTool({
@@ -307,9 +312,11 @@ export class CoreIntegration {
     }
     pi.registerTool(createPindieGateOpenTool(this.runtime, {
       onStateChange: onSemanticStateChange,
+      onMutationUncertain,
     }));
     pi.registerTool(createPindieGateResolveTool(this.runtime, {
       onStateChange: onSemanticStateChange,
+      onMutationUncertain,
     }));
     pi.registerTool(createPindieGitObserveTool());
   }

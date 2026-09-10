@@ -317,3 +317,93 @@ test("invalid State passed to save does not overwrite existing State", async (t)
   await assert.rejects(fixture.store.save(projectRoot, invalidState));
   assert.equal(await readFile(statePath, "utf8"), previousContents);
 });
+
+test("State save cancellation before rename preserves the original file and cleans its temp file", async (t) => {
+  const fixture = await createTestStore();
+  t.after(() => rm(fixture.baseDir, { recursive: true, force: true }));
+  const projectRoot = "/workspace/save-abort-before-rename";
+  const original = activeState();
+  const replacement: PindieState = {
+    task: {
+      ...original.task!,
+      goal: "Replacement must not be renamed",
+    },
+  };
+  await fixture.store.save(projectRoot, original);
+  const statePath = fixture.statePath(projectRoot);
+  const previousContents = await readFile(statePath, "utf8");
+  const controller = new AbortController();
+  const store = new FileStateStore({
+    baseDir: fixture.baseDir,
+    onBeforeRename: async () => controller.abort(),
+  });
+
+  await assert.rejects(
+    store.save(projectRoot, replacement, controller.signal),
+    /Could not save Pindie State file/,
+  );
+  assert.equal(await readFile(statePath, "utf8"), previousContents);
+  assert.deepEqual(
+    (await readdir(join(fixture.baseDir, getProjectId(projectRoot)))).sort(),
+    ["state.json"],
+  );
+});
+
+test("cancelled State lock contenders exit without entering the critical section", async (t) => {
+  const fixture = await createTestStore();
+  t.after(() => rm(fixture.baseDir, { recursive: true, force: true }));
+  const projectRoot = "/workspace/lock-abort-waiter";
+  let markEntered!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const holding = fixture.store.withProjectLock(projectRoot, async () => {
+    markEntered();
+    await held;
+  });
+  await entered;
+
+  const contender = new FileStateStore({
+    baseDir: fixture.baseDir,
+    lockRetryMs: 2,
+    lockTimeoutMs: 500,
+  });
+  const controller = new AbortController();
+  let contenderEntered = false;
+  const waiting = contender.withProjectLock(
+    projectRoot,
+    async () => { contenderEntered = true; },
+    controller.signal,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+
+  await assert.rejects(waiting, (error: unknown) => error === controller.signal.reason);
+  assert.equal(contenderEntered, false);
+  release();
+  await holding;
+});
+
+test("State lock release is not cancelled when its owned operation aborts", async (t) => {
+  const fixture = await createTestStore();
+  t.after(() => rm(fixture.baseDir, { recursive: true, force: true }));
+  const projectRoot = "/workspace/lock-abort-owner";
+  const controller = new AbortController();
+  let ownerEntered = false;
+  await fixture.store.withProjectLock(
+    projectRoot,
+    async () => {
+      ownerEntered = true;
+      controller.abort();
+      await Promise.resolve();
+    },
+    controller.signal,
+  );
+  assert.equal(ownerEntered, true);
+
+  let replacementEntered = false;
+  await fixture.store.withProjectLock(projectRoot, async () => {
+    replacementEntered = true;
+  });
+  assert.equal(replacementEntered, true);
+});

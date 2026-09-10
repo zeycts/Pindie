@@ -31,8 +31,12 @@ export class StateLockBusyError extends Error {
 
 export interface PindieStateStore {
   load(projectRoot: string, signal?: AbortSignal): Promise<PindieState>;
-  save(projectRoot: string, state: PindieState): Promise<void>;
-  withProjectLock<T>(projectRoot: string, operation: () => Promise<T>): Promise<T>;
+  save(projectRoot: string, state: PindieState, signal?: AbortSignal): Promise<void>;
+  withProjectLock<T>(
+    projectRoot: string,
+    operation: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T>;
 }
 
 export interface TaskContinuityStore {
@@ -53,6 +57,8 @@ export interface FileStateStoreOptions {
   isProcessAlive?: (pid: number) => boolean;
   /** Test-only barrier after exclusively claiming a valid dead-owner lock. */
   onReclaimClaimed?: () => Promise<void>;
+  /** Test-only barrier immediately before the final atomic State rename. */
+  onBeforeRename?: () => Promise<void>;
 }
 
 interface LockOwner {
@@ -123,8 +129,25 @@ function isMissingFile(error: unknown): boolean {
   return errorCode(error) === "ENOENT";
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = (): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = (): void => {
+      cleanup();
+      reject(signal?.reason ?? new Error("Operation aborted."));
+    };
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
 }
 
 function defaultIsProcessAlive(pid: number): boolean {
@@ -143,6 +166,7 @@ export class FileStateStore implements PindieStateStore {
   private readonly now: () => number;
   private readonly isProcessAlive: (pid: number) => boolean;
   private readonly onReclaimClaimed: (() => Promise<void>) | undefined;
+  private readonly onBeforeRename: (() => Promise<void>) | undefined;
 
   constructor(options: FileStateStoreOptions = {}) {
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "projects");
@@ -151,6 +175,7 @@ export class FileStateStore implements PindieStateStore {
     this.now = options.now ?? Date.now;
     this.isProcessAlive = options.isProcessAlive ?? defaultIsProcessAlive;
     this.onReclaimClaimed = options.onReclaimClaimed;
+    this.onBeforeRename = options.onBeforeRename;
   }
 
   get storageBaseDir(): string {
@@ -176,15 +201,24 @@ export class FileStateStore implements PindieStateStore {
     return parsed;
   }
 
-  async save(projectRoot: string, state: PindieState): Promise<void> {
+  async save(projectRoot: string, state: PindieState, signal?: AbortSignal): Promise<void> {
     const validation = validateState(state);
     if (!validation.ok) throw new Error(`Cannot save invalid Pindie State: ${validation.errors.join(" ")}`);
+    signal?.throwIfAborted();
     const statePath = this.statePath(projectRoot);
     const stateDir = this.stateDir(projectRoot);
     const temporaryPath = join(stateDir, `.${STATE_FILE_NAME}.${randomUUID()}.tmp`);
     try {
       await mkdir(stateDir, { recursive: true });
-      await writeFile(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+      signal?.throwIfAborted();
+      await writeFile(
+        temporaryPath,
+        `${JSON.stringify(state, null, 2)}\n`,
+        { encoding: "utf8", signal },
+      );
+      signal?.throwIfAborted();
+      await this.onBeforeRename?.();
+      signal?.throwIfAborted();
       await rename(temporaryPath, statePath);
     } catch (error) {
       await rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -192,38 +226,60 @@ export class FileStateStore implements PindieStateStore {
     }
   }
 
-  async withProjectLock<T>(projectRoot: string, operation: () => Promise<T>): Promise<T> {
+  async withProjectLock<T>(
+    projectRoot: string,
+    operation: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    signal?.throwIfAborted();
     const lockPath = this.lockPath(projectRoot);
     const token = randomUUID();
-    await this.acquireLock(projectRoot, lockPath, token);
+    await this.acquireLock(projectRoot, lockPath, token, signal);
     try {
+      signal?.throwIfAborted();
       return await operation();
     } finally {
       await this.releaseLock(lockPath, token);
     }
   }
 
-  private async acquireLock(projectRoot: string, lockPath: string, token: string): Promise<void> {
+  private async acquireLock(
+    projectRoot: string,
+    lockPath: string,
+    token: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted();
     await mkdir(this.stateDir(projectRoot), { recursive: true });
+    signal?.throwIfAborted();
     const deadline = this.now() + this.lockTimeoutMs;
     while (true) {
+      signal?.throwIfAborted();
       try {
         await mkdir(lockPath);
         try {
-          await writeFile(join(lockPath, LOCK_OWNER_FILE_NAME), JSON.stringify({ token, pid: process.pid, acquiredAt: this.now() }), { encoding: "utf8", flag: "wx" });
+          signal?.throwIfAborted();
+          await writeFile(
+            join(lockPath, LOCK_OWNER_FILE_NAME),
+            JSON.stringify({ token, pid: process.pid, acquiredAt: this.now() }),
+            { encoding: "utf8", flag: "wx", signal },
+          );
+          signal?.throwIfAborted();
           return;
         } catch (error) {
           // A successful mkdir created this ownerless lock. Ambiguous ownerless
           // locks are never reclaimed, so no contender can replace it here.
           await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+          if (signal?.aborted) throw signal.reason ?? error;
           throw new Error(`Could not establish Pindie State lock ownership: ${errorMessage(error)}`);
         }
       } catch (error) {
         if (errorCode(error) !== "EEXIST") throw error;
       }
       await this.reclaimIfSafe(lockPath);
+      signal?.throwIfAborted();
       if (this.now() >= deadline) throw new StateLockBusyError();
-      await sleep(this.lockRetryMs);
+      await sleep(this.lockRetryMs, signal);
     }
   }
 
