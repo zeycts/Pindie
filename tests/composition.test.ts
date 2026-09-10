@@ -216,6 +216,7 @@ test("Slice E allows SI-only composition and drops CPL dependencies when disable
     "crossProjectTrustReader",
     "scopeProjectTrustReader",
     "strategySynthesisCandidateStore",
+    "strategySynthesisDecisionStore",
   ]) {
     assert.equal(Object.hasOwn(composition.extensionOptions, dependency), false, dependency);
   }
@@ -231,14 +232,20 @@ test("Slice E allows SI-only composition and drops CPL dependencies when disable
   });
   assert.equal(siOnly.featureSelection.selfImprovement, true);
   assert.equal(siOnly.featureSelection.crossProjectLearning, false);
-  for (const dependency of ["experienceStore", "strategyCandidateStore", "strategyTrustScopeCandidateStore", "strategyTrustScopeWriterLock"]) {
+  for (const dependency of [
+    "experienceStore",
+    "strategyCandidateStore",
+    "strategyTrustScopeCandidateStore",
+    "strategyTrustScopeWriterLock",
+    "strategySynthesisCandidateStore",
+    "strategySynthesisDecisionStore",
+  ]) {
     assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), true, dependency);
   }
   for (const dependency of [
     "crossProjectExperienceReader",
     "crossProjectTrustReader",
     "scopeProjectTrustReader",
-    "strategySynthesisCandidateStore",
   ]) {
     assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), false, dependency);
   }
@@ -466,11 +473,20 @@ test("Slice F assembles the final composition matrix through the production comp
       "crossProjectExperienceReader",
       "crossProjectTrustReader",
       "scopeProjectTrustReader",
-      "strategySynthesisCandidateStore",
     ]) {
       assert.equal(
         Object.hasOwn(composition.extensionOptions, dependency),
         featureSelection.crossProjectLearning,
+        `${name}: ${dependency}`,
+      );
+    }
+    for (const dependency of [
+      "strategySynthesisCandidateStore",
+      "strategySynthesisDecisionStore",
+    ]) {
+      assert.equal(
+        Object.hasOwn(composition.extensionOptions, dependency),
+        featureSelection.selfImprovement,
         `${name}: ${dependency}`,
       );
     }

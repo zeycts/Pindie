@@ -4,6 +4,18 @@ import {
   readScopeTrialGlobalArtifacts,
   type ScopeTrialGlobalArtifacts,
 } from "./strategy-trust-scope-artifacts.ts";
+import {
+  readSynthesisTrialGlobalArtifacts,
+  validateStrategySynthesisDecisionBinding,
+  type SynthesisTrialGlobalArtifacts,
+  type StrategySynthesisDecisionV1,
+} from "./strategy-synthesis-decisions.ts";
+import {
+  strategySynthesisCandidateSemanticFingerprint,
+  validateStrategySynthesisCandidateArtifact,
+  type StrategySynthesisCandidateReader,
+  type StrategySynthesisCandidateV1,
+} from "./strategy-synthesis-candidates.ts";
 import type { StrategyDerivationCandidateV1 } from "./strategy-derivation-candidates.ts";
 import type { StrategyDerivationDecisionV1 } from "./strategy-derivation-decisions.ts";
 import {
@@ -35,9 +47,12 @@ import { MAX_USER_GLOBAL_DERIVED_STRATEGIES } from "./strategy-trust-scope-const
 export { MAX_USER_GLOBAL_DERIVED_STRATEGIES };
 
 export interface UserGlobalTrustedDerivedStrategy {
-  readonly sourceStrategy: StrategyTrustScopeSourceStrategyV1;
-  readonly candidate: StrategyDerivationCandidateV1;
-  readonly decision: StrategyTrustScopeDecisionRecord;
+  readonly origin: "transfer" | "synthesis";
+  /** Null for synthesis-origin trust; synthesis has no fictitious source project. */
+  readonly sourceStrategy: StrategyTrustScopeSourceStrategyV1 | null;
+  readonly candidate: StrategyDerivationCandidateV1 | StrategySynthesisCandidateV1;
+  readonly decision: StrategyTrustScopeDecisionRecord | StrategySynthesisDecisionV1;
+  readonly sourceProjectIds: readonly string[];
   /** Ephemeral Harness projection; the source Candidate remains authority. */
   readonly selection: StrategyRevisionSelection;
 }
@@ -52,6 +67,9 @@ export interface UserGlobalTrustedDerivedStrategyProjectionInput {
   readonly candidateReader: StrategyTrustScopeCandidateReader;
   readonly decisionReader: ScopeDecisionReader;
   readonly sourceResolver: StrategyTrustScopeSourceResolver;
+  /** Optional for v0.1-only callers; production SI supplies both readers. */
+  readonly synthesisCandidateReader?: StrategySynthesisCandidateReader;
+  readonly synthesisDecisionReader?: import("./strategy-synthesis-decisions.ts").StrategySynthesisDecisionReader;
 }
 
 interface ProjectionRuntimeDependencies {
@@ -84,6 +102,15 @@ function sourceIdentityKey(source: StrategyTrustScopeSourceStrategyV1): string {
     source.kind,
     source.revisionIdentity,
     source.revisionFingerprint,
+  ].join("\0");
+}
+
+function selectionIdentityKey(selection: StrategyRevisionSelection): string {
+  return [
+    strategySelectionId(selection),
+    selection.kind,
+    strategySelectionRevisionIdentity(selection),
+    strategySelectionRevisionFingerprint(selection),
   ].join("\0");
 }
 
@@ -174,6 +201,38 @@ function promotedScopeDecisions(
   return artifacts.decisions.filter((decision) => decision.decision === "promoted");
 }
 
+function promotedSynthesisSelection(
+  candidate: StrategySynthesisCandidateV1,
+): StrategyRevisionSelection {
+  const fingerprint = strategySynthesisCandidateSemanticFingerprint(candidate);
+  return createStrategyRevisionSelection({
+    strategyId: candidate.proposal.strategyId,
+    kind: candidate.proposal.kind,
+    revisionIdentity: candidate.candidateId,
+    revisionFingerprint: fingerprint,
+    revisionStatusAtRun: "promoted",
+    semantics: {
+      summary: candidate.proposal.summary,
+      useWhen: [...candidate.proposal.useWhen],
+      avoidWhen: [...candidate.proposal.avoidWhen],
+      principles: [...candidate.proposal.principles],
+    },
+  });
+}
+
+function validateSynthesisGlobalArtifacts(
+  candidateReader: StrategySynthesisCandidateReader | undefined,
+  decisionReader: UserGlobalTrustedDerivedStrategyProjectionInput["synthesisDecisionReader"],
+): Promise<SynthesisTrialGlobalArtifacts> {
+  if (candidateReader === undefined && decisionReader === undefined) {
+    return Promise.resolve(Object.freeze({ candidates: Object.freeze([]), decisions: Object.freeze([]) }));
+  }
+  if (candidateReader === undefined || decisionReader === undefined) {
+    return Promise.reject(new Error("User-global Synthesis authority dependencies are incomplete."));
+  }
+  return readSynthesisTrialGlobalArtifacts(candidateReader, decisionReader);
+}
+
 /**
  * Reconstruct the user-global Derived set from immutable Scope artifacts and
  * exact source authorities. Historical Trial refs are intentionally not read:
@@ -196,11 +255,18 @@ export async function loadUserGlobalTrustedDerivedStrategyProjection(
     validateDecision: derivationDecisions.validateStrategyDerivationDecisionArtifact,
     validateDecisionBinding: derivationDecisions.validateStrategyDerivationDecisionBinding,
   };
-  const artifacts = await readScopeTrialGlobalArtifacts(
-    input.candidateReader,
-    input.decisionReader,
-  );
+  const [artifacts, synthesisArtifacts] = await Promise.all([
+    readScopeTrialGlobalArtifacts(
+      input.candidateReader,
+      input.decisionReader,
+    ),
+    validateSynthesisGlobalArtifacts(
+      input.synthesisCandidateReader,
+      input.synthesisDecisionReader,
+    ),
+  ]);
   const candidatesById = new Map(artifacts.candidates.map((candidate) => [candidate.candidateId, candidate]));
+  const synthesisCandidatesById = new Map(synthesisArtifacts.candidates.map((candidate) => [candidate.candidateId, candidate]));
   const entries: UserGlobalTrustedDerivedStrategy[] = [];
   const logicalIds = new Set<string>();
 
@@ -226,10 +292,38 @@ export async function loadUserGlobalTrustedDerivedStrategyProjection(
     const sourceResolution = sourceResolvedExactly(resolved, decision.sourceStrategy, dependencies);
     logicalIds.add(decision.sourceStrategy.strategyId);
     entries.push(Object.freeze({
+      origin: "transfer" as const,
       sourceStrategy: Object.freeze({ ...decision.sourceStrategy }),
       candidate: sourceResolution.candidate,
       decision,
+      sourceProjectIds: Object.freeze([decision.sourceStrategy.sourceProjectId]),
       selection: sourceResolution.selection,
+    }));
+  }
+
+  for (const decision of synthesisArtifacts.decisions.filter((item) => item.decision === "promoted")) {
+    const candidate = synthesisCandidatesById.get(decision.candidateId);
+    if (candidate === undefined) {
+      throw new Error(`promoted Synthesis Decision '${decision.candidateId}' is missing its immutable Candidate`);
+    }
+    const validatedCandidate = validateStrategySynthesisCandidateArtifact(candidate, decision.candidateId);
+    validateStrategySynthesisDecisionBinding(decision, validatedCandidate);
+    if (SEED_STRATEGIES.some((seed) => seed.id === validatedCandidate.proposal.strategyId) ||
+      getSeedStrategy(validatedCandidate.proposal.strategyId) !== null) {
+      throw new Error("a user-global Synthesis Strategy cannot reuse an immutable Seed logical Strategy ID");
+    }
+    const selection = promotedSynthesisSelection(validatedCandidate);
+    if (logicalIds.has(validatedCandidate.proposal.strategyId)) {
+      throw new Error(`multiple promoted user-global Strategies own logical Strategy ID '${validatedCandidate.proposal.strategyId}'`);
+    }
+    logicalIds.add(validatedCandidate.proposal.strategyId);
+    entries.push(Object.freeze({
+      origin: "synthesis" as const,
+      sourceStrategy: null,
+      candidate: validatedCandidate,
+      decision,
+      sourceProjectIds: Object.freeze([]),
+      selection,
     }));
   }
 
@@ -237,7 +331,7 @@ export async function loadUserGlobalTrustedDerivedStrategyProjection(
     throw new Error(`user-global Derived Strategy capacity exceeds ${MAX_USER_GLOBAL_DERIVED_STRATEGIES}`);
   }
   const sorted = entries.sort((left, right) =>
-    compareText(sourceIdentityKey(left.sourceStrategy), sourceIdentityKey(right.sourceStrategy)));
+    compareText(selectionIdentityKey(left.selection), selectionIdentityKey(right.selection)));
   return Object.freeze({
     entries: Object.freeze(sorted),
     selections: Object.freeze(sorted.map((entry) => entry.selection)),

@@ -74,6 +74,10 @@ import {
   FileStrategySynthesisCandidateStore,
   type StrategySynthesisCandidateStore,
 } from "./strategy-synthesis-candidates.ts";
+import {
+  FileStrategySynthesisDecisionStore,
+  type StrategySynthesisDecisionStore,
+} from "./strategy-synthesis-decisions.ts";
 
 const require = createRequire(import.meta.url);
 
@@ -296,6 +300,7 @@ export function composePindieExtension(
   let scopeProjectTrustReader: ScopeProjectTrustReader | undefined;
   let crossProjectTrustReader: ProjectTrustedStrategyPortfolioReader | undefined;
   let strategySynthesisCandidateStore: StrategySynthesisCandidateStore | undefined;
+  let strategySynthesisDecisionStore: StrategySynthesisDecisionStore | undefined;
 
   if (selection.selfImprovement) {
     experienceStore = input.experienceStore ?? new FileRunExperienceStore({
@@ -334,6 +339,12 @@ export function composePindieExtension(
     strategyTrustScopeWriterLock = input.strategyTrustScopeWriterLock ?? new FileGlobalWriterLock({
       baseDir: roots.globalBaseDir,
     });
+    // Synthesis authority is part of the SI trust-safety substrate, not only
+    // the optional CPL workflow. Construct its readers whenever SI is on.
+    strategySynthesisCandidateStore = input.strategySynthesisCandidateStore ??
+      new FileStrategySynthesisCandidateStore({ baseDir: roots.globalBaseDir });
+    strategySynthesisDecisionStore = input.strategySynthesisDecisionStore ??
+      new FileStrategySynthesisDecisionStore({ baseDir: roots.globalBaseDir });
   }
 
   if (selection.crossProjectLearning) {
@@ -407,6 +418,7 @@ export function composePindieExtension(
     crossProjectExperienceReader: _inputCrossProjectExperienceReader,
     crossProjectTrustReader: _inputCrossProjectTrustReader,
     strategySynthesisCandidateStore: _inputStrategySynthesisCandidateStore,
+    strategySynthesisDecisionStore: _inputStrategySynthesisDecisionStore,
     strategyCandidateStore: _inputStrategyCandidateStore,
     strategyCandidateReader: _inputStrategyCandidateReader,
     strategyDerivationCandidateStore: _inputStrategyDerivationCandidateStore,
@@ -442,6 +454,8 @@ export function composePindieExtension(
           strategyTrustScopeDecisionStore: strategyTrustScopeDecisionStore!,
           strategyTrustScopeSourceResolver: strategyTrustScopeSourceResolver!,
           strategyTrustScopeWriterLock: strategyTrustScopeWriterLock!,
+          strategySynthesisCandidateStore: strategySynthesisCandidateStore!,
+          strategySynthesisDecisionStore: strategySynthesisDecisionStore!,
         }
       : {}),
     ...(selection.crossProjectLearning
@@ -450,6 +464,7 @@ export function composePindieExtension(
           crossProjectTrustReader: crossProjectTrustReader!,
           scopeProjectTrustReader: scopeProjectTrustReader!,
           strategySynthesisCandidateStore: strategySynthesisCandidateStore!,
+          strategySynthesisDecisionStore: strategySynthesisDecisionStore!,
         }
       : {}),
     ...(projectMemorySink === undefined ? {} : { projectMemorySink }),
