@@ -103,17 +103,19 @@ export interface CreateStrategySynthesisCandidateInput {
 }
 
 export interface StrategySynthesisCandidateReader {
-  read(candidateId: string): Promise<StrategySynthesisCandidateV1 | null>;
+  read(candidateId: string, signal?: AbortSignal): Promise<StrategySynthesisCandidateV1 | null>;
   readAll(): Promise<readonly StrategySynthesisCandidateV1[]>;
 }
 
 export interface StrategySynthesisCandidateStore extends StrategySynthesisCandidateReader {
-  save(candidate: StrategySynthesisCandidateV1): Promise<void>;
+  save(candidate: StrategySynthesisCandidateV1, signal?: AbortSignal): Promise<void>;
 }
 
 export interface FileStrategySynthesisCandidateStoreOptions {
   /** User-global root, normally ~/.pindie/global. */
   readonly baseDir?: string;
+  /** Narrow pre-commit barrier used by cancellation tests. */
+  readonly beforeCommit?: () => void | Promise<void>;
 }
 
 /** Runtime packet binding consumed by the CPL-owned creation tool. */
@@ -463,6 +465,10 @@ function isMissing(error: unknown): boolean {
   return errorCode(error) === "ENOENT";
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+}
+
 /** Dedicated read-only user-global Synthesis Candidate access. */
 export class FileStrategySynthesisCandidateReader implements StrategySynthesisCandidateReader {
   protected readonly baseDir: string;
@@ -471,14 +477,14 @@ export class FileStrategySynthesisCandidateReader implements StrategySynthesisCa
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "global");
   }
 
-  async read(candidateId: string): Promise<StrategySynthesisCandidateV1 | null> {
+  async read(candidateId: string, signal?: AbortSignal): Promise<StrategySynthesisCandidateV1 | null> {
     if (!CANONICAL_CANDIDATE_ID.test(candidateId)) {
       throw new Error("Cannot read Strategy Synthesis Candidate: candidateId must be a canonical lowercase UUID-v4.");
     }
     const path = join(this.strategySynthesisCandidateDirectory(), `${candidateId}.json`);
     let contents: string;
     try {
-      contents = await readFile(path, "utf8");
+      contents = await readFile(path, { encoding: "utf8", signal });
     } catch (error) {
       if (isMissing(error)) return null;
       throw new Error(`Could not read Strategy Synthesis Candidate file '${path}': ${errorMessage(error)}`);
@@ -529,14 +535,27 @@ export class FileStrategySynthesisCandidateReader implements StrategySynthesisCa
 
 /** Durable user-global immutable Synthesis Candidate storage. */
 export class FileStrategySynthesisCandidateStore extends FileStrategySynthesisCandidateReader implements StrategySynthesisCandidateStore {
-  async save(candidate: StrategySynthesisCandidateV1): Promise<void> {
+  private readonly beforeCommit: (() => void | Promise<void>) | undefined;
+
+  constructor(options: FileStrategySynthesisCandidateStoreOptions = {}) {
+    super(options);
+    this.beforeCommit = options.beforeCommit;
+  }
+
+  async save(candidate: StrategySynthesisCandidateV1, signal?: AbortSignal): Promise<void> {
     const validated = validateStrategySynthesisCandidateArtifact(candidate, candidate.candidateId);
     const directory = this.strategySynthesisCandidateDirectory();
     const path = join(directory, `${validated.candidateId}.json`);
     const temporaryPath = join(directory, `.${validated.candidateId}.${randomUUID()}.tmp`);
     try {
+      throwIfAborted(signal);
       await mkdir(directory, { recursive: true });
-      await writeFile(temporaryPath, `${JSON.stringify(validated, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+      throwIfAborted(signal);
+      await writeFile(temporaryPath, `${JSON.stringify(validated, null, 2)}\n`, { encoding: "utf8", flag: "wx", signal });
+      throwIfAborted(signal);
+      await this.beforeCommit?.();
+      throwIfAborted(signal);
+      // Hard-link creation is atomic and cannot replace a historical artifact.
       await link(temporaryPath, path);
       await rm(temporaryPath, { force: true });
     } catch (error) {

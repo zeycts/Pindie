@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -19,6 +21,7 @@ import {
   MAX_DERIVED_STRATEGY_ID_LENGTH,
   MIN_DERIVATION_CANDIDATE_SOURCE_RECORDS,
   type StrategyDerivationCandidateProposal,
+  type StrategyDerivationCandidateReader,
   type StrategyDerivationCandidateStore,
 } from "../strategy-derivation-candidates.ts";
 import type {
@@ -33,6 +36,16 @@ import {
 import type {
   StrategyCandidateReader,
 } from "../strategy-candidates.ts";
+import {
+  PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+  PindieLivenessAbortError,
+  PindieLivenessTimeoutError,
+  runBoundedOperation,
+} from "../liveness.ts";
+import {
+  PindieLearningArtifactPublicationUncertainError,
+  publishImmutableLearningArtifact,
+} from "../learning-artifact-liveness.ts";
 import type { StrategyRevisionDecisionReader } from "../strategy-decisions.ts";
 
 const StrategyDerivationCandidateParameters = Type.Object(
@@ -85,10 +98,14 @@ export interface StrategyDerivationCandidateToolOptions {
   readonly derivation: DerivationRuntime;
   readonly experienceReader: RunExperienceReader;
   readonly candidateStore: StrategyDerivationCandidateStore;
+  /** Existing exact Candidate reader used for bounded save reconciliation. */
+  readonly candidateReader: StrategyDerivationCandidateReader;
   readonly getProjectRoot: () => string | null;
   readonly getAgentRunGeneration: () => number | null;
   /** Fresh trust reconstruction; malformed v0.6 artifacts fail closed. */
   readonly loadPortfolio: (projectRoot: string) => Promise<TrustedStrategyPortfolio>;
+  /** Test seam; production uses the shared Slice A deadline. */
+  readonly livenessTimeoutMs?: number;
 }
 
 export interface StrategyDerivationCandidateToolDetails {
@@ -168,7 +185,7 @@ export function createPindieStrategyDerivationCandidateTool(
     description: "Propose one bounded inactive new-logical-Strategy hypothesis during an explicit /derive Run. Candidate creation is optional; evidence permits only a hypothesis and does not establish novelty, usefulness, superiority, or causality.",
     parameters: StrategyDerivationCandidateParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext) {
       const projectRoot = options.getProjectRoot();
       if (projectRoot === null) {
         throw new Error("Cannot create a Strategy Derivation Candidate: no current project root is loaded. Use /derive from a loaded project.");
@@ -188,18 +205,25 @@ export function createPindieStrategyDerivationCandidateTool(
         throw new Error("Cannot create a Strategy Derivation Candidate without a live /derive lease for this Agent Run.");
       }
 
-      let read;
-      try {
-        read = await options.experienceReader.read(projectRoot);
-      } catch (error) {
-        throw new Error(`Strategy Derivation Candidate provenance could not read current Experience: ${errorMessage(error)}`);
-      }
-
+      let read: Awaited<ReturnType<RunExperienceReader["read"]>>;
       let freshPortfolio: TrustedStrategyPortfolio;
       try {
-        freshPortfolio = await options.loadPortfolio(projectRoot);
+        [read, freshPortfolio] = await runBoundedOperation({
+          label: "Strategy Derivation Candidate preparation",
+          timeoutMs: options.livenessTimeoutMs ?? PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+          signal,
+          run: async () => Promise.all([
+            options.experienceReader.read(projectRoot).catch((error: unknown) => {
+              throw new Error(`Strategy Derivation Candidate provenance could not read current Experience: ${errorMessage(error)}`);
+            }),
+            options.loadPortfolio(projectRoot).catch((error: unknown) => {
+              throw new Error(`Strategy Derivation Candidate rejected: trusted portfolio could not be validated: ${errorMessage(error)}`);
+            }),
+          ]),
+        });
       } catch (error) {
-        throw new Error(`Strategy Derivation Candidate rejected: trusted portfolio could not be validated: ${errorMessage(error)}`);
+        if (error instanceof PindieLivenessAbortError || error instanceof PindieLivenessTimeoutError) throw error;
+        throw error;
       }
 
       const currentLease = options.derivation.activeFor(
@@ -270,8 +294,20 @@ export function createPindieStrategyDerivationCandidateTool(
         throw new Error(`Strategy Derivation Candidate rejected: ${errorMessage(error)}`);
       }
       try {
-        await options.candidateStore.save(projectRoot, candidate);
+        await publishImmutableLearningArtifact({
+          label: "Strategy Derivation",
+          timeoutMs: options.livenessTimeoutMs,
+          signal,
+          save: (publicationSignal) => options.candidateStore.save(projectRoot, candidate, publicationSignal),
+          read: (publicationSignal) => options.candidateReader.read(projectRoot, candidate.candidateId, publicationSignal),
+          isExact: (existing) => isDeepStrictEqual(existing, candidate),
+        });
       } catch (error) {
+        if (error instanceof PindieLearningArtifactPublicationUncertainError) {
+          options.derivation.consume(lease.attemptId);
+          throw error;
+        }
+        if (error instanceof PindieLivenessAbortError || error instanceof PindieLivenessTimeoutError) throw error;
         throw new Error(`Strategy Derivation Candidate was not persisted; the /derive lease remains retryable: ${errorMessage(error)}`);
       }
       if (!options.derivation.consume(lease.attemptId)) {

@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -23,6 +25,7 @@ import {
   MAX_CANDIDATE_SOURCE_RECORD_ID_LENGTH,
   MAX_CANDIDATE_SUMMARY_LENGTH,
   type StrategyCandidateProposal,
+  type StrategyCandidateReader,
   type StrategyCandidateStore,
   type StrategyRevisionCandidate,
   validateStrategyCandidateProposal,
@@ -33,6 +36,16 @@ import {
   seedStrategyFingerprint,
 } from "../strategies.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+  PindieLivenessAbortError,
+  PindieLivenessTimeoutError,
+  runBoundedOperation,
+} from "../liveness.ts";
+import {
+  PindieLearningArtifactPublicationUncertainError,
+  publishImmutableLearningArtifact,
+} from "../learning-artifact-liveness.ts";
 
 const StrategyCandidateParameters = Type.Object(
   {
@@ -74,8 +87,12 @@ export interface StrategyCandidateToolOptions {
   readonly adaptation: AdaptationRuntime;
   readonly experienceReader: RunExperienceReader;
   readonly candidateStore: StrategyCandidateStore;
+  /** Existing exact Candidate reader used for bounded save reconciliation. */
+  readonly candidateReader: StrategyCandidateReader;
   readonly getProjectRoot: () => string | null;
   readonly getAgentRunGeneration: () => number | null;
+  /** Test seam; production uses the shared Slice A deadline. */
+  readonly livenessTimeoutMs?: number;
 }
 
 export interface StrategyCandidateToolDetails {
@@ -204,7 +221,7 @@ export function createPindieStrategyCandidateTool(
     description: "Propose one bounded inactive Strategy Revision Candidate during an explicit /adapt <strategy-id> Run. The target Strategy is fixed by that live adaptation attempt; do not use this during ordinary coding Runs. Candidate creation is optional and evidence is not causal proof.",
     parameters: StrategyCandidateParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext) {
       const projectRoot = options.getProjectRoot();
       if (projectRoot === null) {
         throw new Error("Cannot create a Strategy Revision Candidate: no current project root is loaded. Use /adapt <strategy-id> from a loaded project.");
@@ -225,8 +242,14 @@ export function createPindieStrategyCandidateTool(
 
       let read;
       try {
-        read = await options.experienceReader.read(projectRoot);
+        read = await runBoundedOperation({
+          label: "Strategy Revision Candidate preparation",
+          timeoutMs: options.livenessTimeoutMs ?? PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+          signal,
+          run: async () => options.experienceReader.read(projectRoot),
+        });
       } catch (error) {
+        if (error instanceof PindieLivenessAbortError || error instanceof PindieLivenessTimeoutError) throw error;
         throw new Error(`Candidate provenance could not read current Experience: ${errorMessage(error)}`);
       }
       const currentLease = options.adaptation.activeFor(
@@ -245,8 +268,20 @@ export function createPindieStrategyCandidateTool(
         proposal: validated.proposal,
       });
       try {
-        await options.candidateStore.save(projectRoot, candidate);
+        await publishImmutableLearningArtifact({
+          label: "Strategy Revision",
+          timeoutMs: options.livenessTimeoutMs,
+          signal,
+          save: (publicationSignal) => options.candidateStore.save(projectRoot, candidate, publicationSignal),
+          read: (publicationSignal) => options.candidateReader.read(projectRoot, candidate.candidateId, publicationSignal),
+          isExact: (existing) => isDeepStrictEqual(existing, candidate),
+        });
       } catch (error) {
+        if (error instanceof PindieLearningArtifactPublicationUncertainError) {
+          options.adaptation.consume(lease.attemptId);
+          throw error;
+        }
+        if (error instanceof PindieLivenessAbortError || error instanceof PindieLivenessTimeoutError) throw error;
         throw new Error(`Candidate was not persisted; the adaptation attempt remains retryable: ${errorMessage(error)}`);
       }
       if (!options.adaptation.consume(lease.attemptId)) {

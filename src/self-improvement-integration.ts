@@ -820,6 +820,7 @@ export class SelfImprovementIntegration {
       adaptation: this.adaptation,
       experienceReader: this.experienceReader,
       candidateStore: this.strategyCandidateStore,
+      candidateReader: this.strategyCandidateReader,
       getProjectRoot: this.core.getProjectRoot,
       getAgentRunGeneration: this.core.getActiveAgentRunGeneration,
     }));
@@ -827,6 +828,7 @@ export class SelfImprovementIntegration {
       derivation: this.derivation,
       experienceReader: this.experienceReader,
       candidateStore: this.strategyDerivationCandidateStore,
+      candidateReader: this.strategyDerivationCandidateReader,
       getProjectRoot: this.core.getProjectRoot,
       getAgentRunGeneration: this.core.getActiveAgentRunGeneration,
       loadPortfolio: (projectRoot) => this.loadProjectTrustedPortfolio(projectRoot),

@@ -67,17 +67,19 @@ export interface CreateStrategyRevisionCandidateInput {
 
 export interface StrategyCandidateReader {
   /** Read one immutable Candidate by its exact canonical project-local ID. */
-  read(projectRoot: string, candidateId: string): Promise<StrategyRevisionCandidate | null>;
+  read(projectRoot: string, candidateId: string, signal?: AbortSignal): Promise<StrategyRevisionCandidate | null>;
   /** Read every canonical immutable Candidate artifact for the current project. */
   readAll?(projectRoot: string): Promise<readonly StrategyRevisionCandidate[]>;
 }
 
 export interface StrategyCandidateStore {
-  save(projectRoot: string, candidate: StrategyRevisionCandidate): Promise<void>;
+  save(projectRoot: string, candidate: StrategyRevisionCandidate, signal?: AbortSignal): Promise<void>;
 }
 
 export interface FileStrategyCandidateStoreOptions {
   baseDir?: string;
+  /** Narrow pre-commit barrier used by cancellation tests. */
+  beforeCommit?: () => void | Promise<void>;
 }
 
 const CANONICAL_CANDIDATE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -459,17 +461,24 @@ function isMissing(error: unknown): boolean {
   return isRecord(error) && error.code === "ENOENT";
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+}
+
 /** Durable, project-local storage for immutable Candidates. */
 export class FileStrategyCandidateStore implements StrategyCandidateStore, StrategyCandidateReader {
   private readonly baseDir: string;
+  private readonly beforeCommit: (() => void | Promise<void>) | undefined;
 
   constructor(options: FileStrategyCandidateStoreOptions = {}) {
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "projects");
+    this.beforeCommit = options.beforeCommit;
   }
 
   private async readFromDirectory(
     directory: string,
     candidateId: string,
+    signal?: AbortSignal,
   ): Promise<StrategyRevisionCandidate | null> {
     // Validate before constructing the Candidate file path. Do not normalize
     // malformed or uppercase IDs into a different artifact lookup.
@@ -479,7 +488,7 @@ export class FileStrategyCandidateStore implements StrategyCandidateStore, Strat
     const candidatePath = join(directory, `${candidateId}.json`);
     let contents: string;
     try {
-      contents = await readFile(candidatePath, "utf8");
+      contents = await readFile(candidatePath, { encoding: "utf8", signal });
     } catch (error) {
       if (isMissing(error)) return null;
       throw new Error(
@@ -536,11 +545,12 @@ export class FileStrategyCandidateStore implements StrategyCandidateStore, Strat
   async read(
     projectRoot: string,
     candidateId: string,
+    signal?: AbortSignal,
   ): Promise<StrategyRevisionCandidate | null> {
     if (!isCanonicalStrategyCandidateId(candidateId)) {
       throw new Error("Cannot read Strategy Revision Candidate: candidateId must be a canonical lowercase UUID-v4.");
     }
-    return this.readFromDirectory(this.strategyCandidateDirectory(projectRoot), candidateId);
+    return this.readFromDirectory(this.strategyCandidateDirectory(projectRoot), candidateId, signal);
   }
 
   /** Read one Candidate directly from a canonical project namespace. */
@@ -569,24 +579,34 @@ export class FileStrategyCandidateStore implements StrategyCandidateStore, Strat
     return this.readAllFromDirectory(this.strategyCandidateDirectoryForProjectId(projectId));
   }
 
-  async save(projectRoot: string, candidate: StrategyRevisionCandidate): Promise<void> {
+  async save(
+    projectRoot: string,
+    candidate: StrategyRevisionCandidate,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const directory = this.strategyCandidateDirectory(projectRoot);
     const candidatePath = join(directory, `${candidate.candidateId}.json`);
     const temporaryPath = join(directory, `.${candidate.candidateId}.json.tmp`);
     try {
+      throwIfAborted(signal);
       await mkdir(directory, { recursive: true });
+      throwIfAborted(signal);
       // A pre-existing ID is historical data, never a mutable Candidate update.
       try {
-        await readFile(candidatePath);
+        await readFile(candidatePath, { signal });
         throw new Error("Candidate file already exists.");
       } catch (error) {
         if (!isMissing(error)) throw error;
       }
+      throwIfAborted(signal);
       await writeFile(
         temporaryPath,
         `${JSON.stringify(candidate, null, 2)}\n`,
-        { encoding: "utf8", flag: "wx" },
+        { encoding: "utf8", flag: "wx", signal },
       );
+      throwIfAborted(signal);
+      await this.beforeCommit?.();
+      throwIfAborted(signal);
       await rename(temporaryPath, candidatePath);
     } catch (error) {
       await rm(temporaryPath, { force: true }).catch(() => undefined);

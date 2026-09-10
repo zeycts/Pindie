@@ -50,6 +50,8 @@ import {
   type StrategyDerivationCandidateV1,
 } from "../src/strategy-derivation-candidates.ts";
 import { getProjectId } from "../src/store.ts";
+import { PindieLivenessTimeoutError } from "../src/liveness.ts";
+import { PindieLearningArtifactPublicationUncertainError } from "../src/learning-artifact-liveness.ts";
 import { createPindieStrategyDerivationCandidateTool } from "../src/tools/strategy-derivation-candidate.ts";
 
 function task(goal: string): NonNullable<import("../src/state.ts").PindieState["task"]> {
@@ -405,6 +407,75 @@ test("Derivation Candidate store is project-local, immutable, and atomic", async
   assert.deepEqual(await store.readAll("/repo"), [candidate]);
 });
 
+test("Derivation Candidate store observes cancellation before the final hard link", async (t) => {
+  const baseDir = await mkdtemp(join(tmpdir(), "pindie-derivation-candidate-cancel-"));
+  t.after(() => rm(baseDir, { recursive: true, force: true }));
+  const current = portfolio();
+  const candidate = createStrategyDerivationCandidate({
+    projectId: current.projectId,
+    basePortfolio: current,
+    proposal: derivationProposal(["source-new", "source-middle", "source-old"]),
+    candidateId: "00000000-0000-4000-8000-000000000009",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  const controller = new AbortController();
+  const store = new FileStrategyDerivationCandidateStore({
+    baseDir,
+    beforeCommit: () => controller.abort(),
+  });
+  await assert.rejects(store.save("/repo", candidate, controller.signal));
+  assert.deepEqual(await readdir(store.strategyDerivationCandidateDirectory("/repo")), []);
+  assert.equal(await store.read("/repo", candidate.candidateId), null);
+});
+
+test("Derivation Candidate preparation timeout leaves the lease intact and never publishes", async () => {
+  const current = portfolio();
+  const packet = buildDerivationPacket("/repo", current, sourceRecords());
+  const runtime = new DerivationRuntime();
+  assert.equal(runtime.establish("session", current, packet), true);
+  assert.ok(runtime.bind("session", 7));
+  let saves = 0;
+  const tool = createPindieStrategyDerivationCandidateTool({
+    derivation: runtime,
+    experienceReader: { read: async () => new Promise<never>(() => {}) },
+    candidateStore: { save: async () => { saves += 1; } },
+    candidateReader: { read: async () => null },
+    getProjectRoot: () => "/repo",
+    getAgentRunGeneration: () => 7,
+    loadPortfolio: async () => current,
+    livenessTimeoutMs: 5,
+  });
+  await assert.rejects(
+    tool.execute("hung-experience", derivationProposal(packet.sourceRecordIds), undefined, undefined, { sessionManager: { getSessionId: () => "session" } } as never),
+    (error: unknown) => error instanceof PindieLivenessTimeoutError,
+  );
+  assert.equal(saves, 0);
+  assert.equal(runtime.hasDerivation, true);
+});
+
+test("Derivation Candidate uncertain publication retires the active lease", async () => {
+  const current = portfolio();
+  const packet = buildDerivationPacket("/repo", current, sourceRecords());
+  const runtime = new DerivationRuntime();
+  assert.equal(runtime.establish("session", current, packet), true);
+  assert.ok(runtime.bind("session", 7));
+  const tool = createPindieStrategyDerivationCandidateTool({
+    derivation: runtime,
+    experienceReader: { read: async () => ({ records: sourceRecords(), loadedRecords: 3, unsupportedSchema: 0, invalid: 0 }) },
+    candidateStore: { save: async () => { await new Promise<never>(() => {}); } },
+    candidateReader: { read: async () => null },
+    getProjectRoot: () => "/repo",
+    getAgentRunGeneration: () => 7,
+    loadPortfolio: async () => current,
+    livenessTimeoutMs: 5,
+  });
+  await assert.rejects(
+    tool.execute("hung-save", derivationProposal(packet.sourceRecordIds), undefined, undefined, { sessionManager: { getSessionId: () => "session" } } as never),
+    (error: unknown) => error instanceof PindieLearningArtifactPublicationUncertainError,
+  );
+  assert.equal(runtime.hasDerivation, false);
+});
+
 test("Derivation Candidate tool accepts only the packet proposal, revalidates fresh facts, and consumes once", async () => {
   const current = portfolio();
   const packet = buildDerivationPacket("/repo", current, sourceRecords());
@@ -420,6 +491,7 @@ test("Derivation Candidate tool accepts only the packet proposal, revalidates fr
     candidateStore: {
       save: async (_root, candidate) => { saved.push(candidate); },
     },
+    candidateReader: { read: async () => null },
     getProjectRoot: () => "/repo",
     getAgentRunGeneration: () => 7,
     loadPortfolio: async () => current,
