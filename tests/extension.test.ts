@@ -100,6 +100,8 @@ import {
 import type { StrategyTrustScopeSourceResolver } from "../src/strategy-trust-scope-resolution.ts";
 import type { ProjectTrustedStrategyPortfolioReader } from "../src/strategy-trust-safety.ts";
 import {
+  createStrategySynthesisCandidate,
+  strategySynthesisCandidateArtifactFingerprint,
   strategySynthesisCandidateSemanticFingerprint,
   type StrategySynthesisCandidateStore,
   type StrategySynthesisCandidateV1,
@@ -6641,6 +6643,8 @@ test("SI v0.6 /trial refuses malformed, unavailable, busy, missing, and invalid 
   assert.equal(reader.calls, 0);
   await command.handler(`${valid.candidateId} extra`, commandContext);
   assert.match(notices.at(-1)?.message ?? "", /Usage: \/trial <candidate-id>/);
+  assert.match(notices.at(-1)?.message ?? "", /\/trial scope:<candidate-id>/);
+  assert.match(notices.at(-1)?.message ?? "", /\/trial synthesis:<candidate-id>/);
 
   await command.handler(valid.candidateId, { ...commandContext, isIdle: () => false });
   assert.match(notices.at(-1)?.message ?? "", /Agent is busy/i);
@@ -8507,6 +8511,14 @@ test("Slice C Synthesis Trial uses one normal Task Run, attributes only exact se
     principles: candidate.proposal.principles,
   });
   assert.equal(selected.outcome.verificationStatus, "passed");
+  const selectedEvaluation = evaluateRunExperience({
+    recordId: "synthesis-selected.json",
+    experience: selected,
+  });
+  assert.ok(selectedEvaluation.policy.finalPolicyExposureCalls !== null);
+  assert.ok(selectedEvaluation.policy.finalPolicyExposureCalls > 0);
+  assert.ok(selectedEvaluation.policy.finalPolicyExposureRatio !== null);
+  assert.ok(selectedEvaluation.policy.finalPolicyExposureRatio > 0);
   assert.equal(JSON.stringify(selected).includes("candidateId"), false);
   assert.equal(notices.at(-1)?.type, "info");
 
@@ -8518,15 +8530,226 @@ test("Slice C Synthesis Trial uses one normal Task Run, attributes only exact se
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 });
 
-test("Slice C Synthesis Trial clears fail-closed when the Candidate changes before Run binding", async () => {
+test("Slice C active Synthesis Trial still resolves an ordinary exact trusted selector", async () => {
+  const { candidate } = await makeSynthesisTrialFixture("00000000-0000-4000-8000-000000000045");
+  const artifacts = trustedStrategyCommandArtifacts();
+  const localCandidatesById = new Map([[artifacts.promotedSeedCandidate.candidateId, artifacts.promotedSeedCandidate]]);
+  const localCandidates = {
+    read: async (_projectRoot: string, candidateId: string) => localCandidatesById.get(candidateId) ?? null,
+    readAll: async (_projectRoot: string) => [...localCandidatesById.values()],
+    save: async (_projectRoot: string, value: StrategyRevisionCandidate) => { localCandidatesById.set(value.candidateId, value); },
+  };
+  const localDerivationCandidates = { read: async () => null, readAll: async () => [], save: async () => undefined };
+  const decisions = testDecisionStore([artifacts.promotedSeedDecision]);
+  const derivationDecisions = testDerivationDecisionReader();
+  const emptyScope = emptyScopeAuthority();
+  const harness = createHarness([["/repo", activeState("ordinary trusted selector during Synthesis Trial")]], {}, {
+    crossProjectExperienceReader: {
+      listProjectIds: async () => [],
+      readProjectId: async () => ({ records: [], loadedRecords: 0, unsupportedSchema: 0, invalid: 0 }),
+    },
+    crossProjectTrustReader: {
+      readProjectId: async (projectId) => createTrustedStrategyPortfolioForProjectId(
+        projectId,
+        createPromotedStrategyRevisionCatalog([]),
+      ),
+    },
+    strategySynthesisCandidateStore: {
+      read: async (candidateId) => candidateId === candidate.candidateId ? candidate : null,
+      readAll: async () => [candidate],
+      save: async () => undefined,
+    },
+    strategyCandidateStore: localCandidates,
+    strategyCandidateReader: localCandidates,
+    strategyDerivationCandidateStore: localDerivationCandidates,
+    strategyDerivationCandidateReader: localDerivationCandidates,
+    strategyDecisionStore: decisions,
+    strategyDecisionReader: decisions,
+    strategyDerivationDecisionStore: derivationDecisions,
+    strategyDerivationDecisionReader: derivationDecisions,
+    strategyTrustScopeCandidateStore: emptyScope.candidateStore,
+    strategyTrustScopeDecisionStore: emptyScope.decisionStore,
+    strategyTrustScopeSourceResolver: emptyScope.sourceResolver,
+  });
+  await startSession(harness, "/repo");
+  const command = harness.api.commands.get("trial");
+  await command.handler(synthesisTrialCommandValue(candidate.candidateId), {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  const beforeRun = await harnessBeforeAgentStart(harness);
+  assert.match(beforeRun.systemPrompt, /<PINDIE_SYNTHESIS_TRIAL_PACKET>/);
+  assert.equal(harness.integration.trial?.hasActiveSynthesisTrial, true);
+
+  const trusted = strategyRevisionSelectionFromCandidate(artifacts.promotedSeedCandidate, "promoted");
+  await executeSemanticTool(harness, "pindie_policy_set", "ordinary-trusted-policy", {
+    approach: {
+      strategyId: trusted.strategyId,
+      revisionIdentity: trusted.revisionIdentity,
+      revisionFingerprint: trusted.revisionFingerprint,
+    },
+  });
+  assert.equal(harness.integration.policySnapshot?.approach.strategyId, trusted.strategyId);
+  assert.equal(harness.integration.policySnapshot?.approach.revisionIdentity, trusted.revisionIdentity);
+  assert.equal(harness.integration.policySnapshot?.approach.revisionStatusAtRun, "promoted");
+  await captureObservationEvidence(harness, "ordinary-trusted-observation");
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(harness.integration.trial?.hasTrial, false);
+  assert.equal(harness.experienceStore.records.length, 1);
+  assert.equal(
+    harness.experienceStore.records[0]?.experience.policy.finalSnapshot?.approach.revisionIdentity,
+    trusted.revisionIdentity,
+  );
+});
+
+test("Slice C Synthesis Trial fails closed for stale Candidate and target authority before Run binding", async () => {
   const original = await makeSynthesisTrialFixture("00000000-0000-4000-8000-000000000042");
-  const changed = await makeSynthesisTrialFixture(original.candidate.candidateId, {
+  const semanticChanged = await makeSynthesisTrialFixture(original.candidate.candidateId, {
     summary: "The immutable Synthesis Candidate changed after arming.",
   });
-  let current = original.candidate;
+  const hypothesisChanged = createStrategySynthesisCandidate({
+    proposal: {
+      ...original.candidate.proposal,
+      hypothesis: "The same semantic proposal now carries different historical provenance.",
+    },
+    sourceRefs: original.candidate.evidence.sourceRefs,
+    derivationReceipt: original.candidate.derivationReceipt,
+    candidateId: original.candidate.candidateId,
+    createdAt: original.candidate.createdAt,
+  });
+  assert.equal(
+    strategySynthesisCandidateSemanticFingerprint(hypothesisChanged),
+    strategySynthesisCandidateSemanticFingerprint(original.candidate),
+  );
+  assert.notEqual(
+    strategySynthesisCandidateArtifactFingerprint(hypothesisChanged),
+    strategySynthesisCandidateArtifactFingerprint(original.candidate),
+  );
+  const targetConflict = derivedPromotionCandidate(
+    "00000000-0000-4000-8000-000000000043",
+    original.candidate.proposal.strategyId,
+  );
+  const targetConflictDecision = createStrategyDerivationDecision({
+    candidate: targetConflict,
+    decision: "promoted",
+    trialRecordIds: ["target-trial-one", "target-trial-two"],
+    decidedAt: "2026-02-03T00:00:00.000Z",
+  });
+  const cases: readonly {
+    name: string;
+    candidate: unknown;
+    targetConflict?: boolean;
+    reason: RegExp;
+  }[] = [
+    {
+      name: "semantic Candidate change",
+      candidate: semanticChanged.candidate,
+      reason: /stale|changed|Candidate/i,
+    },
+    {
+      name: "Candidate disappearance",
+      candidate: null,
+      reason: /not found|stale|invalid|Candidate/i,
+    },
+    {
+      name: "malformed Candidate",
+      candidate: { schemaVersion: 1 },
+      reason: /invalid|stale|Candidate/i,
+    },
+    {
+      name: "provenance-only Candidate change",
+      candidate: hypothesisChanged,
+      reason: /stale|changed|Candidate/i,
+    },
+    {
+      name: "new target trusted logical ID",
+      candidate: original.candidate,
+      targetConflict: true,
+      reason: /trusted|logical|stale|invalid/i,
+    },
+  ];
+
+  for (const scenario of cases) {
+    let current: unknown = original.candidate;
+    const synthesisStore: StrategySynthesisCandidateStore = {
+      read: async (candidateId) => candidateId === original.candidate.candidateId
+        ? current as StrategySynthesisCandidateV1 | null
+        : null,
+      readAll: async () => current === null
+        ? []
+        : [current as StrategySynthesisCandidateV1],
+      save: async () => undefined,
+    };
+    const localCandidates = { read: async () => null, readAll: async () => [], save: async () => undefined };
+    const localDerivationCandidates = new Map<string, StrategyDerivationCandidateV1>();
+    const derivationCandidateReader = {
+      read: async (_projectRoot: string, candidateId: string) => localDerivationCandidates.get(candidateId) ?? null,
+      readAll: async (_projectRoot: string) => [...localDerivationCandidates.values()],
+      save: async (_projectRoot: string, candidate: StrategyDerivationCandidateV1) => {
+        localDerivationCandidates.set(candidate.candidateId, candidate);
+      },
+    };
+    const decisions = testDecisionStore();
+    const derivationDecisions = testDerivationDecisionReader();
+    const emptyScope = emptyScopeAuthority();
+    const harness = createHarness([["/repo", activeState(`stale Synthesis Trial: ${scenario.name}`)]], {}, {
+      crossProjectExperienceReader: {
+        listProjectIds: async () => [],
+        readProjectId: async () => ({ records: [], loadedRecords: 0, unsupportedSchema: 0, invalid: 0 }),
+      },
+      crossProjectTrustReader: {
+        readProjectId: async (projectId) => createTrustedStrategyPortfolioForProjectId(
+          projectId,
+          createPromotedStrategyRevisionCatalog([]),
+        ),
+      },
+      strategySynthesisCandidateStore: synthesisStore,
+      strategyCandidateStore: localCandidates,
+      strategyCandidateReader: localCandidates,
+      strategyDerivationCandidateStore: derivationCandidateReader,
+      strategyDerivationCandidateReader: derivationCandidateReader,
+      strategyDecisionStore: decisions,
+      strategyDecisionReader: decisions,
+      strategyDerivationDecisionStore: derivationDecisions,
+      strategyDerivationDecisionReader: derivationDecisions,
+      strategyTrustScopeCandidateStore: emptyScope.candidateStore,
+      strategyTrustScopeDecisionStore: emptyScope.decisionStore,
+      strategyTrustScopeSourceResolver: emptyScope.sourceResolver,
+    });
+    await startSession(harness, "/repo");
+    await harness.api.commands.get("trial").handler(synthesisTrialCommandValue(original.candidate.candidateId), {
+      ...context("/repo"),
+      isIdle: () => true,
+      ui: { notify: () => undefined },
+    });
+    assert.equal(harness.integration.trial?.hasPendingSynthesisTrial, true, scenario.name);
+    current = scenario.candidate;
+    if (scenario.targetConflict) {
+      localDerivationCandidates.set(targetConflict.candidateId, targetConflict);
+      derivationDecisions.decisions.set(targetConflictDecision.candidateId, targetConflictDecision);
+    }
+    await assert.rejects(
+      harnessBeforeAgentStart(harness),
+      scenario.reason,
+      scenario.name,
+    );
+    assert.equal(harness.integration.trial?.hasTrial, false, scenario.name);
+    assert.equal(harness.integration.taskMetrics.currentRunBelongsToTask, false, scenario.name);
+    assert.equal(harness.experienceStore.records.length, 0, scenario.name);
+    assert.equal(harness.api.sentUserMessages.length, 0, scenario.name);
+    await harness.api.handler("session_shutdown")(
+      { type: "session_shutdown", reason: "stale-test-cleanup" },
+      context("/repo"),
+    );
+  }
+});
+
+test("Slice C Synthesis Trial fails closed when Session reset clears binding during pre-Run validation", async () => {
+  const { candidate } = await makeSynthesisTrialFixture("00000000-0000-4000-8000-000000000044");
   const synthesisStore: StrategySynthesisCandidateStore = {
-    read: async (candidateId) => candidateId === current.candidateId ? current : null,
-    readAll: async () => [current],
+    read: async (candidateId) => candidateId === candidate.candidateId ? candidate : null,
+    readAll: async () => [candidate],
     save: async () => undefined,
   };
   const localCandidates = { read: async () => null, readAll: async () => [], save: async () => undefined };
@@ -8534,7 +8757,23 @@ test("Slice C Synthesis Trial clears fail-closed when the Candidate changes befo
   const decisions = testDecisionStore();
   const derivationDecisions = testDerivationDecisionReader();
   const emptyScope = emptyScopeAuthority();
-  const harness = createHarness([["/repo", activeState("stale Synthesis Trial")]], {}, {
+  let release!: () => void;
+  const paused = new Promise<void>((resolve) => { release = resolve; });
+  let markEntered!: () => void;
+  const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+  let pauseValidation = false;
+  const deferredScopeCandidates: StrategyTrustScopeCandidateStore = {
+    read: async () => null,
+    readAll: async () => {
+      if (pauseValidation) {
+        markEntered();
+        await paused;
+      }
+      return [];
+    },
+    save: async () => undefined,
+  };
+  const harness = createHarness([["/repo", activeState("Synthesis Trial bind race")]], {}, {
     crossProjectExperienceReader: {
       listProjectIds: async () => [],
       readProjectId: async () => ({ records: [], loadedRecords: 0, unsupportedSchema: 0, invalid: 0 }),
@@ -8554,23 +8793,37 @@ test("Slice C Synthesis Trial clears fail-closed when the Candidate changes befo
     strategyDecisionReader: decisions,
     strategyDerivationDecisionStore: derivationDecisions,
     strategyDerivationDecisionReader: derivationDecisions,
-    strategyTrustScopeCandidateStore: emptyScope.candidateStore,
+    strategyTrustScopeCandidateStore: deferredScopeCandidates,
     strategyTrustScopeDecisionStore: emptyScope.decisionStore,
     strategyTrustScopeSourceResolver: emptyScope.sourceResolver,
   });
   await startSession(harness, "/repo");
-  await harness.api.commands.get("trial").handler(synthesisTrialCommandValue(original.candidate.candidateId), {
+  await harness.api.commands.get("trial").handler(synthesisTrialCommandValue(candidate.candidateId), {
     ...context("/repo"),
     isIdle: () => true,
     ui: { notify: () => undefined },
   });
-  current = changed.candidate;
-  await assert.rejects(
-    harnessBeforeAgentStart(harness),
-    /stale|changed|Candidate/i,
+  assert.equal(harness.integration.trial?.hasPendingSynthesisTrial, true);
+
+  pauseValidation = true;
+  const beforeRun = harnessBeforeAgentStart(harness);
+  await entered;
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "reload" },
+    context("/repo"),
   );
   assert.equal(harness.integration.trial?.hasTrial, false);
+  release();
+
+  await assert.rejects(
+    beforeRun,
+    /pending Synthesis Trial could not bind to the current Session\/generation/i,
+  );
+  assert.equal(harness.integration.trial?.hasTrial, false);
+  assert.equal(harness.integration.core.run.hasActiveAgentRun, false);
+  assert.equal(harness.integration.taskMetrics.currentRunBelongsToTask, false);
   assert.equal(harness.experienceStore.records.length, 0);
+  assert.equal(harness.api.sentUserMessages.length, 0);
 });
 
 test("Slice B /derive-global preparation, launch, and Session failures clear reservation without starting a Run", async () => {

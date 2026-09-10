@@ -19,6 +19,7 @@ import {
 import { getProjectId } from "./store.ts";
 import type {
   SynthesisTrialBinding,
+  SynthesisTrialCandidateSnapshot,
   SynthesisTrialPacket,
 } from "./strategy-trial.ts";
 
@@ -48,7 +49,7 @@ function validTargetRoot(value: unknown): value is string {
 }
 
 function candidateProposal(
-  candidate: StrategySynthesisCandidateV1,
+  candidate: Pick<StrategySynthesisCandidateV1, "proposal">,
 ): SynthesisTrialPacket["proposal"] {
   return Object.freeze({
     strategyId: candidate.proposal.strategyId,
@@ -61,13 +62,39 @@ function candidateProposal(
 }
 
 function candidateRevisionSemantics(
-  candidate: StrategySynthesisCandidateV1,
+  candidate: Pick<StrategySynthesisCandidateV1, "proposal">,
 ): StrategyRevisionSelection["semantics"] {
   return Object.freeze({
     summary: candidate.proposal.summary,
     useWhen: Object.freeze([...candidate.proposal.useWhen]),
     avoidWhen: Object.freeze([...candidate.proposal.avoidWhen]),
     principles: Object.freeze([...candidate.proposal.principles]),
+  });
+}
+
+/** Copy only the Candidate facts required by the SI-owned Trial lease. */
+function createSynthesisTrialCandidateSnapshot(
+  candidate: StrategySynthesisCandidateV1,
+): SynthesisTrialCandidateSnapshot {
+  return Object.freeze({
+    candidateId: candidate.candidateId,
+    createdAt: candidate.createdAt,
+    proposal: candidateProposal(candidate),
+    hypothesis: candidate.hypothesis,
+  });
+}
+
+function synthesisTrialRevisionSelectionFromSnapshot(
+  candidate: SynthesisTrialCandidateSnapshot,
+  candidateSemanticFingerprint: string,
+): StrategyRevisionSelection {
+  return createStrategyRevisionSelection({
+    strategyId: candidate.proposal.strategyId,
+    kind: candidate.proposal.kind,
+    revisionIdentity: candidate.candidateId,
+    revisionFingerprint: candidateSemanticFingerprint,
+    revisionStatusAtRun: "trial",
+    semantics: candidateRevisionSemantics(candidate),
   });
 }
 
@@ -180,42 +207,103 @@ export function formatSynthesisTrialPacket(
 
 export const renderSynthesisTrialPacket = formatSynthesisTrialPacket;
 
-/** Validate the complete runtime binding without performing live reads. */
+const SYNTHESIS_SNAPSHOT_FIELDS = [
+  "candidateId",
+  "createdAt",
+  "proposal",
+  "hypothesis",
+] as const;
+const SYNTHESIS_SNAPSHOT_PROPOSAL_FIELDS = [
+  "strategyId",
+  "kind",
+  "summary",
+  "useWhen",
+  "avoidWhen",
+  "principles",
+] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...fields].sort();
+  return actual.length === expected.length && actual.every((field, index) => field === expected[index]);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every(isNonEmptyString);
+}
+
+/** Validate only SI's narrow structural Candidate snapshot. */
+function isSynthesisTrialCandidateSnapshot(
+  value: unknown,
+): value is SynthesisTrialCandidateSnapshot {
+  if (!isRecord(value) || !hasExactFields(value, SYNTHESIS_SNAPSHOT_FIELDS)) return false;
+  const proposal = value.proposal;
+  return isNonEmptyString(value.candidateId) &&
+    isNonEmptyString(value.createdAt) &&
+    isNonEmptyString(value.hypothesis) &&
+    isRecord(proposal) &&
+    hasExactFields(proposal, SYNTHESIS_SNAPSHOT_PROPOSAL_FIELDS) &&
+    isNonEmptyString(proposal.strategyId) &&
+    (proposal.kind === "approach" || proposal.kind === "modifier") &&
+    isNonEmptyString(proposal.summary) &&
+    isStringArray(proposal.useWhen) &&
+    isStringArray(proposal.avoidWhen) &&
+    isStringArray(proposal.principles);
+}
+
+/** Validate the narrow runtime binding without performing live reads. */
 export function validateSynthesisTrialBindingSnapshot(
   input: SynthesisTrialBinding,
 ): SynthesisTrialBinding {
   if (
+    !isRecord(input) ||
     input.candidateType !== "cross-project-synthesis" ||
+    !isSynthesisTrialCandidateSnapshot(input.candidate) ||
     !validTargetRoot(input.targetProjectRoot) ||
-    !/^[0-9a-f]{64}$/u.test(input.targetProjectId)
-  ) throw new Error("Synthesis Trial binding target identity is invalid.");
-  const candidate = validateStrategySynthesisCandidateArtifact(
-    input.candidate,
-    input.candidate.candidateId,
-  );
+    !/^[0-9a-f]{64}$/u.test(input.targetProjectId) ||
+    !isNonEmptyString(input.candidateSemanticFingerprint) ||
+    !isNonEmptyString(input.candidateArtifactFingerprint)
+  ) throw new Error("Synthesis Trial binding target identity or Candidate snapshot is invalid.");
+  const candidate = input.candidate;
   const semanticFingerprint = strategySynthesisCandidateSemanticFingerprint(candidate);
-  const artifactFingerprint = strategySynthesisCandidateArtifactFingerprint(candidate);
   if (input.candidateSemanticFingerprint !== semanticFingerprint) {
     throw new Error("Synthesis Trial binding has the wrong Candidate semantic fingerprint.");
-  }
-  if (input.candidateArtifactFingerprint !== artifactFingerprint) {
-    throw new Error("Synthesis Trial binding has the wrong Candidate artifact fingerprint.");
   }
   if (input.targetProjectId !== getProjectId(input.targetProjectRoot)) {
     throw new Error("Synthesis Trial binding target project identity does not match its root.");
   }
-  const expectedSelection = strategyRevisionSelectionFromSynthesisTrial(candidate);
+  const expectedSelection = synthesisTrialRevisionSelectionFromSnapshot(
+    candidate,
+    semanticFingerprint,
+  );
   if (!selectionEqual(input.revisionSelection, expectedSelection)) {
     throw new Error("Synthesis Trial binding selection is not the exact Harness-derived trial revision.");
   }
-  const expectedPacket = buildSynthesisTrialPacket({
-    candidate,
-    targetProjectId: input.targetProjectId,
-  });
   if (
-    !isDeepStrictEqual(input.packet, expectedPacket) ||
-    input.renderedPacket !== formatSynthesisTrialPacket(expectedPacket)
-  ) throw new Error("Synthesis Trial binding packet is not the exact Harness-derived packet.");
+    !isRecord(input.packet) ||
+    input.packet.candidateType !== "cross-project-synthesis" ||
+    input.packet.candidateId !== candidate.candidateId ||
+    input.packet.candidateSemanticFingerprint !== input.candidateSemanticFingerprint ||
+    input.packet.target.projectId !== input.targetProjectId ||
+    input.packet.hypothesis !== candidate.hypothesis ||
+    !isDeepStrictEqual(input.packet.proposal, candidateProposal(candidate)) ||
+    input.packet.selector.strategyId !== expectedSelection.strategyId ||
+    input.packet.selector.revisionIdentity !== expectedSelection.revisionIdentity ||
+    input.packet.selector.revisionFingerprint !== expectedSelection.revisionFingerprint ||
+    typeof input.renderedPacket !== "string" ||
+    input.renderedPacket.trim() === ""
+  ) throw new Error("Synthesis Trial binding packet is malformed or not exact.");
   return input;
 }
 
@@ -257,11 +345,13 @@ export function createSynthesisTrialBinding(
     throw new Error("The target project already trusts this Candidate revision identity; the Synthesis Trial is ambiguous.");
   }
   const candidateSemanticFingerprint = strategySynthesisCandidateSemanticFingerprint(candidate);
+  const candidateArtifactFingerprint = strategySynthesisCandidateArtifactFingerprint(candidate);
+  const candidateSnapshot = createSynthesisTrialCandidateSnapshot(candidate);
   const binding: SynthesisTrialBinding = Object.freeze({
     candidateType: "cross-project-synthesis" as const,
-    candidate,
+    candidate: candidateSnapshot,
     candidateSemanticFingerprint,
-    candidateArtifactFingerprint: strategySynthesisCandidateArtifactFingerprint(candidate),
+    candidateArtifactFingerprint,
     targetProjectRoot,
     targetProjectId,
     revisionSelection: strategyRevisionSelectionFromSynthesisTrial(candidate),

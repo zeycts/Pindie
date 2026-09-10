@@ -27,7 +27,12 @@ import {
 } from "../src/strategy-synthesis-trial.ts";
 import {
   TrialRuntime,
+  type SynthesisTrialCandidateSnapshot,
 } from "../src/strategy-trial.ts";
+import {
+  strategySynthesisCandidateArtifactFingerprint,
+  strategySynthesisCandidateSemanticFingerprint,
+} from "../src/strategy-synthesis-candidates.ts";
 import { makeSynthesisTrialFixture } from "./synthesis-trial-fixture.ts";
 
 const TARGET_ROOT = "/synthesis-trial-target";
@@ -45,6 +50,31 @@ function candidateReader(
     read: async (candidateId: string) => candidateId === candidate.candidateId ? candidate : null,
     readAll: async () => [candidate],
   };
+}
+
+function assertNarrowSynthesisTrialCandidate(
+  snapshot: SynthesisTrialCandidateSnapshot,
+  candidate: Awaited<ReturnType<typeof makeSynthesisTrialFixture>>["candidate"],
+): void {
+  assert.deepEqual(snapshot, {
+    candidateId: candidate.candidateId,
+    createdAt: candidate.createdAt,
+    proposal: {
+      strategyId: candidate.proposal.strategyId,
+      kind: candidate.proposal.kind,
+      summary: candidate.proposal.summary,
+      useWhen: candidate.proposal.useWhen,
+      avoidWhen: candidate.proposal.avoidWhen,
+      principles: candidate.proposal.principles,
+    },
+    hypothesis: candidate.hypothesis,
+  });
+  assert.notEqual(snapshot, candidate);
+  assert.notEqual(snapshot.proposal, candidate.proposal);
+  assert.deepEqual(Object.keys(snapshot).sort(), ["candidateId", "createdAt", "hypothesis", "proposal"]);
+  for (const field of ["schemaVersion", "candidateType", "evidence", "derivationReceipt"]) {
+    assert.equal(field in (snapshot as unknown as Record<string, unknown>), false, field);
+  }
 }
 
 function conflictingPortfolio(
@@ -83,7 +113,7 @@ test("Synthesis Trial namespace, packet, selector, and completion are exact and 
     /canonical lowercase UUID-v4/i,
   );
   assert.equal(binding.targetProjectId, TARGET_PROJECT_ID);
-  assert.equal(binding.candidateSemanticFingerprint, packetFingerprint(binding.candidate));
+  assert.equal(binding.candidateSemanticFingerprint, packetFingerprint(candidate));
   assert.equal(binding.revisionSelection.revisionIdentity, candidate.candidateId);
   assert.equal(binding.revisionSelection.revisionStatusAtRun, "trial");
   assert.deepEqual(binding.revisionSelection.semantics, {
@@ -150,20 +180,27 @@ test("Synthesis Trial uses the single runtime lease and resolves only the exact 
 
   assert.equal(runtime.establishSynthesis("session-a", binding), true);
   assert.equal(runtime.establishSynthesis("session-a", binding), false);
-  assert.equal(runtime.pendingSynthesisTrial?.candidate.candidateId, candidate.candidateId);
+  const pending = runtime.pendingSynthesisTrial;
+  assert.ok(pending);
+  assertNarrowSynthesisTrialCandidate(pending.candidate, candidate);
+  assert.equal(pending.candidateSemanticFingerprint, strategySynthesisCandidateSemanticFingerprint(candidate));
+  assert.equal(pending.candidateArtifactFingerprint, strategySynthesisCandidateArtifactFingerprint(candidate));
   assert.equal(runtime.pendingTrial, null);
   assert.equal(runtime.bindSynthesis("session-b", 1), null);
 
   const active = runtime.bindSynthesis("session-a", 1);
   assert.ok(active);
   assert.equal(runtime.hasActiveSynthesisTrial, true);
+  assertNarrowSynthesisTrialCandidate(active.candidate, candidate);
+  assert.equal(active.candidateSemanticFingerprint, strategySynthesisCandidateSemanticFingerprint(candidate));
+  assert.equal(active.candidateArtifactFingerprint, strategySynthesisCandidateArtifactFingerprint(candidate));
   assert.equal(runtime.activeSynthesisFor("session-a", 1)?.candidate.candidateId, candidate.candidateId);
   const selector = {
     strategyId: active.revisionSelection.strategyId,
     revisionIdentity: active.revisionSelection.revisionIdentity,
     revisionFingerprint: active.revisionSelection.revisionFingerprint,
   };
-  const resolved = runtime.resolveSynthesisSelector("session-a", 1, selector, "approach", candidate);
+  const resolved = runtime.resolveSynthesisSelector("session-a", 1, selector, "approach", active.candidate);
   assert.equal(resolved.revisionIdentity, candidate.candidateId);
   assert.equal(resolved.revisionStatusAtRun, "trial");
   assert.deepEqual(resolved.semantics, {
@@ -173,12 +210,32 @@ test("Synthesis Trial uses the single runtime lease and resolves only the exact 
     principles: candidate.proposal.principles,
   });
   assert.throws(
-    () => runtime.resolveSynthesisSelector("session-a", 1, selector, "modifier", candidate),
+    () => runtime.resolveSynthesisSelector("session-a", 1, selector, "modifier", active.candidate),
     /wrong.*modifier|role/i,
   );
   assert.throws(
-    () => runtime.resolveSynthesisSelector("session-a", 2, selector, "approach", candidate),
+    () => runtime.resolveSynthesisSelector("session-a", 2, selector, "approach", active.candidate),
     /without an active Synthesis Trial/i,
+  );
+  assert.throws(
+    () => runtime.resolveSynthesisSelector(
+      "session-a",
+      1,
+      { ...selector, revisionIdentity: "00000000-0000-4000-8000-000000000034" },
+      "approach",
+      active.candidate,
+    ),
+    /does not match/i,
+  );
+  assert.throws(
+    () => runtime.resolveSynthesisSelector(
+      "session-a",
+      1,
+      { ...selector, revisionFingerprint: `sha256:${"f".repeat(64)}` },
+      "approach",
+      active.candidate,
+    ),
+    /does not match/i,
   );
   assert.throws(
     () => runtime.resolveSynthesisSelector(
@@ -186,9 +243,14 @@ test("Synthesis Trial uses the single runtime lease and resolves only the exact 
       1,
       selector,
       "approach",
-      { ...candidate, proposal: { ...candidate.proposal, summary: "changed" } },
+      { ...active.candidate, proposal: { ...active.candidate.proposal, summary: "changed" } },
     ),
     /artifact changed/i,
+  );
+  runtime.clear();
+  assert.throws(
+    () => runtime.resolveSynthesisSelector("session-a", 1, selector, "approach", active.candidate),
+    /without an active Synthesis Trial/i,
   );
 });
 

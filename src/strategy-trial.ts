@@ -216,6 +216,61 @@ function synthesisCandidateRevisionSemantics(
   };
 }
 
+const SYNTHESIS_CANDIDATE_SNAPSHOT_FIELDS = [
+  "candidateId",
+  "createdAt",
+  "proposal",
+  "hypothesis",
+] as const;
+const SYNTHESIS_CANDIDATE_PROPOSAL_FIELDS = [
+  "strategyId",
+  "kind",
+  "summary",
+  "useWhen",
+  "avoidWhen",
+  "principles",
+] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...fields].sort();
+  return actual.length === expected.length && actual.every((field, index) => field === expected[index]);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every(isNonEmptyString);
+}
+
+/** Prove the exact narrow Candidate shape without knowing the CPL artifact. */
+function isSynthesisTrialCandidateSnapshot(
+  value: unknown,
+): value is SynthesisTrialCandidateSnapshot {
+  if (!isRecord(value) || !hasExactFields(value, SYNTHESIS_CANDIDATE_SNAPSHOT_FIELDS)) return false;
+  const proposal = value.proposal;
+  return isNonEmptyString(value.candidateId) &&
+    isNonEmptyString(value.createdAt) &&
+    isNonEmptyString(value.hypothesis) &&
+    isRecord(proposal) &&
+    hasExactFields(proposal, SYNTHESIS_CANDIDATE_PROPOSAL_FIELDS) &&
+    isNonEmptyString(proposal.strategyId) &&
+    (proposal.kind === "approach" || proposal.kind === "modifier") &&
+    isNonEmptyString(proposal.summary) &&
+    isStringArray(proposal.useWhen) &&
+    isStringArray(proposal.avoidWhen) &&
+    isStringArray(proposal.principles);
+}
+
 function isSynthesisTrialLease(
   lease: StoredTrialLease,
 ): lease is SynthesisTrialLease {
@@ -239,10 +294,9 @@ function validateSynthesisTrialBinding(
   input: SynthesisTrialBinding,
 ): SynthesisTrialBinding {
   if (
+    !isRecord(input) ||
     input.candidateType !== "cross-project-synthesis" ||
-    input.candidate === null ||
-    typeof input.candidate.candidateId !== "string" ||
-    input.candidate.candidateId.trim() === "" ||
+    !isSynthesisTrialCandidateSnapshot(input.candidate) ||
     typeof input.candidateArtifactFingerprint !== "string" ||
     input.candidateArtifactFingerprint.trim() === "" ||
     typeof input.candidateSemanticFingerprint !== "string" ||
@@ -266,6 +320,7 @@ function validateSynthesisTrialBinding(
     input.packet.candidateId !== input.candidate.candidateId ||
     input.packet.candidateSemanticFingerprint !== input.candidateSemanticFingerprint ||
     input.packet.target.projectId !== input.targetProjectId ||
+    input.packet.hypothesis !== input.candidate.hypothesis ||
     !isDeepStrictEqual(input.packet.proposal, synthesisCandidateSemantics(input.candidate)) ||
     input.packet.selector.strategyId !== selection.strategyId ||
     input.packet.selector.revisionIdentity !== selection.revisionIdentity ||

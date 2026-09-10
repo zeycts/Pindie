@@ -851,7 +851,15 @@ export class SelfImprovementIntegration {
             this.trial.clear();
             throw new Error(`Pindie rejected this Agent Run: the pending Synthesis Trial binding is stale or invalid: ${errorMessage(error)}`);
           }
-          trialLease = this.trial.bindSynthesis(sessionId, this.core.getActiveAgentRunGeneration()!);
+          const bound = this.trial.bindSynthesis(
+            sessionId,
+            this.core.getActiveAgentRunGeneration()!,
+          );
+          if (bound === null) {
+            this.trial.clear();
+            throw new Error("Pindie rejected this Agent Run: the pending Synthesis Trial could not bind to the current Session/generation.");
+          }
+          trialLease = bound;
         } else if (pendingDerivationTrial !== null) {
           const projectRoot = this.core.getProjectRoot();
           try {
@@ -1945,7 +1953,7 @@ export class SelfImprovementIntegration {
       return;
     }
     if (/\s/.test(requestedId)) {
-      ctx.ui.notify("Usage: /trial <candidate-id> (or scope:candidate-id)", "warning");
+      ctx.ui.notify("Usage: /trial <candidate-id> | /trial scope:<candidate-id> | /trial synthesis:<candidate-id>", "warning");
       return;
     }
     if (requestedId.startsWith("synthesis:")) {
