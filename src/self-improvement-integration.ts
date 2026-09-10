@@ -110,8 +110,10 @@ import {
   TrialRuntime,
   type DerivationTrialLease,
   type ScopeTrialLease,
+  type SynthesisTrialLease,
   type TrialLease,
 } from "./strategy-trial.ts";
+import type { SynthesisTrialBinding } from "./strategy-trial.ts";
 import type { ScopeTrialBinding } from "./strategy-trust-scope-trial.ts";
 import { resolveTrialCandidate } from "./strategy-candidate-resolution.ts";
 import type {
@@ -143,17 +145,33 @@ export interface SelfImprovementTrialAccess {
   readonly hasActiveScopeTrial: boolean;
   readonly pendingScopeTrial: ScopeTrialLease | null;
   readonly activeScopeTrial: ScopeTrialLease | null;
+  readonly hasPendingSynthesisTrial: boolean;
+  readonly hasActiveSynthesisTrial: boolean;
+  readonly pendingSynthesisTrial: SynthesisTrialLease | null;
+  readonly activeSynthesisTrial: SynthesisTrialLease | null;
   readonly establishScope: (sessionId: string, binding: ScopeTrialBinding) => boolean;
+  readonly establishSynthesis: (sessionId: string, binding: SynthesisTrialBinding) => boolean;
   readonly activeScopeFor: (
     sessionId: string | null,
     agentRunGeneration: number | null,
   ) => ScopeTrialLease | null;
+  readonly activeSynthesisFor: (
+    sessionId: string | null,
+    agentRunGeneration: number | null,
+  ) => SynthesisTrialLease | null;
   readonly resolveScopeSelector: (
     sessionId: string | null,
     agentRunGeneration: number | null,
     selector: unknown,
     kind: "approach" | "modifier",
     currentSourceCandidate?: import("./strategy-derivation-candidates.ts").StrategyDerivationCandidateV1,
+  ) => StrategyRevisionSelection;
+  readonly resolveSynthesisSelector: (
+    sessionId: string | null,
+    agentRunGeneration: number | null,
+    selector: unknown,
+    kind: "approach" | "modifier",
+    currentCandidate?: import("./strategy-trial.ts").SynthesisTrialCandidateSnapshot,
   ) => StrategyRevisionSelection;
 }
 
@@ -196,6 +214,7 @@ export interface CrossProjectLearningAttachment {
   readonly settleGlobalDerivationRun: (agentRunGeneration: number) => void;
   readonly resetForSession: () => void;
   readonly validatePendingScopeTrial: (binding: ScopeTrialBinding) => Promise<void>;
+  readonly validatePendingSynthesisTrial: (binding: SynthesisTrialBinding) => Promise<void>;
   readonly resolveScopeRevisionSelector: (
     lease: ScopeTrialLease,
     selector: StrategyRevisionSelector,
@@ -203,6 +222,21 @@ export interface CrossProjectLearningAttachment {
     sessionId: string,
     agentRunGeneration: number | null,
   ) => Promise<StrategyRevisionSelection>;
+  readonly resolveSynthesisRevisionSelector: (
+    lease: SynthesisTrialLease,
+    selector: StrategyRevisionSelector,
+    kind: "approach" | "modifier",
+    sessionId: string,
+    agentRunGeneration: number | null,
+  ) => Promise<StrategyRevisionSelection>;
+  readonly handleSynthesisTrialCommand: (
+    args: string,
+    ctx: ExtensionCommandContext,
+  ) => Promise<void>;
+  readonly synthesisTrialCommandCompletions: (
+    projectRoot: string,
+    prefix: string,
+  ) => Promise<readonly { readonly value: string; readonly label: string }[]>;
   readonly handleScopeTrialCommand: (
     args: string,
     ctx: ExtensionCommandContext,
@@ -256,7 +290,7 @@ export interface SelfImprovementIntegrationOptions {
 
 export interface SelfImprovementRunPreparation {
   readonly adaptationLease: ReturnType<AdaptationRuntime["bind"]>;
-  readonly trialLease: TrialLease | DerivationTrialLease | ScopeTrialLease | null;
+  readonly trialLease: TrialLease | DerivationTrialLease | ScopeTrialLease | SynthesisTrialLease | null;
   readonly derivationLease: ReturnType<DerivationRuntime["bind"]>;
   readonly globalDerivationLease: GlobalDerivationLease | null;
   readonly promptContributions: readonly string[];
@@ -616,6 +650,23 @@ export class SelfImprovementIntegration {
     } catch (error) {
       throw new Error(`Candidate revision selector could not resolve the current Session: ${errorMessage(error)}`);
     }
+    const activeSynthesisTrial = this.trial.activeSynthesisFor(
+      sessionId,
+      this.core.getActiveAgentRunGeneration(),
+    );
+    if (activeSynthesisTrial !== null) {
+      if (this.crossProjectLearning === null) {
+        throw new Error("Synthesis Candidate selector is unavailable because Cross-Project Learning is disabled.");
+      }
+      return this.crossProjectLearning.resolveSynthesisRevisionSelector(
+        activeSynthesisTrial,
+        selector,
+        kind,
+        sessionId,
+        this.core.getActiveAgentRunGeneration(),
+      );
+    }
+
     const activeScopeTrial = this.trial.activeScopeFor(
       sessionId,
       this.core.getActiveAgentRunGeneration(),
@@ -773,10 +824,11 @@ export class SelfImprovementIntegration {
         this.adaptationRunGeneration = null;
       }
 
-      let trialLease: TrialLease | DerivationTrialLease | ScopeTrialLease | null = null;
+      let trialLease: TrialLease | DerivationTrialLease | ScopeTrialLease | SynthesisTrialLease | null = null;
       if (adaptationLease === null && this.trial.hasPendingTrial) {
         const sessionId = ctx.sessionManager.getSessionId();
         const pendingScopeTrial = this.trial.pendingScopeTrial;
+        const pendingSynthesisTrial = this.trial.pendingSynthesisTrial;
         const pendingDerivationTrial = this.trial.pendingDerivationTrial;
         if (pendingScopeTrial !== null) {
           try {
@@ -789,6 +841,25 @@ export class SelfImprovementIntegration {
             throw new Error(`Pindie rejected this Agent Run: the pending Scope Trial binding is stale or invalid: ${errorMessage(error)}`);
           }
           trialLease = this.trial.bindScope(sessionId, this.core.getActiveAgentRunGeneration()!);
+        } else if (pendingSynthesisTrial !== null) {
+          try {
+            if (this.crossProjectLearning === null) {
+              throw new Error("Cross-Project Learning is disabled");
+            }
+            await this.crossProjectLearning.validatePendingSynthesisTrial(pendingSynthesisTrial);
+          } catch (error) {
+            this.trial.clear();
+            throw new Error(`Pindie rejected this Agent Run: the pending Synthesis Trial binding is stale or invalid: ${errorMessage(error)}`);
+          }
+          const bound = this.trial.bindSynthesis(
+            sessionId,
+            this.core.getActiveAgentRunGeneration()!,
+          );
+          if (bound === null) {
+            this.trial.clear();
+            throw new Error("Pindie rejected this Agent Run: the pending Synthesis Trial could not bind to the current Session/generation.");
+          }
+          trialLease = bound;
         } else if (pendingDerivationTrial !== null) {
           const projectRoot = this.core.getProjectRoot();
           try {
@@ -891,7 +962,13 @@ export class SelfImprovementIntegration {
       }
 
       const packetLease = adaptationLease ?? trialLease ?? derivationLease;
-      const restrictedRun = packetLease !== null || globalDerivationLease !== null;
+      const synthesisTrialRun = trialLease !== null &&
+        "candidateType" in trialLease &&
+        trialLease.candidateType === "cross-project-synthesis";
+      const restrictedRun = globalDerivationLease !== null ||
+        adaptationLease !== null ||
+        derivationLease !== null ||
+        (packetLease !== null && !synthesisTrialRun);
       const normalTrust = await this.loadNormalTrustedPortfolio(this.core.getProjectRoot());
       this.currentPromotedStrategyRevisionCatalog = normalTrust.promotedCatalog;
       this.currentTrustedStrategyPortfolio = normalTrust.portfolio;
@@ -1315,6 +1392,11 @@ export class SelfImprovementIntegration {
       });
       const options = filterTrialCommandOptions(projection, prefix);
       if (this.crossProjectLearning !== null) {
+        try {
+          options.push(...await this.crossProjectLearning.synthesisTrialCommandCompletions(projectRoot, prefix));
+        } catch {
+          // Synthesis completion is advisory and cannot hide local Trial options.
+        }
         try {
           options.push(...await this.crossProjectLearning.scopeCommandCompletions("trial", projectRoot, prefix));
         } catch {
@@ -1871,7 +1953,15 @@ export class SelfImprovementIntegration {
       return;
     }
     if (/\s/.test(requestedId)) {
-      ctx.ui.notify("Usage: /trial <candidate-id> (or scope:candidate-id)", "warning");
+      ctx.ui.notify("Usage: /trial <candidate-id> | /trial scope:<candidate-id> | /trial synthesis:<candidate-id>", "warning");
+      return;
+    }
+    if (requestedId.startsWith("synthesis:")) {
+      if (this.crossProjectLearning === null) {
+        ctx.ui.notify("Pindie could not arm /trial: unknown Candidate subject namespace.", "warning");
+        return;
+      }
+      await this.crossProjectLearning.handleSynthesisTrialCommand(requestedId, ctx);
       return;
     }
     if (requestedId.startsWith("scope:")) {
