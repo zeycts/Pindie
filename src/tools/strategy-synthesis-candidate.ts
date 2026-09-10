@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -14,10 +16,12 @@ import {
   MIN_SYNTHESIS_CANDIDATE_SOURCE_REFS,
   strategySynthesisCandidateArtifactFingerprint,
   strategySynthesisCandidateSemanticFingerprint,
+  validateStrategySynthesisCandidateArtifact,
   validateStrategySynthesisCandidateProposal,
   type StrategySynthesisCandidateProposal,
   type StrategySynthesisCandidateRuntimeAccess,
   type StrategySynthesisCandidateStore,
+  type StrategySynthesisCandidateV1,
 } from "../strategy-synthesis-candidates.ts";
 
 const StrategySynthesisCandidateParameters = Type.Object(
@@ -213,7 +217,38 @@ export function createPindieStrategySynthesisCandidateTool(
           candidateId: active.candidateId,
           createdAt: active.createdAt,
         });
-        await options.candidateStore.save(candidate);
+        try {
+          await options.candidateStore.save(candidate);
+        } catch (saveError) {
+          let existing: StrategySynthesisCandidateV1 | null;
+          try {
+            existing = await options.candidateStore.read(candidate.candidateId);
+          } catch (readError) {
+            throw new Error(
+              `Strategy Synthesis Candidate persistence/reconciliation failed after save error: could not read Candidate '${candidate.candidateId}' to establish durable state (${errorMessage(readError)}; original save error: ${errorMessage(saveError)}).`,
+            );
+          }
+          if (existing === null) throw saveError;
+
+          let validatedExisting: StrategySynthesisCandidateV1;
+          try {
+            validatedExisting = validateStrategySynthesisCandidateArtifact(existing, candidate.candidateId);
+          } catch (validationError) {
+            throw new Error(
+              `Strategy Synthesis Candidate persistence/reconciliation failed: existing Candidate '${candidate.candidateId}' is not a valid immutable artifact (${errorMessage(validationError)}; original save error: ${errorMessage(saveError)}).`,
+            );
+          }
+          if (
+            !isDeepStrictEqual(validatedExisting, candidate) ||
+            strategySynthesisCandidateArtifactFingerprint(validatedExisting) !== strategySynthesisCandidateArtifactFingerprint(candidate)
+          ) {
+            throw new Error(
+              `Strategy Synthesis Candidate persistence/reconciliation failed closed: existing Candidate '${candidate.candidateId}' does not exactly match the intended immutable artifact.`,
+            );
+          }
+          // The exact immutable artifact is already durable; reconcile the
+          // ambiguous save as the same publication without writing again.
+        }
         if (!options.runtime.completePublication(active.attemptId)) {
           throw new Error("Strategy Synthesis Candidate was persisted but the /derive-global reservation was no longer current.");
         }

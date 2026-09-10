@@ -6011,6 +6011,17 @@ test("SI v0.5 /adapt is explicit, Run-bound, and Candidate creation stays inacti
   assert.doesNotMatch(adaptationBaseline.message.content, /<PINDIE_ADAPTATION_PACKET>/);
 
   const stateBefore = structuredClone(harness.integration.runtime.state);
+  for (const toolName of ["read", "grep", "find", "ls", "web_search", "url_context", "pindie_git_observe"]) {
+    assert.equal(
+      await callGuard(harness, toolCall(toolName, {}, `adapt-observation-${toolName}`)),
+      undefined,
+      toolName,
+    );
+  }
+  assertBlocked(
+    await callGuard(harness, toolCall("pindie_strategy_synthesis_candidate_create", {}, "adapt-synthesis")),
+    /adaptation Run is read-only/,
+  );
   assertBlocked(
     await callGuard(harness, toolCall("edit", { path: "src/index.ts", oldText: "x", newText: "y" }, "adapt-edit")),
     /adaptation Run is read-only/,
@@ -6138,6 +6149,17 @@ test("SI v0.7 /derive is explicit, bounded, read-only, and consumes one Candidat
   assert.equal(harness.integration.derivation.hasActiveDerivation, true);
 
   const stateBefore = structuredClone(harness.integration.runtime.state);
+  for (const toolName of ["read", "grep", "find", "ls", "web_search", "url_context", "pindie_git_observe"]) {
+    assert.equal(
+      await callGuard(harness, toolCall(toolName, {}, `derive-observation-${toolName}`)),
+      undefined,
+      toolName,
+    );
+  }
+  assertBlocked(
+    await callGuard(harness, toolCall("pindie_strategy_synthesis_candidate_create", {}, "derive-synthesis")),
+    /Derivation Run is read-only/i,
+  );
   assertBlocked(
     await callGuard(harness, toolCall("edit", {}, "derive-edit")),
     /Derivation Run is read-only/i,
@@ -8297,17 +8319,6 @@ test("Slice B /derive-global admits once, binds one packet-only Run, and settles
   assert.match(runStart.systemPrompt, /<PINDIE_GLOBAL_DERIVATION_RUN>/);
   assert.equal(harness.integration.taskMetrics.currentRunBelongsToTask, false);
   assert.equal(harness.integration.globalDerivation?.hasActive, true);
-  const blocked = [
-    ["read", /Global Derivation Run is packet-only/],
-    ["edit", /Global Derivation Run is packet-only/],
-    ["custom_tool", /Global Derivation Run is packet-only/],
-    ["pindie_policy_set", /Global Derivation Run is packet-only/],
-    ["pindie_strategy_derivation_candidate_create", /Global Derivation Run is packet-only/],
-  ] as const;
-  for (const [toolName, reason] of blocked) {
-    assertBlocked(await callGuard(harness, toolCall(toolName, {}, `global-block-${toolName}`)), reason);
-  }
-
   const input = {
     strategyId: "global-boundary",
     kind: "approach",
@@ -8318,7 +8329,44 @@ test("Slice B /derive-global admits once, binds one packet-only Run, and settles
     evidenceHandles: ["E1", "E2", "E3"],
     hypothesis: "Distributed trusted-policy evidence may expose a reusable boundary.",
   };
-  await executeSemanticTool(harness, "pindie_strategy_synthesis_candidate_create", "global-candidate", input);
+  const globalToolSurface = [
+    ["pindie_strategy_synthesis_candidate_create", true],
+    ["read", false],
+    ["grep", false],
+    ["find", false],
+    ["ls", false],
+    ["web_search", false],
+    ["url_context", false],
+    ["pindie_git_observe", false],
+    ["bash", false],
+    ["edit", false],
+    ["write", false],
+    ["custom_tool", false],
+    ["pindie_policy_set", false],
+    ["pindie_memory_capture", false],
+    ["pindie_strategy_candidate_create", false],
+    ["pindie_strategy_derivation_candidate_create", false],
+    ["pindie_task_start", false],
+    ["pindie_task_replace", false],
+    ["pindie_task_refine", false],
+    ["pindie_task_progress", false],
+    ["pindie_task_complete", false],
+    ["pindie_task_handoff", false],
+    ["pindie_gate_open", false],
+    ["pindie_gate_resolve", false],
+    ["pindie_verification_record", false],
+    ["unknown_tool", false],
+  ] as const;
+  for (const [toolName, allowed] of globalToolSurface) {
+    if (allowed) {
+      await executeSemanticTool(harness, toolName, "global-allowed-synthesis", input);
+      continue;
+    }
+    assertBlocked(
+      await callGuard(harness, toolCall(toolName, {}, `global-block-${toolName}`)),
+      /Global Derivation Run is packet-only/,
+    );
+  }
   assert.equal(candidates.length, 1);
   assert.deepEqual(harness.integration.runtime.state, stateBefore);
   await assert.rejects(

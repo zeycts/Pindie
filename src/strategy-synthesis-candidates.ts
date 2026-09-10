@@ -167,6 +167,20 @@ function boundedString(value: unknown, field: string, maxLength: number): string
   return value;
 }
 
+function canonicalTimestamp(value: unknown): string {
+  const createdAt = boundedString(value, "createdAt", MAX_SYNTHESIS_CANDIDATE_TIMESTAMP_LENGTH);
+  const timestamp = Date.parse(createdAt);
+  if (!Number.isFinite(timestamp)) return invalid("createdAt must be a valid timestamp.");
+  let canonical: string;
+  try {
+    canonical = new Date(timestamp).toISOString();
+  } catch (error) {
+    return invalid(`createdAt must be a valid timestamp (${errorMessage(error)}).`);
+  }
+  if (canonical !== createdAt) return invalid("createdAt must use the canonical ISO representation emitted by Pindie.");
+  return createdAt;
+}
+
 function boundedGuidanceArray(value: unknown, field: string, minItems: number): readonly string[] {
   if (!Array.isArray(value) || value.length < minItems || value.length > MAX_SYNTHESIS_CANDIDATE_GUIDANCE_ITEMS) {
     return invalid(`${field} must contain between ${minItems} and ${MAX_SYNTHESIS_CANDIDATE_GUIDANCE_ITEMS} items.`);
@@ -362,8 +376,7 @@ export function validateStrategySynthesisCandidateArtifact(
   if (value.candidateType !== "cross-project-synthesis") return invalid("candidateType must be cross-project-synthesis.");
   if (typeof value.candidateId !== "string" || !CANONICAL_CANDIDATE_ID.test(value.candidateId)) return invalid("candidateId must be a canonical lowercase UUID-v4.");
   if (requestedCandidateId !== undefined && value.candidateId !== requestedCandidateId) return invalid("requested Candidate ID does not match artifact candidateId.");
-  const createdAt = boundedString(value.createdAt, "createdAt", MAX_SYNTHESIS_CANDIDATE_TIMESTAMP_LENGTH);
-  if (!Number.isFinite(Date.parse(createdAt))) return invalid("createdAt must be a valid timestamp.");
+  const createdAt = canonicalTimestamp(value.createdAt);
   const rawProposal = isRecord(value.proposal) && hasExactFields(value.proposal, PROPOSAL_FIELDS)
     ? {
         strategyId: value.proposal.strategyId,
@@ -426,10 +439,7 @@ export function createStrategySynthesisCandidate(
   validateComparisonBinding(proposal, receipt);
   const candidateId = (input.candidateId ?? randomUUID()).toLowerCase();
   if (!CANONICAL_CANDIDATE_ID.test(candidateId)) return invalid("candidateId must be a canonical lowercase UUID-v4.");
-  const createdAt = input.createdAt ?? new Date().toISOString();
-  if (typeof createdAt !== "string" || createdAt.trim() === "" || createdAt.length > MAX_SYNTHESIS_CANDIDATE_TIMESTAMP_LENGTH || !Number.isFinite(Date.parse(createdAt))) {
-    return invalid("createdAt must be a valid timestamp.");
-  }
+  const createdAt = canonicalTimestamp(input.createdAt ?? new Date().toISOString());
   return validateStrategySynthesisCandidateArtifact({
     schemaVersion: STRATEGY_SYNTHESIS_CANDIDATE_SCHEMA_VERSION,
     candidateType: "cross-project-synthesis",

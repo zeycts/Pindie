@@ -38,6 +38,7 @@ import {
   type StrategySynthesisCandidateProposal,
   type StrategySynthesisCandidateRunBinding,
   type StrategySynthesisCandidateRuntimeAccess,
+  type StrategySynthesisCandidateStore,
   type StrategySynthesisCandidateV1,
 } from "../src/strategy-synthesis-candidates.ts";
 import { createTrustedStrategyPortfolioForProjectId } from "../src/strategy-portfolio.ts";
@@ -310,6 +311,18 @@ test("Strategy Synthesis Candidate is strict, immutable, packet-bound, and has d
   assert.equal(Object.isFrozen(candidate.derivationReceipt), true);
   assert.equal(Object.isFrozen(candidate.derivationReceipt.evidence.runs), true);
   assert.doesNotThrow(() => validateStrategySynthesisCandidateArtifact(candidate));
+  assert.doesNotThrow(() => validateStrategySynthesisCandidateArtifact({
+    ...candidate,
+    createdAt: "2026-08-21T00:00:00.000Z",
+  }));
+  assert.throws(() => validateStrategySynthesisCandidateArtifact({
+    ...candidate,
+    createdAt: "2026-08-21T00:00:00Z",
+  }), /canonical ISO/i);
+  assert.throws(() => validateStrategySynthesisCandidateArtifact({
+    ...candidate,
+    createdAt: "not-a-timestamp",
+  }), /valid timestamp/i);
   assert.match(strategySynthesisCandidateSemanticFingerprint(candidate), /^sha256:[0-9a-f]{64}$/);
   assert.match(strategySynthesisCandidateArtifactFingerprint(candidate), /^sha256:[0-9a-f]{64}$/);
 
@@ -430,6 +443,171 @@ test("Synthesis Candidate tool resolves exact packet handles, publishes once, an
     /not an exact evidence handle/i,
   );
   assert.equal(saved.length, 1);
+});
+
+test("Synthesis Candidate publication reconciles ambiguous immutable writes without changing identity", async () => {
+  const packet = await packetFixture();
+  const input = {
+    ...proposal(packet),
+    evidenceHandles: ["E1", "E2", "E3"],
+  };
+
+  const publicationRuntime = () => {
+    let publication: "idle" | "publishing" | "published" = "idle";
+    const active = binding(packet);
+    const runtime: StrategySynthesisCandidateRuntimeAccess = {
+      activeFor: (sessionId, invocationRoot, generation) =>
+        sessionId === active.sessionId && invocationRoot === active.invocationRoot && generation === active.agentRunGeneration
+          ? active
+          : null,
+      claimPublication: (attemptId) => {
+        if (attemptId !== active.attemptId || publication !== "idle") return false;
+        publication = "publishing";
+        return true;
+      },
+      releasePublication: (attemptId) => {
+        if (attemptId === active.attemptId && publication === "publishing") publication = "idle";
+      },
+      completePublication: (attemptId) => {
+        if (attemptId !== active.attemptId || publication !== "publishing") return false;
+        publication = "published";
+        return true;
+      },
+    };
+    return {
+      active,
+      runtime,
+      publication: () => publication,
+    };
+  };
+  const makeTool = (
+    runtime: StrategySynthesisCandidateRuntimeAccess,
+    candidateStore: StrategySynthesisCandidateStore,
+  ) => createPindieStrategySynthesisCandidateTool({
+    runtime,
+    candidateStore,
+    getProjectRoot: () => "/repo",
+    getAgentRunGeneration: () => 7,
+  });
+
+  {
+    const { runtime, publication } = publicationRuntime();
+    const originalSaveError = new Error("injected save failure");
+    const store: StrategySynthesisCandidateStore = {
+      read: async () => null,
+      readAll: async () => [],
+      save: async () => { throw originalSaveError; },
+    };
+    await assert.rejects(
+      makeTool(runtime, store).execute("save-fails", input, undefined, undefined, toolContext()),
+      (error: unknown) => error === originalSaveError,
+    );
+    assert.equal(publication(), "idle");
+  }
+
+  {
+    const { runtime, active, publication } = publicationRuntime();
+    const durable = new Map<string, StrategySynthesisCandidateV1>();
+    const saved: StrategySynthesisCandidateV1[] = [];
+    const store: StrategySynthesisCandidateStore = {
+      read: async (candidateId) => durable.get(candidateId) ?? null,
+      readAll: async () => [...durable.values()],
+      save: async (candidate) => {
+        saved.push(candidate);
+        durable.set(candidate.candidateId, structuredClone(candidate));
+        throw new Error("persisted before injected transport failure");
+      },
+    };
+    const result = await makeTool(runtime, store).execute(
+      "persist-then-throw",
+      input,
+      undefined,
+      undefined,
+      toolContext(),
+    ) as { details: { candidateId: string } };
+    assert.equal(result.details.candidateId, active.candidateId);
+    assert.equal(publication(), "published");
+    assert.equal(saved.length, 1);
+    assert.equal(durable.size, 1);
+    assert.deepEqual([...durable.keys()], [active.candidateId]);
+
+    await assert.rejects(
+      makeTool(runtime, store).execute("retry-after-reconcile", input, undefined, undefined, toolContext()),
+      /already published or is publishing/i,
+    );
+    assert.equal(saved.length, 1);
+    assert.deepEqual([...durable.keys()], [active.candidateId]);
+  }
+
+  {
+    const { runtime, active, publication } = publicationRuntime();
+    const conflicting = createStrategySynthesisCandidate({
+      proposal: { ...proposal(packet), summary: "A different artifact occupies this identity." },
+      sourceRefs: packet.sourceRefs.slice(0, 3),
+      derivationReceipt: packet,
+      candidateId: active.candidateId,
+      createdAt: active.createdAt,
+    });
+    const store: StrategySynthesisCandidateStore = {
+      read: async () => conflicting,
+      readAll: async () => [conflicting],
+      save: async () => { throw new Error("ambiguous write with conflicting occupant"); },
+    };
+    await assert.rejects(
+      makeTool(runtime, store).execute("conflicting-occupant", input, undefined, undefined, toolContext()),
+      /failed closed|does not exactly match/i,
+    );
+    assert.equal(publication(), "idle");
+  }
+
+  {
+    const { runtime, publication } = publicationRuntime();
+    const store: StrategySynthesisCandidateStore = {
+      read: async () => { throw new Error("candidate read unavailable"); },
+      readAll: async () => [],
+      save: async () => { throw new Error("ambiguous save"); },
+    };
+    await assert.rejects(
+      makeTool(runtime, store).execute("reconciliation-read-fails", input, undefined, undefined, toolContext()),
+      /persistence\/reconciliation failed.*could not read Candidate/i,
+    );
+    assert.equal(publication(), "idle");
+  }
+
+  {
+    const { runtime, active, publication } = publicationRuntime();
+    const durable = new Map<string, StrategySynthesisCandidateV1>();
+    const savedIds: string[] = [];
+    let saves = 0;
+    const store: StrategySynthesisCandidateStore = {
+      read: async (candidateId) => durable.get(candidateId) ?? null,
+      readAll: async () => [...durable.values()],
+      save: async (candidate) => {
+        saves += 1;
+        savedIds.push(candidate.candidateId);
+        if (saves === 1) throw new Error("first attempt did not become durable");
+        durable.set(candidate.candidateId, structuredClone(candidate));
+        throw new Error("retry persisted before injected transport failure");
+      },
+    };
+    await assert.rejects(
+      makeTool(runtime, store).execute("retry-first-fails", input, undefined, undefined, toolContext()),
+      /first attempt did not become durable/i,
+    );
+    assert.equal(publication(), "idle");
+    const result = await makeTool(runtime, store).execute(
+      "retry-reconciles",
+      input,
+      undefined,
+      undefined,
+      toolContext(),
+    ) as { details: { candidateId: string } };
+    assert.equal(result.details.candidateId, active.candidateId);
+    assert.equal(publication(), "published");
+    assert.deepEqual(savedIds, [active.candidateId, active.candidateId]);
+    assert.equal(durable.size, 1);
+    assert.deepEqual([...durable.keys()], [active.candidateId]);
+  }
 });
 
 test("packet evidence handles are canonical and bounded", () => {
