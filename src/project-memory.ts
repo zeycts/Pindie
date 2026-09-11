@@ -40,8 +40,15 @@ export type ProjectMemoryCaptureResult =
       readonly error: string;
     };
 
+export interface ProjectMemoryCaptureContext {
+  readonly signal?: AbortSignal;
+}
+
 export interface ProjectMemorySink {
-  capture(memory: ProjectMemoryCapture): Promise<ProjectMemoryCaptureResult>;
+  capture(
+    memory: ProjectMemoryCapture,
+    context?: ProjectMemoryCaptureContext,
+  ): Promise<ProjectMemoryCaptureResult>;
 }
 
 const PROJECT_MEMORY_TYPES: readonly ProjectMemoryType[] = [
