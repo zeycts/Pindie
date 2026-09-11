@@ -2169,23 +2169,24 @@ test("Remote-enabled wiring observes public input without altering Pindie tools"
 
 test("Pi session_info_changed awaits presentation rename for the mapped active Session", async () => {
   const titles: string[] = [];
-  let markSessionReady!: () => void;
-  const sessionReady = new Promise<void>((resolve) => { markSessionReady = resolve; });
+  let markPresentationReady!: () => void;
+  const presentationReady = new Promise<void>((resolve) => { markPresentationReady = resolve; });
+  let presentationUpdates = 0;
   const surface: RemoteSurface = {
     ensureProject: async () => ({ channelId: "channel" }),
-    ensureSession: async () => {
-      markSessionReady();
-      return { threadId: "thread", anchorMessageId: "anchor", headerMessageId: "header" };
-    },
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: "header" }),
     send: async () => undefined,
-    updateSessionPresentation: async (_session, presentation) => { titles.push(presentation.title); },
+    updateSessionPresentation: async (_session, presentation) => {
+      titles.push(presentation.title);
+      presentationUpdates += 1;
+      if (presentationUpdates === 1) markPresentationReady();
+    },
   };
   const companion = new RemoteCompanion(surface);
   const { api } = createHarness([], {}, { remoteCompanion: { companion, guildId: "guild" } });
   const ui = context("/repo", [{ id: "u", message: { role: "user", content: "Original prompt" } }]);
   await api.handler("session_start")({ type: "session_start", reason: "startup" }, ui);
-  await sessionReady;
-  await nextTurn();
+  await presentationReady;
   const before = titles.length;
   await api.handler("session_info_changed")({ type: "session_info_changed", name: "Discord Remote Test 2" }, ui);
   assert.equal(companion.activeSessionId, "remote-session");
