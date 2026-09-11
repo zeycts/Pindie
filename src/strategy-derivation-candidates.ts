@@ -109,16 +109,18 @@ export interface CreateStrategyDerivationCandidateInput {
 }
 
 export interface StrategyDerivationCandidateReader {
-  read(projectRoot: string, candidateId: string): Promise<StrategyDerivationCandidateV1 | null>;
+  read(projectRoot: string, candidateId: string, signal?: AbortSignal): Promise<StrategyDerivationCandidateV1 | null>;
   readAll?(projectRoot: string): Promise<readonly StrategyDerivationCandidateV1[]>;
 }
 
 export interface StrategyDerivationCandidateStore extends StrategyDerivationCandidateReader {
-  save(projectRoot: string, candidate: StrategyDerivationCandidateV1): Promise<void>;
+  save(projectRoot: string, candidate: StrategyDerivationCandidateV1, signal?: AbortSignal): Promise<void>;
 }
 
 export interface FileStrategyDerivationCandidateStoreOptions {
   baseDir?: string;
+  /** Narrow pre-commit barrier used by cancellation tests. */
+  beforeCommit?: () => void | Promise<void>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -535,18 +537,25 @@ function isMissing(error: unknown): boolean {
   return errorCode(error) === "ENOENT";
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+}
+
 /** Durable project-local immutable storage for Derivation Candidates. */
 export class FileStrategyDerivationCandidateStore implements StrategyDerivationCandidateStore {
   private readonly baseDir: string;
+  private readonly beforeCommit: (() => void | Promise<void>) | undefined;
 
   constructor(options: FileStrategyDerivationCandidateStoreOptions = {}) {
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "projects");
+    this.beforeCommit = options.beforeCommit;
   }
 
   private async readFromDirectory(
     directory: string,
     projectId: string,
     candidateId: string,
+    signal?: AbortSignal,
   ): Promise<StrategyDerivationCandidateV1 | null> {
     if (!CANONICAL_CANDIDATE_ID.test(candidateId)) {
       throw new Error("Cannot read Strategy Derivation Candidate: candidateId must be a canonical lowercase UUID-v4.");
@@ -554,7 +563,7 @@ export class FileStrategyDerivationCandidateStore implements StrategyDerivationC
     const candidatePath = join(directory, `${candidateId}.json`);
     let contents: string;
     try {
-      contents = await readFile(candidatePath, "utf8");
+      contents = await readFile(candidatePath, { encoding: "utf8", signal });
     } catch (error) {
       if (isMissing(error)) return null;
       throw new Error(`Could not read Pindie Strategy Derivation Candidate file '${candidatePath}': ${errorMessage(error)}`);
@@ -601,6 +610,7 @@ export class FileStrategyDerivationCandidateStore implements StrategyDerivationC
   async read(
     projectRoot: string,
     candidateId: string,
+    signal?: AbortSignal,
   ): Promise<StrategyDerivationCandidateV1 | null> {
     if (!CANONICAL_CANDIDATE_ID.test(candidateId)) {
       throw new Error("Cannot read Strategy Derivation Candidate: candidateId must be a canonical lowercase UUID-v4.");
@@ -609,6 +619,7 @@ export class FileStrategyDerivationCandidateStore implements StrategyDerivationC
       this.strategyDerivationCandidateDirectory(projectRoot),
       getProjectId(projectRoot),
       candidateId,
+      signal,
     );
   }
 
@@ -648,18 +659,27 @@ export class FileStrategyDerivationCandidateStore implements StrategyDerivationC
     );
   }
 
-  async save(projectRoot: string, candidate: StrategyDerivationCandidateV1): Promise<void> {
+  async save(
+    projectRoot: string,
+    candidate: StrategyDerivationCandidateV1,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const validated = validateStrategyDerivationCandidateBinding(candidate, projectRoot);
     const directory = this.strategyDerivationCandidateDirectory(projectRoot);
     const candidatePath = join(directory, `${validated.candidateId}.json`);
     const temporaryPath = join(directory, `.${validated.candidateId}.${randomUUID()}.tmp`);
     try {
+      throwIfAborted(signal);
       await mkdir(directory, { recursive: true });
+      throwIfAborted(signal);
       await writeFile(
         temporaryPath,
         `${JSON.stringify(validated, null, 2)}\n`,
-        { encoding: "utf8", flag: "wx" },
+        { encoding: "utf8", flag: "wx", signal },
       );
+      throwIfAborted(signal);
+      await this.beforeCommit?.();
+      throwIfAborted(signal);
       // Hard-link creation is atomic and cannot replace a historical artifact.
       await link(temporaryPath, candidatePath);
       await rm(temporaryPath, { force: true });

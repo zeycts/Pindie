@@ -3,6 +3,12 @@ import { isDeepStrictEqual } from "node:util";
 import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { PINDIE_TOOL_LIVENESS_TIMEOUT_MS } from "../liveness.ts";
+import {
+  PindieLearningArtifactPublicationUncertainError,
+  publishImmutableLearningArtifact,
+} from "../learning-artifact-liveness.ts";
+
 import {
   crossProjectSynthesisEvidenceHandleIndex,
 } from "../cross-project-synthesis.ts";
@@ -21,7 +27,6 @@ import {
   type StrategySynthesisCandidateProposal,
   type StrategySynthesisCandidateRuntimeAccess,
   type StrategySynthesisCandidateStore,
-  type StrategySynthesisCandidateV1,
 } from "../strategy-synthesis-candidates.ts";
 
 const StrategySynthesisCandidateParameters = Type.Object(
@@ -79,6 +84,8 @@ export interface StrategySynthesisCandidateToolOptions {
   readonly candidateStore: StrategySynthesisCandidateStore;
   readonly getProjectRoot: () => string | null;
   readonly getAgentRunGeneration: () => number | null;
+  /** Test seam; production uses the shared Slice A deadline. */
+  readonly livenessTimeoutMs?: number;
 }
 
 export interface StrategySynthesisCandidateToolDetails {
@@ -177,7 +184,7 @@ export function createPindieStrategySynthesisCandidateTool(
     description: "Propose one bounded inactive Strategy Synthesis hypothesis during an explicit /derive-global Run. Candidate creation is optional; cited packet evidence permits only a hypothesis and does not establish novelty, usefulness, superiority, or causality.",
     parameters: StrategySynthesisCandidateParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext) {
       const projectRoot = options.getProjectRoot();
       if (projectRoot === null) {
         throw new Error("Cannot create a Strategy Synthesis Candidate: no current project root is loaded. Use /derive-global from a loaded project.");
@@ -217,38 +224,18 @@ export function createPindieStrategySynthesisCandidateTool(
           candidateId: active.candidateId,
           createdAt: active.createdAt,
         });
-        try {
-          await options.candidateStore.save(candidate);
-        } catch (saveError) {
-          let existing: StrategySynthesisCandidateV1 | null;
-          try {
-            existing = await options.candidateStore.read(candidate.candidateId);
-          } catch (readError) {
-            throw new Error(
-              `Strategy Synthesis Candidate persistence/reconciliation failed after save error: could not read Candidate '${candidate.candidateId}' to establish durable state (${errorMessage(readError)}; original save error: ${errorMessage(saveError)}).`,
-            );
-          }
-          if (existing === null) throw saveError;
-
-          let validatedExisting: StrategySynthesisCandidateV1;
-          try {
-            validatedExisting = validateStrategySynthesisCandidateArtifact(existing, candidate.candidateId);
-          } catch (validationError) {
-            throw new Error(
-              `Strategy Synthesis Candidate persistence/reconciliation failed: existing Candidate '${candidate.candidateId}' is not a valid immutable artifact (${errorMessage(validationError)}; original save error: ${errorMessage(saveError)}).`,
-            );
-          }
-          if (
-            !isDeepStrictEqual(validatedExisting, candidate) ||
-            strategySynthesisCandidateArtifactFingerprint(validatedExisting) !== strategySynthesisCandidateArtifactFingerprint(candidate)
-          ) {
-            throw new Error(
-              `Strategy Synthesis Candidate persistence/reconciliation failed closed: existing Candidate '${candidate.candidateId}' does not exactly match the intended immutable artifact.`,
-            );
-          }
-          // The exact immutable artifact is already durable; reconcile the
-          // ambiguous save as the same publication without writing again.
-        }
+        await publishImmutableLearningArtifact({
+          label: "Strategy Synthesis",
+          timeoutMs: options.livenessTimeoutMs ?? PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+          signal,
+          save: (publicationSignal) => options.candidateStore.save(candidate, publicationSignal),
+          read: (publicationSignal) => options.candidateStore.read(candidate.candidateId, publicationSignal),
+          isExact: (existing) => {
+            const validatedExisting = validateStrategySynthesisCandidateArtifact(existing, candidate.candidateId);
+            return isDeepStrictEqual(validatedExisting, candidate) &&
+              strategySynthesisCandidateArtifactFingerprint(validatedExisting) === strategySynthesisCandidateArtifactFingerprint(candidate);
+          },
+        });
         if (!options.runtime.completePublication(active.attemptId)) {
           throw new Error("Strategy Synthesis Candidate was persisted but the /derive-global reservation was no longer current.");
         }
@@ -259,10 +246,13 @@ export function createPindieStrategySynthesisCandidateTool(
           artifactFingerprint: strategySynthesisCandidateArtifactFingerprint(candidate),
         });
       } catch (error) {
-        if (publicationClaimed && !publicationCompleted) options.runtime.releasePublication(active.attemptId);
-        throw error instanceof Error
-          ? error
-          : new Error(`Strategy Synthesis Candidate was not persisted: ${errorMessage(error)}`);
+        if (
+          publicationClaimed &&
+          !publicationCompleted &&
+          !(error instanceof PindieLearningArtifactPublicationUncertainError)
+        ) options.runtime.releasePublication(active.attemptId);
+        if (error instanceof Error) throw error;
+        throw new Error(`Strategy Synthesis Candidate was not persisted: ${errorMessage(error)}`);
       }
     },
   });

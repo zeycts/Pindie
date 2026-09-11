@@ -44,6 +44,7 @@ import {
 import { createTrustedStrategyPortfolioForProjectId } from "../src/strategy-portfolio.ts";
 import { createPromotedStrategyRevisionCatalog } from "../src/strategy-decisions.ts";
 import { getProjectId } from "../src/store.ts";
+import { PindieLearningArtifactPublicationUncertainError } from "../src/learning-artifact-liveness.ts";
 import { createPindieStrategySynthesisCandidateTool } from "../src/tools/strategy-synthesis-candidate.ts";
 
 const PROJECT_A = getProjectId("/synthesis-candidate-project-a");
@@ -384,6 +385,27 @@ test("Strategy Synthesis Candidate store is global, immutable, strict, and creat
   await assert.rejects(store.read("not-a-candidate"), /canonical lowercase UUID/i);
 });
 
+test("Synthesis Candidate store observes cancellation before the final hard link", async (t) => {
+  const baseDir = await mkdtemp(join(tmpdir(), "pindie-synthesis-candidate-cancel-"));
+  t.after(() => rm(baseDir, { recursive: true, force: true }));
+  const packet = await packetFixture();
+  const candidate = createStrategySynthesisCandidate({
+    proposal: proposal(packet),
+    sourceRefs: packet.sourceRefs.slice(0, 3),
+    derivationReceipt: packet,
+    candidateId: "55555555-5555-4555-8555-555555555555",
+    createdAt: "2026-08-21T00:00:00.000Z",
+  });
+  const controller = new AbortController();
+  const store = new FileStrategySynthesisCandidateStore({
+    baseDir,
+    beforeCommit: () => controller.abort(),
+  });
+  await assert.rejects(store.save(candidate, controller.signal));
+  assert.deepEqual(await readdir(store.candidateDirectory()), []);
+  assert.equal(await store.read(candidate.candidateId), null);
+});
+
 test("Synthesis Candidate tool resolves exact packet handles, publishes once, and never rereads discovery sources", async () => {
   const packet = await packetFixture();
   const active = binding(packet);
@@ -443,6 +465,54 @@ test("Synthesis Candidate tool resolves exact packet handles, publishes once, an
     /not an exact evidence handle/i,
   );
   assert.equal(saved.length, 1);
+});
+
+test("Synthesis Candidate uncertain publication keeps the global publication frontier sealed", async () => {
+  const packet = await packetFixture();
+  const active = binding(packet);
+  let publication: "idle" | "publishing" | "published" = "idle";
+  const runtime: StrategySynthesisCandidateRuntimeAccess = {
+    activeFor: (sessionId, invocationRoot, generation) =>
+      sessionId === active.sessionId && invocationRoot === active.invocationRoot && generation === active.agentRunGeneration
+        ? active
+        : null,
+    claimPublication: (attemptId) => {
+      if (attemptId !== active.attemptId || publication !== "idle") return false;
+      publication = "publishing";
+      return true;
+    },
+    releasePublication: (attemptId) => {
+      if (attemptId === active.attemptId && publication === "publishing") publication = "idle";
+    },
+    completePublication: () => false,
+  };
+  let saveStarted = false;
+  const tool = createPindieStrategySynthesisCandidateTool({
+    runtime,
+    candidateStore: {
+      save: async () => {
+        saveStarted = true;
+        await new Promise<never>(() => {});
+      },
+      read: async () => null,
+      readAll: async () => [],
+    },
+    getProjectRoot: () => "/repo",
+    getAgentRunGeneration: () => active.agentRunGeneration,
+    livenessTimeoutMs: 5,
+  });
+  const input = { ...proposal(packet), evidenceHandles: ["E1", "E2", "E3"] };
+  await assert.rejects(
+    tool.execute("uncertain", input, undefined, undefined, toolContext()),
+    (error: unknown) => error instanceof PindieLearningArtifactPublicationUncertainError,
+  );
+  assert.equal(saveStarted, true);
+  assert.equal(publication, "publishing");
+  await assert.rejects(
+    tool.execute("blind-retry", input, undefined, undefined, toolContext()),
+    /already published or is publishing/i,
+  );
+  assert.equal(publication, "publishing");
 });
 
 test("Synthesis Candidate publication reconciles ambiguous immutable writes without changing identity", async () => {

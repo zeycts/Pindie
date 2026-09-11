@@ -30,6 +30,8 @@ import {
   type SeedStrategy,
 } from "../src/strategies.ts";
 import { createPindiePolicySetTool } from "../src/tools/policy.ts";
+import { PindieLivenessTimeoutError } from "../src/liveness.ts";
+import { PindieLearningArtifactPublicationUncertainError } from "../src/learning-artifact-liveness.ts";
 import { createPindieStrategyCandidateTool } from "../src/tools/strategy-candidate.ts";
 import {
   assembleRunExperience,
@@ -341,6 +343,7 @@ test("Candidate control has a separate non-execution effect and successful creat
         saved.push(candidate);
       },
     },
+    candidateReader: { read: async () => null },
     getProjectRoot: () => "/project",
     getAgentRunGeneration: () => 4,
   });
@@ -367,6 +370,97 @@ test("Candidate control has a separate non-execution effect and successful creat
   );
 });
 
+test("Revision Candidate preparation timeout leaves the adaptation lease retryable and never saves", async () => {
+  const target = SEED_STRATEGIES.find((strategy) => strategy.id === "direct-action")!;
+  const records = [
+    source("one", experience("one", createPolicySnapshot({ approach: target.id }), "2026-01-01T00:00:00.000Z")),
+    source("two", experience("two", createPolicySnapshot({ approach: target.id }), "2026-01-02T00:00:00.000Z")),
+  ];
+  const adaptation = new AdaptationRuntime();
+  assert.equal(adaptation.establish("session", target, buildAdaptationPacket(target, records)), true);
+  assert.ok(adaptation.bind("session", 4));
+  let saves = 0;
+  const tool = createPindieStrategyCandidateTool({
+    adaptation,
+    experienceReader: { read: async () => new Promise<never>(() => {}) },
+    candidateStore: { save: async () => { saves += 1; } },
+    candidateReader: { read: async () => null },
+    getProjectRoot: () => "/project",
+    getAgentRunGeneration: () => 4,
+    livenessTimeoutMs: 5,
+  });
+  await assert.rejects(
+    tool.execute("hung-experience", proposal(["one", "two"]), undefined, undefined, candidateContext()),
+    (error: unknown) => error instanceof PindieLivenessTimeoutError,
+  );
+  assert.equal(saves, 0);
+  assert.equal(adaptation.hasAttempt, true);
+});
+
+test("Revision Candidate uncertain publication retires the adaptation lease and blocks blind retry", async () => {
+  const target = SEED_STRATEGIES.find((strategy) => strategy.id === "direct-action")!;
+  const records = [
+    source("one", experience("one", createPolicySnapshot({ approach: target.id }), "2026-01-01T00:00:00.000Z")),
+    source("two", experience("two", createPolicySnapshot({ approach: target.id }), "2026-01-02T00:00:00.000Z")),
+  ];
+  const adaptation = new AdaptationRuntime();
+  assert.equal(adaptation.establish("session", target, buildAdaptationPacket(target, records)), true);
+  assert.ok(adaptation.bind("session", 4));
+  let saveStarted = false;
+  const tool = createPindieStrategyCandidateTool({
+    adaptation,
+    experienceReader: { read: async () => ({ records, loadedRecords: 2, unsupportedSchema: 0, invalid: 0 }) },
+    candidateStore: { save: async () => {
+      saveStarted = true;
+      await new Promise<never>(() => {});
+    } },
+    candidateReader: { read: async () => null },
+    getProjectRoot: () => "/project",
+    getAgentRunGeneration: () => 4,
+    livenessTimeoutMs: 5,
+  });
+  await assert.rejects(
+    tool.execute("hung-save", proposal(["one", "two"]), undefined, undefined, candidateContext()),
+    (error: unknown) => error instanceof PindieLearningArtifactPublicationUncertainError,
+  );
+  assert.equal(saveStarted, true);
+  assert.equal(adaptation.hasAttempt, false);
+  await assert.rejects(
+    tool.execute("blind-retry", proposal(["one", "two"]), undefined, undefined, candidateContext()),
+    /without a live adaptation attempt/i,
+  );
+});
+
+test("Revision Candidate save failure reconciles an exact durable artifact and consumes the lease", async () => {
+  const target = SEED_STRATEGIES.find((strategy) => strategy.id === "direct-action")!;
+  const records = [
+    source("one", experience("one", createPolicySnapshot({ approach: target.id }), "2026-01-01T00:00:00.000Z")),
+    source("two", experience("two", createPolicySnapshot({ approach: target.id }), "2026-01-02T00:00:00.000Z")),
+  ];
+  const adaptation = new AdaptationRuntime();
+  assert.equal(adaptation.establish("session", target, buildAdaptationPacket(target, records)), true);
+  assert.ok(adaptation.bind("session", 4));
+  let durable: any = null;
+  let saves = 0;
+  const tool = createPindieStrategyCandidateTool({
+    adaptation,
+    experienceReader: { read: async () => ({ records, loadedRecords: 2, unsupportedSchema: 0, invalid: 0 }) },
+    candidateStore: { save: async (_root, candidate) => {
+      saves += 1;
+      durable = structuredClone(candidate);
+      throw new Error("acknowledgement lost after immutable publication");
+    } },
+    candidateReader: { read: async (_root, candidateId) => durable?.candidateId === candidateId ? durable : null },
+    getProjectRoot: () => "/project",
+    getAgentRunGeneration: () => 4,
+    livenessTimeoutMs: 50,
+  });
+  const result = await tool.execute("reconcile", proposal(["one", "two"]), undefined, undefined, candidateContext());
+  assert.match(result.content[0]!.text, /Candidate created/);
+  assert.equal(saves, 1);
+  assert.equal(adaptation.hasAttempt, false);
+});
+
 test("Candidate persistence is project-local, schema-v1, UUID-v4, and atomic", async (t) => {
   const baseDir = await mkdtemp(join(tmpdir(), "pindie-candidate-"));
   t.after(() => rm(baseDir, { recursive: true, force: true }));
@@ -386,6 +480,26 @@ test("Candidate persistence is project-local, schema-v1, UUID-v4, and atomic", a
   assert.equal("fingerprint" in persisted, false);
   assert.equal((await readdir(store.strategyCandidateDirectory("/project-b")).catch(() => [])).length, 0);
   await assert.rejects(store.save("/project-a", candidate), /already exists/);
+});
+
+test("Revision Candidate store observes cancellation before the final rename", async (t) => {
+  const baseDir = await mkdtemp(join(tmpdir(), "pindie-candidate-cancel-"));
+  t.after(() => rm(baseDir, { recursive: true, force: true }));
+  const target = SEED_STRATEGIES.find((strategy) => strategy.id === "direct-action")!;
+  const candidate = createStrategyRevisionCandidate({
+    target,
+    proposal: proposal(["one", "two"]),
+    candidateId: "00000000-0000-4000-8000-000000000008",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  const controller = new AbortController();
+  const store = new FileStrategyCandidateStore({
+    baseDir,
+    beforeCommit: () => controller.abort(),
+  });
+  await assert.rejects(store.save("/project-a", candidate, controller.signal));
+  assert.deepEqual(await readdir(store.strategyCandidateDirectory("/project-a")), []);
+  assert.equal(await store.read("/project-a", candidate.candidateId), null);
 });
 
 test("adaptation-control calls do not create normal execution or policy telemetry", () => {
