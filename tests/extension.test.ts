@@ -263,6 +263,11 @@ class ExtensionTestStore implements PindieStateStore {
     readonly markEntered: () => void;
     readonly pending: Promise<void>;
   } | null = null;
+  private nextSaveBarrier: {
+    readonly markEntered: () => void;
+    readonly pending: Promise<void>;
+    readonly markFinished: () => void;
+  } | null = null;
 
   constructor(entries: Array<[string, PindieState]> = []) {
     for (const [root, state] of entries) this.states.set(root, state);
@@ -290,10 +295,34 @@ class ExtensionTestStore implements PindieStateStore {
     return this.states.get(projectRoot) ?? EMPTY_STATE;
   }
 
+  pauseNextSave(): {
+    entered: Promise<void>;
+    release: () => void;
+    finished: Promise<void>;
+  } {
+    let markEntered!: () => void;
+    let release!: () => void;
+    let markFinished!: () => void;
+    const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const finished = new Promise<void>((resolve) => { markFinished = resolve; });
+    this.nextSaveBarrier = { markEntered, pending, markFinished };
+    return { entered, release, finished };
+  }
+
   async save(projectRoot: string, state: PindieState): Promise<void> {
     this.saves.push({ projectRoot, state });
     if (this.saveError) throw this.saveError;
     this.states.set(projectRoot, state);
+    const barrier = this.nextSaveBarrier;
+    this.nextSaveBarrier = null;
+    if (barrier === null) return;
+    barrier.markEntered();
+    try {
+      await barrier.pending;
+    } finally {
+      barrier.markFinished();
+    }
   }
 
   async withProjectLock<T>(_projectRoot: string, operation: () => Promise<T>): Promise<T> {
@@ -3384,6 +3413,132 @@ test("T45 successful write invalidates verification and persists it", async () =
   assert.equal(harness.integration.runtime.state.task?.verification.stale, true);
   assert.equal(harness.store.states.get("/repo")?.task?.verification.stale, true);
   assert.equal(harness.store.saves.length, 1);
+});
+
+test("Slice B ambiguous tool_call settles after a baseline fingerprint deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let markCaptureStarted!: () => void;
+  let releaseCapture!: () => void;
+  const captureStarted = new Promise<void>((resolve) => { markCaptureStarted = resolve; });
+  const capture = new Promise<{ kind: "known"; digest: string }>((resolve) => {
+    releaseCapture = () => resolve({ kind: "known", digest: "late-baseline" });
+  });
+  const harness = createHarness([["/repo", verifiedState()]], {}, {
+    captureProjectFingerprint: async () => {
+      markCaptureStarted();
+      return capture;
+    },
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+
+  const call = callGuard(harness, toolCall("bash", { command: "mutate" }, "baseline-liveness"));
+  await captureStarted;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+  assert.equal(await call, undefined);
+
+  const result = await harness.api.handler("tool_result")(
+    toolResult(
+      "bash",
+      false,
+      "baseline-liveness",
+      [{ type: "text", text: "external tool output" }],
+      { command: "mutate" },
+    ),
+    context("/repo"),
+  ) as { content: Array<{ type: string; text?: string }> };
+  assert.equal(result.content[0]?.text, "external tool output");
+  assert.match(textOf(result), /Project mutation changed authoritative verification state/);
+  assert.equal(harness.integration.runtime.state.task?.verification.stale, true);
+
+  releaseCapture();
+  await nextTurn();
+});
+
+test("Slice B ambiguous tool_result settles after an after-fingerprint deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let captureCount = 0;
+  let markSettlementStarted!: () => void;
+  let releaseSettlement!: () => void;
+  const settlementStarted = new Promise<void>((resolve) => { markSettlementStarted = resolve; });
+  const settlement = new Promise<{ kind: "known"; digest: string }>((resolve) => {
+    releaseSettlement = () => resolve({ kind: "known", digest: "baseline" });
+  });
+  const harness = createHarness([["/repo", verifiedState()]], {}, {
+    captureProjectFingerprint: async () => {
+      captureCount += 1;
+      if (captureCount === 1) return { kind: "known", digest: "baseline" };
+      markSettlementStarted();
+      return settlement;
+    },
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  assert.equal(await callGuard(harness, toolCall("bash", { command: "mutate" }, "settlement-liveness")), undefined);
+
+  const resultPromise = harness.api.handler("tool_result")(
+    toolResult(
+      "bash",
+      false,
+      "settlement-liveness",
+      [{ type: "text", text: "external tool output" }],
+      { command: "mutate" },
+    ),
+    context("/repo"),
+  );
+  await settlementStarted;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+  const result = await resultPromise as { content: Array<{ type: string; text?: string }> };
+  assert.equal(result.content[0]?.text, "external tool output");
+  assert.match(textOf(result), /Project mutation changed authoritative verification state/);
+  assert.equal(harness.integration.runtime.state.task?.verification.stale, true);
+  assert.equal(harness.integration.stateUnavailableReason, null);
+
+  releaseSettlement();
+  await nextTurn();
+});
+
+test("Slice B uncertain verification invalidation preserves tool output and fences late State publication", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const harness = createHarness([["/repo", verifiedState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  assert.equal(await callGuard(harness, toolCall("edit", {}, "uncertain-invalidation")), undefined);
+  const save = harness.store.pauseNextSave();
+
+  const resultPromise = harness.api.handler("tool_result")(
+    toolResult(
+      "edit",
+      false,
+      "uncertain-invalidation",
+      [{ type: "text", text: "external tool output" }],
+    ),
+    context("/repo"),
+  );
+  await save.entered;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+  const result = await resultPromise as { content: Array<{ type: string; text?: string }> };
+
+  assert.equal(result.content[0]?.text, "external tool output");
+  assert.match(
+    textOf(result),
+    /could not establish verification freshness after this project mutation; semantic authority is unavailable for this Run/i,
+  );
+  assert.doesNotMatch(textOf(result), /Current Pindie Action Eligibility:/);
+  assert.match(harness.integration.stateUnavailableReason ?? "", /semantic authority is unavailable/i);
+  assert.equal(harness.integration.runtime.projectRoot, null);
+  assert.equal(harness.integration.core.run.authoritativeState, null);
+  await assert.rejects(
+    harness.integration.runtime.load("/repo"),
+    /semantic State mutation is still pending/i,
+  );
+
+  save.release();
+  await save.finished;
+  await nextTurn();
+  assert.equal(harness.integration.runtime.projectRoot, null);
+  assert.equal(harness.integration.runtime.state.task, null);
+  assert.equal(harness.integration.core.run.authoritativeState, null);
 });
 
 test("verification invalidation commits when status presentation throws", async () => {

@@ -5,6 +5,12 @@ import type {
 
 import type { ToolEffect } from "./execution-semantics.ts";
 import {
+  PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+  PindieLivenessAbortError,
+  PindieLivenessTimeoutError,
+  runBoundedOperation,
+} from "./liveness.ts";
+import {
   captureProjectFingerprint as defaultCaptureProjectFingerprint,
   type ProjectFingerprint,
 } from "./project-mutation.ts";
@@ -42,10 +48,6 @@ export interface CapturedEvidenceResult {
 
 export interface ExecutionIntegrationOptions {
   captureProjectFingerprint?: (projectRoot: string) => Promise<ProjectFingerprint>;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Runtime-only execution bookkeeping for mutation freshness and evidence provenance. */
@@ -124,11 +126,10 @@ export class ExecutionIntegration {
     if (effect.projectMutation === "ambiguous") {
       if (this.mutationWindow === null) {
         let baseline: ProjectFingerprint;
-        try {
-          baseline = await this.captureProjectFingerprint(projectRoot);
-        } catch (error) {
-          baseline = { kind: "unknown", reason: errorMessage(error) };
-        }
+        baseline = await this.captureProjectFingerprintBounded(
+          projectRoot,
+          "Pindie project mutation baseline fingerprint",
+        );
         this.mutationWindow = {
           projectRoot,
           baseline,
@@ -173,12 +174,10 @@ export class ExecutionIntegration {
     if (window.pendingToolCallIds.size === 0) this.mutationWindow = null;
     if (window.baseline.kind === "unknown") return "invalidate";
 
-    let after: ProjectFingerprint;
-    try {
-      after = await this.captureProjectFingerprint(window.projectRoot);
-    } catch (error) {
-      after = { kind: "unknown", reason: errorMessage(error) };
-    }
+    const after = await this.captureProjectFingerprintBounded(
+      window.projectRoot,
+      "Pindie project mutation settlement fingerprint",
+    );
     return after.kind === "known" && after.digest === window.baseline.digest
       ? "unchanged"
       : "invalidate";
@@ -226,6 +225,27 @@ export class ExecutionIntegration {
         },
       ],
     };
+  }
+
+  private async captureProjectFingerprintBounded(
+    projectRoot: string,
+    label: string,
+  ): Promise<ProjectFingerprint> {
+    try {
+      return await runBoundedOperation({
+        label,
+        timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+        run: () => this.captureProjectFingerprint(projectRoot),
+      });
+    } catch (error) {
+      if (error instanceof PindieLivenessTimeoutError) {
+        return { kind: "unknown", reason: "Project fingerprint capture timed out." };
+      }
+      if (error instanceof PindieLivenessAbortError) {
+        return { kind: "unknown", reason: "Project fingerprint capture was aborted." };
+      }
+      return { kind: "unknown", reason: "Project fingerprint capture failed." };
+    }
   }
 
   private recordAuthorizedExecution(

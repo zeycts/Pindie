@@ -96,7 +96,10 @@ import type { RunActivityTracker } from "./run-activity.ts";
 import type { RunCostTracker } from "./run-cost.ts";
 import type { RunTimer } from "./run-timer.ts";
 import type { TaskMetricsTracker } from "./task-metrics.ts";
-import type { PindieRuntime } from "./runtime.ts";
+import {
+  PindieStateMutationUncertainError,
+  type PindieRuntime,
+} from "./runtime.ts";
 import {
   deriveCapabilities,
   type PindieCapability,
@@ -518,27 +521,35 @@ function registerComposedPindieExtension(
     projectRemoteSemantics();
   };
 
-  const invalidateVerificationAfterProjectMutation = async (): Promise<string | null> => {
+  const invalidateVerificationAfterProjectMutation = async (): Promise<{
+    update: string | null;
+    authorityUnavailable: boolean;
+  }> => {
     execution.advanceEvidenceGeneration();
     if (
       runtime.projectRoot === null ||
       run.stateUnavailableReason !== null ||
       !runtime.state.task
     ) {
-      return null;
+      return { update: null, authorityUnavailable: false };
     }
     const beforeVerification = structuredClone(runtime.state.task.verification);
     const beforeCompleted = runtime.state.task.completed;
     const hadCurrentChecks = beforeVerification.checks.length > 0;
     try {
-      const result = await runtime.dispatch({ type: "invalidate_verification" });
+      const result = await runtime.dispatchBounded({ type: "invalidate_verification" });
       if (!result.ok) {
         markUnavailable(
           `Pindie could not invalidate verification after project mutation: ${result.error.message}`,
         );
-        return null;
+        return { update: null, authorityUnavailable: false };
       }
     } catch (error) {
+      if (error instanceof PindieStateMutationUncertainError) {
+        const warning = "Pindie could not establish verification freshness after this project mutation; semantic authority is unavailable for this Run.";
+        markUnavailable(warning);
+        return { update: warning, authorityUnavailable: true };
+      }
       if (error instanceof StateLockBusyError) {
         presentation.refreshStatus();
         throw error;
@@ -554,13 +565,16 @@ function registerComposedPindieExtension(
       !isDeepStrictEqual(beforeVerification, afterTask.verification)
     );
     semanticStateChanged();
-    if (!semanticChanged) return null;
+    if (!semanticChanged) return { update: null, authorityUnavailable: false };
     const derivation = run.deriveSnapshot();
-    return renderPindieProjectMutationUpdate(
-      runtime.state,
-      derivation.ok ? derivation.snapshot : undefined,
-      hadCurrentChecks,
-    );
+    return {
+      update: renderPindieProjectMutationUpdate(
+        runtime.state,
+        derivation.ok ? derivation.snapshot : undefined,
+        hadCurrentChecks,
+      ),
+      authorityUnavailable: false,
+    };
   };
 
   const renderEligibilityAfterSemanticChange = (
@@ -1210,15 +1224,23 @@ function registerComposedPindieExtension(
     );
     if (mutationSettlement === "ignore") return;
     if (mutationSettlement === "invalidate") {
-      const update = await invalidateVerificationAfterProjectMutation();
-      if (update === null) return;
+      const invalidation = await invalidateVerificationAfterProjectMutation();
+      if (invalidation.authorityUnavailable) {
+        return {
+          content: [
+            ...event.content,
+            { type: "text", text: invalidation.update! },
+          ],
+        };
+      }
+      if (invalidation.update === null) return;
       const eligibility = renderEligibilityAfterSemanticChange(
         authorizedExecution.capabilitiesAtCall,
       );
       return {
         content: [
           ...event.content,
-          { type: "text", text: update },
+          { type: "text", text: invalidation.update },
           ...(eligibility === null ? [] : [{ type: "text" as const, text: eligibility }]),
         ],
       };

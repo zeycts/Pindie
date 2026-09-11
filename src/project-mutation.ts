@@ -47,9 +47,8 @@ export async function runProjectFingerprintGit(
   return new Promise((resolveResult, reject) => {
     const chunks: Buffer[] = [];
     let bytes = 0;
-    let overflow = false;
     let settled = false;
-    let timedOut = false;
+    let terminationCause: "timeout" | "overflow" | undefined;
     let escalation: ReturnType<typeof setTimeout> | undefined;
     const child = spawnGit("git", invocation.argv, {
       cwd: invocation.cwd, env: invocation.env, shell: false, detached: false,
@@ -62,16 +61,25 @@ export async function runProjectFingerprintGit(
       if (escalation) clearTimeout(escalation);
       callback();
     };
-    const terminate = () => {
+    const terminate = (cause: "timeout" | "overflow") => {
+      if (settled || terminationCause !== undefined) return;
+      terminationCause = cause;
       child.kill("SIGTERM");
-      escalation = setTimeout(() => child.kill("SIGKILL"), 250);
+      escalation = setTimeout(() => {
+        child.kill("SIGKILL");
+        finish(() => reject(
+          cause === "timeout"
+            ? new Error("Git fingerprint timed out.")
+            : new Error("Git fingerprint path list exceeded its byte bound."),
+        ));
+      }, 250);
     };
-    const timer = setTimeout(() => { timedOut = true; terminate(); }, invocation.timeoutMs);
+    const timer = setTimeout(() => terminate("timeout"), invocation.timeoutMs);
     child.stdout?.on("data", (chunk: Buffer) => {
+      if (settled || terminationCause !== undefined) return;
       const next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       if (bytes + next.length > invocation.maxOutputBytes) {
-        overflow = true;
-        terminate();
+        terminate("overflow");
         return;
       }
       bytes += next.length;
@@ -79,8 +87,8 @@ export async function runProjectFingerprintGit(
     });
     child.on("error", (error) => finish(() => reject(error)));
     child.on("close", (code) => finish(() => {
-      if (timedOut) return reject(new Error("Git fingerprint timed out."));
-      if (overflow) return reject(new Error("Git fingerprint path list exceeded its byte bound."));
+      if (terminationCause === "timeout") return reject(new Error("Git fingerprint timed out."));
+      if (terminationCause === "overflow") return reject(new Error("Git fingerprint path list exceeded its byte bound."));
       if (code !== 0) return reject(new Error(`Git fingerprint enumeration failed (exit ${code ?? "unknown"}).`));
       resolveResult(Buffer.concat(chunks));
     }));
