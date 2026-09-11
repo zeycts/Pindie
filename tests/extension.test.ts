@@ -2266,10 +2266,12 @@ test("Remote-enabled wiring observes public input without altering Pindie tools"
   assert.ok(Array.isArray(sent));
 });
 
-test("Pi session_info_changed awaits presentation rename for the mapped active Session", async () => {
+test("Pi session_info_changed projects presentation rename for the mapped active Session", async () => {
   const titles: string[] = [];
   let markPresentationReady!: () => void;
   const presentationReady = new Promise<void>((resolve) => { markPresentationReady = resolve; });
+  let markRenameReady!: () => void;
+  const renameReady = new Promise<void>((resolve) => { markRenameReady = resolve; });
   let presentationUpdates = 0;
   const surface: RemoteSurface = {
     ensureProject: async () => ({ channelId: "channel" }),
@@ -2279,6 +2281,7 @@ test("Pi session_info_changed awaits presentation rename for the mapped active S
       titles.push(presentation.title);
       presentationUpdates += 1;
       if (presentationUpdates === 1) markPresentationReady();
+      if (presentationUpdates === 2) markRenameReady();
     },
   };
   const companion = new RemoteCompanion(surface);
@@ -2287,10 +2290,58 @@ test("Pi session_info_changed awaits presentation rename for the mapped active S
   await api.handler("session_start")({ type: "session_start", reason: "startup" }, ui);
   await presentationReady;
   const before = titles.length;
-  await api.handler("session_info_changed")({ type: "session_info_changed", name: "Discord Remote Test 2" }, ui);
+  const handlerResult = api.handler("session_info_changed")({ type: "session_info_changed", name: "Discord Remote Test 2" }, ui);
+  assert.equal(handlerResult, undefined);
+  await renameReady;
   assert.equal(companion.activeSessionId, "remote-session");
   assert.equal(titles.length, before + 1);
   assert.equal(titles.at(-1), "Discord Remote Test 2");
+});
+
+test("detached Remote session rename cannot hold the Pi lifecycle handler open", async () => {
+  let markPresentationReady!: () => void;
+  const presentationReady = new Promise<void>((resolve) => { markPresentationReady = resolve; });
+  let markRenameEntered!: () => void;
+  const renameEntered = new Promise<void>((resolve) => { markRenameEntered = resolve; });
+  const neverSettles = new Promise<void>(() => undefined);
+  let presentationUpdates = 0;
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: "header" }),
+    send: async () => undefined,
+    updateSessionPresentation: async () => {
+      presentationUpdates += 1;
+      if (presentationUpdates === 1) {
+        markPresentationReady();
+        return;
+      }
+      markRenameEntered();
+      await neverSettles;
+    },
+  };
+  const companion = new RemoteCompanion(surface);
+  const { api } = createHarness([], {}, { remoteCompanion: { companion, guildId: "guild" } });
+  const ui = context("/repo", [{ id: "u", message: { role: "user", content: "Original prompt" } }]);
+  await api.handler("session_start")({ type: "session_start", reason: "startup" }, ui);
+  await presentationReady;
+  assert.equal(companion.activeSessionId, "remote-session");
+  const handlerResult = api.handler("session_info_changed")({ type: "session_info_changed", name: "Never Settles" }, ui);
+  assert.equal(handlerResult, undefined);
+  await renameEntered;
+});
+
+test("detached Remote session rename contains a rejection", async () => {
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: "header" }),
+    send: async () => undefined,
+    updateSessionPresentation: async () => undefined,
+  };
+  const companion = new RemoteCompanion(surface);
+  const { api } = createHarness([], {}, { remoteCompanion: { companion, guildId: "guild" } });
+  const ui = context("/repo", []);
+  companion.rename = async () => { throw new Error("Remote unavailable"); };
+  assert.equal(api.handler("session_info_changed")({ type: "session_info_changed", name: "Rejected" }, ui), undefined);
 });
 
 test("Discord startup is deferred from session_start and current-session shutdown cleans it up", async () => {

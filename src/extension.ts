@@ -709,8 +709,10 @@ function registerComposedPindieExtension(
       if (!entries) return;
       void options.remoteCompanion!.companion.catchUp(entries).catch(() => undefined);
     });
-    pi.on("session_info_changed", async (event, _ctx) => {
-      await options.remoteCompanion!.companion.rename(event.name ?? "");
+    pi.on("session_info_changed", (event) => {
+      void options.remoteCompanion!.companion
+        .rename(event.name ?? "")
+        .catch(() => undefined);
     });
     pi.on("ui_prompt_start", () => options.remoteCompanion!.companion.setLocalUiPrompt(true));
     pi.on("ui_prompt_end", () => options.remoteCompanion!.companion.setLocalUiPrompt(false));
