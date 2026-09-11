@@ -5,10 +5,14 @@ import { Value } from "typebox/value";
 
 import {
   type ProjectMemoryCapture,
+  type ProjectMemoryCaptureContext,
   type ProjectMemoryCaptureResult,
   type ProjectMemorySemanticInput,
   type ProjectMemorySink,
 } from "../src/project-memory.ts";
+import {
+  PindieLivenessAbortError,
+} from "../src/liveness.ts";
 import type { PindieState } from "../src/state.ts";
 import { createPindieMemoryCaptureTool } from "../src/tools/memory.ts";
 
@@ -16,11 +20,45 @@ class FakeMemorySink implements ProjectMemorySink {
   readonly captures: ProjectMemoryCapture[] = [];
   result: ProjectMemoryCaptureResult = { ok: true, outcome: "created" };
   thrown: unknown = null;
+  captureSignal: AbortSignal | undefined;
 
-  async capture(memory: ProjectMemoryCapture): Promise<ProjectMemoryCaptureResult> {
+  async capture(
+    memory: ProjectMemoryCapture,
+    context: ProjectMemoryCaptureContext = {},
+  ): Promise<ProjectMemoryCaptureResult> {
     this.captures.push(memory);
+    this.captureSignal = context.signal;
     if (this.thrown !== null) throw this.thrown;
     return this.result;
+  }
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+  readonly reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+class ControlledMemorySink implements ProjectMemorySink {
+  readonly outcome = deferred<ProjectMemoryCaptureResult>();
+  captureCalls = 0;
+  captureSignal: AbortSignal | undefined;
+
+  capture(
+    _memory: ProjectMemoryCapture,
+    context: ProjectMemoryCaptureContext = {},
+  ): Promise<ProjectMemoryCaptureResult> {
+    this.captureCalls += 1;
+    this.captureSignal = context.signal;
+    return this.outcome.promise;
   }
 }
 
@@ -53,11 +91,12 @@ function semanticParams(
 }
 
 function createTool(
-  sink: FakeMemorySink,
+  sink: ProjectMemorySink,
   options: {
     readonly projectRoot?: string | null;
     readonly state?: PindieState | null;
     readonly now?: () => Date;
+    readonly livenessTimeoutMs?: number;
   } = {},
 ) {
   return createPindieMemoryCaptureTool({
@@ -67,6 +106,7 @@ function createTool(
       : options.projectRoot,
     getState: () => options.state === undefined ? taskState(null) : options.state,
     now: options.now,
+    livenessTimeoutMs: options.livenessTimeoutMs,
   });
 }
 
@@ -287,6 +327,94 @@ test("unexpected sink throws become generic non-leaking failures", async () => {
   assert.match(text, /Work Memory capture failed: external Work Memory sink failed\./);
   assert.doesNotMatch(text, new RegExp(secret));
   assert.match(text, /Continue the primary work; do not retry automatically\./);
+});
+
+test("a never-settling sink reaches a bounded unknown outcome and receives an aborted signal", async () => {
+  const sink = new ControlledMemorySink();
+  const result = await createTool(sink, { livenessTimeoutMs: 5 }).execute(
+    "capture",
+    semanticParams(),
+  );
+  const text = textOf(result);
+
+  assert.match(text, /Work Memory capture outcome unknown/);
+  assert.match(text, /external sink timed out after capture started/);
+  assert.match(text, /Continue the primary work; do not retry automatically\./);
+  assert.doesNotMatch(text, /capture failed/);
+  assert.equal(sink.captureCalls, 1);
+  assert.ok(sink.captureSignal);
+  assert.equal(sink.captureSignal.aborted, true);
+});
+
+test("an already-aborted caller does not invoke the Work Memory sink or claim uncertainty", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const sink = new ControlledMemorySink();
+
+  await assert.rejects(
+    createTool(sink, { livenessTimeoutMs: 5 }).execute(
+      "capture",
+      semanticParams(),
+      controller.signal,
+    ),
+    (error: unknown) => error instanceof PindieLivenessAbortError,
+  );
+  assert.equal(sink.captureCalls, 0);
+});
+
+test("a caller abort after sink start propagates cancellation without an unknown-result claim", async () => {
+  const controller = new AbortController();
+  const sink = new ControlledMemorySink();
+  const pending = createTool(sink, { livenessTimeoutMs: 10_000 }).execute(
+    "capture",
+    semanticParams(),
+    controller.signal,
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(sink.captureCalls, 1);
+  controller.abort();
+  await assert.rejects(
+    pending,
+    (error: unknown) => error instanceof PindieLivenessAbortError,
+  );
+  assert.ok(sink.captureSignal);
+  assert.equal(sink.captureSignal.aborted, true);
+});
+
+test("late Work Memory sink resolution and rejection are observed without retry or second settlement", async () => {
+  const resolvingSink = new ControlledMemorySink();
+  const resolvingCall = createTool(resolvingSink, { livenessTimeoutMs: 5 }).execute(
+    "capture",
+    semanticParams(),
+  );
+  const unknownResult = await resolvingCall;
+  assert.match(textOf(unknownResult), /outcome unknown/);
+  resolvingSink.outcome.resolve({ ok: true, outcome: "created" });
+  assert.deepEqual(await resolvingCall, unknownResult);
+  assert.equal(resolvingSink.captureCalls, 1);
+
+  const rejectingSink = new ControlledMemorySink();
+  const rejectingCall = createTool(rejectingSink, { livenessTimeoutMs: 5 }).execute(
+    "capture",
+    semanticParams(),
+  );
+  const rejectedUnknownResult = await rejectingCall;
+  const lateError = new Error("secret late external failure");
+  let unhandled = false;
+  const onUnhandled = (reason: unknown): void => {
+    if (reason === lateError) unhandled = true;
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    rejectingSink.outcome.reject(lateError);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+  assert.deepEqual(await rejectingCall, rejectedUnknownResult);
+  assert.equal(rejectingSink.captureCalls, 1);
+  assert.equal(unhandled, false);
 });
 
 test("unavailable project root fails before the sink is called", async () => {

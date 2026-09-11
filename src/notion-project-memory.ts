@@ -2,6 +2,7 @@ import type { Client } from "@notionhq/client";
 
 import type {
   ProjectMemoryCapture,
+  ProjectMemoryCaptureContext,
   ProjectMemoryCaptureResult,
   ProjectMemorySink,
   ProjectMemoryType,
@@ -32,6 +33,17 @@ export interface NotionProjectMemorySinkOptions {
 type SinkFailure = Extract<ProjectMemoryCaptureResult, { readonly ok: false }>;
 type OperationResult<T> = { readonly ok: true; readonly value: T } | SinkFailure;
 type CreatePageArguments = Parameters<Client["pages"]["create"]>[0];
+
+class NotionCaptureAbortedError extends Error {
+  constructor() {
+    super("Notion Work Memory capture was aborted.");
+    this.name = "NotionCaptureAbortedError";
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new NotionCaptureAbortedError();
+}
 type PageProperties = NonNullable<CreatePageArguments["properties"]>;
 
 interface ExistingMemoryPage {
@@ -69,11 +81,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 async function callNotion<T>(
   operation: string,
+  signal: AbortSignal | undefined,
   invoke: () => Promise<T>,
 ): Promise<OperationResult<T>> {
+  throwIfAborted(signal);
   try {
-    return { ok: true, value: await invoke() };
-  } catch {
+    const value = await invoke();
+    throwIfAborted(signal);
+    return { ok: true, value };
+  } catch (error) {
+    if (error instanceof NotionCaptureAbortedError || signal?.aborted) {
+      throw new NotionCaptureAbortedError();
+    }
     return failure(`Notion ${operation} failed.`);
   }
 }
@@ -270,8 +289,12 @@ export class NotionProjectMemorySink implements ProjectMemorySink {
     this.#dataSourceId = options.dataSourceId.trim();
   }
 
-  async capture(memory: ProjectMemoryCapture): Promise<ProjectMemoryCaptureResult> {
-    const queried = await this.#queryActive(memory.scope);
+  async capture(
+    memory: ProjectMemoryCapture,
+    context: ProjectMemoryCaptureContext = {},
+  ): Promise<ProjectMemoryCaptureResult> {
+    const { signal } = context;
+    const queried = await this.#queryActive(memory.scope, signal);
     if (!queried.ok) return queried;
 
     const title = memory.memory.trim();
@@ -284,7 +307,7 @@ export class NotionProjectMemorySink implements ProjectMemorySink {
     }
 
     if (memory.supersedes === undefined) {
-      return this.#ensureActive(memory, newMatches[0]);
+      return this.#ensureActive(memory, newMatches[0], signal);
     }
 
     const supersedes = memory.supersedes.trim();
@@ -299,10 +322,10 @@ export class NotionProjectMemorySink implements ProjectMemorySink {
       return failure("Notion supersede target is ambiguous.");
     }
 
-    const ensured = await this.#ensureActive(memory, newMatches[0]);
+    const ensured = await this.#ensureActive(memory, newMatches[0], signal);
     if (!ensured.ok) return ensured;
 
-    const superseded = await callNotion("supersede update", () => this.#client.pages.update({
+    const superseded = await callNotion("supersede update", signal, () => this.#client.pages.update({
       page_id: oldMatches[0]!.id,
       properties: { Status: { select: { name: "Superseded" } } },
     }));
@@ -313,13 +336,16 @@ export class NotionProjectMemorySink implements ProjectMemorySink {
     return { ok: true, outcome: "superseded" };
   }
 
-  async #queryActive(scope: string): Promise<OperationResult<readonly ExistingMemoryPage[]>> {
+  async #queryActive(
+    scope: string,
+    signal: AbortSignal | undefined,
+  ): Promise<OperationResult<readonly ExistingMemoryPage[]>> {
     const pages: ExistingMemoryPage[] = [];
     const seenCursors = new Set<string>();
     let cursor: string | undefined;
 
     do {
-      const queried = await callNotion("data source query", () => this.#client.dataSources.query({
+      const queried = await callNotion("data source query", signal, () => this.#client.dataSources.query({
         data_source_id: this.#dataSourceId,
         filter: {
           and: [
@@ -371,9 +397,10 @@ export class NotionProjectMemorySink implements ProjectMemorySink {
   async #ensureActive(
     memory: ProjectMemoryCapture,
     existing: ExistingMemoryPage | undefined,
+    signal: AbortSignal | undefined,
   ): Promise<ProjectMemoryCaptureResult> {
     if (existing === undefined) {
-      const created = await callNotion("page create", () => this.#client.pages.create({
+      const created = await callNotion("page create", signal, () => this.#client.pages.create({
         parent: { type: "data_source_id", data_source_id: this.#dataSourceId },
         properties: memoryProperties(memory, memory.date),
         markdown: buildBody(memory),
@@ -385,7 +412,7 @@ export class NotionProjectMemorySink implements ProjectMemorySink {
       return { ok: true, outcome: "created" };
     }
 
-    const retrieved = await callNotion("page Markdown retrieval", () =>
+    const retrieved = await callNotion("page Markdown retrieval", signal, () =>
       this.#client.pages.retrieveMarkdown({ page_id: existing.id })
     );
     if (!retrieved.ok) return retrieved;
@@ -416,7 +443,7 @@ export class NotionProjectMemorySink implements ProjectMemorySink {
       return { ok: true, outcome: "duplicate" };
     }
 
-    const updated = await callNotion("page property update", () => this.#client.pages.update({
+    const updated = await callNotion("page property update", signal, () => this.#client.pages.update({
       page_id: existing.id,
       properties: memoryProperties(memory, existing.date, {
         source: mergedSource,
@@ -429,7 +456,7 @@ export class NotionProjectMemorySink implements ProjectMemorySink {
     }
 
     if (!bodyMatches) {
-      const bodyUpdated = await callNotion("page Markdown update", () => this.#client.pages.updateMarkdown({
+      const bodyUpdated = await callNotion("page Markdown update", signal, () => this.#client.pages.updateMarkdown({
         page_id: existing.id,
         type: "replace_content",
         replace_content: { new_str: buildBody(memory) },

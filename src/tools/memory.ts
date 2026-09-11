@@ -11,6 +11,12 @@ import {
   type ProjectMemoryType,
 } from "../project-memory.ts";
 import type { PindieState } from "../state.ts";
+import {
+  PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+  PindieLivenessAbortError,
+  PindieLivenessTimeoutError,
+  runBoundedOperation,
+} from "../liveness.ts";
 
 const MEMORY_TYPES: readonly ProjectMemoryType[] = [
   "decision",
@@ -60,6 +66,8 @@ export interface PindieMemoryToolOptions {
   readonly getState: () => PindieState | null;
   /** Harness clock seam; the default uses the local machine clock. */
   readonly now?: () => Date;
+  /** Test seam; production uses the shared Slice A deadline. */
+  readonly livenessTimeoutMs?: number;
 }
 
 function result(text: string) {
@@ -90,6 +98,13 @@ function failureWithBoundedDetail(
 ): ReturnType<typeof result> {
   const bounded = typeof detail === "string" ? boundedText(detail) : "";
   return failure(bounded === "" ? fallback : `${prefix}: ${bounded}`);
+}
+
+function unknownCapture(): ReturnType<typeof result> {
+  return result(
+    "Work Memory capture outcome unknown: external sink timed out after capture started.\n" +
+      CAPTURE_RETRY_MESSAGE,
+  );
 }
 
 function deriveScope(projectRoot: string | null): string | null {
@@ -147,7 +162,7 @@ export function createPindieMemoryCaptureTool(
     description: "Capture one durable Work Memory state. Provide semantic meaning only; Pindie supplies factual project provenance.",
     parameters: MemoryCaptureParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       let scope: string | null;
       try {
         scope = deriveScope(options.getProjectRoot());
@@ -205,9 +220,23 @@ export function createPindieMemoryCaptureTool(
       }
 
       let captured;
+      let captureStarted = false;
       try {
-        captured = await options.sink.capture(capture);
-      } catch {
+        captured = await runBoundedOperation({
+          label: "Work Memory capture",
+          timeoutMs: options.livenessTimeoutMs ?? PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+          signal,
+          run: async (operationSignal) => {
+            captureStarted = true;
+            return options.sink.capture(capture, { signal: operationSignal });
+          },
+        });
+      } catch (error) {
+        if (error instanceof PindieLivenessTimeoutError) {
+          if (captureStarted) return unknownCapture();
+          throw error;
+        }
+        if (error instanceof PindieLivenessAbortError) throw error;
         return failure("external Work Memory sink failed.");
       }
       if (!captured.ok) {

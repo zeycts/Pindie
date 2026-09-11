@@ -36,13 +36,17 @@ class FakeNotionClient {
   readonly queryResults: unknown[] = [];
   readonly bodies = new Map<string, string>();
   readonly failures = new Set<string>();
+  readonly gates = new Map<string, Promise<void>>();
+  readonly afterCalls = new Map<string, () => void>();
   #created = 0;
 
   readonly dataSources = {
     query: async (args: Record<string, any>) => {
       this.calls.push({ method: "query", args });
+      const gate = this.#gate("query");
+      if (gate !== undefined) await gate;
       this.#fail("query");
-      return {
+      const result = {
         object: "list",
         type: "page_or_data_source",
         page_or_data_source: {},
@@ -50,44 +54,63 @@ class FakeNotionClient {
         has_more: false,
         next_cursor: null,
       };
+      this.#afterCall("query");
+      return result;
     },
   };
 
   readonly pages = {
     create: async (args: Record<string, any>) => {
       this.calls.push({ method: "create", args });
+      const gate = this.#gate("create");
+      if (gate !== undefined) await gate;
       this.#fail("create");
       this.#created += 1;
-      return { object: "page", id: `created-${this.#created}` };
+      const result = { object: "page", id: `created-${this.#created}` };
+      this.#afterCall("create");
+      return result;
     },
     update: async (args: Record<string, any>) => {
       const superseding = args.properties?.Status?.select?.name === "Superseded";
       const method = superseding ? "supersede" : "updateProperties";
       this.calls.push({ method, args });
+      const gate = this.#gate(method);
+      if (gate !== undefined) await gate;
       this.#fail(method);
-      return { object: "page", id: args.page_id };
+      const result = { object: "page", id: args.page_id };
+      this.#afterCall(method);
+      return result;
     },
     retrieveMarkdown: async (args: Record<string, any>) => {
       this.calls.push({ method: "retrieveMarkdown", args });
+      const gate = this.#gate("retrieveMarkdown");
+      if (gate !== undefined) await gate;
       this.#fail("retrieveMarkdown");
-      return {
+      const result = {
         object: "page_markdown",
         id: args.page_id,
         markdown: this.bodies.get(args.page_id) ?? "",
         truncated: false,
         unknown_block_ids: [],
       };
+      this.#afterCall("retrieveMarkdown");
+      return result;
     },
+
     updateMarkdown: async (args: Record<string, any>) => {
       this.calls.push({ method: "updateMarkdown", args });
+      const gate = this.#gate("updateMarkdown");
+      if (gate !== undefined) await gate;
       this.#fail("updateMarkdown");
-      return {
+      const result = {
         object: "page_markdown",
         id: args.page_id,
         markdown: args.replace_content.new_str,
         truncated: false,
         unknown_block_ids: [],
       };
+      this.#afterCall("updateMarkdown");
+      return result;
     },
   };
 
@@ -114,6 +137,14 @@ class FakeNotionClient {
       },
     });
     this.bodies.set(id, options.body ?? controlledBody());
+  }
+
+  #gate(method: string): Promise<void> | undefined {
+    return this.gates.get(method);
+  }
+
+  #afterCall(method: string): void {
+    this.afterCalls.get(method)?.();
   }
 
   #fail(method: string): void {
@@ -171,6 +202,17 @@ function sink(fake: FakeNotionClient): NotionProjectMemorySink {
     client: fake.asClient(),
     dataSourceId: "data-source-1",
   });
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function call(fake: FakeNotionClient, method: string): FakeCall {
@@ -463,6 +505,73 @@ test("a failed old-page supersede leaves the successfully created replacement Ac
     { ok: false, error: "Notion supersede update failed." },
   );
   assert.deepEqual(fake.calls.map(({ method }) => method), ["query", "create", "supersede"]);
+});
+
+test("an already-aborted capture stops before the first Notion request", async () => {
+  const fake = new FakeNotionClient();
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    sink(fake).capture(capture(), { signal: controller.signal }),
+    /Notion Work Memory capture was aborted\./,
+  );
+  assert.deepEqual(fake.calls, []);
+});
+
+test("an abort observed after a pending query prevents create or update", async () => {
+  const fake = new FakeNotionClient();
+  const queryGate = deferred<void>();
+  fake.gates.set("query", queryGate.promise);
+  const controller = new AbortController();
+  const pending = sink(fake).capture(capture(), { signal: controller.signal });
+
+  assert.deepEqual(fake.calls.map(({ method }) => method), ["query"]);
+  controller.abort();
+  queryGate.resolve();
+
+  await assert.rejects(pending, /Notion Work Memory capture was aborted\./);
+  assert.deepEqual(fake.calls.map(({ method }) => method), ["query"]);
+});
+
+test("an abort after property update starts prevents the Markdown follow-up", async () => {
+  const fake = new FakeNotionClient();
+  fake.addPage({ id: "existing-page" });
+  const propertyGate = deferred<void>();
+  fake.gates.set("updateProperties", propertyGate.promise);
+  const controller = new AbortController();
+  const pending = sink(fake).capture(
+    capture({ summary: "Changed" }),
+    { signal: controller.signal },
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(fake.calls.map(({ method }) => method), [
+    "query",
+    "retrieveMarkdown",
+    "updateProperties",
+  ]);
+  controller.abort();
+  propertyGate.resolve();
+
+  await assert.rejects(pending, /Notion Work Memory capture was aborted\./);
+  assert.equal(fake.calls.some(({ method }) => method === "updateMarkdown"), false);
+});
+
+test("an abort after ensuring a replacement prevents the supersede follow-up", async () => {
+  const fake = new FakeNotionClient();
+  fake.addPage({ id: "old-page", memory: "Old direction" });
+  const controller = new AbortController();
+  fake.afterCalls.set("create", () => controller.abort());
+
+  await assert.rejects(
+    sink(fake).capture(
+      capture({ supersedes: "Old direction" }),
+      { signal: controller.signal },
+    ),
+    /Notion Work Memory capture was aborted\./,
+  );
+  assert.deepEqual(fake.calls.map(({ method }) => method), ["query", "create"]);
 });
 
 test("adapter uses the official Markdown API version and has no local persistence or retry", async () => {
