@@ -110,26 +110,51 @@ test("PMF-F26 invalid UTF-8 Git path bytes fail closed while valid Unicode paths
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("PMF-F24 timeout terminates the Git child and capture fails closed", async () => {
+test("PMF-F24 timeout hard-settles after SIGKILL even when the Git child emits no close", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const child = new EventEmitter() as any;
   child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
   const signals: string[] = [];
   child.kill = (signal: string) => {
     signals.push(signal);
-    if (signal === "SIGKILL") setImmediate(() => child.emit("close", null));
     return true;
   };
   const invocation: ProjectFingerprintInvocation = {
     executable: "git", argv: buildProjectFingerprintArgv(), cwd: process.cwd(), env: process.env,
     shell: false, timeoutMs: 1, maxOutputBytes: 64,
   };
-  await assert.rejects(runProjectFingerprintGit(invocation, (() => child) as any), /timed out/);
+  const pending = runProjectFingerprintGit(invocation, (() => child) as any);
+  t.mock.timers.tick(invocation.timeoutMs);
+  t.mock.timers.tick(250);
+  await assert.rejects(pending, /timed out/);
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  child.emit("close", 0);
+  child.emit("error", new Error("late child error"));
   const dir = await mkdtemp(join(tmpdir(), "pindie-pmf-timeout-"));
   try {
     const result = await captureProjectFingerprint(dir, { runner: async () => { throw new Error("timeout"); } });
     assert.equal(result.kind, "unknown");
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("PMF-F25 output overflow hard-settles after SIGKILL without close", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const child = new EventEmitter() as any;
+  child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+  const signals: string[] = [];
+  child.kill = (signal: string) => {
+    signals.push(signal);
+    return true;
+  };
+  const invocation: ProjectFingerprintInvocation = {
+    executable: "git", argv: buildProjectFingerprintArgv(), cwd: process.cwd(), env: process.env,
+    shell: false, timeoutMs: 1_000, maxOutputBytes: 2,
+  };
+  const pending = runProjectFingerprintGit(invocation, (() => child) as any);
+  child.stdout.emit("data", Buffer.from("too much"));
+  t.mock.timers.tick(250);
+  await assert.rejects(pending, /path list exceeded its byte bound/);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
 });
 
 test("PMF-F15-F19 framing is deterministic and Git invocation is fixed and hardened", async () => {
