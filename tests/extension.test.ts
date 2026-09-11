@@ -2212,14 +2212,16 @@ test("Discord startup is deferred from session_start and current-session shutdow
   const surface: RemoteSurface = { ensureProject: async () => ({ channelId: "channel" }), ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }), send: async () => undefined, updateSessionPresentation: async () => undefined };
   let started = 0; let stopped = 0; let release!: () => void;
   const pending = new Promise<void>((resolve) => { release = resolve; });
+  let markStarted!: () => void;
+  const startReady = new Promise<void>((resolve) => { markStarted = resolve; });
   const discord = {
-    start: () => { started++; return pending; },
+    start: () => { started++; markStarted(); return pending; },
     stop: () => { stopped++; },
   } as unknown as import("../src/discord-remote.ts").DiscordRemote;
   const harness = createHarness([], {}, { remoteCompanion: { companion: new RemoteCompanion(surface), guildId: "guild", discord } });
   const ui = context("/repo", []);
   await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, ui);
-  await nextTurn();
+  await startReady;
   assert.equal(started, 1);
   await harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "done" }, ui);
   assert.equal(stopped, 1);
@@ -2337,9 +2339,12 @@ test("late Discord input after session shutdown is inert and never touches the o
     updateSessionPresentation: async () => undefined,
   };
   const starts: Array<{ input: (threadId: string, text: string) => Promise<unknown> }> = [];
+  let markStarted!: () => void;
+  const startReady = new Promise<void>((resolve) => { markStarted = resolve; });
   const discord = {
     start: (input: (threadId: string, text: string) => Promise<unknown>) => {
       starts.push({ input });
+      markStarted();
       return Promise.resolve();
     },
     stop: () => undefined,
@@ -2352,7 +2357,7 @@ test("late Discord input after session shutdown is inert and never touches the o
     throw new Error("This extension ctx is stale after session replacement or reload.");
   });
   await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, oldContext);
-  await nextTurn();
+  await startReady;
   await harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "new" }, oldContext);
 
   assert.equal(await starts[0]!.input("thread", "!stop"), "failed");
