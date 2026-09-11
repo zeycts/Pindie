@@ -1197,10 +1197,18 @@ test("Work Memory policy is absent when no sink is configured", async () => {
 
 test("Slice F selected features keep one registration set and rebuild Core authority across reload and shutdown", async () => {
   let sessionBinds = 0;
+  const sessionBindWaiters = new Map<string, Array<() => void>>();
+  const waitForSessionBind = (sessionId: string): Promise<void> =>
+    new Promise((resolve) => {
+      const waiters = sessionBindWaiters.get(sessionId) ?? [];
+      waiters.push(resolve);
+      sessionBindWaiters.set(sessionId, waiters);
+    });
   const remoteSurface: RemoteSurface = {
     ensureProject: async () => ({ channelId: "channel" }),
     ensureSession: async (_channelId, sessionId) => {
       sessionBinds += 1;
+      sessionBindWaiters.get(sessionId)?.shift()?.();
       return { threadId: `thread-${sessionId}`, anchorMessageId: "anchor", headerMessageId: null };
     },
     send: async () => undefined,
@@ -1263,8 +1271,10 @@ test("Slice F selected features keep one registration set and rebuild Core autho
     );
   };
 
+  const firstSessionBind = waitForSessionBind("session-a");
   await sessionStart("startup", "session-a");
   const first = await beforeAgentStart("session-a");
+  await firstSessionBind;
   assert.equal((first.systemPrompt.match(/<PINDIE_WORK_MEMORY_CONTRACT>/g) ?? []).length, 1);
   assert.equal(remote.activeSessionId, "session-a");
   assert.equal(harness.integration.runtime.projectRoot, "/repo");
@@ -1282,15 +1292,19 @@ test("Slice F selected features keep one registration set and rebuild Core autho
   assert.equal(harness.api.commandRegistrations.length, commands.length);
   assert.equal(harness.api.handlerRegistrations.length, handlers.length);
 
+  const reloadSessionBind = waitForSessionBind("session-a");
   await sessionStart("reload", "session-a");
   const second = await beforeAgentStart("session-a");
+  await reloadSessionBind;
   assert.equal((second.systemPrompt.match(/<PINDIE_WORK_MEMORY_CONTRACT>/g) ?? []).length, 1);
   assert.equal(remote.activeSessionId, "session-a");
   assert.equal(harness.integration.runtime.projectRoot, "/repo");
 
   await sessionShutdown("new", "session-a");
+  const newSessionBind = waitForSessionBind("session-b");
   await sessionStart("new", "session-b");
   const third = await beforeAgentStart("session-b");
+  await newSessionBind;
   assert.equal((third.systemPrompt.match(/<PINDIE_WORK_MEMORY_CONTRACT>/g) ?? []).length, 1);
   assert.equal(remote.activeSessionId, "session-b");
   assert.equal(harness.integration.runtime.projectRoot, "/repo");
