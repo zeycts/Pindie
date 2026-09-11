@@ -449,6 +449,19 @@ export class CoreIntegration {
     this.execution.discardRuntime();
   }
 
+  /**
+   * Fail closed for one preparation generation without touching a newer Run.
+   * Preparation has not crossed the measurement frontier yet, but Core still
+   * owns the generation, evidence, handoff, and settlement bookkeeping.
+   */
+  abortAgentRunPreparation(agentRunGeneration: number): boolean {
+    if (!this.run.isAgentRunCurrent(agentRunGeneration)) return false;
+    this.handoff.clear();
+    this.setMeasurementContext(null);
+    this.resetAgentRunBookkeeping();
+    return true;
+  }
+
   beginAgentRunFacts(ctx: ExtensionContext): void {
     this.setMeasurementContext(ctx);
     this.execution.beginEvidenceScope(this.runtime.externalStateEpoch);

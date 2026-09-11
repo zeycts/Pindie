@@ -129,7 +129,7 @@ import {
   runBoundedOperation,
 } from "./liveness.ts";
 
-type ProjectRootResolver = (cwd: string) => Promise<string>;
+type ProjectRootResolver = (cwd: string, signal?: AbortSignal) => Promise<string>;
 
 export interface PindieExtensionOptions {
   /** Startup selection; composition resolves this before registration. */
@@ -403,7 +403,7 @@ function registerComposedPindieExtension(
     taskMetrics: core.taskMetrics,
     uiEnabled: featureSelection.presentation,
   });
-  type LiveRemoteSession = { sessionId: string; ctx: ExtensionContext; generation: number };
+  type LiveRemoteSession = { projectRoot: string; sessionId: string; ctx: ExtensionContext; generation: number };
   let liveRemoteSession: LiveRemoteSession | null = null;
   let nextRemoteLeaseGeneration = 0;
   let lastCheckpointCompactionId: string | null = null;
@@ -423,6 +423,56 @@ function registerComposedPindieExtension(
         return pi.sendUserMessage(content, inputOptions);
       },
     };
+  };
+
+  const bootstrapRemoteForSession = async (
+    live: LiveRemoteSession,
+    remoteSessionId: string,
+    remoteSessionName: string | undefined,
+  ): Promise<void> => {
+    const remote = options.remoteCompanion;
+    if (!remote || liveRemoteSession !== live) return;
+    const remoteLeaseGeneration = live.generation;
+    await remote.companion.bind(
+      live.projectRoot,
+      remote.guildId,
+      remoteSessionId,
+      { sessionName: remoteSessionName, taskGoal: runtime.state.task?.goal, status: remoteStatusFacts(), getStatus: remoteStatusFacts },
+    );
+    if (liveRemoteSession !== live) return;
+    if (remote.companion.activeSessionId !== remoteSessionId) {
+      liveRemoteSession = null;
+      remote.companion.shutdown(remoteSessionId);
+      return;
+    }
+    if (remote.discord) {
+      if (liveRemoteSession !== live || remote.companion.activeSessionId !== remoteSessionId) return;
+      void remote.discord.start(
+        (threadId, text) => {
+          const current = liveRemoteSession;
+          if (!current || current.sessionId !== remoteSessionId || current.generation !== remoteLeaseGeneration) return Promise.resolve("failed" as const);
+          if (remote.companion.activeSessionId !== remoteSessionId) return Promise.resolve("failed" as const);
+          const currentPi = remotePiFor(remoteSessionId, remoteLeaseGeneration);
+          if (!currentPi) return Promise.resolve("failed" as const);
+          return remote.companion.input(threadId, text, currentPi);
+        },
+        () => {
+          const current = liveRemoteSession;
+          if (!current || current.sessionId !== remoteSessionId || current.generation !== remoteLeaseGeneration) return;
+          if (remote.companion.activeSessionId !== remoteSessionId) return;
+          const entries = safeSessionEntries(current.ctx);
+          if (!entries) return;
+          void remote.companion.catchUp(entries).catch(() => undefined);
+        },
+        (threadId) => remote.companion.isMappedThread(threadId),
+      ).catch(() => undefined);
+      return;
+    }
+    if (liveRemoteSession !== live || remote.companion.activeSessionId !== remoteSessionId) return;
+    const entries = safeSessionEntries(live.ctx);
+    if (!entries) return;
+    await remote.companion.catchUp(entries);
+    if (liveRemoteSession !== live || remote.companion.activeSessionId !== remoteSessionId) return;
   };
 
   const markUnavailable = (reason: string): void => {
@@ -582,66 +632,53 @@ function registerComposedPindieExtension(
     core.resetRuntimeForSession(nativeSessionId);
     lastCheckpointCompactionId = null;
 
+    let projectRoot: string | null = null;
     try {
-      const projectRoot = await resolveProjectRoot(ctx.cwd);
-      await run.loadProject(projectRoot);
-      const task = run.authoritativeState?.task ?? null;
-      core.enterTaskMetricsSession(
-        projectRoot,
-        task !== null && !task.completed
-          ? taskContractFingerprint(task)
-          : null,
-      );
+      projectRoot = await runBoundedOperation({
+        label: "Pindie project root resolution",
+        timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+        run: (signal) => resolveProjectRoot(ctx.cwd, signal),
+      });
     } catch (error) {
       core.resetTaskMetrics();
       markUnavailable(
-        `Could not load Pindie State for '${ctx.cwd}': ${errorMessage(error)}`,
+        `Could not resolve Pindie project root for '${ctx.cwd}': ${errorMessage(error)}`,
       );
+    }
+    if (projectRoot !== null) {
+      try {
+        await runBoundedOperation({
+          label: "Pindie project State load",
+          timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+          run: (signal) => run.loadProject(projectRoot!, signal),
+        });
+        const task = run.authoritativeState?.task ?? null;
+        core.enterTaskMetricsSession(
+          projectRoot,
+          task !== null && !task.completed
+            ? taskContractFingerprint(task)
+            : null,
+        );
+      } catch (error) {
+        core.resetTaskMetrics();
+        markUnavailable(
+          `Could not load Pindie State for '${ctx.cwd}': ${errorMessage(error)}`,
+        );
+      }
     }
     presentation.refreshStatus(ctx);
     void presentation.refreshSubscriptionUsage(ctx);
     if (options.remoteCompanion && runtime.projectRoot !== null && remoteSessionId !== null) {
-      const live = { sessionId: remoteSessionId, ctx, generation: ++nextRemoteLeaseGeneration };
-      const remoteLeaseGeneration = live.generation;
+      const live: LiveRemoteSession = {
+        projectRoot: runtime.projectRoot,
+        sessionId: remoteSessionId,
+        ctx,
+        generation: ++nextRemoteLeaseGeneration,
+      };
       liveRemoteSession = live;
-      await options.remoteCompanion.companion.bind(
-        runtime.projectRoot,
-        options.remoteCompanion.guildId,
-        remoteSessionId,
-        { sessionName: remoteSessionName, taskGoal: runtime.state.task?.goal, status: remoteStatusFacts(), getStatus: remoteStatusFacts },
-      );
-      if (liveRemoteSession !== live) return;
-      if (options.remoteCompanion.companion.activeSessionId !== remoteSessionId) {
-        liveRemoteSession = null;
-        options.remoteCompanion.companion.shutdown(remoteSessionId);
-        return;
-      }
-      // Discord login is optional external I/O. Do not make local startup wait for it.
-      if (options.remoteCompanion.discord) {
-        if (options.remoteCompanion.companion.activeSessionId !== remoteSessionId) return;
-        void options.remoteCompanion.discord.start(
-          (threadId, text) => {
-            const live = liveRemoteSession;
-            if (!live || live.sessionId !== remoteSessionId || live.generation !== remoteLeaseGeneration) return Promise.resolve("failed" as const);
-            if (options.remoteCompanion!.companion.activeSessionId !== remoteSessionId) return Promise.resolve("failed" as const);
-            const currentPi = remotePiFor(remoteSessionId, remoteLeaseGeneration);
-            if (!currentPi) return Promise.resolve("failed" as const);
-            return options.remoteCompanion!.companion.input(threadId, text, currentPi);
-          },
-          () => {
-            const live = liveRemoteSession;
-            if (!live || live.sessionId !== remoteSessionId || live.generation !== remoteLeaseGeneration) return;
-            if (options.remoteCompanion!.companion.activeSessionId !== remoteSessionId) return;
-            const entries = safeSessionEntries(live.ctx);
-            if (!entries) return;
-            void options.remoteCompanion!.companion.catchUp(entries).catch(() => undefined);
-          },
-          (threadId) => options.remoteCompanion!.companion.isMappedThread(threadId),
-        ).catch(() => undefined);
-      } else {
-        const entries = safeSessionEntries(live.ctx);
-        if (entries) await options.remoteCompanion.companion.catchUp(entries);
-      }
+      // Remote is an optional projection. Its bind/catch-up work is detached so
+      // an unavailable external transport cannot hold local Session startup.
+      void bootstrapRemoteForSession(live, remoteSessionId, remoteSessionName).catch(() => undefined);
     }
   });
 
@@ -694,12 +731,17 @@ function registerComposedPindieExtension(
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    let preparationGeneration: number | null = null;
     try {
       presentation.setStatusContext(ctx);
       core.resetAgentRunBookkeeping();
       if (run.authoritativeState !== null) {
         try {
-          await run.refreshAuthoritativeState();
+          await runBoundedOperation({
+            label: "Pindie pre-Run authoritative State refresh",
+            timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+            run: (signal) => run.refreshAuthoritativeState(signal),
+          });
         } catch (error) {
           markUnavailable(
             `Could not refresh Pindie State before this Agent Run: ${errorMessage(error)}`,
@@ -709,6 +751,7 @@ function registerComposedPindieExtension(
       // Refresh precedes all identity snapshots so a new Run always begins from
       // authoritative project State rather than a previous session snapshot.
       core.beginAgentRunFacts(ctx);
+      preparationGeneration = run.activeAgentRunGeneration;
       const selfImprovementRun = selfImprovement === null
         ? {
             adaptationLease: null,
@@ -717,7 +760,11 @@ function registerComposedPindieExtension(
             globalDerivationLease: null,
             promptContributions: [] as readonly string[],
           }
-        : await selfImprovement.prepareAgentRun(ctx);
+        : await runBoundedOperation({
+            label: "Pindie Self-Improvement Run preparation",
+            timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+            run: (signal) => selfImprovement.prepareAgentRun(ctx, signal),
+          });
 
       let derivation = run.deriveSnapshot();
       if (!derivation.ok) {
@@ -787,7 +834,10 @@ function registerComposedPindieExtension(
         ),
       };
     } catch (error) {
-      selfImprovement?.abortGlobalDerivationRun();
+      if (preparationGeneration !== null) {
+        selfImprovement?.abortAgentRunPreparation(preparationGeneration);
+        core.abortAgentRunPreparation(preparationGeneration);
+      }
       throw error;
     }
   });

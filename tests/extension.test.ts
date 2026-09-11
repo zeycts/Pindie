@@ -277,7 +277,7 @@ class ExtensionTestStore implements PindieStateStore {
     return { entered, release };
   }
 
-  async load(projectRoot: string): Promise<PindieState> {
+  async load(projectRoot: string, _signal?: AbortSignal): Promise<PindieState> {
     this.loads.push(projectRoot);
     const barrier = this.nextLoadBarrier;
     if (barrier !== null) {
@@ -745,6 +745,12 @@ function completedState(): PindieState {
   };
 }
 
+async function nextTurn(): Promise<void> {
+  for (let index = 0; index < 20; index += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
 function context(
   cwd: string,
   sessionEntries: unknown[] = [],
@@ -854,7 +860,7 @@ function continuationProbe(
 function createHarness(
   entries: Array<[string, PindieState]> = [],
   resolvedRoots: Record<string, string> = {},
-  options: Omit<PindieExtensionOptions, "store" | "resolveProjectRoot"> = {},
+  options: Omit<PindieExtensionOptions, "store"> = {},
 ) {
   const api = new CapturedExtensionAPI();
   const store = new ExtensionTestStore(entries);
@@ -868,7 +874,7 @@ function createHarness(
       store,
       experienceStore,
       experienceReader,
-      resolveProjectRoot: async (cwd) => resolvedRoots[cwd] ?? cwd,
+      resolveProjectRoot: options.resolveProjectRoot ?? (async (cwd) => resolvedRoots[cwd] ?? cwd),
     },
   );
   api.bindRuntime();
@@ -1191,10 +1197,18 @@ test("Work Memory policy is absent when no sink is configured", async () => {
 
 test("Slice F selected features keep one registration set and rebuild Core authority across reload and shutdown", async () => {
   let sessionBinds = 0;
+  const sessionBindWaiters = new Map<string, Array<() => void>>();
+  const waitForSessionBind = (sessionId: string): Promise<void> =>
+    new Promise((resolve) => {
+      const waiters = sessionBindWaiters.get(sessionId) ?? [];
+      waiters.push(resolve);
+      sessionBindWaiters.set(sessionId, waiters);
+    });
   const remoteSurface: RemoteSurface = {
     ensureProject: async () => ({ channelId: "channel" }),
     ensureSession: async (_channelId, sessionId) => {
       sessionBinds += 1;
+      sessionBindWaiters.get(sessionId)?.shift()?.();
       return { threadId: `thread-${sessionId}`, anchorMessageId: "anchor", headerMessageId: null };
     },
     send: async () => undefined,
@@ -1257,8 +1271,10 @@ test("Slice F selected features keep one registration set and rebuild Core autho
     );
   };
 
+  const firstSessionBind = waitForSessionBind("session-a");
   await sessionStart("startup", "session-a");
   const first = await beforeAgentStart("session-a");
+  await firstSessionBind;
   assert.equal((first.systemPrompt.match(/<PINDIE_WORK_MEMORY_CONTRACT>/g) ?? []).length, 1);
   assert.equal(remote.activeSessionId, "session-a");
   assert.equal(harness.integration.runtime.projectRoot, "/repo");
@@ -1276,15 +1292,19 @@ test("Slice F selected features keep one registration set and rebuild Core autho
   assert.equal(harness.api.commandRegistrations.length, commands.length);
   assert.equal(harness.api.handlerRegistrations.length, handlers.length);
 
+  const reloadSessionBind = waitForSessionBind("session-a");
   await sessionStart("reload", "session-a");
   const second = await beforeAgentStart("session-a");
+  await reloadSessionBind;
   assert.equal((second.systemPrompt.match(/<PINDIE_WORK_MEMORY_CONTRACT>/g) ?? []).length, 1);
   assert.equal(remote.activeSessionId, "session-a");
   assert.equal(harness.integration.runtime.projectRoot, "/repo");
 
   await sessionShutdown("new", "session-a");
+  const newSessionBind = waitForSessionBind("session-b");
   await sessionStart("new", "session-b");
   const third = await beforeAgentStart("session-b");
+  await newSessionBind;
   assert.equal((third.systemPrompt.match(/<PINDIE_WORK_MEMORY_CONTRACT>/g) ?? []).length, 1);
   assert.equal(remote.activeSessionId, "session-b");
   assert.equal(harness.integration.runtime.projectRoot, "/repo");
@@ -2163,16 +2183,24 @@ test("Remote-enabled wiring observes public input without altering Pindie tools"
 
 test("Pi session_info_changed awaits presentation rename for the mapped active Session", async () => {
   const titles: string[] = [];
+  let markPresentationReady!: () => void;
+  const presentationReady = new Promise<void>((resolve) => { markPresentationReady = resolve; });
+  let presentationUpdates = 0;
   const surface: RemoteSurface = {
     ensureProject: async () => ({ channelId: "channel" }),
     ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: "header" }),
     send: async () => undefined,
-    updateSessionPresentation: async (_session, presentation) => { titles.push(presentation.title); },
+    updateSessionPresentation: async (_session, presentation) => {
+      titles.push(presentation.title);
+      presentationUpdates += 1;
+      if (presentationUpdates === 1) markPresentationReady();
+    },
   };
   const companion = new RemoteCompanion(surface);
   const { api } = createHarness([], {}, { remoteCompanion: { companion, guildId: "guild" } });
   const ui = context("/repo", [{ id: "u", message: { role: "user", content: "Original prompt" } }]);
   await api.handler("session_start")({ type: "session_start", reason: "startup" }, ui);
+  await presentationReady;
   const before = titles.length;
   await api.handler("session_info_changed")({ type: "session_info_changed", name: "Discord Remote Test 2" }, ui);
   assert.equal(companion.activeSessionId, "remote-session");
@@ -2184,17 +2212,61 @@ test("Discord startup is deferred from session_start and current-session shutdow
   const surface: RemoteSurface = { ensureProject: async () => ({ channelId: "channel" }), ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }), send: async () => undefined, updateSessionPresentation: async () => undefined };
   let started = 0; let stopped = 0; let release!: () => void;
   const pending = new Promise<void>((resolve) => { release = resolve; });
+  let markStarted!: () => void;
+  const startReady = new Promise<void>((resolve) => { markStarted = resolve; });
   const discord = {
-    start: () => { started++; return pending; },
+    start: () => { started++; markStarted(); return pending; },
     stop: () => { stopped++; },
   } as unknown as import("../src/discord-remote.ts").DiscordRemote;
   const harness = createHarness([], {}, { remoteCompanion: { companion: new RemoteCompanion(surface), guildId: "guild", discord } });
   const ui = context("/repo", []);
   await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, ui);
+  await startReady;
   assert.equal(started, 1);
   await harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "done" }, ui);
   assert.equal(stopped, 1);
   release();
+});
+
+test("detached Remote bootstrap cannot hold startup and stale binds cannot claim a newer Session", async () => {
+  let markLoadEntered!: () => void;
+  let releaseLoad!: () => void;
+  const loadEntered = new Promise<void>((resolve) => { markLoadEntered = resolve; });
+  const loadPending = new Promise<void>((resolve) => { releaseLoad = resolve; });
+  const routing = {
+    load: async () => {
+      markLoadEntered();
+      await loadPending;
+      return null;
+    },
+    save: async () => undefined,
+    projectName: () => "repo",
+  } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+    send: async () => undefined,
+    updateSessionPresentation: async () => undefined,
+  };
+  const companion = new RemoteCompanion(surface, { routing });
+  const harness = createHarness([["/repo", activeState("detached Remote")]], {}, {
+    remoteCompanion: { companion, guildId: "guild" },
+  });
+  const oldContext = context("/repo", [], false, "old-session");
+  const newContext = context("/repo", [], false, "new-session");
+
+  await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, oldContext);
+  await loadEntered;
+  assert.equal(harness.integration.runtime.projectRoot, "/repo");
+  assert.equal(companion.activeSessionId, null);
+
+  await harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "new" }, oldContext);
+  await harness.api.handler("session_start")({ type: "session_start", reason: "new" }, newContext);
+  assert.equal(companion.activeSessionId, null);
+
+  releaseLoad();
+  await nextTurn();
+  assert.equal(companion.activeSessionId, "new-session");
 });
 
 test("stale Discord READY after same-session reload never reads the old ExtensionContext", async () => {
@@ -2240,8 +2312,11 @@ test("stale Discord READY after same-session reload never reads the old Extensio
   const shutdownContext = context("/repo", [], false, "same-session");
 
   await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, staleContext);
+  await nextTurn();
+  assert.equal(starts.length, 1);
   await harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "reload" }, shutdownContext);
   await harness.api.handler("session_start")({ type: "session_start", reason: "reload" }, currentContext);
+  await nextTurn();
   assert.equal(starts.length, 2);
 
   assert.doesNotThrow(() => starts[0]!.ready());
@@ -2264,9 +2339,12 @@ test("late Discord input after session shutdown is inert and never touches the o
     updateSessionPresentation: async () => undefined,
   };
   const starts: Array<{ input: (threadId: string, text: string) => Promise<unknown> }> = [];
+  let markStarted!: () => void;
+  const startReady = new Promise<void>((resolve) => { markStarted = resolve; });
   const discord = {
     start: (input: (threadId: string, text: string) => Promise<unknown>) => {
       starts.push({ input });
+      markStarted();
       return Promise.resolve();
     },
     stop: () => undefined,
@@ -2279,6 +2357,7 @@ test("late Discord input after session shutdown is inert and never touches the o
     throw new Error("This extension ctx is stale after session replacement or reload.");
   });
   await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, oldContext);
+  await startReady;
   await harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "new" }, oldContext);
 
   assert.equal(await starts[0]!.input("thread", "!stop"), "failed");
@@ -2482,6 +2561,207 @@ test("T37 session_start resolves and loads project State", async () => {
   assert.equal(harness.integration.runtime.projectRoot, "/canonical/repo");
   assert.equal(harness.integration.runtime.state, state);
   assert.deepEqual(harness.store.loads, ["/canonical/repo"]);
+});
+
+test("Slice A bounds project-root resolution and never loads State after a root hang", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let markStarted!: () => void;
+  let release!: (root: string) => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const pending = new Promise<string>((resolve) => { release = resolve; });
+  let signal: AbortSignal | undefined;
+  const harness = createHarness([], {}, {
+    resolveProjectRoot: async (_cwd, innerSignal) => {
+      signal = innerSignal;
+      markStarted();
+      return pending;
+    },
+  });
+
+  const startup = startSession(harness, "/working/repo");
+  await started;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+  await startup;
+
+  assert.equal(signal?.aborted, true);
+  assert.deepEqual(harness.store.loads, []);
+  assert.equal(harness.integration.runtime.projectRoot, null);
+  assert.match(harness.integration.stateUnavailableReason ?? "", /project root resolution.*timed out/i);
+
+  release("/late/repo");
+  await nextTurn();
+  assert.equal(harness.integration.runtime.projectRoot, null);
+  assert.deepEqual(harness.store.loads, []);
+});
+
+test("Slice A bounds initial State load and rejects its late result", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const harness = createHarness([["/repo", activeState("late State")]]);
+  const pending = harness.store.pauseNextLoad();
+  const startup = startSession(harness, "/repo");
+  await pending.entered;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+  await startup;
+
+  assert.deepEqual(harness.store.loads, ["/repo"]);
+  assert.equal(harness.integration.runtime.projectRoot, null);
+  assert.deepEqual(harness.integration.runtime.state, EMPTY_STATE);
+  assert.match(harness.integration.stateUnavailableReason ?? "", /State load.*timed out/i);
+
+  pending.release();
+  await nextTurn();
+  assert.equal(harness.integration.runtime.projectRoot, null);
+  assert.deepEqual(harness.integration.runtime.state, EMPTY_STATE);
+});
+
+test("Slice A bounds authoritative pre-Run refresh without hanging the Run start", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const harness = createHarness([["/repo", activeState("bounded refresh")]], {}, {
+    featureSelection: { selfImprovement: false },
+  });
+  await startSession(harness, "/repo");
+  const pending = harness.store.pauseNextLoad();
+  const beforeRun = harnessBeforeAgentStart(harness);
+  await pending.entered;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+
+  const baseline = await beforeRun;
+  assert.match(baseline.message.content, /Agent Run authority: unavailable/);
+  assert.match(harness.integration.stateUnavailableReason ?? "", /pre-Run authoritative State refresh.*timed out/i);
+  assert.equal(harness.integration.runtime.projectRoot, null);
+  assert.equal(harness.integration.runTimer.active, true);
+
+  pending.release();
+  await nextTurn();
+  assert.equal(harness.integration.runtime.projectRoot, null);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("Slice A times out Self-Improvement preparation and clears only its failed generation", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const reader = new ExtensionTestExperienceReader();
+  reader.result = {
+    records: [
+      { recordId: "adapt-one", experience: commandExperience("adapt one", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "adapt-two", experience: commandExperience("adapt two", createPolicySnapshot({ approach: "direct-action" })) },
+    ],
+    loadedRecords: 2,
+    unsupportedSchema: 0,
+    invalid: 0,
+  };
+  let markTrustRead!: () => void;
+  let releaseTrustRead!: () => void;
+  let pauseTrustRead = true;
+  const trustReadEntered = new Promise<void>((resolve) => { markTrustRead = resolve; });
+  const trustReadPaused = new Promise<void>((resolve) => { releaseTrustRead = resolve; });
+  const strategyDecisionReader = {
+    read: async () => null,
+    readAll: async () => {
+      if (pauseTrustRead) {
+        pauseTrustRead = false;
+        markTrustRead();
+        await trustReadPaused;
+      }
+      return [];
+    },
+  };
+  const harness = createHarness([["/repo", activeState("timed-out SI")]], {}, {
+    experienceReader: reader,
+    strategyDecisionReader,
+  });
+  await startSession(harness, "/repo");
+  await harness.api.commands.get("adapt").handler("direct-action", {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  const beforeRun = harnessBeforeAgentStart(harness);
+  await trustReadEntered;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+  await assert.rejects(beforeRun, /Self-Improvement Run preparation.*timed out/i);
+
+  assert.equal(harness.integration.core.run.hasActiveAgentRun, false);
+  assert.equal(harness.integration.trial?.hasTrial, false);
+  assert.equal(harness.integration.derivation?.hasDerivation, false);
+  assert.equal(harness.integration.globalDerivation?.hasAttempt, false);
+  assert.equal(harness.integration.trustedStrategyPortfolio, null);
+
+  releaseTrustRead();
+  await nextTurn();
+  assert.equal(harness.integration.core.run.hasActiveAgentRun, false);
+  const ordinary = await harnessBeforeAgentStart(harness);
+  assert.doesNotMatch(ordinary.systemPrompt, /<PINDIE_ADAPTATION_PACKET>/);
+  assert.equal(harness.integration.core.run.hasActiveAgentRun, true);
+});
+
+test("Slice A rejects late trust publication from an older preparation generation", async () => {
+  const promoted = trialCandidate("00000000-0000-4000-8000-000000000081");
+  const decision = createStrategyRevisionDecision({
+    candidate: promoted,
+    decision: "promoted",
+    trialRecordIds: ["late-trust-one", "late-trust-two"],
+    decidedAt: "2026-01-02T00:00:00.000Z",
+  });
+  let markFirstRead!: () => void;
+  let releaseFirstRead!: () => void;
+  let firstRead = true;
+  const firstReadEntered = new Promise<void>((resolve) => { markFirstRead = resolve; });
+  const firstReadPaused = new Promise<void>((resolve) => { releaseFirstRead = resolve; });
+  const strategyDecisionReader = {
+    read: async () => null,
+    readAll: async () => {
+      if (firstRead) {
+        firstRead = false;
+        markFirstRead();
+        await firstReadPaused;
+        return [];
+      }
+      return [decision];
+    },
+  };
+  const strategyCandidateReader = {
+    read: async (_root: string, candidateId: string) => candidateId === promoted.candidateId ? promoted : null,
+    readAll: async () => [promoted],
+  };
+  const harness = createHarness([["/repo", activeState("late trust")]], {}, {
+    featureSelection: { crossProjectLearning: false },
+    strategyDecisionReader,
+    strategyCandidateReader,
+  });
+  await startSession(harness, "/repo");
+
+  const staleRun = harnessBeforeAgentStart(harness);
+  await firstReadEntered;
+  const currentRun = await harnessBeforeAgentStart(harness);
+  const currentPortfolio = harness.integration.trustedStrategyPortfolio;
+  assert.ok(currentPortfolio);
+  assert.ok(harness.integration.promotedStrategyRevisionCatalog.entries.length > 0);
+
+  releaseFirstRead();
+  await assert.rejects(staleRun, /preparation became stale/i);
+  assert.strictEqual(harness.integration.trustedStrategyPortfolio, currentPortfolio);
+  assert.ok(harness.integration.promotedStrategyRevisionCatalog.entries.length > 0);
+  assert.equal(harness.integration.core.run.hasActiveAgentRun, true);
+
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("ordinary Self-Improvement preparation tolerates a context without a Session getter", async () => {
+  const harness = createHarness([["/repo", activeState("ordinary context")]]);
+  const ordinaryContext = {
+    cwd: "/repo",
+    hasUI: false,
+    hasPendingMessages: () => false,
+    getContextUsage: () => undefined,
+    sessionManager: { getEntries: () => [] },
+    ui: { notify: () => undefined },
+  };
+  await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, ordinaryContext);
+  await harness.api.handler("before_agent_start")(
+    { type: "before_agent_start", systemPrompt: "", prompt: "Continue", systemPromptOptions: {} },
+    ordinaryContext,
+  );
+  assert.equal(harness.integration.core.run.hasActiveAgentRun, true);
 });
 
 test("T38 session replacement reloads the same project task", async () => {
@@ -8857,7 +9137,7 @@ test("Slice C Synthesis Trial fails closed when Session reset clears binding dur
 
   await assert.rejects(
     beforeRun,
-    /pending Synthesis Trial could not bind to the current Session\/generation/i,
+    /pending Synthesis Trial could not bind to the current Session\/generation|preparation became stale/i,
   );
   assert.equal(harness.integration.trial?.hasTrial, false);
   assert.equal(harness.integration.core.run.hasActiveAgentRun, false);

@@ -57,3 +57,15 @@ test("P04 separate Git repositories resolve to distinct project roots", async (t
     await resolveProjectRoot(second),
   );
 });
+
+test("P05 an aborted project-root resolution does not fall back to canonical cwd", async (t) => {
+  const directory = await createFixture(t);
+  const controller = new AbortController();
+  const reason = new Error("root resolution cancelled");
+  controller.abort(reason);
+
+  await assert.rejects(
+    resolveProjectRoot(directory, controller.signal),
+    (error: unknown) => error === reason,
+  );
+});

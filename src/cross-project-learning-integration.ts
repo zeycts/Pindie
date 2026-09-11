@@ -238,6 +238,12 @@ export class CrossProjectLearningIntegration {
     this.clearGlobalDerivationPreparation();
   }
 
+  /** Clear only an active synthesis preparation owned by one Run generation. */
+  abortGlobalDerivationRunForGeneration(agentRunGeneration: number): void {
+    if (this.activeGlobalDerivation?.agentRunGeneration !== agentRunGeneration) return;
+    this.clearGlobalDerivationPreparation();
+  }
+
   /** Bind CPL's frozen packet after SI has bound the generic reservation. */
   bindGlobalDerivationRun(lease: GlobalDerivationLease): {
     readonly promptContribution: string;
@@ -1181,6 +1187,7 @@ export class CrossProjectLearningIntegration {
     return {
       bindGlobalDerivationRun: (lease) => this.bindGlobalDerivationRun(lease),
       abortGlobalDerivationRun: () => this.abortGlobalDerivationRun(),
+      abortGlobalDerivationRunForGeneration: (generation) => this.abortGlobalDerivationRunForGeneration(generation),
       settleGlobalDerivationRun: (generation) => this.settleGlobalDerivationRun(generation),
       resetForSession: () => this.resetForSession(),
       validatePendingScopeTrial: (binding) => this.validatePendingScopeTrial(binding),
