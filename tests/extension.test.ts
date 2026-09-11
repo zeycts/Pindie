@@ -227,6 +227,62 @@ class ExtensionTestContinuityStore implements TaskContinuityStore {
   }
 }
 
+class HangingExperienceStore implements RunExperienceStore {
+  readonly records: Array<{ projectRoot: string; experience: RunExperience }> = [];
+  readonly saveStarted: Promise<void>;
+  readonly saveFinished: Promise<void>;
+  private resolveSaveStarted!: () => void;
+  private resolveSaveFinished!: () => void;
+  private resolvePending!: () => void;
+  private readonly pending: Promise<void>;
+
+  constructor() {
+    this.saveStarted = new Promise((resolve) => { this.resolveSaveStarted = resolve; });
+    this.saveFinished = new Promise((resolve) => { this.resolveSaveFinished = resolve; });
+    this.pending = new Promise((resolve) => { this.resolvePending = resolve; });
+  }
+
+  releaseSave(): void { this.resolvePending(); }
+
+  async save(projectRoot: string, experience: RunExperience): Promise<void> {
+    this.records.push({ projectRoot, experience });
+    this.resolveSaveStarted();
+    try {
+      await this.pending;
+    } finally {
+      this.resolveSaveFinished();
+    }
+  }
+}
+
+class HangingContinuityStore implements TaskContinuityStore {
+  readonly records: Array<{ projectRoot: string; checkpoint: TaskContinuityV1 }> = [];
+  readonly saveStarted: Promise<void>;
+  readonly saveFinished: Promise<void>;
+  private resolveSaveStarted!: () => void;
+  private resolveSaveFinished!: () => void;
+  private resolvePending!: () => void;
+  private readonly pending: Promise<void>;
+
+  constructor() {
+    this.saveStarted = new Promise((resolve) => { this.resolveSaveStarted = resolve; });
+    this.saveFinished = new Promise((resolve) => { this.resolveSaveFinished = resolve; });
+    this.pending = new Promise((resolve) => { this.resolvePending = resolve; });
+  }
+
+  releaseSave(): void { this.resolvePending(); }
+
+  async save(projectRoot: string, checkpoint: TaskContinuityV1): Promise<void> {
+    this.records.push({ projectRoot, checkpoint });
+    this.resolveSaveStarted();
+    try {
+      await this.pending;
+    } finally {
+      this.resolveSaveFinished();
+    }
+  }
+}
+
 class ExtensionTestExperienceReader implements RunExperienceReader {
   result: RunExperienceReadResult = {
     records: [],
@@ -2408,7 +2464,7 @@ test("Remote transport failure cannot disrupt startup, semantic milestones, veri
   const { ref } = await captureObservationEvidence(harness, "remote-failure-evidence");
   await assert.doesNotReject(harness.api.tool("pindie_verification_record").execute("verify", { check: { name: "tests", status: "passed", covers: ["c1"], evidenceRefs: [ref] } }));
   assert.equal(harness.integration.runtime.state.task?.verification.checks[0]?.status, "passed");
-  assert.doesNotThrow(() => harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries)));
+  await assert.doesNotReject(harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries)));
   assert.equal(harness.integration.stateUnavailableReason, null);
 });
 
@@ -7700,6 +7756,104 @@ test("continuity persistence failure clears only handoff runtime state and leave
   assert.equal(harness.integration.runtime.state.task?.openLoops.nextIntent, input.nextIntent);
   assert.equal(harness.store.states.get("/repo")?.task?.openLoops.nextIntent, input.nextIntent);
   assert.equal(harness.integration.stateUnavailableReason, null);
+});
+
+test("Slice C observer timeout settles the Run and late Experience cannot clear a newer Trial", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const candidate = trialCandidate();
+  const experienceStore = new HangingExperienceStore();
+  const harness = createHarness([["/repo", activeState("observer liveness")]], {}, {
+    experienceStore,
+    strategyCandidateReader: { read: async () => candidate },
+  });
+  await startSession(harness, "/repo");
+  await harness.api.commands.get("trial").handler(candidate.candidateId, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  await beginAgentRun(harness);
+  assert.equal(harness.integration.trial.hasActiveTrial, true);
+  await captureObservationEvidence(harness, "observer-liveness");
+
+  const oldSettlement = harness.api.handler("agent_settled")(
+    { type: "agent_settled" },
+    context("/repo"),
+  );
+  await experienceStore.saveStarted;
+  assert.equal(harness.integration.trial.hasTrial, false, "SI cleanup must precede Experience persistence");
+
+  await harness.api.commands.get("trial").handler(candidate.candidateId, {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  await beginAgentRun(harness);
+  assert.equal(harness.integration.trial.hasActiveTrial, true);
+
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+  await oldSettlement;
+  assert.equal(harness.integration.core.run.hasActiveAgentRun, true);
+
+  experienceStore.releaseSave();
+  await experienceStore.saveFinished;
+  await nextTurn();
+  assert.equal(harness.integration.trial.hasActiveTrial, true);
+
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("Slice C continuity timeout clears the old handoff and suppresses late Host rollover", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let published = 0;
+  const releasePublisher = installCommittedRolloverReceiver(() => { published += 1; });
+  try {
+    const continuityStore = new HangingContinuityStore();
+    const harness = createHarness([["/repo", activeState("continuity liveness")]], {}, {
+      enableTaskHandoff: true,
+      continuityStore,
+    });
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+    const input = handoffInput("Continue after bounded continuity");
+    assert.equal(await callGuard(harness, toolCall("pindie_task_handoff", input, "continuity-liveness")), undefined);
+    await harness.api.tool("pindie_task_handoff").execute("continuity-liveness", input);
+    await harness.api.handler("tool_result")(
+      toolResult("pindie_task_handoff", false, "continuity-liveness"),
+      context("/repo"),
+    );
+
+    const oldSettlement = harness.api.handler("agent_settled")(
+      { type: "agent_settled" },
+      context("/repo"),
+    );
+    await continuityStore.saveStarted;
+    t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+    await oldSettlement;
+    assert.equal(published, 0);
+    assert.equal(harness.integration.core.handoff.pendingHandoff, null);
+    assert.equal(harness.integration.core.run.hasActiveAgentRun, false);
+
+    await beginAgentRun(harness);
+    const nextInput = handoffInput("Keep the newer handoff");
+    assert.equal(await callGuard(harness, toolCall("pindie_task_handoff", nextInput, "new-continuity-handoff")), undefined);
+    await harness.api.tool("pindie_task_handoff").execute("new-continuity-handoff", nextInput);
+    await harness.api.handler("tool_result")(
+      toolResult("pindie_task_handoff", false, "new-continuity-handoff"),
+      context("/repo"),
+    );
+    assert.equal(harness.integration.core.handoff.pendingHandoff?.sourceSessionId, "remote-session");
+
+    continuityStore.releaseSave();
+    await continuityStore.saveFinished;
+    await nextTurn();
+    assert.equal(published, 0);
+    assert.equal(harness.integration.core.handoff.pendingHandoff?.progressSummary, nextInput.progressSummary);
+    harness.integration.core.handoff.clear();
+    await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  } finally {
+    releasePublisher();
+  }
 });
 
 test("SI v0.6 /promote creates one immutable Decision and normal Runs explicitly attribute promoted Policy", async () => {

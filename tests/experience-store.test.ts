@@ -103,3 +103,27 @@ test("FileRunExperienceStore only writes current schema-v4 records", async (t) =
     { code: "ENOENT" },
   );
 });
+
+test("FileRunExperienceStore aborts after temp write without publishing an immutable record", async (t) => {
+  const baseDir = await mkdtemp(join(tmpdir(), "pindie-experience-abort-"));
+  t.after(() => rm(baseDir, { recursive: true, force: true }));
+  let markBeforeRename!: () => void;
+  let releaseBeforeRename!: () => void;
+  const beforeRename = new Promise<void>((resolve) => { markBeforeRename = resolve; });
+  const renameBarrier = new Promise<void>((resolve) => { releaseBeforeRename = resolve; });
+  const store = new FileRunExperienceStore({
+    baseDir,
+    onBeforeRename: async () => {
+      markBeforeRename();
+      await renameBarrier;
+    },
+  });
+  const controller = new AbortController();
+  const save = store.save("/workspace/project", experience("aborted"), controller.signal);
+  await beforeRename;
+  controller.abort();
+  releaseBeforeRename();
+
+  await assert.rejects(save);
+  assert.deepEqual(await readdir(store.experienceDirectory("/workspace/project")), []);
+});

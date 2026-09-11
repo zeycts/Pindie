@@ -42,13 +42,56 @@ export class PindieSemanticMutationPendingError extends Error {
   }
 }
 
+interface ProcessSemanticMutationFenceState {
+  readonly projects: Map<string, Set<symbol>>;
+}
+
+const PROCESS_SEMANTIC_MUTATION_FENCE = Symbol.for(
+  "pindie.runtime.process-semantic-mutation-fence",
+);
+
+function processSemanticMutationFenceState(): ProcessSemanticMutationFenceState {
+  const globalObject = globalThis as object;
+  const existing = Reflect.get(globalObject, PROCESS_SEMANTIC_MUTATION_FENCE) as
+    | ProcessSemanticMutationFenceState
+    | undefined;
+  if (existing !== undefined) return existing;
+  const state: ProcessSemanticMutationFenceState = { projects: new Map() };
+  Reflect.set(globalObject, PROCESS_SEMANTIC_MUTATION_FENCE, state);
+  return state;
+}
+
+function hasProcessSemanticMutationFence(projectRoot: string): boolean {
+  return (processSemanticMutationFenceState().projects.get(projectRoot)?.size ?? 0) > 0;
+}
+
+function installProcessSemanticMutationFence(
+  projectRoot: string,
+  operation: Promise<unknown>,
+): void {
+  const state = processSemanticMutationFenceState();
+  let leases = state.projects.get(projectRoot);
+  if (leases === undefined) {
+    leases = new Set<symbol>();
+    state.projects.set(projectRoot, leases);
+  }
+  const token = Symbol("pindie.semantic-mutation-fence-lease");
+  leases.add(token);
+  const release = (): void => {
+    const current = state.projects.get(projectRoot);
+    if (current === undefined || !current.delete(token)) return;
+    if (current.size === 0) state.projects.delete(projectRoot);
+  };
+  // Observe both outcomes so a late old mutation cannot become unhandled.
+  void operation.then(release, release);
+}
+
 export class PindieRuntime {
   private readonly store: PindieStateStore;
   private currentProjectRoot: string | null = null;
   private currentState: PindieState = EMPTY_STATE;
   private currentExternalStateEpoch = 0;
   private authorityGeneration = 0;
-  private pendingSemanticMutation: Promise<void> | null = null;
 
   constructor(store: PindieStateStore) { this.store = store; }
   get state(): PindieState { return this.currentState; }
@@ -63,34 +106,38 @@ export class PindieRuntime {
   }
 
   async load(projectRoot: string, signal?: AbortSignal): Promise<void> {
-    this.assertNoPendingSemanticMutation();
+    this.assertNoPendingSemanticMutation(projectRoot);
     this.unload();
     const generation = this.authorityGeneration;
     const state = await this.store.load(projectRoot, signal);
     this.assertCurrentAuthority(null, generation, signal);
+    this.assertNoPendingSemanticMutation(projectRoot);
     this.currentProjectRoot = projectRoot;
     this.currentState = state;
   }
 
   async refresh(signal?: AbortSignal): Promise<boolean> {
-    this.assertNoPendingSemanticMutation();
     const projectRoot = this.requireProjectRoot();
+    this.assertNoPendingSemanticMutation(projectRoot);
     const generation = this.authorityGeneration;
     const latest = await this.store.load(projectRoot, signal);
     this.assertCurrentAuthority(projectRoot, generation, signal);
+    this.assertNoPendingSemanticMutation(projectRoot);
     return this.adoptExternal(latest);
   }
 
   async dispatch(event: PindieEvent, signal?: AbortSignal): Promise<TransitionResult> {
-    this.assertNoPendingSemanticMutation();
     const projectRoot = this.requireProjectRoot();
+    this.assertNoPendingSemanticMutation(projectRoot);
     const generation = this.authorityGeneration;
     const expectedState = this.currentState;
     signal?.throwIfAborted();
     return this.store.withProjectLock(projectRoot, async () => {
       this.assertCurrentAuthority(projectRoot, generation, signal);
+      this.assertNoPendingSemanticMutation(projectRoot);
       const latestState = await this.store.load(projectRoot, signal);
       this.assertCurrentAuthority(projectRoot, generation, signal);
+      this.assertNoPendingSemanticMutation(projectRoot);
       if (!isDeepStrictEqual(latestState, expectedState)) {
         this.adoptExternal(latestState);
         if (event.type !== "invalidate_verification") throw new PindieStateConflictError();
@@ -101,7 +148,8 @@ export class PindieRuntime {
   }
 
   async dispatchBounded(event: PindieEvent, signal?: AbortSignal): Promise<TransitionResult> {
-    this.assertNoPendingSemanticMutation();
+    const mutationProjectRoot = this.currentProjectRoot;
+    this.assertNoPendingSemanticMutation(mutationProjectRoot);
     let mutationStarted = false;
     let mutation: Promise<TransitionResult> | null = null;
     try {
@@ -121,8 +169,8 @@ export class PindieRuntime {
         error instanceof PindieLivenessTimeoutError ||
         error instanceof PindieLivenessAbortError
       ) {
-        if (!mutationStarted || mutation === null) throw error;
-        this.installSemanticMutationFence(mutation);
+        if (!mutationStarted || mutation === null || mutationProjectRoot === null) throw error;
+        installProcessSemanticMutationFence(mutationProjectRoot, mutation);
         throw new PindieStateMutationUncertainError();
       }
       throw error;
@@ -137,12 +185,15 @@ export class PindieRuntime {
     signal?: AbortSignal,
   ): Promise<TransitionResult> {
     this.assertCurrentAuthority(projectRoot, generation, signal);
+    this.assertNoPendingSemanticMutation(projectRoot);
     const result = reduceState(state, event);
     if (!result.ok) return result;
     if (result.state === state) return result;
     this.assertCurrentAuthority(projectRoot, generation, signal);
+    this.assertNoPendingSemanticMutation(projectRoot);
     await this.store.save(projectRoot, result.state, signal);
     this.assertCurrentAuthority(projectRoot, generation, signal);
+    this.assertNoPendingSemanticMutation(projectRoot);
     this.currentState = result.state;
     return result;
   }
@@ -154,21 +205,8 @@ export class PindieRuntime {
     return true;
   }
 
-  private installSemanticMutationFence(operation: Promise<TransitionResult>): void {
-    const fence = operation.then(
-      () => undefined,
-      () => undefined,
-    );
-    this.pendingSemanticMutation = fence;
-    void fence.finally(() => {
-      if (this.pendingSemanticMutation === fence) {
-        this.pendingSemanticMutation = null;
-      }
-    });
-  }
-
-  private assertNoPendingSemanticMutation(): void {
-    if (this.pendingSemanticMutation !== null) {
+  private assertNoPendingSemanticMutation(projectRoot: string | null): void {
+    if (projectRoot !== null && hasProcessSemanticMutationFence(projectRoot)) {
       throw new PindieSemanticMutationPendingError();
     }
   }

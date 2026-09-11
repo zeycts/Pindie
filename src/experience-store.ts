@@ -13,11 +13,13 @@ import { getProjectId } from "./store.ts";
 export const EXPERIENCE_DIRECTORY_NAME = "experience";
 
 export interface RunExperienceStore {
-  save(projectRoot: string, experience: RunExperience): Promise<void>;
+  save(projectRoot: string, experience: RunExperience, signal?: AbortSignal): Promise<void>;
 }
 
 export interface FileRunExperienceStoreOptions {
   baseDir?: string;
+  /** Test-only barrier immediately before the atomic rename. */
+  onBeforeRename?: () => Promise<void>;
 }
 
 export interface RunExperienceSourceRecord {
@@ -183,26 +185,37 @@ export class FileRunExperienceReader implements RunExperienceReader, RunExperien
 /** Durable, write-only per-project storage for immutable Run Experience records. */
 export class FileRunExperienceStore implements RunExperienceStore {
   private readonly baseDir: string;
+  private readonly onBeforeRename: (() => Promise<void>) | undefined;
 
   constructor(options: FileRunExperienceStoreOptions = {}) {
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "projects");
+    this.onBeforeRename = options.onBeforeRename;
   }
 
-  async save(projectRoot: string, experience: RunExperience): Promise<void> {
+  async save(
+    projectRoot: string,
+    experience: RunExperience,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (experience.schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION) {
       throw new Error("Could not save Pindie Run Experience: new records must use schema-v4.");
     }
+    signal?.throwIfAborted();
     const directory = this.experienceDirectory(projectRoot);
     const recordId = randomUUID();
     const recordPath = join(directory, `${recordId}.json`);
     const temporaryPath = join(directory, `.${recordId}.json.tmp`);
     try {
       await mkdir(directory, { recursive: true });
+      signal?.throwIfAborted();
       await writeFile(
         temporaryPath,
         `${JSON.stringify(experience, null, 2)}\n`,
-        { encoding: "utf8", flag: "wx" },
+        { encoding: "utf8", flag: "wx", signal },
       );
+      signal?.throwIfAborted();
+      await this.onBeforeRename?.();
+      signal?.throwIfAborted();
       await rename(temporaryPath, recordPath);
     } catch (error) {
       await rm(temporaryPath, { force: true }).catch(() => undefined);

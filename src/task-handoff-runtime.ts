@@ -225,6 +225,15 @@ export class TaskHandoffRuntime {
       this.terminalLatch;
   }
 
+  isPendingHandoffCurrent(pending: PendingHandoff): boolean {
+    return this.stagedPendingHandoff === pending &&
+      this.isPendingFor(pending.sourceSessionId, pending.agentRunGeneration);
+  }
+
+  clearHandoffIfCurrent(pending: PendingHandoff): void {
+    if (this.isPendingHandoffCurrent(pending)) this.clearHandoff();
+  }
+
   clearHandoff(): void {
     this.handoffReservation = null;
     this.stagedPendingHandoff = null;

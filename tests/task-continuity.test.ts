@@ -142,3 +142,30 @@ test("FileTaskContinuityStore is project-local, latest-only, and atomic", async 
   assert.equal(await readFile(firstPath, "utf8"), previousContents);
   assert.deepEqual(await readdir(join(baseDir, getProjectId(projectRoot))), ["continuity.json"]);
 });
+
+test("FileTaskContinuityStore aborts after temp write without committing continuity.json", async (t) => {
+  const baseDir = await mkdtemp(join(tmpdir(), "pindie-continuity-abort-"));
+  t.after(() => rm(baseDir, { recursive: true, force: true }));
+  let markBeforeRename!: () => void;
+  let releaseBeforeRename!: () => void;
+  const beforeRename = new Promise<void>((resolve) => { markBeforeRename = resolve; });
+  const renameBarrier = new Promise<void>((resolve) => { releaseBeforeRename = resolve; });
+  const store = new FileTaskContinuityStore({
+    baseDir,
+    onBeforeRename: async () => {
+      markBeforeRename();
+      await renameBarrier;
+    },
+  });
+  const controller = new AbortController();
+  const save = store.save("/workspace/project", checkpoint("aborted"), controller.signal);
+  await beforeRename;
+  controller.abort();
+  releaseBeforeRename();
+
+  await assert.rejects(save);
+  assert.deepEqual(
+    await readdir(store.continuityDirectory("/workspace/project")),
+    [],
+  );
+});
