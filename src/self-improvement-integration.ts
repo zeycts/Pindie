@@ -1228,24 +1228,36 @@ export class SelfImprovementIntegration {
     let isDerivationRun = false;
     let isGlobalDerivationRun = false;
     let isTrialRun = false;
-    let settledGeneration: number | null = null;
     return {
       begin: (settlementGeneration) => {
-        settledGeneration = settlementGeneration;
         isAdaptationRun = settlementGeneration !== null && this.adaptationRunGeneration === settlementGeneration;
         isDerivationRun = settlementGeneration !== null && this.derivationRunGeneration === settlementGeneration;
         isGlobalDerivationRun = settlementGeneration !== null && this.globalDerivation.isActiveForGeneration(settlementGeneration);
         isTrialRun = settlementGeneration !== null && this.trial.isActiveForGeneration(settlementGeneration);
-        if (isGlobalDerivationRun && settlementGeneration !== null) {
+
+        // Every live Self-Improvement identity mutation belongs to the exact
+        // Run being settled and must happen before any awaited observer work.
+        if (settlementGeneration === null) return;
+        if (isGlobalDerivationRun) {
           this.crossProjectLearning?.settleGlobalDerivationRun(settlementGeneration);
+          this.globalDerivation.clear();
         }
-        this.adaptation.clear();
-        this.derivation.clear();
-        this.globalDerivation.clear();
-        this.adaptationRunGeneration = null;
-        this.derivationRunGeneration = null;
+        if (this.adaptationRunGeneration === settlementGeneration) {
+          this.adaptation.clear();
+          this.adaptationRunGeneration = null;
+        }
+        if (this.derivationRunGeneration === settlementGeneration) {
+          this.derivation.clear();
+          this.derivationRunGeneration = null;
+        }
+        if (isTrialRun) this.trial.clear();
+        if (this.trustProjectionRunGeneration === settlementGeneration) {
+          this.currentPromotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
+          this.currentTrustedStrategyPortfolio = null;
+          this.trustProjectionRunGeneration = null;
+        }
       },
-      observe: async (facts: CoreSettlementFacts) => {
+      observe: async (facts: CoreSettlementFacts, signal?: AbortSignal) => {
         if (
           !isAdaptationRun &&
           !isDerivationRun &&
@@ -1273,16 +1285,10 @@ export class SelfImprovementIntegration {
               durationMs: facts.durationMs,
               cost: facts.cost,
             });
-            await this.experienceStore.save(facts.projectRoot!, experience);
+            await this.experienceStore.save(facts.projectRoot!, experience, signal);
           } catch (error) {
             console.warn(`[Pindie] Dropped Run Experience record: ${errorMessage(error)}`);
           }
-        }
-        if (isTrialRun) this.trial.clear();
-        if (this.trustProjectionRunGeneration === settledGeneration) {
-          this.currentPromotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
-          this.currentTrustedStrategyPortfolio = null;
-          this.trustProjectionRunGeneration = null;
         }
       },
     };

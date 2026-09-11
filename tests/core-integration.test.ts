@@ -69,9 +69,41 @@ class DeferredCoreSaveStore extends MemoryStateStore {
   }
 }
 
+class DeferredCoreLoadStore extends MemoryStateStore {
+  private nextLoad: {
+    readonly pending: Promise<void>;
+    readonly started: Promise<void>;
+    readonly release: () => void;
+    readonly markStarted: () => void;
+  } | null = null;
+
+  pauseNextLoad(): { started: Promise<void>; release: () => void } {
+    let markStarted!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    this.nextLoad = { pending, started, release, markStarted };
+    return { started, release };
+  }
+
+  override async load(projectRoot: string): Promise<PindieState> {
+    const nextLoad = this.nextLoad;
+    this.nextLoad = null;
+    if (nextLoad !== null) {
+      nextLoad.markStarted();
+      await nextLoad.pending;
+    }
+    return super.load(projectRoot);
+  }
+}
+
 const continuityStore: TaskContinuityStore = {
   async save(): Promise<void> {},
 };
+
+function nextTurn(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 function coreContext(): ExtensionContext {
   return {
@@ -202,6 +234,68 @@ test("Core Task tools fail closed and mark authority unavailable on uncertain mu
   await new Promise((resolve) => setImmediate(resolve));
   await core.runtime.load("/core-only");
   assert.equal(core.runtime.state.task?.goal, "Bound semantic State mutation");
+});
+
+test("Core settlement bounds a final authority refresh and releases the exact Run latch", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const store = new DeferredCoreLoadStore();
+  const core = createCoreIntegration({
+    store,
+    continuityStore,
+    taskHandoffEnabled: false,
+  });
+  const ctx = coreContext();
+  await core.runtime.load("/core-only");
+  core.beginAgentRunFacts(ctx);
+  const refresh = store.pauseNextLoad();
+  const settlement = core.settleAgentRun(ctx, []);
+  await refresh.started;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+
+  const result = await settlement;
+  assert.equal(result.status, "settled");
+  assert.equal(result.facts?.snapshot, null);
+  assert.equal(core.run.hasActiveAgentRun, false);
+
+  core.beginAgentRunFacts(ctx);
+  assert.equal(core.run.hasActiveAgentRun, true);
+  refresh.release();
+  await nextTurn();
+  assert.equal(core.run.hasActiveAgentRun, true);
+});
+
+test("Core settlement observer timeout cannot leave bookkeeping latched", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const store = new MemoryStateStore();
+  const core = createCoreIntegration({
+    store,
+    continuityStore,
+    taskHandoffEnabled: false,
+  });
+  const ctx = coreContext();
+  await core.runtime.load("/core-only");
+  core.beginAgentRunFacts(ctx);
+  let markObserverStarted!: () => void;
+  let releaseObserver!: () => void;
+  const observerStarted = new Promise<void>((resolve) => { markObserverStarted = resolve; });
+  const observerPending = new Promise<void>((resolve) => { releaseObserver = resolve; });
+  const settlement = core.settleAgentRun(ctx, [], {
+    observe: async (_facts, _signal) => {
+      markObserverStarted();
+      await observerPending;
+    },
+  });
+  await observerStarted;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+
+  const result = await settlement;
+  assert.equal(result.status, "settled");
+  assert.equal(core.run.hasActiveAgentRun, false);
+  core.beginAgentRunFacts(ctx);
+  assert.equal(core.run.hasActiveAgentRun, true);
+  releaseObserver();
+  await nextTurn();
+  assert.equal(core.run.hasActiveAgentRun, true);
 });
 
 test("Core-only authorization ignores caller-provided capability injection", async () => {

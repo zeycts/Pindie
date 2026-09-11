@@ -16,6 +16,10 @@ import {
   type ToolEffect,
 } from "./execution-semantics.ts";
 import { ExecutionIntegration } from "./execution-integration.ts";
+import {
+  PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+  runBoundedOperation,
+} from "./liveness.ts";
 import type { ProjectFingerprint } from "./project-mutation.ts";
 import { PindieRuntime } from "./runtime.ts";
 import { RunIntegration } from "./run-integration.ts";
@@ -125,7 +129,7 @@ export interface CoreSettlementObserver {
    * Receives frozen Run facts before Core clears Run authority/bookkeeping.
    * Observer failure is isolated from Core settlement.
    */
-  observe(facts: CoreSettlementFacts): Promise<void> | void;
+  observe(facts: CoreSettlementFacts, signal?: AbortSignal): Promise<void> | void;
 }
 
 export type CoreSettlementStatus = "ignored" | "invalidated" | "settled";
@@ -493,192 +497,241 @@ export class CoreIntegration {
     }
 
     const settlementGeneration = this.run.activeAgentRunGeneration;
+    const isCurrentSettlement = (): boolean =>
+      settlementGeneration !== null && this.run.isAgentRunCurrent(settlementGeneration);
+    const isSafeNoGenerationSettlement = (): boolean =>
+      settlementGeneration === null && !this.run.hasActiveAgentRun;
+    const isSettlementStillCurrent = (): boolean =>
+      isCurrentSettlement() || isSafeNoGenerationSettlement();
+
     try {
-      observer?.begin?.(settlementGeneration);
-    } catch (error) {
-      console.warn(`[Pindie] Settlement observer setup failed: ${errorMessage(error)}`);
-    }
-    const projectRoot = this.runtime.projectRoot;
-    let finalDerivation = this.run.deriveSnapshot();
-    if (
-      projectRoot !== null &&
-      this.run.authoritativeState !== null &&
-      this.run.hasActiveAgentRun
-    ) {
       try {
-        await this.run.refreshAuthoritativeState();
-        if (
-          settlementGeneration === null ||
-          !this.run.isAgentRunCurrent(settlementGeneration)
-        ) {
-          return { status: "invalidated", facts: null };
-        }
-        finalDerivation = this.run.deriveSnapshot();
-      } catch {
-        finalDerivation = {
-          ok: false,
-          error: "Final authority refresh failed.",
-        };
-      }
-    }
-
-    const finalState = cloneState(this.run.authoritativeState);
-    const task = finalState?.task ?? null;
-    const settledDurationMs = this.runTimer.finish();
-    const settledCost: RunCost | null = this.runCost.finish(entries);
-    const taskConsumption = this.taskMetrics.settleRun({
-      durationMs: settledDurationMs ?? 0,
-      cost: settledCost?.cost ?? 0,
-    });
-    const facts: CoreSettlementFacts = Object.freeze({
-      settlementGeneration,
-      projectRoot,
-      state: finalState,
-      task,
-      snapshot: finalDerivation.ok ? finalDerivation.snapshot : null,
-      runStartTaskStatus: this.run.taskStatusAtRunStart,
-      runStartTaskGoal: this.run.taskGoalAtRunStart,
-      execution: this.run.executionCounters,
-      policy: this.run.policyAttribution,
-      durationMs: settledDurationMs,
-      cost: settledCost?.cost ?? null,
-      taskConsumption: freezeMetrics(taskConsumption),
-    });
-
-    if (observer !== undefined) {
-      try {
-        await observer.observe(facts);
+        observer?.begin?.(settlementGeneration);
       } catch (error) {
-        console.warn(`[Pindie] Settlement observer failed: ${errorMessage(error)}`);
+        console.warn(`[Pindie] Settlement observer setup failed: ${errorMessage(error)}`);
+      }
+
+      const projectRoot = this.runtime.projectRoot;
+      let finalDerivation = this.run.deriveSnapshot();
+      if (
+        projectRoot !== null &&
+        this.run.authoritativeState !== null &&
+        this.run.hasActiveAgentRun
+      ) {
+        try {
+          await runBoundedOperation({
+            label: "Pindie final Run authority refresh",
+            timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+            run: (signal) => this.run.refreshAuthoritativeState(signal),
+          });
+          if (!isSettlementStillCurrent()) {
+            return { status: "invalidated", facts: null };
+          }
+          finalDerivation = this.run.deriveSnapshot();
+        } catch {
+          if (!isSettlementStillCurrent()) {
+            return { status: "invalidated", facts: null };
+          }
+          finalDerivation = {
+            ok: false,
+            error: "Final authority refresh failed.",
+          };
+        }
+      }
+
+      if (!isSettlementStillCurrent()) {
+        return { status: "invalidated", facts: null };
+      }
+
+      const finalState = cloneState(this.run.authoritativeState);
+      const task = finalState?.task ?? null;
+      const settledDurationMs = this.runTimer.finish();
+      const settledCost: RunCost | null = this.runCost.finish(entries);
+      const taskConsumption = this.taskMetrics.settleRun({
+        durationMs: settledDurationMs ?? 0,
+        cost: settledCost?.cost ?? 0,
+      });
+      const facts: CoreSettlementFacts = Object.freeze({
+        settlementGeneration,
+        projectRoot,
+        state: finalState,
+        task,
+        snapshot: finalDerivation.ok ? finalDerivation.snapshot : null,
+        runStartTaskStatus: this.run.taskStatusAtRunStart,
+        runStartTaskGoal: this.run.taskGoalAtRunStart,
+        execution: this.run.executionCounters,
+        policy: this.run.policyAttribution,
+        durationMs: settledDurationMs,
+        cost: settledCost?.cost ?? null,
+        taskConsumption: freezeMetrics(taskConsumption),
+      });
+
+      if (observer !== undefined) {
+        try {
+          await runBoundedOperation({
+            label: "Pindie Run settlement observer",
+            timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+            run: (signal) => Promise.resolve(observer.observe(facts, signal)),
+          });
+        } catch (error) {
+          console.warn(`[Pindie] Settlement observer failed: ${errorMessage(error)}`);
+        }
+      }
+
+      if (!isSettlementStillCurrent()) {
+        return { status: "invalidated", facts };
+      }
+
+      try {
+        await runBoundedOperation({
+          label: "Pindie Task handoff settlement",
+          timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+          run: (signal) => this.settleTaskHandoff(ctx, settlementGeneration, signal),
+        });
+      } catch (error) {
+        console.warn(`[Pindie] Task handoff settlement failed closed: ${errorMessage(error)}`);
+      }
+
+      if (!isSettlementStillCurrent()) {
+        return { status: "invalidated", facts };
+      }
+      return { status: "settled", facts };
+    } finally {
+      if (isSettlementStillCurrent()) {
+        this.handoff.clear();
+        try {
+          this.execution.discardRuntime();
+        } finally {
+          this.run.resetAgentRun();
+        }
       }
     }
-
-    if (
-      settlementGeneration !== null &&
-      !this.run.isAgentRunCurrent(settlementGeneration)
-    ) {
-      if (this.handoff.pendingHandoff?.agentRunGeneration === settlementGeneration) {
-        this.handoff.clearHandoff();
-      }
-      return { status: "invalidated", facts };
-    }
-
-    await this.settleTaskHandoff(ctx, settlementGeneration);
-    this.handoff.clear();
-    this.execution.discardRuntime();
-    this.run.resetAgentRun();
-    return { status: "settled", facts };
   }
 
   private async settleTaskHandoff(
     ctx: ExtensionContext,
     settlementGeneration: number | null,
+    signal?: AbortSignal,
   ): Promise<void> {
     const pending = this.handoff.pendingHandoff;
     if (pending === null) return;
 
-    const failClosed = (): void => this.handoff.clearHandoff();
-    if (
-      settlementGeneration === null ||
-      !this.run.isAgentRunCurrent(settlementGeneration) ||
-      !this.handoff.isPendingFor(pending.sourceSessionId, pending.agentRunGeneration)
-    ) {
-      failClosed();
-      return;
-    }
-
-    let currentSessionId: string;
+    const failClosed = (): void => this.handoff.clearHandoffIfCurrent(pending);
     try {
-      currentSessionId = ctx.sessionManager.getSessionId();
-      if (ctx.hasPendingMessages()) {
+      signal?.throwIfAborted();
+      if (
+        settlementGeneration === null ||
+        !this.run.isAgentRunCurrent(settlementGeneration) ||
+        !this.handoff.isPendingFor(pending.sourceSessionId, pending.agentRunGeneration)
+      ) {
         failClosed();
         return;
       }
-    } catch {
-      failClosed();
-      return;
-    }
-    if (
-      currentSessionId !== pending.sourceSessionId ||
-      this.handoff.currentSessionId !== pending.sourceSessionId ||
-      this.runtime.projectRoot === null
-    ) {
-      failClosed();
-      return;
-    }
 
-    try {
-      await this.run.refreshAuthoritativeState();
-    } catch {
-      failClosed();
-      return;
-    }
-    if (
-      !this.run.isAgentRunCurrent(settlementGeneration) ||
-      !this.handoff.isPendingFor(pending.sourceSessionId, pending.agentRunGeneration)
-    ) {
-      failClosed();
-      return;
-    }
-
-    const derivation = this.run.deriveSnapshot();
-    const state = this.run.authoritativeState;
-    const task = state?.task ?? null;
-    if (!derivation.ok || derivation.snapshot.authority !== "coherent") {
-      failClosed();
-      return;
-    }
-    if (
-      derivation.snapshot.taskStatus !== "active" ||
-      task === null ||
-      task.completed ||
-      task.humanGate !== null ||
-      task.openLoops.blockers.length > 0 ||
-      taskContractFingerprint(task) !== pending.taskFingerprint
-    ) {
-      failClosed();
-      return;
-    }
-
-    try {
-      if (ctx.hasPendingMessages()) {
-        failClosed();
-        return;
-      }
-    } catch {
-      failClosed();
-      return;
-    }
-
-    let checkpoint;
-    try {
-      checkpoint = createTaskContinuity({
-        createdAt: new Date(this.now()).toISOString(),
-        taskFingerprint: pending.taskFingerprint,
-        sourceSessionId: pending.sourceSessionId,
-        progressSummary: pending.progressSummary,
-        decisions: pending.decisions,
-      });
-      await this.continuityStore.save(this.runtime.projectRoot, checkpoint);
-    } catch (error) {
-      console.warn(`[Pindie] Dropped Task continuity checkpoint: ${errorMessage(error)}`);
-      failClosed();
-      return;
-    }
-    if (this.committedRolloverPublisher !== null) {
+      let currentSessionId: string;
       try {
-        if (checkpoint.sourceSessionId !== pending.sourceSessionId) {
-          throw new Error("Committed continuity checkpoint Session identity did not match the pending handoff.");
+        currentSessionId = ctx.sessionManager.getSessionId();
+        if (ctx.hasPendingMessages()) {
+          failClosed();
+          return;
         }
-        this.committedRolloverPublisher({
-          sourceSessionId: checkpoint.sourceSessionId,
-          checkpoint,
-        });
-      } catch (error) {
-        console.warn(`[Pindie] Committed Task continuity checkpoint could not reach Host rollover control: ${errorMessage(error)}`);
+      } catch {
+        failClosed();
+        return;
       }
+      if (
+        currentSessionId !== pending.sourceSessionId ||
+        this.handoff.currentSessionId !== pending.sourceSessionId ||
+        this.runtime.projectRoot === null
+      ) {
+        failClosed();
+        return;
+      }
+
+      signal?.throwIfAborted();
+      await this.run.refreshAuthoritativeState(signal);
+      signal?.throwIfAborted();
+      if (
+        !this.run.isAgentRunCurrent(settlementGeneration) ||
+        !this.handoff.isPendingFor(pending.sourceSessionId, pending.agentRunGeneration)
+      ) {
+        failClosed();
+        return;
+      }
+
+      const derivation = this.run.deriveSnapshot();
+      const state = this.run.authoritativeState;
+      const task = state?.task ?? null;
+      if (!derivation.ok || derivation.snapshot.authority !== "coherent") {
+        failClosed();
+        return;
+      }
+      if (
+        derivation.snapshot.taskStatus !== "active" ||
+        task === null ||
+        task.completed ||
+        task.humanGate !== null ||
+        task.openLoops.blockers.length > 0 ||
+        taskContractFingerprint(task) !== pending.taskFingerprint
+      ) {
+        failClosed();
+        return;
+      }
+
+      try {
+        signal?.throwIfAborted();
+        if (ctx.hasPendingMessages()) {
+          failClosed();
+          return;
+        }
+      } catch {
+        failClosed();
+        return;
+      }
+
+      let checkpoint;
+      try {
+        checkpoint = createTaskContinuity({
+          createdAt: new Date(this.now()).toISOString(),
+          taskFingerprint: pending.taskFingerprint,
+          sourceSessionId: pending.sourceSessionId,
+          progressSummary: pending.progressSummary,
+          decisions: pending.decisions,
+        });
+        signal?.throwIfAborted();
+        await this.continuityStore.save(this.runtime.projectRoot, checkpoint, signal);
+        signal?.throwIfAborted();
+      } catch (error) {
+        console.warn(`[Pindie] Dropped Task continuity checkpoint: ${errorMessage(error)}`);
+        failClosed();
+        throw error;
+      }
+      if (
+        !this.run.isAgentRunCurrent(settlementGeneration) ||
+        !this.handoff.isPendingFor(pending.sourceSessionId, pending.agentRunGeneration)
+      ) {
+        failClosed();
+        return;
+      }
+      signal?.throwIfAborted();
+      if (this.committedRolloverPublisher !== null) {
+        try {
+          if (checkpoint.sourceSessionId !== pending.sourceSessionId) {
+            throw new Error("Committed continuity checkpoint Session identity did not match the pending handoff.");
+          }
+          this.committedRolloverPublisher({
+            sourceSessionId: checkpoint.sourceSessionId,
+            checkpoint,
+          });
+        } catch (error) {
+          console.warn(`[Pindie] Committed Task continuity checkpoint could not reach Host rollover control: ${errorMessage(error)}`);
+        }
+      }
+      failClosed();
+    } catch (error) {
+      failClosed();
+      throw error;
     }
-    failClosed();
   }
 }
 

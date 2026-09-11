@@ -416,7 +416,7 @@ test("dispatchBounded reports an uncertain mutation at its deadline and fences n
   );
   const loadCount = store.loads.length;
   await assert.rejects(
-    runtime.load("/workspace/other"),
+    runtime.load("/workspace/pindie"),
     (error: unknown) => error instanceof PindieSemanticMutationPendingError,
   );
   await assert.rejects(
@@ -514,4 +514,98 @@ test("an abort after dispatch starts fences authority until late settlement", as
   assert.equal(runtime.projectRoot, null);
   await runtime.load("/workspace/pindie");
   assert.deepEqual(runtime.state, store.state);
+});
+
+test("a process project fence blocks a replacement Runtime and an in-flight load cannot publish", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mutationStore = new DeferredSaveStore({ commitBeforePending: true });
+  const runtimeA = new PindieRuntime(mutationStore);
+  await runtimeA.load("/workspace/pindie");
+
+  const replacementStore = new DeferredLoadStore();
+  const runtimeB = new PindieRuntime(replacementStore);
+  const pendingLoad = replacementStore.deferLoad();
+  const loadB = runtimeB.load("/workspace/pindie");
+  await pendingLoad.started;
+
+  const mutation = runtimeA.dispatchBounded(START_EVENT);
+  await mutationStore.saveStarted;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+  await assert.rejects(mutation, PindieStateMutationUncertainError);
+
+  pendingLoad.resolve({ task: null });
+  await assert.rejects(
+    loadB,
+    (error: unknown) => error instanceof PindieSemanticMutationPendingError,
+  );
+  assert.equal(runtimeB.projectRoot, null);
+
+  mutationStore.releaseSave();
+  await mutationStore.saveFinished;
+  await nextTurn();
+  assert.equal(runtimeA.state.task, null, "the late old mutation must not publish Runtime A State");
+  await runtimeB.load("/workspace/pindie");
+  assert.deepEqual(runtimeB.state, replacementStore.state);
+});
+
+test("a process project fence recheck prevents an in-flight refresh from adopting State", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mutationStore = new DeferredSaveStore({ commitBeforePending: true });
+  const runtimeA = new PindieRuntime(mutationStore);
+  await runtimeA.load("/workspace/pindie");
+
+  const refreshStore = new DeferredLoadStore();
+  const runtimeB = new PindieRuntime(refreshStore);
+  await runtimeB.load("/workspace/pindie");
+  const pendingRefresh = refreshStore.deferLoad();
+  const refreshB = runtimeB.refresh();
+  await pendingRefresh.started;
+
+  const mutation = runtimeA.dispatchBounded(START_EVENT);
+  await mutationStore.saveStarted;
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+  await assert.rejects(mutation, PindieStateMutationUncertainError);
+
+  pendingRefresh.resolve({ task: null });
+  await assert.rejects(
+    refreshB,
+    (error: unknown) => error instanceof PindieSemanticMutationPendingError,
+  );
+  assert.deepEqual(runtimeB.state, EMPTY_STATE);
+
+  mutationStore.releaseSave();
+  await mutationStore.saveFinished;
+  await nextTurn();
+});
+
+test("exact process fence leases keep a project fenced until every uncertain mutation settles", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const storeA = new DeferredSaveStore({ commitBeforePending: true });
+  const storeB = new DeferredSaveStore({ commitBeforePending: true });
+  const runtimeA = new PindieRuntime(storeA);
+  const runtimeB = new PindieRuntime(storeB);
+  await runtimeA.load("/workspace/pindie");
+  await runtimeB.load("/workspace/pindie");
+
+  const mutationA = runtimeA.dispatchBounded(START_EVENT);
+  const mutationB = runtimeB.dispatchBounded(START_EVENT);
+  await Promise.all([storeA.saveStarted, storeB.saveStarted]);
+  t.mock.timers.tick(PINDIE_TOOL_LIVENESS_TIMEOUT_MS);
+  await Promise.all([
+    assert.rejects(mutationA, PindieStateMutationUncertainError),
+    assert.rejects(mutationB, PindieStateMutationUncertainError),
+  ]);
+
+  const probe = new PindieRuntime(storeA);
+  await assert.rejects(probe.load("/workspace/pindie"), PindieSemanticMutationPendingError);
+  storeA.releaseSave();
+  await storeA.saveFinished;
+  await nextTurn();
+  await assert.rejects(probe.load("/workspace/pindie"), PindieSemanticMutationPendingError);
+
+  storeB.releaseSave();
+  await storeB.saveFinished;
+  await nextTurn();
+  await probe.load("/workspace/pindie");
+  assert.deepEqual(probe.state, storeA.state);
 });

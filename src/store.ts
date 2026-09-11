@@ -40,7 +40,7 @@ export interface PindieStateStore {
 }
 
 export interface TaskContinuityStore {
-  save(projectRoot: string, checkpoint: TaskContinuityV1): Promise<void>;
+  save(projectRoot: string, checkpoint: TaskContinuityV1, signal?: AbortSignal): Promise<void>;
 }
 
 export interface FileTaskContinuityStoreOptions {
@@ -481,22 +481,30 @@ export class FileTaskContinuityStore implements TaskContinuityStore {
     this.onBeforeRename = options.onBeforeRename;
   }
 
-  async save(projectRoot: string, checkpoint: TaskContinuityV1): Promise<void> {
+  async save(
+    projectRoot: string,
+    checkpoint: TaskContinuityV1,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const validation = validateTaskContinuity(checkpoint);
     if (!validation.ok) {
       throw new Error(`Cannot save invalid Task continuity: ${validation.errors.join(" ")}`);
     }
+    signal?.throwIfAborted();
     const path = this.continuityPath(projectRoot);
     const directory = this.continuityDirectory(projectRoot);
     const temporaryPath = join(directory, `.${CONTINUITY_FILE_NAME}.${randomUUID()}.tmp`);
     try {
       await mkdir(directory, { recursive: true });
+      signal?.throwIfAborted();
       await writeFile(
         temporaryPath,
         `${JSON.stringify(checkpoint, null, 2)}\n`,
-        { encoding: "utf8", flag: "wx" },
+        { encoding: "utf8", flag: "wx", signal },
       );
+      signal?.throwIfAborted();
       await this.onBeforeRename?.();
+      signal?.throwIfAborted();
       await rename(temporaryPath, path);
     } catch (error) {
       await rm(temporaryPath, { force: true }).catch(() => undefined);
