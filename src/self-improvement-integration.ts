@@ -216,6 +216,7 @@ export interface CrossProjectLearningAttachment {
     readonly promptContribution: string;
   };
   readonly abortGlobalDerivationRun: () => void;
+  readonly abortGlobalDerivationRunForGeneration: (agentRunGeneration: number) => void;
   readonly settleGlobalDerivationRun: (agentRunGeneration: number) => void;
   readonly resetForSession: () => void;
   readonly validatePendingScopeTrial: (binding: ScopeTrialBinding) => Promise<void>;
@@ -362,6 +363,7 @@ export class SelfImprovementIntegration {
   private crossProjectLearning: CrossProjectLearningAttachment | null = null;
   private currentPromotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
   private currentTrustedStrategyPortfolio: TrustedStrategyPortfolio | null = null;
+  private trustProjectionRunGeneration: number | null = null;
   private adaptationRunGeneration: number | null = null;
   private derivationRunGeneration: number | null = null;
 
@@ -475,8 +477,37 @@ export class SelfImprovementIntegration {
     this.globalDerivation.clear();
     this.currentPromotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
     this.currentTrustedStrategyPortfolio = null;
+    this.trustProjectionRunGeneration = null;
     this.adaptationRunGeneration = null;
     this.derivationRunGeneration = null;
+  }
+
+  /**
+   * Remove only runtime state that was published or bound by one failed Run
+   * preparation. Pending user intent is left untouched unless the preparation
+   * itself is still the current generation and its existing failure cleanup
+   * owns that pending attempt.
+   */
+  abortAgentRunPreparation(agentRunGeneration: number): void {
+    if (!this.core.isAgentRunCurrent(agentRunGeneration)) return;
+    if (this.adaptation.isActiveForGeneration(agentRunGeneration)) {
+      this.adaptation.clear();
+      this.adaptationRunGeneration = null;
+    }
+    if (this.trial.isActiveForGeneration(agentRunGeneration)) this.trial.clear();
+    if (this.derivation.isActiveForGeneration(agentRunGeneration)) {
+      this.derivation.clear();
+      this.derivationRunGeneration = null;
+    }
+    if (this.globalDerivation.isActiveForGeneration(agentRunGeneration)) {
+      this.crossProjectLearning?.abortGlobalDerivationRunForGeneration(agentRunGeneration);
+      this.globalDerivation.clear();
+    }
+    if (this.trustProjectionRunGeneration === agentRunGeneration) {
+      this.currentPromotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
+      this.currentTrustedStrategyPortfolio = null;
+      this.trustProjectionRunGeneration = null;
+    }
   }
 
   private reserveGlobalDerivation(
@@ -835,10 +866,73 @@ export class SelfImprovementIntegration {
     }));
   }
 
+  private assertPreparationCurrent(
+    ctx: ExtensionContext,
+    sessionId: string | null,
+    projectRoot: string | null,
+    agentRunGeneration: number,
+    signal?: AbortSignal,
+  ): void {
+    signal?.throwIfAborted();
+    if (!this.core.isAgentRunCurrent(agentRunGeneration)) {
+      throw new Error("Pindie Self-Improvement Run preparation became stale after Agent Run replacement.");
+    }
+    if (this.core.getProjectRoot() !== projectRoot) {
+      throw new Error("Pindie Self-Improvement Run preparation became stale after project replacement.");
+    }
+    if (sessionId === null) return;
+    let currentSessionId: string;
+    try {
+      currentSessionId = ctx.sessionManager.getSessionId();
+    } catch (error) {
+      throw new Error(`Pindie Self-Improvement Run preparation could not verify the current Session: ${errorMessage(error)}`);
+    }
+    if (currentSessionId !== sessionId) {
+      throw new Error("Pindie Self-Improvement Run preparation became stale after Session replacement.");
+    }
+  }
+
+  private cleanupFailedPreparation(
+    agentRunGeneration: number,
+    trialWasArmed: boolean,
+    trialBound: boolean,
+    derivationWasArmed: boolean,
+    derivationBound: boolean,
+    globalDerivationWasArmed: boolean,
+    globalDerivationBound: boolean,
+  ): void {
+    // A late old preparation must not clear leases created by a newer Run.
+    if (!this.core.isAgentRunCurrent(agentRunGeneration)) return;
+    if (trialWasArmed || trialBound) this.trial.clear();
+    if (derivationWasArmed || derivationBound) {
+      this.derivation.clear();
+      this.derivationRunGeneration = null;
+    }
+    if (globalDerivationWasArmed || globalDerivationBound) {
+      this.abortGlobalDerivationRun();
+    }
+  }
+
   /** Return the exact SI read-only packet/context contribution for a Run. */
   async prepareAgentRun(
     ctx: ExtensionContext,
+    signal?: AbortSignal,
   ): Promise<SelfImprovementRunPreparation> {
+    const agentRunGeneration = this.core.getActiveAgentRunGeneration();
+    if (agentRunGeneration === null) {
+      throw new Error("Pindie rejected this Agent Run: Self-Improvement preparation requires an active Agent Run generation.");
+    }
+    const preparationSessionId = typeof ctx.sessionManager.getSessionId === "function"
+      ? ctx.sessionManager.getSessionId()
+      : null;
+    const preparationProjectRoot = this.core.getProjectRoot();
+    this.assertPreparationCurrent(
+      ctx,
+      preparationSessionId,
+      preparationProjectRoot,
+      agentRunGeneration,
+      signal,
+    );
     const trialWasArmed = this.trial.hasTrial;
     const derivationWasArmed = this.derivation.hasDerivation;
     const globalDerivationWasArmed = this.globalDerivation.hasAttempt;
@@ -880,9 +974,16 @@ export class SelfImprovementIntegration {
       let adaptationLease = null;
       if (this.adaptation.hasAttempt) {
         try {
+          this.assertPreparationCurrent(
+            ctx,
+            preparationSessionId,
+            preparationProjectRoot,
+            agentRunGeneration,
+            signal,
+          );
           adaptationLease = this.adaptation.bind(
-            ctx.sessionManager.getSessionId(),
-            this.core.getActiveAgentRunGeneration()!,
+            preparationSessionId!,
+            agentRunGeneration,
           );
         } catch (error) {
           this.adaptation.clear();
@@ -890,6 +991,13 @@ export class SelfImprovementIntegration {
           throw error;
         }
         this.adaptationRunGeneration = adaptationLease?.agentRunGeneration ?? null;
+        this.assertPreparationCurrent(
+          ctx,
+          preparationSessionId,
+          preparationProjectRoot,
+          agentRunGeneration,
+          signal,
+        );
       } else {
         this.adaptationRunGeneration = null;
       }
@@ -906,27 +1014,31 @@ export class SelfImprovementIntegration {
               throw new Error("Cross-Project Learning is disabled");
             }
             await this.crossProjectLearning.validatePendingScopeTrial(pendingScopeTrial);
+            this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
           } catch (error) {
-            this.trial.clear();
+            if (this.core.isAgentRunCurrent(agentRunGeneration)) this.trial.clear();
             throw new Error(`Pindie rejected this Agent Run: the pending Scope Trial binding is stale or invalid: ${errorMessage(error)}`);
           }
-          trialLease = this.trial.bindScope(sessionId, this.core.getActiveAgentRunGeneration()!);
+          this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
+          trialLease = this.trial.bindScope(preparationSessionId!, agentRunGeneration);
         } else if (pendingSynthesisTrial !== null) {
           try {
             if (this.crossProjectLearning === null) {
               throw new Error("Cross-Project Learning is disabled");
             }
             await this.crossProjectLearning.validatePendingSynthesisTrial(pendingSynthesisTrial);
+            this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
           } catch (error) {
-            this.trial.clear();
+            if (this.core.isAgentRunCurrent(agentRunGeneration)) this.trial.clear();
             throw new Error(`Pindie rejected this Agent Run: the pending Synthesis Trial binding is stale or invalid: ${errorMessage(error)}`);
           }
+          this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
           const bound = this.trial.bindSynthesis(
-            sessionId,
-            this.core.getActiveAgentRunGeneration()!,
+            preparationSessionId!,
+            agentRunGeneration,
           );
           if (bound === null) {
-            this.trial.clear();
+            if (this.core.isAgentRunCurrent(agentRunGeneration)) this.trial.clear();
             throw new Error("Pindie rejected this Agent Run: the pending Synthesis Trial could not bind to the current Session/generation.");
           }
           trialLease = bound;
@@ -940,6 +1052,7 @@ export class SelfImprovementIntegration {
               revisionReader: this.strategyCandidateReader,
               derivationReader: this.strategyDerivationCandidateReader,
             });
+            this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
             if (
               currentCandidateRef === null ||
               currentCandidateRef.kind !== "derivation" ||
@@ -949,19 +1062,23 @@ export class SelfImprovementIntegration {
             }
             const currentCandidate = currentCandidateRef.candidate;
             const currentDecision = await this.readDerivationDecisionForCandidate(projectRoot, currentCandidate);
+            this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
             if (currentDecision !== null) throw new Error("a terminal Derivation Decision exists for the active Trial Candidate");
             const currentPortfolio = await this.loadTrustedPortfolio(projectRoot);
+            this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
             validateStrategyDerivationCandidateBinding(currentCandidate, projectRoot, currentPortfolio);
             if (trustedLogicalStrategyIds(currentPortfolio).includes(currentCandidate.proposal.strategyId)) {
               throw new Error("the proposed logical Strategy ID is already trusted in the current portfolio");
             }
           } catch (error) {
-            this.trial.clear();
+            if (this.core.isAgentRunCurrent(agentRunGeneration)) this.trial.clear();
             throw new Error(`Pindie rejected this Agent Run: the pending Derivation Trial binding is stale or invalid: ${errorMessage(error)}`);
           }
-          trialLease = this.trial.bindDerivation(sessionId, this.core.getActiveAgentRunGeneration()!);
+          this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
+          trialLease = this.trial.bindDerivation(preparationSessionId!, agentRunGeneration);
         } else {
-          trialLease = this.trial.bind(sessionId, this.core.getActiveAgentRunGeneration()!);
+          this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
+          trialLease = this.trial.bind(preparationSessionId!, agentRunGeneration);
         }
         if (trialLease === null) {
           this.trial.clear();
@@ -972,8 +1089,8 @@ export class SelfImprovementIntegration {
 
       let derivationLease = null;
       if (adaptationLease === null && trialLease === null && this.derivation.hasPendingDerivation) {
-        const sessionId = ctx.sessionManager.getSessionId();
-        derivationLease = this.derivation.bind(sessionId, this.core.getActiveAgentRunGeneration()!);
+        this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
+        derivationLease = this.derivation.bind(preparationSessionId!, agentRunGeneration);
         if (derivationLease === null) {
           this.derivation.clear();
           this.derivationRunGeneration = null;
@@ -994,8 +1111,9 @@ export class SelfImprovementIntegration {
         derivationLease === null &&
         this.globalDerivation.hasPending
       ) {
-        const sessionId = ctx.sessionManager.getSessionId();
-        const invocationRoot = this.core.getProjectRoot();
+        this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
+        const sessionId = preparationSessionId;
+        const invocationRoot = preparationProjectRoot;
         const reservation = this.globalDerivation.pendingReservation;
         if (
           reservation === null ||
@@ -1006,11 +1124,12 @@ export class SelfImprovementIntegration {
           this.globalDerivation.clear();
           throw new Error("Pindie rejected this Agent Run: the pending Global Derivation reservation is stale or no longer addresses the current Session/project.");
         }
+        this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
         globalDerivationLease = this.globalDerivation.bind(
           reservation,
           sessionId,
           invocationRoot,
-          this.core.getActiveAgentRunGeneration()!,
+          agentRunGeneration,
         );
         if (globalDerivationLease === null) {
           this.globalDerivation.clear();
@@ -1021,9 +1140,11 @@ export class SelfImprovementIntegration {
           if (this.crossProjectLearning === null) {
             throw new Error("Cross-Project Learning is disabled");
           }
+          this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
           globalPromptContribution = this.crossProjectLearning.bindGlobalDerivationRun(
             globalDerivationLease,
           ).promptContribution;
+          this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
         } catch (error) {
           this.crossProjectLearning?.abortGlobalDerivationRun();
           this.globalDerivation.clear();
@@ -1039,11 +1160,15 @@ export class SelfImprovementIntegration {
         adaptationLease !== null ||
         derivationLease !== null ||
         (packetLease !== null && !synthesisTrialRun);
-      const normalTrust = await this.loadNormalTrustedPortfolio(this.core.getProjectRoot());
+      const normalTrust = await this.loadNormalTrustedPortfolio(preparationProjectRoot);
+      this.assertPreparationCurrent(ctx, preparationSessionId, preparationProjectRoot, agentRunGeneration, signal);
+      // Build all async-derived trust state locally, then publish it once the
+      // Run/session/project identity has crossed the final commit frontier.
       this.currentPromotedStrategyRevisionCatalog = normalTrust.promotedCatalog;
       this.currentTrustedStrategyPortfolio = normalTrust.portfolio;
+      this.trustProjectionRunGeneration = agentRunGeneration;
       const promotedContext = !restrictedRun
-        ? formatPromotedTrustedStrategyPortfolio(this.trustedStrategyPortfolio)
+        ? formatPromotedTrustedStrategyPortfolio(normalTrust.portfolio)
         : "";
       return {
         adaptationLease,
@@ -1057,14 +1182,15 @@ export class SelfImprovementIntegration {
         ]),
       };
     } catch (error) {
-      if (trialWasArmed || trialBound) this.trial.clear();
-      if (derivationWasArmed || derivationBound) {
-        this.derivation.clear();
-        this.derivationRunGeneration = null;
-      }
-      if (globalDerivationWasArmed || globalDerivationBound) {
-        this.abortGlobalDerivationRun();
-      }
+      this.cleanupFailedPreparation(
+        agentRunGeneration,
+        trialWasArmed,
+        trialBound,
+        derivationWasArmed,
+        derivationBound,
+        globalDerivationWasArmed,
+        globalDerivationBound,
+      );
       throw error;
     }
   }
@@ -1102,8 +1228,10 @@ export class SelfImprovementIntegration {
     let isDerivationRun = false;
     let isGlobalDerivationRun = false;
     let isTrialRun = false;
+    let settledGeneration: number | null = null;
     return {
       begin: (settlementGeneration) => {
+        settledGeneration = settlementGeneration;
         isAdaptationRun = settlementGeneration !== null && this.adaptationRunGeneration === settlementGeneration;
         isDerivationRun = settlementGeneration !== null && this.derivationRunGeneration === settlementGeneration;
         isGlobalDerivationRun = settlementGeneration !== null && this.globalDerivation.isActiveForGeneration(settlementGeneration);
@@ -1151,8 +1279,11 @@ export class SelfImprovementIntegration {
           }
         }
         if (isTrialRun) this.trial.clear();
-        this.currentPromotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
-        this.currentTrustedStrategyPortfolio = null;
+        if (this.trustProjectionRunGeneration === settledGeneration) {
+          this.currentPromotedStrategyRevisionCatalog = emptyPromotedStrategyRevisionCatalog();
+          this.currentTrustedStrategyPortfolio = null;
+          this.trustProjectionRunGeneration = null;
+        }
       },
     };
   }
