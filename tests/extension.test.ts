@@ -2230,6 +2230,7 @@ test("Host lifecycle wiring receives the native Session shutdown boundary", asyn
 test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
   const { api } = createHarness();
 
+  assert.equal(api.entryRenderers.has(PINDIE_REMOTE_NOTICE_TYPE), true);
   assert.deepEqual([...api.tools.keys()].sort(), [
     "pindie_gate_open",
     "pindie_gate_resolve",

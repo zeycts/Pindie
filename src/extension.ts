@@ -274,9 +274,10 @@ function registerComposedPindieExtension(
   options: PindieExtensionOptions,
   featureSelection: PindieFeatureSelection,
 ): PindieExtensionIntegration {
+  pi.registerEntryRenderer(PINDIE_REMOTE_NOTICE_TYPE, renderPindieRemoteNotice);
+
   const discord = options.remoteCompanion?.discord;
   if (discord) {
-    pi.registerEntryRenderer(PINDIE_REMOTE_NOTICE_TYPE, renderPindieRemoteNotice);
     if (typeof discord.setWarningSink === "function") {
       discord.setWarningSink((message) => {
         try {
