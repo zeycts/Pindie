@@ -154,6 +154,45 @@ test("proxy credentials are never included in configuration or transport diagnos
   remote.stop();
 });
 
+test("gateway errors emit one warning per outage and READY/RESUMED reset the latch", async () => {
+  const warnings: string[] = [];
+  const { client, remote } = await setup(new FakeRest(), { warn: (message: string) => warnings.push(message) });
+
+  for (let index = 0; index < 10; index += 1) client.emit("error");
+  assert.deepEqual(warnings, ["Pindie Discord Remote disconnected. Retrying…"]);
+
+  client.emit("ready");
+  client.emit("error");
+  assert.equal(warnings.length, 2);
+
+  client.emit("shardResume");
+  client.emit("error");
+  assert.equal(warnings.length, 3);
+  assert.ok(warnings.every((message) => message === "Pindie Discord Remote disconnected. Retrying…"));
+  remote.stop();
+});
+
+test("a new DiscordRemote generation does not inherit the old gateway outage latch", async () => {
+  const stale = new FakeClient();
+  const current = new FakeClient();
+  const clients = [stale, current];
+  const warnings: string[] = [];
+  const remote = new DiscordRemote(config, {
+    createClient: () => clients.shift()!,
+    createRest: () => new FakeRest(),
+    warn: (message: string) => warnings.push(message),
+  });
+
+  await remote.start(async () => "sent");
+  stale.emit("error");
+  await remote.start(async () => "sent");
+  stale.emit("error");
+  current.emit("error");
+
+  assert.equal(warnings.length, 2);
+  remote.stop();
+});
+
 test("Discord REST receives AbortSignal, disables mentions, and starts a message thread with real options", async () => {
   const calls: Array<{ method: string; route: string; options: any }> = []; let next = 0;
   const raw = {

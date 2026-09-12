@@ -36,6 +36,7 @@ import {
   shouldProbeContinuation,
 } from "./continuation.ts";
 import { PresentationIntegration } from "./presentation-integration.ts";
+import { PINDIE_REMOTE_NOTICE_TYPE, renderPindieRemoteNotice } from "./remote-notice.ts";
 import { CrossProjectLearningIntegration } from "./cross-project-learning-integration.ts";
 import { SelfImprovementIntegration } from "./self-improvement-integration.ts";
 import type {
@@ -273,6 +274,20 @@ function registerComposedPindieExtension(
   options: PindieExtensionOptions,
   featureSelection: PindieFeatureSelection,
 ): PindieExtensionIntegration {
+  const discord = options.remoteCompanion?.discord;
+  if (discord) {
+    pi.registerEntryRenderer(PINDIE_REMOTE_NOTICE_TYPE, renderPindieRemoteNotice);
+    if (typeof discord.setWarningSink === "function") {
+      discord.setWarningSink((message) => {
+        try {
+          pi.appendEntry(PINDIE_REMOTE_NOTICE_TYPE, { message });
+        } catch {
+          // Remote notices are best-effort presentation and must not affect Pi.
+        }
+      });
+    }
+  }
+
   // Capture the Host lease at extension registration. A released extension
   // publisher must never be able to target a later Host in this process.
   const committedRolloverPublisher = getCommittedRolloverPublisher();

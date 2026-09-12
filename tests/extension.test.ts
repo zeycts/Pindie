@@ -48,6 +48,8 @@ import {
   createTrustedStrategyPortfolio,
   createTrustedStrategyPortfolioForProjectId,
 } from "../src/strategy-portfolio.ts";
+import { DiscordRemote, type DiscordClientSeam } from "../src/discord-remote.ts";
+import { PINDIE_REMOTE_NOTICE_TYPE } from "../src/remote-notice.ts";
 import { RemoteCompanion, type RemoteSurface } from "../src/remote-companion.ts";
 import {
   EMPTY_STATE,
@@ -126,6 +128,7 @@ class CapturedExtensionAPI {
   readonly sentMessages: unknown[] = [];
   readonly sentUserMessages: unknown[] = [];
   readonly appendedEntries: unknown[] = [];
+  readonly entryRenderers = new Map<string, unknown>();
   readonly setActiveToolsCalls: string[][] = [];
   thinkingLevel = "medium";
   private runtimeBound = false;
@@ -173,7 +176,13 @@ class CapturedExtensionAPI {
     this.sentUserMessages.push({ content, options });
   }
 
-  appendEntry(entry: unknown): void { this.appendedEntries.push(entry); }
+  registerEntryRenderer(customType: string, renderer: unknown): void {
+    this.entryRenderers.set(customType, renderer);
+  }
+
+  appendEntry(customType: string, data?: unknown): void {
+    this.appendedEntries.push({ customType, data });
+  }
 
   getActiveTools(): string[] {
     if (!this.runtimeBound) throw new Error("Extension runtime not initialized.");
@@ -2255,6 +2264,55 @@ test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
     "turn_end",
   ]);
   assert.equal(api.handlers.has("input"), false);
+});
+
+test("production Discord Remote warnings append one TUI-only transcript notice per outage", async () => {
+  const handlers = new Map<string, Array<(...args: any[]) => void>>();
+  const client = {
+    rest: { get: async () => ({}), post: async () => ({}), patch: async () => ({}) },
+    login: async () => undefined,
+    destroy: () => undefined,
+    on: (event: string, listener: (...args: any[]) => void) => {
+      handlers.set(event, [...(handlers.get(event) ?? []), listener]);
+    },
+    emit: (event: string, ...args: any[]) => {
+      for (const listener of handlers.get(event) ?? []) listener(...args);
+    },
+  } as unknown as DiscordClientSeam;
+  const discord = new DiscordRemote(
+    { token: "token", userId: "user", guildId: "guild" },
+    { createClient: () => client },
+  );
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+    send: async () => undefined,
+    updateSessionPresentation: async () => undefined,
+  };
+  const harness = createHarness([], {}, {
+    remoteCompanion: {
+      companion: new RemoteCompanion(surface),
+      guildId: "guild",
+      discord,
+    },
+  });
+
+  await discord.start(async () => "sent");
+  for (let index = 0; index < 10; index += 1) client.emit("error");
+
+  assert.equal(harness.api.appendedEntries.length, 1);
+  assert.deepEqual(harness.api.appendedEntries[0], {
+    customType: PINDIE_REMOTE_NOTICE_TYPE,
+    data: { message: "Pindie Discord Remote disconnected. Retrying…" },
+  });
+  assert.ok(harness.api.entryRenderers.has(PINDIE_REMOTE_NOTICE_TYPE));
+  assert.deepEqual(harness.api.sentMessages, []);
+  assert.deepEqual(harness.api.sentUserMessages, []);
+
+  client.emit("ready");
+  client.emit("error");
+  assert.equal(harness.api.appendedEntries.length, 2);
+  discord.stop();
 });
 
 test("Remote-enabled wiring observes public input without altering Pindie tools", async () => {
