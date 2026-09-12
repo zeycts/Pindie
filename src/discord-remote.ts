@@ -118,7 +118,8 @@ export class DiscordRemote implements RemoteSurface {
   private readonly clearTimer: NonNullable<DiscordRemoteOptions["clearTimer"]>;
   private readonly createClient: NonNullable<DiscordRemoteOptions["createClient"]>;
   private readonly createRest: NonNullable<DiscordRemoteOptions["createRest"]>;
-  private readonly warn: NonNullable<DiscordRemoteOptions["warn"]>;
+  private warn: NonNullable<DiscordRemoteOptions["warn"]>;
+  private gatewayErrorReported = false;
 
   constructor(config: DiscordRemoteConfig, options: DiscordRemoteOptions = {}) {
     this.config = config;
@@ -129,22 +130,40 @@ export class DiscordRemote implements RemoteSurface {
     this.warn = options.warn ?? console.warn;
   }
 
+  /** Updates the generic warning sink without coupling this Remote to a presentation runtime. */
+  setWarningSink(warn: NonNullable<DiscordRemoteOptions["warn"]>): void {
+    this.warn = warn;
+  }
+
   /** Starts only after a native Session binds. It is intentionally never awaited by extension startup. */
   async start(input: Input, ready: () => void = () => undefined, acceptsThread: (threadId: string) => boolean = () => true): Promise<void> {
     this.stop();
     const generation = ++this.generation; const client = this.createClient();
     this.lifecycleAbort = new AbortController();
+    this.gatewayErrorReported = false;
     this.client = client; this.rest = this.createRest(client); this.onInput = input; this.onReady = ready;
-    client.on("ready", () => { if (this.current(generation, client)) this.onReady?.(); });
-    client.on("shardResume", () => { if (this.current(generation, client)) this.onReady?.(); });
+    client.on("ready", () => {
+      if (!this.current(generation, client)) return;
+      this.gatewayErrorReported = false;
+      this.onReady?.();
+    });
+    client.on("shardResume", () => {
+      if (!this.current(generation, client)) return;
+      this.gatewayErrorReported = false;
+      this.onReady?.();
+    });
     client.on("messageCreate", (message: DiscordMessage) => { void this.receive(generation, message, acceptsThread); });
-    client.on("error", () => this.warn("Pindie Discord Remote gateway error."));
+    client.on("error", () => {
+      if (!this.current(generation, client) || this.gatewayErrorReported) return;
+      this.gatewayErrorReported = true;
+      this.warn("Pindie Discord Remote disconnected. Retrying…");
+    });
     try { await client.login(this.config.token); }
     catch { this.warn("Pindie Discord Remote connection failed."); throw new Error("Pindie Discord Remote connection failed."); }
   }
 
   stop(): void {
-    ++this.generation; this.lifecycleAbort.abort();
+    ++this.generation; this.gatewayErrorReported = false; this.lifecycleAbort.abort();
     for (const pending of this.pending.values()) if (pending.timer) this.clearTimer(pending.timer);
     this.pending.clear(); this.deliveredPresentation.clear(); this.onInput = null; this.onReady = null; this.rest = null;
     const client = this.client; this.client = null;
