@@ -131,10 +131,10 @@ PINDIE_BROWSER_ENABLED=false pnpm pindie
 ```
 
 This path requires WSL mirrored networking and Windows Chrome at
-`C:\Program Files\Google\Chrome\Application\chrome.exe`. It uses
-`http://127.0.0.1:9222` and a separate persistent profile at
-`%LOCALAPPDATA%\Pindie\Dev Browser`; it never attaches to an endpoint that is
-already running. Optional overrides are:
+`C:\Program Files\Google\Chrome\Application\chrome.exe`. Each Pindie Host asks
+Windows for its own loopback debug port and uses an isolated runtime profile
+under `%LOCALAPPDATA%\Pindie\Dev Browser`; normal shutdown stops only that
+Host's Chrome and removes its runtime profile. Optional advanced overrides are:
 
 ```text
 PINDIE_BROWSER_URL
@@ -143,6 +143,9 @@ PINDIE_BROWSER_PROFILE_DIR
 ```
 
 `PINDIE_BROWSER_URL` must remain an HTTP loopback URL with an explicit port.
-Browser Reality is runtime-only: disabling it leaves normal Pindie startup and
-semantic State unchanged, while startup/bridge failures are reported without
-disabling the rest of Pindie.
+When explicitly set, Pindie conservatively refuses an endpoint that is already
+running rather than attaching to an unknown browser. An explicit
+`PINDIE_BROWSER_PROFILE_DIR` remains developer-managed and is not removed on
+shutdown. Browser Reality is runtime-only: disabling it leaves normal Pindie
+startup and semantic State unchanged, while startup/bridge failures are
+reported without disabling the rest of Pindie.

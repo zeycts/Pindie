@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -10,12 +11,12 @@ import {
 
 const execFile = promisify(execFileCallback);
 
-const DEFAULT_BROWSER_URL = "http://127.0.0.1:9222";
 const DEFAULT_WINDOWS_CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const DEFAULT_POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 const POWERSHELL_CWD = "/mnt/c/Windows";
 const START_TIMEOUT_MS = 10_000;
 const START_POLL_MS = 250;
+const DEFAULT_START_ATTEMPTS = 2;
 
 export const REQUIRED_BROWSER_TOOL_NAMES = Object.freeze([
   "list_pages",
@@ -35,9 +36,14 @@ export const REQUIRED_BROWSER_TOOL_NAMES = Object.freeze([
 
 export interface BrowserRealityConfig {
   readonly enabled: boolean;
-  readonly browserUrl: string;
+  readonly browserUrl?: string;
   readonly chromeExecutable: string;
   readonly profileDirectory?: string;
+}
+
+interface ActiveBrowserRealityConfig extends BrowserRealityConfig {
+  readonly browserUrl: string;
+  readonly profileDirectory: string;
 }
 
 export interface BrowserRealityStatus {
@@ -59,8 +65,11 @@ interface LaunchedBrowser {
 
 export interface BrowserRealityRuntimeDependencies {
   probe?(browserUrl: string): Promise<boolean>;
-  launch?(config: BrowserRealityConfig): Promise<LaunchedBrowser>;
+  allocatePort?(): Promise<number>;
+  allocateProfileDirectory?(runtimeId: string): Promise<string>;
+  launch?(config: ActiveBrowserRealityConfig): Promise<LaunchedBrowser>;
   stop?(browser: LaunchedBrowser): Promise<void>;
+  cleanupProfile?(profileDirectory: string): Promise<void>;
   sleep?(milliseconds: number): Promise<void>;
   now?(): number;
 }
@@ -109,7 +118,9 @@ export function resolveBrowserRealityConfig(
 ): BrowserRealityConfig {
   return Object.freeze({
     enabled: configuredFlag(env, "PINDIE_BROWSER_ENABLED") ?? true,
-    browserUrl: env.PINDIE_BROWSER_URL?.trim() || DEFAULT_BROWSER_URL,
+    ...(env.PINDIE_BROWSER_URL?.trim()
+      ? { browserUrl: env.PINDIE_BROWSER_URL.trim() }
+      : {}),
     chromeExecutable:
       env.PINDIE_BROWSER_EXECUTABLE?.trim() || DEFAULT_WINDOWS_CHROME,
     ...(env.PINDIE_BROWSER_PROFILE_DIR?.trim()
@@ -121,6 +132,7 @@ export function resolveBrowserRealityConfig(
 function browserEndpoint(config: BrowserRealityConfig): URL | string {
   let url: URL;
   try {
+    if (!config.browserUrl) throw new Error("missing browser URL");
     url = new URL(config.browserUrl);
   } catch {
     return "PINDIE_BROWSER_URL must be an HTTP loopback URL.";
@@ -162,18 +174,68 @@ function powershellLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-async function defaultLaunch(config: BrowserRealityConfig): Promise<LaunchedBrowser> {
-  const endpoint = browserEndpoint(config);
-  if (typeof endpoint === "string") throw new Error(endpoint);
-  const profileExpression = config.profileDirectory
-    ? powershellLiteral(config.profileDirectory)
-    : "Join-Path $env:LOCALAPPDATA 'Pindie\\Dev Browser'";
+async function defaultAllocatePort(): Promise<number> {
   const script = [
     "$ErrorActionPreference = 'Stop'",
-    `$profile = ${profileExpression}`,
+    "$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)",
+    "try {",
+    "  $listener.Start()",
+    "  Write-Output \"PORT:$($listener.LocalEndpoint.Port)\"",
+    "} finally {",
+    "  $listener.Stop()",
+    "}",
+  ].join("\n");
+  const result = await execFile(DEFAULT_POWERSHELL, [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    script,
+  ], {
+    cwd: POWERSHELL_CWD,
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  const match = /(?:^|\n)PORT:(\d+)(?:\r?\n|$)/u.exec(result.stdout);
+  const port = match ? Number(match[1]) : 0;
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("Windows did not allocate a loopback browser port.");
+  }
+  return port;
+}
+
+async function defaultAllocateProfileDirectory(runtimeId: string): Promise<string> {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$root = Join-Path $env:LOCALAPPDATA 'Pindie\\Dev Browser'",
+    `$profile = Join-Path $root ${powershellLiteral(runtimeId)}`,
+    "[Console]::OutputEncoding = [Text.UTF8Encoding]::new()",
+    "Write-Output \"PROFILE:$profile\"",
+  ].join("\n");
+  const result = await execFile(DEFAULT_POWERSHELL, [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    script,
+  ], {
+    cwd: POWERSHELL_CWD,
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  const match = /(?:^|\n)PROFILE:(.+?)(?:\r?\n|$)/u.exec(result.stdout);
+  const profileDirectory = match?.[1]?.trim();
+  if (!profileDirectory) throw new Error("Windows did not provide a Dev Browser profile path.");
+  return profileDirectory;
+}
+
+async function defaultLaunch(config: ActiveBrowserRealityConfig): Promise<LaunchedBrowser> {
+  const endpoint = browserEndpoint(config);
+  if (typeof endpoint === "string") throw new Error(endpoint);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$profile = ${powershellLiteral(config.profileDirectory)}`,
     "$arguments = @(",
     `  '--remote-debugging-port=${endpoint.port}',`,
-    "  \"--user-data-dir=$profile\",",
+    "  \"--user-data-dir=`\"$profile`\"\",",
     "  '--no-first-run',",
     "  '--no-default-browser-check',",
     "  '--disable-extensions',",
@@ -216,17 +278,48 @@ async function defaultStop(browser: LaunchedBrowser): Promise<void> {
   });
 }
 
+async function defaultCleanupProfile(profileDirectory: string): Promise<void> {
+  const script = [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    `$profile = ${powershellLiteral(profileDirectory)}`,
+    "for ($attempt = 0; $attempt -lt 20; $attempt++) {",
+    "  if (-not (Test-Path -LiteralPath $profile)) { exit 0 }",
+    "  Remove-Item -LiteralPath $profile -Recurse -Force",
+    "  Start-Sleep -Milliseconds 100",
+    "}",
+    "if (Test-Path -LiteralPath $profile) { exit 1 }",
+  ].join("\n");
+  await execFile(DEFAULT_POWERSHELL, [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    script,
+  ], {
+    cwd: POWERSHELL_CWD,
+    timeout: 10_000,
+    windowsHide: true,
+  });
+}
+
 export function createBrowserRealityRuntime(
   config: BrowserRealityConfig,
   dependencies: BrowserRealityRuntimeDependencies = {},
 ): BrowserRealityRuntime {
   const probe = dependencies.probe ?? defaultProbe;
+  const allocatePort = dependencies.allocatePort ?? defaultAllocatePort;
+  const allocateProfileDirectory = dependencies.allocateProfileDirectory ??
+    defaultAllocateProfileDirectory;
   const launch = dependencies.launch ?? defaultLaunch;
   const stop = dependencies.stop ?? defaultStop;
+  const cleanupProfile = dependencies.cleanupProfile ?? defaultCleanupProfile;
   const sleep = dependencies.sleep ?? ((milliseconds: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const now = dependencies.now ?? Date.now;
+  const runtimeId = randomUUID();
+  const ownsProfile = config.profileDirectory === undefined;
+  let effectiveConfig: BrowserRealityConfig = config;
   let browser: LaunchedBrowser | null = null;
+  let ownedProfileDirectory: string | null = null;
   let current: BrowserRealityStatus = {
     enabled: config.enabled,
     available: false,
@@ -238,48 +331,97 @@ export function createBrowserRealityRuntime(
     current = { enabled: config.enabled, available: false, reason };
     return current;
   };
+  const cleanOwnedProfile = async (): Promise<void> => {
+    const profileDirectory = ownedProfileDirectory;
+    ownedProfileDirectory = null;
+    if (profileDirectory) await cleanupProfile(profileDirectory);
+  };
 
   return {
-    config,
+    get config() {
+      return effectiveConfig;
+    },
     async start() {
       if (!config.enabled) return current;
-      const endpoint = browserEndpoint(config);
-      if (typeof endpoint === "string") return unavailable(endpoint);
-      if (await probe(config.browserUrl)) {
-        return unavailable(
-          `Refused to attach to the existing browser endpoint at ${config.browserUrl}; ` +
-          "Pindie only starts its own dedicated Dev Browser.",
-        );
-      }
-      try {
-        browser = await launch(config);
-      } catch (error) {
-        return unavailable(`Could not start Pindie Dev Browser: ${safeFailure(error)}`);
-      }
 
-      const deadline = now() + START_TIMEOUT_MS;
-      while (now() < deadline) {
-        if (await probe(config.browserUrl)) {
-          current = { enabled: true, available: true, reason: null };
-          return current;
+      let profileDirectory = config.profileDirectory;
+      try {
+        if (!profileDirectory) {
+          profileDirectory = await allocateProfileDirectory(runtimeId);
+          ownedProfileDirectory = profileDirectory;
         }
-        await sleep(START_POLL_MS);
+      } catch (error) {
+        return unavailable(`Could not prepare Pindie Dev Browser: ${safeFailure(error)}`);
       }
 
-      try {
-        await stop(browser);
-      } catch {
-        // Preserve the factual startup failure; cleanup is best effort.
+      const attempts = config.browserUrl ? 1 : DEFAULT_START_ATTEMPTS;
+      let lastFailure = "";
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        let browserUrl = config.browserUrl;
+        try {
+          browserUrl ??= `http://127.0.0.1:${await allocatePort()}`;
+        } catch (error) {
+          lastFailure = `Could not allocate Pindie Dev Browser endpoint: ${safeFailure(error)}`;
+          break;
+        }
+        effectiveConfig = Object.freeze({ ...config, browserUrl, profileDirectory });
+        const activeConfig = effectiveConfig as ActiveBrowserRealityConfig;
+        const endpoint = browserEndpoint(activeConfig);
+        if (typeof endpoint === "string") {
+          lastFailure = endpoint;
+          break;
+        }
+        if (await probe(browserUrl)) {
+          if (config.browserUrl) {
+            lastFailure =
+              `Refused to attach to the existing browser endpoint at ${browserUrl}; ` +
+              "Pindie only starts its own dedicated Dev Browser.";
+            break;
+          }
+          lastFailure = `Allocated browser endpoint ${browserUrl} became occupied before launch.`;
+          continue;
+        }
+        try {
+          browser = await launch(activeConfig);
+        } catch (error) {
+          lastFailure = `Could not start Pindie Dev Browser: ${safeFailure(error)}`;
+          if (!config.browserUrl && attempt + 1 < attempts) continue;
+          break;
+        }
+
+        const deadline = now() + START_TIMEOUT_MS;
+        while (now() < deadline) {
+          if (await probe(browserUrl)) {
+            current = { enabled: true, available: true, reason: null };
+            return current;
+          }
+          await sleep(START_POLL_MS);
+        }
+
+        try {
+          await stop(browser);
+        } catch {
+          // Preserve the factual startup failure; cleanup is best effort.
+        }
+        browser = null;
+        lastFailure =
+          `Pindie Dev Browser did not expose ${browserUrl} within ${START_TIMEOUT_MS}ms.`;
       }
-      browser = null;
-      return unavailable(
-        `Pindie Dev Browser did not expose ${config.browserUrl} within ${START_TIMEOUT_MS}ms.`,
-      );
+
+      if (ownsProfile) {
+        try {
+          await cleanOwnedProfile();
+        } catch {
+          // Preserve the factual startup failure; profile cleanup is best effort.
+        }
+      }
+      return unavailable(lastFailure || "Could not start Pindie Dev Browser.");
     },
     async status() {
       if (!current.available) return current;
-      if (await probe(config.browserUrl)) return current;
-      return unavailable(`Pindie Dev Browser endpoint ${config.browserUrl} is no longer reachable.`);
+      const browserUrl = effectiveConfig.browserUrl!;
+      if (await probe(browserUrl)) return current;
+      return unavailable(`Pindie Dev Browser endpoint ${browserUrl} is no longer reachable.`);
     },
     dispose() {
       disposePromise ??= (async () => {
@@ -290,6 +432,13 @@ export function createBrowserRealityRuntime(
             await stop(launched);
           } catch (error) {
             console.warn(`[Pindie] Could not stop Pindie Dev Browser: ${safeFailure(error)}`);
+          }
+        }
+        if (ownsProfile) {
+          try {
+            await cleanOwnedProfile();
+          } catch (error) {
+            console.warn(`[Pindie] Could not clean Pindie Dev Browser profile: ${safeFailure(error)}`);
           }
         }
         current = {
@@ -304,6 +453,7 @@ export function createBrowserRealityRuntime(
 }
 
 function browserClientConfig(config: BrowserRealityConfig): BrowserUseConfig {
+  if (!config.browserUrl) throw new Error("Pindie Dev Browser endpoint is unavailable.");
   return {
     sessionMode: "existing",
     browserUrl: config.browserUrl,

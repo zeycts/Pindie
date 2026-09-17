@@ -16,6 +16,7 @@ function config() {
   return resolveBrowserRealityConfig({
     PINDIE_BROWSER_ENABLED: "true",
     PINDIE_BROWSER_URL: "http://127.0.0.1:9222",
+    PINDIE_BROWSER_PROFILE_DIR: "C:\\Pindie\\explicit-profile",
   });
 }
 
@@ -51,8 +52,11 @@ function discoveredTools() {
   }));
 }
 
-test("Browser Reality defaults on and preserves explicit boolean configuration", () => {
-  assert.equal(resolveBrowserRealityConfig({}).enabled, true);
+test("Browser Reality defaults on without a fixed endpoint or shared profile", () => {
+  const defaults = resolveBrowserRealityConfig({});
+  assert.equal(defaults.enabled, true);
+  assert.equal(defaults.browserUrl, undefined);
+  assert.equal(defaults.profileDirectory, undefined);
   assert.equal(resolveBrowserRealityConfig({ PINDIE_BROWSER_ENABLED: "false" }).enabled, false);
   for (const value of ["1", "true", "yes", "on"]) {
     assert.equal(resolveBrowserRealityConfig({ PINDIE_BROWSER_ENABLED: value }).enabled, true);
@@ -76,6 +80,84 @@ test("explicitly disabled Browser Reality does not launch or probe Chrome", asyn
   });
   assert.equal(probes, 0);
   assert.equal(launches, 0);
+  await runtime.dispose();
+});
+
+test("two default runtimes allocate independent endpoints and profiles and clean only themselves", async () => {
+  const active = new Set<string>();
+  const urlsByPid = new Map<number, string>();
+  const stopped: number[] = [];
+  const cleaned: string[] = [];
+  const ports = [41_001, 41_002];
+  let nextPid = 100;
+  const makeRuntime = (label: string) => createBrowserRealityRuntime(
+    resolveBrowserRealityConfig({}),
+    {
+      allocatePort: async () => ports.shift()!,
+      allocateProfileDirectory: async (runtimeId) => `C:\\Pindie\\${label}-${runtimeId}`,
+      probe: async (url) => active.has(url),
+      launch: async (runtimeConfig) => {
+        const pid = nextPid++;
+        active.add(runtimeConfig.browserUrl);
+        urlsByPid.set(pid, runtimeConfig.browserUrl);
+        return { pid };
+      },
+      stop: async (browser) => {
+        stopped.push(browser.pid);
+        active.delete(urlsByPid.get(browser.pid)!);
+      },
+      cleanupProfile: async (profileDirectory) => { cleaned.push(profileDirectory); },
+      sleep: async () => {},
+    },
+  );
+  const runtimeA = makeRuntime("A");
+  const runtimeB = makeRuntime("B");
+
+  assert.equal((await runtimeA.start()).available, true);
+  assert.equal((await runtimeB.start()).available, true);
+  assert.equal(runtimeA.config.browserUrl, "http://127.0.0.1:41001");
+  assert.equal(runtimeB.config.browserUrl, "http://127.0.0.1:41002");
+  assert.notEqual(runtimeA.config.profileDirectory, runtimeB.config.profileDirectory);
+
+  await runtimeA.dispose();
+  assert.deepEqual(stopped, [100]);
+  assert.deepEqual(cleaned, [runtimeA.config.profileDirectory]);
+  assert.equal((await runtimeB.status()).available, true);
+
+  await runtimeB.dispose();
+  assert.deepEqual(stopped, [100, 101]);
+  assert.deepEqual(cleaned, [
+    runtimeA.config.profileDirectory,
+    runtimeB.config.profileDirectory,
+  ]);
+});
+
+test("occupied 9222 does not affect default allocation and an allocation race retries once", async () => {
+  const probed: string[] = [];
+  const launched: string[] = [];
+  const allocatedPorts = [42_001, 42_002];
+  const runtime = createBrowserRealityRuntime(resolveBrowserRealityConfig({}), {
+    allocatePort: async () => allocatedPorts.shift()!,
+    allocateProfileDirectory: async () => "C:\\Pindie\\runtime",
+    probe: async (url) => {
+      probed.push(url);
+      return url === "http://127.0.0.1:9222" ||
+        url === "http://127.0.0.1:42001" ||
+        launched.includes(url);
+    },
+    launch: async (runtimeConfig) => {
+      launched.push(runtimeConfig.browserUrl);
+      return { pid: 200 };
+    },
+    stop: async () => {},
+    cleanupProfile: async () => {},
+    sleep: async () => {},
+  });
+
+  assert.equal((await runtime.start()).available, true);
+  assert.equal(runtime.config.browserUrl, "http://127.0.0.1:42002");
+  assert.deepEqual(launched, ["http://127.0.0.1:42002"]);
+  assert.equal(probed.includes("http://127.0.0.1:9222"), false);
   await runtime.dispose();
 });
 
