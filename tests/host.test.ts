@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import {
-  createPindieHost,
+  createPindieHost as createPindieHostRuntime,
   createPindieRuntimeFactory,
   getPindieResourcePaths,
   type PindieInteractiveMode,
@@ -75,6 +75,15 @@ function fakeRuntime() {
 
 function fakeSessionServices(): AgentSessionServices {
   return {} as AgentSessionServices;
+}
+
+function createPindieHost(
+  options: Parameters<typeof createPindieHostRuntime>[0],
+) {
+  return createPindieHostRuntime({
+    env: { PINDIE_BROWSER_ENABLED: "false" },
+    ...options,
+  });
 }
 
 test("Pindie extension resource path is relative to the package", () => {
@@ -269,7 +278,7 @@ test("Host isolates unavailable Browser Reality and cleans its runtime on shutdo
 
   try {
     const host = await createPindieHost({
-      env: { PINDIE_BROWSER_ENABLED: "true" },
+      env: {},
       sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
       dependencies: {
         createBrowserRealityRuntime: (config) => {

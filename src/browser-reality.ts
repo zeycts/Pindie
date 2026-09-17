@@ -108,7 +108,7 @@ export function resolveBrowserRealityConfig(
   env: Record<string, string | undefined> = process.env,
 ): BrowserRealityConfig {
   return Object.freeze({
-    enabled: configuredFlag(env, "PINDIE_BROWSER_ENABLED") ?? false,
+    enabled: configuredFlag(env, "PINDIE_BROWSER_ENABLED") ?? true,
     browserUrl: env.PINDIE_BROWSER_URL?.trim() || DEFAULT_BROWSER_URL,
     chromeExecutable:
       env.PINDIE_BROWSER_EXECUTABLE?.trim() || DEFAULT_WINDOWS_CHROME,
