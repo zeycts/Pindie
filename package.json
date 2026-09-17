@@ -37,6 +37,7 @@
     "typebox": "*"
   },
   "dependencies": {
+    "@amaster.ai/pi-browser-use": "0.1.15",
     "@earendil-works/pi-tui": "0.85.1",
     "@notionhq/client": "5.26.0",
     "discord.js": "14.27.0",

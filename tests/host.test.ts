@@ -24,6 +24,10 @@ import {
 } from "../src/long-task-control.ts";
 import { createTaskContinuity } from "../src/task-continuity.ts";
 import { TaskMetricsTracker } from "../src/task-metrics.ts";
+import type {
+  BrowserRealityConfig,
+  BrowserRealityRuntime,
+} from "../src/browser-reality.ts";
 
 class ManualScheduler {
   readonly callbacks: Array<() => void> = [];
@@ -130,6 +134,39 @@ test("runtime factory passes project cwd and package resources to Pi services", 
   assert.equal(runtimeResult.services, services);
 });
 
+test("runtime factory adds Browser Reality only when an enabled Host supplies it", async () => {
+  const services = fakeSessionServices();
+  let servicesOptions: CreateAgentSessionServicesOptions | undefined;
+  const browserFactory = () => {};
+  const factory = createPindieRuntimeFactory(
+    {
+      createAgentSessionServices: async (options) => {
+        servicesOptions = options;
+        return services;
+      },
+      createAgentSessionFromServices: async () => ({
+        session: {} as AgentSession,
+        extensionsResult: {} as LoadExtensionsResult,
+      }),
+    },
+    new TaskMetricsTracker(),
+    { browserExtensionFactory: browserFactory },
+  );
+
+  await factory({
+    cwd: "/tmp/pindie-host-project",
+    agentDir: "/tmp/pindie-host-agent",
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+  });
+
+  const extensionFactories = servicesOptions?.resourceLoaderOptions?.extensionFactories;
+  assert.deepEqual(extensionFactories?.map((entry) => entry.name), [
+    "pindie",
+    "pindie-browser-reality",
+  ]);
+  assert.equal(extensionFactories?.[1]?.factory, browserFactory);
+});
+
 test("runtime factory omits Pindie-added Skills when the startup selection disables them", async () => {
   const services = fakeSessionServices();
   let servicesOptions: CreateAgentSessionServicesOptions | undefined;
@@ -202,6 +239,57 @@ test("Host creates one runtime and supplies that same runtime to InteractiveMode
 
   assert.equal(modeRuns, 1);
   assert.equal(disposeCalls(), 1);
+});
+
+test("Host isolates unavailable Browser Reality and cleans its runtime on shutdown", async () => {
+  const { runtime, disposeCalls } = fakeRuntime();
+  let browserStarts = 0;
+  let browserDisposals = 0;
+  let resolvedConfig: BrowserRealityConfig | undefined;
+  const browserRuntime: BrowserRealityRuntime = {
+    config: {
+      enabled: true,
+      browserUrl: "http://127.0.0.1:9222",
+      chromeExecutable: "chrome.exe",
+    },
+    start: async () => {
+      browserStarts += 1;
+      return { enabled: true, available: false, reason: "Chrome unavailable" };
+    },
+    status: async () => ({
+      enabled: true,
+      available: false,
+      reason: "Chrome unavailable",
+    }),
+    dispose: async () => { browserDisposals += 1; },
+  };
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
+
+  try {
+    const host = await createPindieHost({
+      env: { PINDIE_BROWSER_ENABLED: "true" },
+      sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+      dependencies: {
+        createBrowserRealityRuntime: (config) => {
+          resolvedConfig = config;
+          return browserRuntime;
+        },
+        createAgentSessionRuntime: async () => runtime,
+        createInteractiveMode: () => ({ run: async () => {} }),
+      },
+    });
+
+    assert.equal(resolvedConfig?.enabled, true);
+    assert.equal(browserStarts, 1);
+    assert.match(String(warnings[0]?.[0]), /Browser Reality unavailable.*Chrome unavailable/);
+    await host.dispose();
+    assert.equal(disposeCalls(), 1);
+    assert.equal(browserDisposals, 1);
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 test("Host disposal is idempotent and disposes the native runtime once", async () => {

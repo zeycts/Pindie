@@ -479,6 +479,28 @@ dogfooded, compatibility-closed, and frozen contract is documented in
 likewise create purpose-specific Agent executions later without pretending
 every execution must be initiated by an externally owned Session.
 
+### Browser Reality v0.1
+
+Browser Reality is an optional external development surface, not semantic
+State. The Host owns only the dedicated `Pindie Dev Browser` process lifetime;
+a small Pi extension adapter exposes selected official Chrome DevTools MCP tools
+through Pi's concrete Tool Surface. Pindie's existing unknown/custom Tool Effect
+classification and Execution Gateway remain the execution authority.
+
+```text
+Windows dedicated Chrome profile (runtime-only external Reality)
+        ↓ official Chrome DevTools MCP
+Pi browser_* concrete tools
+        ↓ existing Pindie Gateway
+Model
+```
+
+Browser availability, page selection, DOM snapshots, screenshots, Console and
+Network observations are never written to `PindieState`. Bridge/session cleanup
+follows Pi extension lifecycle; Chrome cleanup follows Host lifecycle. Disabled
+or unavailable Browser Reality does not alter Task truth or prevent ordinary
+Pindie startup.
+
 ## 14. Work Memory v0.1 — approved architecture
 
 Work Memory is an external durable work-memory projection shared with other AI work surfaces. It preserves only high-value durable state changes that would otherwise be costly to reconstruct later. It is not `PindieState`, Task continuity, Run Experience, Session history, a second memory database, or another workflow engine.
