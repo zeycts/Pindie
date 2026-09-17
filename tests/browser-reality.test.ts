@@ -4,6 +4,7 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import {
+  buildBrowserLaunchArguments,
   createBrowserRealityRuntime,
   registerBrowserRealityExtension,
   REQUIRED_BROWSER_TOOL_NAMES,
@@ -52,15 +53,37 @@ function discoveredTools() {
   }));
 }
 
-test("Browser Reality defaults on without a fixed endpoint or shared profile", () => {
+test("Browser Reality defaults on and headless without a fixed endpoint or shared profile", () => {
   const defaults = resolveBrowserRealityConfig({});
   assert.equal(defaults.enabled, true);
+  assert.equal(defaults.headless, true);
   assert.equal(defaults.browserUrl, undefined);
   assert.equal(defaults.profileDirectory, undefined);
   assert.equal(resolveBrowserRealityConfig({ PINDIE_BROWSER_ENABLED: "false" }).enabled, false);
   for (const value of ["1", "true", "yes", "on"]) {
     assert.equal(resolveBrowserRealityConfig({ PINDIE_BROWSER_ENABLED: value }).enabled, true);
   }
+  assert.equal(resolveBrowserRealityConfig({ PINDIE_BROWSER_HEADLESS: "true" }).headless, true);
+  assert.equal(resolveBrowserRealityConfig({ PINDIE_BROWSER_HEADLESS: "false" }).headless, false);
+});
+
+test("default launch arguments are headless and the explicit headful override omits it", () => {
+  const launchConfig = {
+    PINDIE_BROWSER_URL: "http://127.0.0.1:43123",
+    PINDIE_BROWSER_PROFILE_DIR: "C:\\Pindie\\runtime",
+  };
+  const defaultArguments = buildBrowserLaunchArguments(resolveBrowserRealityConfig(launchConfig));
+  const headfulArguments = buildBrowserLaunchArguments(resolveBrowserRealityConfig({
+    ...launchConfig,
+    PINDIE_BROWSER_HEADLESS: "false",
+  }));
+
+  assert.equal(defaultArguments.includes("--headless"), true);
+  assert.equal(headfulArguments.includes("--headless"), false);
+  assert.equal(defaultArguments.includes("--remote-debugging-port=43123"), true);
+  assert.equal(headfulArguments.includes("--remote-debugging-port=43123"), true);
+  assert.equal(defaultArguments.includes('--user-data-dir="C:\\Pindie\\runtime"'), true);
+  assert.equal(headfulArguments.includes('--user-data-dir="C:\\Pindie\\runtime"'), true);
 });
 
 test("explicitly disabled Browser Reality does not launch or probe Chrome", async () => {

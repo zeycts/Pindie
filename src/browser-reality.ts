@@ -36,6 +36,7 @@ export const REQUIRED_BROWSER_TOOL_NAMES = Object.freeze([
 
 export interface BrowserRealityConfig {
   readonly enabled: boolean;
+  readonly headless: boolean;
   readonly browserUrl?: string;
   readonly chromeExecutable: string;
   readonly profileDirectory?: string;
@@ -118,6 +119,7 @@ export function resolveBrowserRealityConfig(
 ): BrowserRealityConfig {
   return Object.freeze({
     enabled: configuredFlag(env, "PINDIE_BROWSER_ENABLED") ?? true,
+    headless: configuredFlag(env, "PINDIE_BROWSER_HEADLESS") ?? true,
     ...(env.PINDIE_BROWSER_URL?.trim()
       ? { browserUrl: env.PINDIE_BROWSER_URL.trim() }
       : {}),
@@ -227,19 +229,31 @@ async function defaultAllocateProfileDirectory(runtimeId: string): Promise<strin
   return profileDirectory;
 }
 
-async function defaultLaunch(config: ActiveBrowserRealityConfig): Promise<LaunchedBrowser> {
+export function buildBrowserLaunchArguments(
+  config: BrowserRealityConfig,
+): readonly string[] {
   const endpoint = browserEndpoint(config);
   if (typeof endpoint === "string") throw new Error(endpoint);
+  if (!config.profileDirectory) throw new Error("Pindie Dev Browser profile is unavailable.");
+  return Object.freeze([
+    `--remote-debugging-port=${endpoint.port}`,
+    `--user-data-dir="${config.profileDirectory}"`,
+    ...(config.headless ? ["--headless"] : []),
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-extensions",
+    "about:blank",
+  ]);
+}
+
+async function defaultLaunch(config: ActiveBrowserRealityConfig): Promise<LaunchedBrowser> {
+  const argumentsScript = buildBrowserLaunchArguments(config)
+    .map((argument) => `  ${powershellLiteral(argument)}`)
+    .join(",\n");
   const script = [
     "$ErrorActionPreference = 'Stop'",
-    `$profile = ${powershellLiteral(config.profileDirectory)}`,
     "$arguments = @(",
-    `  '--remote-debugging-port=${endpoint.port}',`,
-    "  \"--user-data-dir=`\"$profile`\"\",",
-    "  '--no-first-run',",
-    "  '--no-default-browser-check',",
-    "  '--disable-extensions',",
-    "  'about:blank'",
+    argumentsScript,
     ")",
     `$process = Start-Process -FilePath ${powershellLiteral(config.chromeExecutable)} -ArgumentList $arguments -PassThru`,
     "[Console]::OutputEncoding = [Text.UTF8Encoding]::new()",

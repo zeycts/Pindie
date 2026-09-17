@@ -258,6 +258,7 @@ test("Host isolates unavailable Browser Reality and cleans its runtime on shutdo
   const browserRuntime: BrowserRealityRuntime = {
     config: {
       enabled: true,
+      headless: true,
       browserUrl: "http://127.0.0.1:9222",
       chromeExecutable: "chrome.exe",
     },
