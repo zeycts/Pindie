@@ -479,12 +479,14 @@ dogfooded, compatibility-closed, and frozen contract is documented in
 likewise create purpose-specific Agent executions later without pretending
 every execution must be initiated by an externally owned Session.
 
-### Browser Reality v0.1.2
+### Browser Reality v0.1.3
 
-Browser Reality is a default-on external development surface, not semantic
-State. Each Host owns only the dedicated `Pindie Dev Browser` process it starts,
-with a Windows-allocated loopback endpoint and isolated runtime profile; Hosts
-do not share or attach to an existing browser. A small Pi extension adapter
+Browser Reality is a default-on, headless-by-default external development
+surface, not semantic State. `PINDIE_BROWSER_HEADLESS=false` is the minimal
+headful debugging override. Each Host owns only the dedicated
+`Pindie Dev Browser` process it starts, with a Windows-allocated loopback
+endpoint and isolated runtime profile; Hosts do not share or attach to an
+existing browser. A small Pi extension adapter
 exposes selected official Chrome DevTools MCP tools through Pi's concrete Tool
 Surface. Pindie's existing unknown/custom Tool Effect classification and
 Execution Gateway remain the execution authority.

@@ -116,12 +116,20 @@ Both must be configured to enable Work Memory.
 
 ### Browser Reality
 
-On the supported WSL/Windows path, a normal Pindie startup enables Browser
-Reality, starts a dedicated Windows Chrome profile, and exposes selected
-official Chrome DevTools MCP tools as `browser_*` Pi tools:
+On the supported WSL/Windows path, Browser Reality is default-on and headless
+by default. A normal Pindie startup starts a dedicated Windows Chrome profile
+without a visible browser window and exposes selected official Chrome DevTools
+MCP tools as `browser_*` Pi tools:
 
 ```bash
 pnpm pindie
+```
+
+For rare debugging that requires a visible dedicated Chrome, use the headful
+override:
+
+```bash
+PINDIE_BROWSER_HEADLESS=false pnpm pindie
 ```
 
 Explicitly opt out when Browser Reality is not wanted:
@@ -137,6 +145,7 @@ under `%LOCALAPPDATA%\Pindie\Dev Browser`; normal shutdown stops only that
 Host's Chrome and removes its runtime profile. Optional advanced overrides are:
 
 ```text
+PINDIE_BROWSER_HEADLESS
 PINDIE_BROWSER_URL
 PINDIE_BROWSER_EXECUTABLE
 PINDIE_BROWSER_PROFILE_DIR
