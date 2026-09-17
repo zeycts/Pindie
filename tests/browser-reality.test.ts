@@ -51,10 +51,20 @@ function discoveredTools() {
   }));
 }
 
-test("Browser Reality is disabled by default without launching or probing Chrome", async () => {
+test("Browser Reality defaults on and preserves explicit boolean configuration", () => {
+  assert.equal(resolveBrowserRealityConfig({}).enabled, true);
+  assert.equal(resolveBrowserRealityConfig({ PINDIE_BROWSER_ENABLED: "false" }).enabled, false);
+  for (const value of ["1", "true", "yes", "on"]) {
+    assert.equal(resolveBrowserRealityConfig({ PINDIE_BROWSER_ENABLED: value }).enabled, true);
+  }
+});
+
+test("explicitly disabled Browser Reality does not launch or probe Chrome", async () => {
   let probes = 0;
   let launches = 0;
-  const runtime = createBrowserRealityRuntime(resolveBrowserRealityConfig({}), {
+  const runtime = createBrowserRealityRuntime(resolveBrowserRealityConfig({
+    PINDIE_BROWSER_ENABLED: "false",
+  }), {
     probe: async () => { probes += 1; return false; },
     launch: async () => { launches += 1; return { pid: 1 }; },
   });
