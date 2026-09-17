@@ -9,8 +9,16 @@ import {
   SessionManager,
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
+  type ExtensionAPI,
   type InteractiveModeOptions,
 } from "@earendil-works/pi-coding-agent";
+import {
+  createBrowserRealityRuntime,
+  registerBrowserRealityExtension,
+  resolveBrowserRealityConfig,
+  type BrowserRealityConfig,
+  type BrowserRealityRuntime,
+} from "./browser-reality.ts";
 import { PiRuntimeAdapter } from "./pi-runtime.ts";
 import { registerConfiguredPindieExtension } from "./extension.ts";
 import {
@@ -46,6 +54,9 @@ export interface PindieHostDependencies {
     runtime: AgentSessionRuntime,
     options: InteractiveModeOptions,
   ) => PindieInteractiveMode;
+  createBrowserRealityRuntime?: (
+    config: BrowserRealityConfig,
+  ) => BrowserRealityRuntime;
 }
 
 export interface PindieHostOptions {
@@ -56,6 +67,7 @@ export interface PindieHostOptions {
   sessionManager?: SessionManager;
   interactiveModeOptions?: InteractiveModeOptions;
   longTaskRollover?: LongTaskRolloverSupervisorOptions;
+  env?: Record<string, string | undefined>;
   dependencies?: PindieHostDependencies;
 }
 
@@ -82,6 +94,7 @@ export function createPindieRuntimeFactory(
   compositionOptions: {
     readonly featureSelection?: PindieFeatureSelectionOverrides;
     readonly storageRoots?: PindieStorageRootOverrides;
+    readonly browserExtensionFactory?: (pi: ExtensionAPI) => void;
   } = {},
 ): CreateAgentSessionRuntimeFactory {
   const createServices = dependencies.createAgentSessionServices ?? createAgentSessionServices;
@@ -106,7 +119,12 @@ export function createPindieRuntimeFactory(
             featureSelection: compositionOptions.featureSelection,
             storageRoots: compositionOptions.storageRoots,
           }),
-        }],
+        }, ...(compositionOptions.browserExtensionFactory
+          ? [{
+              name: "pindie-browser-reality",
+              factory: compositionOptions.browserExtensionFactory,
+            }]
+          : [])],
       },
     });
     const created = await createSession({
@@ -135,6 +153,10 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       new InteractiveMode(runtime, modeOptions));
 
   const taskMetrics = new TaskMetricsTracker();
+  const browserConfig = resolveBrowserRealityConfig(options.env ?? process.env);
+  const makeBrowserReality = dependencies.createBrowserRealityRuntime ??
+    createBrowserRealityRuntime;
+  let browserReality: BrowserRealityRuntime | undefined;
   let nativeRuntime: AgentSessionRuntime | undefined;
   let runtime: PiRuntimeAdapter | undefined;
   let rolloverSupervisor: LongTaskRolloverSupervisor | undefined;
@@ -159,9 +181,24 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   };
 
   try {
+    if (browserConfig.enabled) {
+      browserReality = makeBrowserReality(browserConfig);
+      const status = await browserReality.start();
+      if (!status.available) {
+        console.warn(`[Pindie] Browser Reality unavailable: ${status.reason}`);
+      }
+    }
     nativeRuntime = await createRuntime(createPindieRuntimeFactory(dependencies, taskMetrics, {
       featureSelection: options.featureSelection,
       storageRoots: options.storageRoots,
+      ...(browserReality
+        ? {
+            browserExtensionFactory: (pi) => registerBrowserRealityExtension(pi, {
+              config: browserReality!.config,
+              status: () => browserReality!.status(),
+            }),
+          }
+        : {}),
     }), {
       cwd,
       agentDir,
@@ -183,7 +220,11 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     const dispose = (): Promise<void> => {
       disposePromise ??= (async () => {
         await releaseHostControl();
-        await runtime!.dispose();
+        try {
+          await runtime!.dispose();
+        } finally {
+          await browserReality?.dispose();
+        }
       })();
       return disposePromise;
     };
@@ -208,6 +249,11 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       } catch {
         // Preserve the bootstrap error; cleanup is best effort during failed setup.
       }
+    }
+    try {
+      await browserReality?.dispose();
+    } catch {
+      // Preserve the bootstrap error; Browser cleanup is best effort.
     }
     throw error;
   }

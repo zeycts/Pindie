@@ -113,3 +113,30 @@ PINDIE_WORK_MEMORY_DATA_SOURCE_ID
 ```
 
 Both must be configured to enable Work Memory.
+
+### Browser Reality (optional)
+
+On the supported WSL/Windows path, Pindie can start a dedicated Windows Chrome
+profile and expose selected official Chrome DevTools MCP tools as `browser_*`
+Pi tools:
+
+```bash
+PINDIE_BROWSER_ENABLED=true pnpm pindie
+```
+
+This path requires WSL mirrored networking and Windows Chrome at
+`C:\Program Files\Google\Chrome\Application\chrome.exe`. It uses
+`http://127.0.0.1:9222` and a separate persistent profile at
+`%LOCALAPPDATA%\Pindie\Dev Browser`; it never attaches to an endpoint that is
+already running. Optional overrides are:
+
+```text
+PINDIE_BROWSER_URL
+PINDIE_BROWSER_EXECUTABLE
+PINDIE_BROWSER_PROFILE_DIR
+```
+
+`PINDIE_BROWSER_URL` must remain an HTTP loopback URL with an explicit port.
+Browser Reality is runtime-only: disabling it leaves normal Pindie startup and
+semantic State unchanged, while startup/bridge failures are reported without
+disabling the rest of Pindie.
