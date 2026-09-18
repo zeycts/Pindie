@@ -195,6 +195,34 @@ test("SSA-S03 through SSA-S11 lifecycle and attention preserve independent seman
   ]);
 });
 
+test("quota waiting replaces active, stays accent, and preserves verification and attention", () => {
+  const result = segments({ quotaResumeWaiting: true });
+  assert.deepEqual(result.slice(2), [
+    { text: "waiting · quota", tone: "accent" },
+    { text: "verify 0/4", tone: "text" },
+  ]);
+  assert.equal(result.some(({ text }) => text === "active"), false);
+
+  const attention = segments({
+    quotaResumeWaiting: true,
+    runStale: true,
+    state: { task: task({ humanGate: { kind: "input", question: "Input?" } }) },
+  });
+  assert.equal(attention.at(-1)?.text, "⚠ gate: input");
+});
+
+test("no-Task quota waiting remains visible", () => {
+  assert.deepEqual(segments({
+    consumption: { scope: "run", durationMs: 134_000, cost: 0 },
+    state: { task: null },
+    quotaResumeWaiting: true,
+  }), [
+    { text: "run 2m 14s", tone: "dim" },
+    { text: "$0.000", tone: "dim" },
+    { text: "waiting · quota", tone: "accent" },
+  ]);
+});
+
 test("no-Task Run uses run consumption scope and omits idle verification", () => {
   assert.deepEqual(segments({
     consumption: { scope: "run", durationMs: 134_000, cost: 0 },
@@ -355,6 +383,20 @@ test("attention quota resets survive compact degradation before reset credits", 
   const rendered = renderStatusLayout({ fg: (_tone, text) => text }, { left: [{ text: "ordinary run information", tone: "text" }], ...layout }, 36)!;
   assert.ok(visibleWidth(rendered) <= 36);
   assert.match(rendered, /5h 8% • ↻ 32m • wk 25%$/);
+
+  const waitingLayout = deriveStatusLayout({
+    ...snapshot({ quotaResumeWaiting: true }),
+    subscriptionUsage: {
+      fetchedAt: 1,
+      windows: [{ usedPercent: 100, windowMinutes: 300, resetsAt: now + 32 * 60 * 1_000 }],
+    },
+  }, now);
+  const narrow = renderStatusLayout(
+    { fg: (_tone, text) => text },
+    waitingLayout,
+    visibleWidth("5h 0% • ↻ 32m"),
+  )!;
+  assert.equal(narrow, "5h 0% • ↻ 32m");
 });
 
 test("Current Activity preserves right-aligned weekly usage", () => {

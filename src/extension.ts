@@ -133,7 +133,10 @@ import {
   registerQuotaResumeIntegration,
   type QuotaResumePreferenceStore,
 } from "./quota-resume.ts";
-import { getQuotaResumePublisher } from "./quota-resume-control.ts";
+import {
+  getQuotaResumePublisher,
+  getQuotaResumeStatusObserver,
+} from "./quota-resume-control.ts";
 import { buildQuotaResumePlan } from "./quota-resume-incident.ts";
 import { createPindieMemoryCaptureTool } from "./tools/memory.ts";
 import {
@@ -306,6 +309,7 @@ function registerComposedPindieExtension(
   const committedRolloverPublisher = getCommittedRolloverPublisher();
   const sessionLifecyclePublisher = getSessionLifecyclePublisher();
   const quotaResumePublisher = getQuotaResumePublisher();
+  const quotaResumeStatusObserver = getQuotaResumeStatusObserver();
   let quotaPlanningGeneration = 0;
   const taskHandoffEnabled = options.enableTaskHandoff === true || committedRolloverPublisher !== null;
   // Composition supplies Core's production dependencies explicitly. Feature
@@ -440,6 +444,10 @@ function registerComposedPindieExtension(
     taskMetrics: core.taskMetrics,
     uiEnabled: featureSelection.presentation,
   });
+  let releaseQuotaStatusObserver = quotaResumeStatusObserver?.subscribe((status) => {
+    presentation.setQuotaResumeWaiting(status);
+  }) ?? null;
+  presentation.setQuotaResumeWaiting(quotaResumeStatusObserver?.getSnapshot() ?? null);
   const cancelQuotaResume = (ctx: ExtensionContext): void => {
     ++quotaPlanningGeneration;
     if (quotaResumePublisher === null) return;
@@ -777,6 +785,9 @@ function registerComposedPindieExtension(
 
   pi.on("session_shutdown", (event, ctx) => {
     cancelQuotaResume(ctx);
+    releaseQuotaStatusObserver?.();
+    releaseQuotaStatusObserver = null;
+    presentation.setQuotaResumeWaiting(null);
     let nativeSessionId: string | null = null;
     try {
       nativeSessionId = ctx.sessionManager.getSessionId();

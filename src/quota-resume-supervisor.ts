@@ -1,5 +1,6 @@
 import { detectCodexQuotaIncident, type QuotaResumePlan } from "./quota-resume-incident.ts";
 import { PiRuntimeAdapter } from "./pi-runtime.ts";
+import type { QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
 
 export const PINDIE_QUOTA_RESUME_TYPE = "pindie-quota-resume";
 export const PINDIE_QUOTA_RESUME_MESSAGE = `<PINDIE_QUOTA_RESUME>
@@ -20,6 +21,7 @@ export interface QuotaResumeSupervisorOptions {
   readonly now?: () => number;
   readonly schedule?: QuotaResumeScheduler;
   readonly logger?: (message: string) => void;
+  readonly onWaitingChange?: (status: QuotaResumeWaitingStatus | null) => void;
 }
 
 interface WaitingLease {
@@ -38,6 +40,7 @@ export class QuotaResumeSupervisor {
   private readonly now: () => number;
   private readonly schedule: QuotaResumeScheduler;
   private readonly logger: (message: string) => void;
+  private readonly onWaitingChange: (status: QuotaResumeWaitingStatus | null) => void;
   private lease: WaitingLease | null = null;
   private generation = 0;
   private disposed = false;
@@ -47,6 +50,7 @@ export class QuotaResumeSupervisor {
     this.now = options.now ?? Date.now;
     this.schedule = options.schedule ?? defaultSchedule;
     this.logger = options.logger ?? ((message) => console.warn(`[Pindie] ${message}`));
+    this.onWaitingChange = options.onWaitingChange ?? (() => undefined);
   }
 
   request(plan: QuotaResumePlan): void {
@@ -63,6 +67,7 @@ export class QuotaResumeSupervisor {
       return;
     }
     this.lease = { generation, plan, cancelTimer };
+    this.publishWaiting({ sessionId: plan.sessionId, resumeAt: plan.resumeAt });
   }
 
   cancel(sessionId: string): void {
@@ -130,12 +135,21 @@ export class QuotaResumeSupervisor {
     const lease = this.lease;
     this.lease = null;
     ++this.generation;
-    if (lease) lease.cancelTimer();
+    if (lease) {
+      lease.cancelTimer();
+      this.publishWaiting(null);
+    }
   }
 
   private detachLease(): void {
+    const lease = this.lease;
     this.lease = null;
     ++this.generation;
+    if (lease) this.publishWaiting(null);
+  }
+
+  private publishWaiting(status: QuotaResumeWaitingStatus | null): void {
+    try { this.onWaitingChange(status); } catch { /* Runtime status is best effort. */ }
   }
 
   private report(message: string): void {

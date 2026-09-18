@@ -355,7 +355,25 @@ Activity, Run Timer, Run Cost, status presentation, subscription usage observati
 
 Run Activity reflects actual Pi tool lifecycle. Presentation reads authoritative/derived runtime state; it does not define it.
 
-## 14. Global behavioral invariants
+## 14. Quota Auto Resume
+
+`/quota-resume` configures process-local automatic resume after a Codex
+subscription quota reset. It defaults ON. Enter changes the current Session;
+the save binding (Ctrl+S by default) changes both the Global default and the
+current Session.
+
+A terminal `openai-codex` quota candidate schedules only after fresh subscription
+usage confirms an exhausted window with a natural reset time. The Host waits on
+a runtime-only lease; Presentation shows `waiting · quota` only for that real
+lease and reuses the existing subscription reset countdown. Human input, model
+selection, branch changes, and Session lifecycle changes cancel waiting.
+Process exit loses the pending lease.
+
+At wake, Pi receives a hidden custom resume with `triggerTurn: true`. The hidden
+resume is runtime metadata, not user intent: it starts a fresh Agent Run in the
+same Session. Reset credits are never automatically consumed.
+
+## 15. Global behavioral invariants
 
 1. Pindie keeps one durable current Task, not a queue or workflow graph.
 2. Deterministic legality comes from semantic derivation, not model memory of rules.
