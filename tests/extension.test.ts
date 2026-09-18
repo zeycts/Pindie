@@ -2257,6 +2257,7 @@ test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
     "session_compact_failed",
     "session_shutdown",
     "session_start",
+    "session_tree",
     "thinking_level_select",
     "tool_call",
     "tool_execution_end",

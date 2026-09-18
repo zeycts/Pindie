@@ -125,6 +125,10 @@ import {
 } from "./long-task-control.ts";
 import { PINDIE_TASK_HANDOFF_TOOL } from "./task-handoff-runtime.ts";
 import type { SubscriptionUsageProvider } from "./subscription-usage.ts";
+import {
+  registerQuotaResumeIntegration,
+  type QuotaResumePreferenceStore,
+} from "./quota-resume.ts";
 import { createPindieMemoryCaptureTool } from "./tools/memory.ts";
 import {
   PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
@@ -144,6 +148,7 @@ export interface PindieExtensionOptions {
   remoteRoutingStore?: RemoteRoutingStore;
   store?: PindieStateStore;
   continuityStore?: TaskContinuityStore;
+  quotaResumePreferenceStore?: QuotaResumePreferenceStore;
   experienceStore?: RunExperienceStore;
   experienceReader?: RunExperienceReader;
   strategyCandidateStore?: StrategyCandidateStore;
@@ -209,6 +214,7 @@ export interface PindieExtensionIntegration {
   readonly trustedStrategyPortfolio: TrustedStrategyPortfolio | null;
   readonly policySnapshot: PolicySnapshot | null;
   readonly stateUnavailableReason: string | null;
+  readonly quotaAutoResumeEnabled: boolean;
 }
 
 function errorMessage(error: unknown): string {
@@ -422,6 +428,7 @@ function registerComposedPindieExtension(
     taskMetrics: core.taskMetrics,
     uiEnabled: featureSelection.presentation,
   });
+  const quotaResume = registerQuotaResumeIntegration(pi, options.quotaResumePreferenceStore!);
   type LiveRemoteSession = { projectRoot: string; sessionId: string; ctx: ExtensionContext; generation: number };
   let liveRemoteSession: LiveRemoteSession | null = null;
   let nextRemoteLeaseGeneration = 0;
@@ -647,6 +654,7 @@ function registerComposedPindieExtension(
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    await quotaResume.restoreSession(ctx);
     const nativeSessionId = options.remoteCompanion || taskHandoffEnabled
       ? ctx.sessionManager.getSessionId()
       : null;
@@ -710,6 +718,10 @@ function registerComposedPindieExtension(
       // an unavailable external transport cannot hold local Session startup.
       void bootstrapRemoteForSession(live, remoteSessionId, remoteSessionName).catch(() => undefined);
     }
+  });
+
+  pi.on("session_tree", async (_event, ctx) => {
+    await quotaResume.restoreBranch(ctx);
   });
 
   if (options.remoteCompanion) {
@@ -1359,6 +1371,9 @@ function registerComposedPindieExtension(
     },
     get stateUnavailableReason() {
       return run.stateUnavailableReason;
+    },
+    get quotaAutoResumeEnabled() {
+      return quotaResume.quotaAutoResumeEnabled;
     },
   };
 }
