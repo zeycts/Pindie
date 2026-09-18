@@ -68,6 +68,10 @@ import {
   type TaskContinuityStore,
 } from "./store.ts";
 import type { PindieExtensionOptions } from "./extension.ts";
+import {
+  FileQuotaResumePreferenceStore,
+  type QuotaResumePreferenceStore,
+} from "./quota-resume.ts";
 import type { NotionProjectMemoryClient } from "./notion-project-memory.ts";
 import type { ProjectMemorySink } from "./project-memory.ts";
 import {
@@ -285,6 +289,10 @@ export function composePindieExtension(
   const continuityStore: TaskContinuityStore = input.continuityStore ?? new FileTaskContinuityStore({
     baseDir: roots.projectsBaseDir,
   });
+  const quotaResumePreferenceStore: QuotaResumePreferenceStore =
+    input.quotaResumePreferenceStore ?? new FileQuotaResumePreferenceStore({
+      baseDir: roots.globalBaseDir,
+    });
 
   let experienceStore: RunExperienceStore | undefined;
   let experienceReader: RunExperienceReader | undefined;
@@ -432,6 +440,7 @@ export function composePindieExtension(
     projectMemorySink: _inputProjectMemorySink,
     remoteCompanion: _inputRemoteCompanion,
     remoteRoutingStore: _inputRemoteRoutingStore,
+    quotaResumePreferenceStore: _inputQuotaResumePreferenceStore,
     experienceStore: _inputExperienceStore,
     experienceReader: _inputExperienceReader,
     crossProjectExperienceReader: _inputCrossProjectExperienceReader,
@@ -459,6 +468,7 @@ export function composePindieExtension(
     ...inputWithoutOptionalFeatures,
     store: stateStore,
     continuityStore,
+    quotaResumePreferenceStore,
     ...(selection.selfImprovement
       ? {
           experienceStore: experienceStore!,
