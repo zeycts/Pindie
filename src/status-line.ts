@@ -52,6 +52,8 @@ export interface PindieStatusSnapshot {
   stateUnavailableReason: string | null;
   /** Runtime-only presentation fact for an active Agent Run. */
   runStale?: boolean;
+  /** Runtime-only mirror of the Host Supervisor's waiting lease. */
+  quotaResumeWaiting?: boolean;
   subscriptionUsage?: SubscriptionUsageSnapshot | null;
 }
 
@@ -152,7 +154,9 @@ export function deriveStatusSegments(
   const task = state?.task;
   const showTaskSemantics = snapshot.consumption === null ||
     snapshot.consumption.scope === "task";
-  if (showTaskSemantics && state && snapshot.stateUnavailableReason === null) {
+  if (snapshot.quotaResumeWaiting) {
+    segments.push({ text: "waiting · quota", tone: "accent" });
+  } else if (showTaskSemantics && state && snapshot.stateUnavailableReason === null) {
     const lifecycle = taskLifecycleSegment(state);
     if (lifecycle) segments.push(lifecycle);
   }

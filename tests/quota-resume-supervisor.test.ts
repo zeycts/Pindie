@@ -51,16 +51,24 @@ function harness() {
   };
   const runtime = { get session() { return session; } } as unknown as AgentSessionRuntime;
   const callbacks: Array<{ cancelled: boolean; callback: () => void }> = [];
-  const supervisor = new QuotaResumeSupervisor(new PiRuntimeAdapter(runtime), {
+  const waitingChanges: Array<{ sessionId: string; resumeAt: number } | null> = [];
+  let scheduleFailure: Error | null = null;
+  const runtimeAdapter = new PiRuntimeAdapter(runtime);
+  const supervisor = new QuotaResumeSupervisor(runtimeAdapter, {
     now: () => NOW,
-    schedule: (_delay, callback) => { const item = { cancelled: false, callback }; callbacks.push(item); return () => { item.cancelled = true; }; },
+    schedule: (_delay, callback) => {
+      if (scheduleFailure) throw scheduleFailure;
+      const item = { cancelled: false, callback }; callbacks.push(item); return () => { item.cancelled = true; };
+    },
     logger: () => undefined,
+    onWaitingChange: (status) => waitingChanges.push(status),
   });
-  return { supervisor, callbacks, sends,
+  return { supervisor, runtimeAdapter, callbacks, sends, waitingChanges,
     setBranch: (value: SessionEntry[]) => { branch = value; }, setSession: (value: string) => { sessionId = value; },
     setModel: (provider: string, id: string) => { model = { provider, id }; }, setBusy: (s: boolean, c = false, p = 0) => { streaming = s; compacting = c; pending = p; },
     throwOnRead: (value: "facts" | "model" | "branch" | null) => { throwingRead = value; },
     setSendResult: (value: Promise<void>) => { sendResult = value; },
+    failSchedule: (error: Error) => { scheduleFailure = error; },
   };
 }
 
@@ -69,7 +77,9 @@ test("valid plan schedules once, accepts metadata after anchor, and sends exact 
   h.setBranch([quota(), { type: "custom", id: "meta", parentId: "quota", timestamp: "", customType: "x", data: {} } as SessionEntry]);
   h.supervisor.request(plan()); h.supervisor.request(plan());
   assert.equal(h.callbacks.length, 1);
+  assert.deepEqual(h.waitingChanges, [{ sessionId: "session", resumeAt: NOW + 1000 }]);
   h.callbacks[0]!.callback();
+  assert.deepEqual(h.waitingChanges, [{ sessionId: "session", resumeAt: NOW + 1000 }, null]);
   assert.deepEqual(h.sends, [[{ customType: PINDIE_QUOTA_RESUME_TYPE, content: PINDIE_QUOTA_RESUME_MESSAGE, display: false }, { triggerTurn: true }]]);
 });
 
@@ -83,7 +93,33 @@ test("invalid time, session, busy state, model, and anchor fail closed", () => {
     (h: ReturnType<typeof harness>) => { h.setBusy(false, false, 1); h.supervisor.request(plan()); },
     (h: ReturnType<typeof harness>) => { h.setModel("other", "gpt-5-codex"); h.supervisor.request(plan()); },
     (h: ReturnType<typeof harness>) => { h.setBranch([quota("other")]); h.supervisor.request(plan()); },
-  ]) { const h = harness(); mutate(h); assert.equal(h.callbacks.length, 0); }
+  ]) {
+    const h = harness(); mutate(h);
+    assert.equal(h.callbacks.length, 0);
+    assert.deepEqual(h.waitingChanges, []);
+  }
+});
+
+test("scheduler failure never publishes waiting", () => {
+  const h = harness();
+  h.failSchedule(new Error("timer unavailable"));
+  assert.doesNotThrow(() => h.supervisor.request(plan()));
+  assert.deepEqual(h.callbacks, []);
+  assert.deepEqual(h.waitingChanges, []);
+});
+
+test("waiting callback failure is isolated from scheduling and resume", () => {
+  const h = harness();
+  const callbacks: Array<() => void> = [];
+  const supervisor = new QuotaResumeSupervisor(h.runtimeAdapter, {
+    now: () => NOW,
+    schedule: (_delay, callback) => { callbacks.push(callback); return () => undefined; },
+    logger: () => undefined,
+    onWaitingChange: () => { throw new Error("observer failed"); },
+  });
+  assert.doesNotThrow(() => supervisor.request(plan()));
+  assert.equal(callbacks.length, 1);
+  assert.doesNotThrow(() => callbacks[0]!());
 });
 
 test("throwing active branch validation fails closed during request", () => {
@@ -101,6 +137,7 @@ test("throwing runtime reads during wake abandon the lease without escaping or r
     h.throwOnRead(read);
     assert.doesNotThrow(() => h.callbacks[0]!.callback(), read);
     assert.equal(h.sends.length, 0, read);
+    assert.deepEqual(h.waitingChanges, [{ sessionId: "session", resumeAt: NOW + 1000 }, null], read);
 
     h.throwOnRead(null);
     h.callbacks[0]!.callback();
@@ -112,7 +149,13 @@ test("a valid newer anchor replaces, cancel and stale callbacks cannot resume", 
   const h = harness(); h.supervisor.request(plan()); const stale = h.callbacks[0]!;
   h.setBranch([quota("new")]); h.supervisor.request(plan({ anchorEntryId: "new", resumeAt: NOW + 2000 }));
   assert.equal(stale.cancelled, true); stale.callback(); assert.equal(h.sends.length, 0);
-  h.supervisor.cancel("session"); h.callbacks[1]!.callback(); assert.equal(h.sends.length, 0);
+  assert.deepEqual(h.waitingChanges, [
+    { sessionId: "session", resumeAt: NOW + 1000 }, null,
+    { sessionId: "session", resumeAt: NOW + 2000 },
+  ]);
+  h.supervisor.cancel("session");
+  assert.deepEqual(h.waitingChanges.at(-1), null);
+  h.callbacks[1]!.callback(); assert.equal(h.sends.length, 0);
 });
 
 test("wake revalidates conversation, model, busy and pending state", () => {
@@ -123,7 +166,11 @@ test("wake revalidates conversation, model, busy and pending state", () => {
     (h: ReturnType<typeof harness>) => h.setBusy(false, true),
     (h: ReturnType<typeof harness>) => h.setBusy(false, false, 1),
   ];
-  for (const mutate of mutations) { const h = harness(); h.supervisor.request(plan()); mutate(h); h.callbacks[0]!.callback(); assert.equal(h.sends.length, 0); }
+  for (const mutate of mutations) {
+    const h = harness(); h.supervisor.request(plan()); mutate(h); h.callbacks[0]!.callback();
+    assert.equal(h.sends.length, 0);
+    assert.deepEqual(h.waitingChanges.at(-1), null);
+  }
 });
 
 test("lease releases before resume Promise settles and rejection never retries", async () => {
@@ -135,5 +182,6 @@ test("lease releases before resume Promise settles and rejection never retries",
   reject(new Error("failed")); await new Promise((resolve) => setImmediate(resolve));
   assert.equal(h.sends.length, 1);
   h.supervisor.dispose(); assert.equal(h.callbacks[1]!.cancelled, true);
+  assert.deepEqual(h.waitingChanges.at(-1), null);
   h.callbacks[1]!.callback(); assert.equal(h.sends.length, 1);
 });

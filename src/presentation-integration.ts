@@ -23,6 +23,7 @@ import {
   renderStatusLayout,
 } from "./status-line.ts";
 import { SubscriptionUsageMonitor } from "./subscription-usage.ts";
+import type { QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
 
 const PINDIE_STATUS_ID = "pindie-status";
 
@@ -74,6 +75,8 @@ export class PresentationIntegration {
   ) => void;
   private statusContext: ExtensionContext | null = null;
   private statusContextGeneration = 0;
+  private quotaResumeWaiting: QuotaResumeWaitingStatus | null = null;
+  private notifiedQuotaWaitingKey: string | null = null;
   private activityLingerTimer: ReturnType<typeof setTimeout> | null = null;
   private activityLingerGeneration = 0;
 
@@ -111,6 +114,18 @@ export class PresentationIntegration {
   setStatusContext(ctx: ExtensionContext | null): void {
     this.statusContext = this.uiEnabled ? ctx : null;
     this.statusContextGeneration += 1;
+    this.notifyQuotaWaitingBestEffort();
+  }
+
+  setQuotaResumeWaiting(status: QuotaResumeWaitingStatus | null): void {
+    if (
+      this.quotaResumeWaiting?.sessionId === status?.sessionId &&
+      this.quotaResumeWaiting?.resumeAt === status?.resumeAt
+    ) return;
+    this.quotaResumeWaiting = status;
+    this.notifiedQuotaWaitingKey = null;
+    this.notifyQuotaWaitingBestEffort();
+    this.refreshStatus();
   }
 
   resetTrackers(): void {
@@ -160,6 +175,7 @@ export class PresentationIntegration {
         runStale: this.runTimer.active &&
           this.getAuthoritativeState() !== null &&
           this.getRunStale(),
+        quotaResumeWaiting: this.quotaWaitingMatches(activeContext),
         subscriptionUsage: this.subscriptionUsageMonitor.snapshot,
       }, this.now());
       return renderStatusLayout(
@@ -341,6 +357,33 @@ export class PresentationIntegration {
 
   finishCost(entries: readonly SessionEntry[]): RunCost | null {
     return this.runCost.finish(entries);
+  }
+
+  private quotaWaitingMatches(ctx: ExtensionContext): boolean {
+    const waiting = this.quotaResumeWaiting;
+    if (waiting === null) return false;
+    try {
+      return waiting.sessionId === ctx.sessionManager.getSessionId();
+    } catch {
+      return false;
+    }
+  }
+
+  private notifyQuotaWaitingBestEffort(): void {
+    const ctx = this.statusContext;
+    const waiting = this.quotaResumeWaiting;
+    if (!this.uiEnabled || !ctx?.hasUI || waiting === null || !this.quotaWaitingMatches(ctx)) return;
+    const key = `${waiting.sessionId}\0${waiting.resumeAt}`;
+    if (this.notifiedQuotaWaitingKey === key) return;
+    this.notifiedQuotaWaitingKey = key;
+    try {
+      ctx.ui.notify(
+        "Codex quota reached. Auto-resume scheduled after the current reset.",
+        "info",
+      );
+    } catch {
+      // Notification presentation must not alter runtime behavior.
+    }
   }
 
   private presentStatusBestEffort(

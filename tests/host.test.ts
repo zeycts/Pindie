@@ -22,6 +22,11 @@ import {
   getCommittedRolloverPublisher,
   getSessionLifecyclePublisher,
 } from "../src/long-task-control.ts";
+import {
+  getQuotaResumePublisher,
+  getQuotaResumeStatusObserver,
+} from "../src/quota-resume-control.ts";
+import type { QuotaResumePlan } from "../src/quota-resume-incident.ts";
 import { createTaskContinuity } from "../src/task-continuity.ts";
 import { TaskMetricsTracker } from "../src/task-metrics.ts";
 import type {
@@ -354,6 +359,7 @@ test("Host bootstrap failure disposes a runtime created before InteractiveMode",
   );
 
   assert.equal(disposeCalls(), 1);
+  assert.equal(getQuotaResumeStatusObserver(), null);
 });
 
 test("Host bootstrap failure releases process-local control ownership", async () => {
@@ -411,6 +417,106 @@ test("Host control bridge rejects a second live Host and releases on disposal", 
     },
   });
   await afterRelease.dispose();
+});
+
+test("Host wires Supervisor waiting status through wake to hidden resume", async () => {
+  const now = 1_700_000_000_000;
+  const callbacks: Array<() => void> = [];
+  const seamChanges: Array<{ sessionId: string; resumeAt: number } | null> = [];
+  const sends: Array<{ args: unknown[]; waitingAtSend: unknown }> = [];
+  const quotaEntry = {
+    type: "message", id: "quota", parentId: null, timestamp: new Date(now).toISOString(),
+    message: {
+      role: "assistant", content: [], provider: "openai-codex", model: "gpt-5-codex",
+      usage: {}, stopReason: "error", errorMessage: "The usage limit has been reached", timestamp: now,
+    },
+  } as any;
+  const session = {
+    sessionId: "session-1",
+    model: { provider: "openai-codex", id: "gpt-5-codex" },
+    isStreaming: false,
+    isCompacting: false,
+    pendingMessageCount: 0,
+    sessionManager: { getBranch: () => [quotaEntry] },
+    sendCustomMessage: (...args: unknown[]) => {
+      sends.push({ args, waitingAtSend: getQuotaResumeStatusObserver()?.getSnapshot() });
+      return Promise.resolve();
+    },
+  } as unknown as AgentSession;
+  const runtime = {
+    session,
+    diagnostics: [],
+    modelFallbackMessage: undefined,
+    dispose: async () => undefined,
+  } as unknown as AgentSessionRuntime;
+  const host = await createPindieHost({
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+    quotaResume: {
+      now: () => now,
+      schedule: (_delay, callback) => { callbacks.push(callback); return () => undefined; },
+      onWaitingChange: (status) => seamChanges.push(status),
+    },
+    dependencies: {
+      createAgentSessionRuntime: async () => runtime,
+      createInteractiveMode: () => ({ run: async () => {} }),
+    },
+  });
+
+  try {
+    const observer = getQuotaResumeStatusObserver();
+    const publisher = getQuotaResumePublisher();
+    assert.ok(observer);
+    assert.ok(publisher);
+    const observed: unknown[] = [];
+    observer.subscribe((status) => observed.push(status));
+    const plan: QuotaResumePlan = {
+      sessionId: "session-1", anchorEntryId: "quota", provider: "openai-codex",
+      modelId: "gpt-5-codex", detectedAt: now, resumeAt: now + 1000,
+    };
+    publisher({ type: "schedule", plan });
+    assert.deepEqual(observer.getSnapshot(), { sessionId: "session-1", resumeAt: now + 1000 });
+    callbacks[0]!();
+    assert.deepEqual(observed, [{ sessionId: "session-1", resumeAt: now + 1000 }, null]);
+    assert.deepEqual(seamChanges, [{ sessionId: "session-1", resumeAt: now + 1000 }, null]);
+    assert.equal(sends.length, 1);
+    assert.equal(sends[0]!.waitingAtSend, null);
+    assert.deepEqual((sends[0]!.args[1] as object), { triggerTurn: true });
+  } finally {
+    await host.dispose();
+  }
+});
+
+test("Host disposal publishes final null before releasing the quota bridge", async () => {
+  const now = 1_700_000_000_000;
+  const quotaEntry = {
+    type: "message", id: "quota", parentId: null, timestamp: new Date(now).toISOString(),
+    message: { role: "assistant", content: [], provider: "openai-codex", model: "gpt-5-codex", usage: {}, stopReason: "error", errorMessage: "usage limit reached", timestamp: now },
+  } as any;
+  const control = fakeRuntime();
+  Object.assign(control.runtime.session as object, {
+    model: { provider: "openai-codex", id: "gpt-5-codex" }, isStreaming: false,
+    isCompacting: false, pendingMessageCount: 0,
+    sessionManager: { getBranch: () => [quotaEntry] },
+  });
+  const host = await createPindieHost({
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+    quotaResume: { now: () => now, schedule: () => () => undefined },
+    dependencies: {
+      createAgentSessionRuntime: async () => control.runtime,
+      createInteractiveMode: () => ({ run: async () => {} }),
+    },
+  });
+  const observer = getQuotaResumeStatusObserver()!;
+  const observed: unknown[] = [];
+  observer.subscribe((status) => observed.push(status));
+  getQuotaResumePublisher()!({ type: "schedule", plan: {
+    sessionId: "session-1", anchorEntryId: "quota", provider: "openai-codex",
+    modelId: "gpt-5-codex", detectedAt: now, resumeAt: now + 1000,
+  } });
+  await host.dispose();
+  assert.deepEqual(observed.at(-1), null);
+  assert.equal(observer.getSnapshot(), null);
+  assert.equal(getQuotaResumeStatusObserver(), null);
 });
 
 test("Host lifecycle boundaries reset rollover state even when native Session identity is reused", async () => {

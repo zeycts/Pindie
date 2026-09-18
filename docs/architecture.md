@@ -479,6 +479,35 @@ dogfooded, compatibility-closed, and frozen contract is documented in
 likewise create purpose-specific Agent executions later without pretending
 every execution must be initiated by an externally owned Session.
 
+### Quota Auto Resume v0.1
+
+Quota Auto Resume crosses a subscription-availability boundary without changing
+semantic State or Session identity:
+
+```text
+Extension incident planning
+→ process-local control bridge
+→ Host-owned QuotaResumeSupervisor waiting lease/timer
+→ Pi sendCustomMessage(..., { triggerTurn: true })
+→ same Session, fresh later Agent Run
+```
+
+The Extension identifies a terminal `openai-codex` quota candidate and confirms
+a fresh exhausted subscription window. The Host/Supervisor alone owns the real
+waiting lease and timer, and publishes a runtime-only waiting status back to
+Presentation. That status is never `PindieState`, Experience, TaskContinuity,
+or durable Session semantic state. Pi owns the resumed Agent Run. Human input,
+model or branch changes, and Session lifecycle boundaries cancel the pending
+lease; process exit loses it. Reset credits are never automatically consumed.
+
+The three continuation mechanisms have distinct boundaries:
+
+- **Continuation Probe:** normal stop → semantic follow-up inside Pi's current
+  lifecycle.
+- **Long Task Runtime:** Session/context lifetime boundary → fresh Session.
+- **Quota Auto Resume:** subscription availability boundary → same Session,
+  later fresh Agent Run.
+
 ### Browser Reality v0.1.3
 
 Browser Reality is a default-on, headless-by-default external development

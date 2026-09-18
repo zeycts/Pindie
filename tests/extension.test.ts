@@ -4011,6 +4011,53 @@ test("H11 unavailable Pindie State blocks consequential tools", async () => {
   assert.equal(harness.store.loads.length, loadsBeforeObserve);
 });
 
+test("Extension mirrors only current-Session Host waiting status and releases observation on shutdown", async () => {
+  const hostLease = installQuotaResumeReceiver(() => undefined);
+  const statuses: Array<string | undefined> = [];
+  const notifications: Array<{ message: string; type?: string }> = [];
+  try {
+    const harness = createHarness([["/repo", activeState()]]);
+    const base = context("/repo", [], false, "session");
+    const ctx = {
+      ...base,
+      hasUI: true,
+      ui: {
+        theme: { fg: (_tone: string, text: string) => text },
+        setStatus: (_id: string, text: string | undefined) => statuses.push(text),
+        notify: (message: string, type?: string) => notifications.push({ message, type }),
+      },
+    };
+    await harness.api.handler("session_start")(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+
+    hostLease.publishWaitingStatus({ sessionId: "other", resumeAt: 100 });
+    assert.doesNotMatch(statuses.at(-1) ?? "", /waiting · quota/);
+    assert.deepEqual(notifications, []);
+
+    hostLease.publishWaitingStatus({ sessionId: "session", resumeAt: 200 });
+    hostLease.publishWaitingStatus({ sessionId: "session", resumeAt: 200 });
+    assert.match(statuses.at(-1) ?? "", /waiting · quota/);
+    assert.equal((statuses.at(-1) ?? "").includes("active • waiting · quota"), false);
+    assert.deepEqual(notifications, [{
+      message: "Codex quota reached. Auto-resume scheduled after the current reset.",
+      type: "info",
+    }]);
+
+    await harness.api.handler("session_shutdown")(
+      { type: "session_shutdown", reason: "reload" },
+      ctx,
+    );
+    const statusCount = statuses.length;
+    hostLease.publishWaitingStatus({ sessionId: "session", resumeAt: 300 });
+    assert.equal(statuses.length, statusCount);
+    assert.equal(notifications.length, 1);
+  } finally {
+    hostLease.release();
+  }
+});
+
 async function assertPendingQuotaPlanningCancelledBy(
   boundary: "input" | "session_shutdown",
 ): Promise<void> {
@@ -4103,7 +4150,7 @@ async function assertPendingQuotaPlanningCancelledBy(
     assert.equal(events.filter((event) => event.type === "schedule").length, 0);
   } finally {
     releasePlanning();
-    releaseReceiver();
+    releaseReceiver.release();
   }
 }
 

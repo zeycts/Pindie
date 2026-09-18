@@ -39,6 +39,8 @@ import {
 import {
   installQuotaResumeReceiver,
   type QuotaResumeControlEvent,
+  type QuotaResumeHostLease,
+  type QuotaResumeWaitingStatus,
 } from "./quota-resume-control.ts";
 import {
   QuotaResumeSupervisor,
@@ -170,9 +172,9 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   let runtime: PiRuntimeAdapter | undefined;
   let rolloverSupervisor: LongTaskRolloverSupervisor | undefined;
   let quotaResumeSupervisor: QuotaResumeSupervisor | undefined;
-  let releaseQuotaBridge: (() => void) | undefined;
+  let quotaBridgeLease: QuotaResumeHostLease | undefined;
   let releaseControlBridge: (() => void) | undefined;
-  releaseQuotaBridge = installQuotaResumeReceiver((event: QuotaResumeControlEvent) => {
+  quotaBridgeLease = installQuotaResumeReceiver((event: QuotaResumeControlEvent) => {
     if (!quotaResumeSupervisor) {
       console.warn("[Pindie] Ignored a quota resume event while Host runtime was bootstrapping.");
       return;
@@ -194,14 +196,15 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       },
     );
   } catch (error) {
-    releaseQuotaBridge();
+    quotaBridgeLease.release();
     throw error;
   }
 
   const releaseHostControl = async (): Promise<void> => {
-    releaseQuotaBridge?.();
-    releaseQuotaBridge = undefined;
     quotaResumeSupervisor?.dispose();
+    quotaResumeSupervisor = undefined;
+    quotaBridgeLease?.release();
+    quotaBridgeLease = undefined;
     releaseControlBridge?.();
     releaseControlBridge = undefined;
     await rolloverSupervisor?.dispose();
@@ -232,7 +235,14 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       sessionManager,
     });
     runtime = new PiRuntimeAdapter(nativeRuntime);
-    quotaResumeSupervisor = new QuotaResumeSupervisor(runtime, options.quotaResume);
+    const testWaitingChange = options.quotaResume?.onWaitingChange;
+    quotaResumeSupervisor = new QuotaResumeSupervisor(runtime, {
+      ...options.quotaResume,
+      onWaitingChange: (status: QuotaResumeWaitingStatus | null) => {
+        quotaBridgeLease?.publishWaitingStatus(status);
+        if (testWaitingChange) testWaitingChange(status);
+      },
+    });
     rolloverSupervisor = new LongTaskRolloverSupervisor(runtime, {
       ...options.longTaskRollover,
       taskMetrics,
