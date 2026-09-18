@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ContextUsage, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ContextUsage, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 
 import {
   PINDIE_STATE_CHECKPOINT_TYPE,
@@ -26,6 +26,10 @@ import {
   installCommittedRolloverReceiver,
   type CommittedRolloverRequest,
 } from "../src/long-task-control.ts";
+import {
+  installQuotaResumeReceiver,
+  type QuotaResumeControlEvent,
+} from "../src/quota-resume-control.ts";
 import {
   createPolicySnapshot,
   createPolicySnapshotFromRevisions,
@@ -2227,7 +2231,7 @@ test("Host lifecycle wiring receives the native Session shutdown boundary", asyn
   }
 });
 
-test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
+test("Remote-disabled baseline registers only core and quota lifecycle hooks", () => {
   const { api } = createHarness();
 
   assert.equal(api.entryRenderers.has(PINDIE_REMOTE_NOTICE_TYPE), true);
@@ -2253,6 +2257,8 @@ test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
     "agent_settled",
     "before_agent_start",
     "context",
+    "input",
+    "model_select",
     "session_compact",
     "session_compact_failed",
     "session_shutdown",
@@ -2265,7 +2271,7 @@ test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
     "tool_result",
     "turn_end",
   ]);
-  assert.equal(api.handlers.has("input"), false);
+  assert.equal(api.handlers.has("input"), true);
 });
 
 test("production Discord Remote warnings append one TUI-only transcript notice per outage", async () => {
@@ -4003,6 +4009,110 @@ test("H11 unavailable Pindie State blocks consequential tools", async () => {
   const loadsBeforeObserve = harness.store.loads.length;
   assert.equal(await callGuard(harness, toolCall("pindie_git_observe", { action: "status" })), undefined);
   assert.equal(harness.store.loads.length, loadsBeforeObserve);
+});
+
+async function assertPendingQuotaPlanningCancelledBy(
+  boundary: "input" | "session_shutdown",
+): Promise<void> {
+  const now = 1_700_000_000_000;
+  const branch = [{
+    type: "message",
+    id: "pending-quota-plan",
+    parentId: null,
+    timestamp: new Date(now).toISOString(),
+    message: {
+      role: "assistant",
+      content: [],
+      provider: "openai-codex",
+      model: "gpt-5-codex",
+      usage: {},
+      stopReason: "error",
+      errorMessage: "The usage limit has been reached",
+      timestamp: now,
+    },
+  } as SessionEntry];
+  const events: QuotaResumeControlEvent[] = [];
+  const releaseReceiver = installQuotaResumeReceiver((event) => events.push(event));
+  let fetches = 0;
+  let markPlanningEntered!: () => void;
+  let releasePlanning!: () => void;
+  const planningEntered = new Promise<void>((resolve) => { markPlanningEntered = resolve; });
+  const planningRelease = new Promise<void>((resolve) => { releasePlanning = resolve; });
+
+  try {
+    const harness = createHarness(
+      [["/repo", activeState()]],
+      {},
+      {
+        now: () => now,
+        quotaResumePreferenceStore: {
+          loadDefault: async () => true,
+          saveDefault: async () => undefined,
+        },
+        subscriptionUsageProvider: {
+          async fetchUsage() {
+            fetches += 1;
+            if (fetches === 1) return null;
+            markPlanningEntered();
+            await planningRelease;
+            return {
+              fetchedAt: now,
+              windows: [
+                { usedPercent: 100, windowMinutes: 300, resetsAt: now + 60_000 },
+                { usedPercent: 50, windowMinutes: 10_080, resetsAt: now + 600_000 },
+              ],
+            };
+          },
+        },
+      },
+    );
+    const ctx = {
+      ...context("/repo", branch),
+      sessionManager: {
+        getEntries: () => branch,
+        getBranch: () => branch,
+        getSessionId: () => "same-session",
+        getSessionName: () => undefined,
+      },
+    };
+    await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+    await nextTurn();
+    assert.equal(fetches, 1);
+    await harness.api.handler("before_agent_start")(
+      { type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} },
+      ctx,
+    );
+    await harness.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+    await planningEntered;
+
+    if (boundary === "input") {
+      await harness.api.handler("input")(
+        { type: "input", source: "interactive", streamingBehavior: "steer" },
+        ctx,
+      );
+    } else {
+      await harness.api.handler("session_shutdown")(
+        { type: "session_shutdown", reason: "reload" },
+        ctx,
+      );
+    }
+    assert.equal(events.filter((event) => event.type === "cancel").length, 1);
+
+    releasePlanning();
+    await nextTurn();
+    assert.equal(events.filter((event) => event.type === "schedule").length, 0);
+  } finally {
+    releasePlanning();
+    releaseReceiver();
+  }
+}
+
+test("user input invalidates pending quota planning before it can re-arm", async () => {
+  await assertPendingQuotaPlanningCancelledBy("input");
+});
+
+test("same-Session reload shutdown invalidates pending quota planning before it can re-arm", async () => {
+  await assertPendingQuotaPlanningCancelledBy("session_shutdown");
 });
 
 test("subscription usage is runtime-only, cached, and does not affect State on fetch failure", async () => {

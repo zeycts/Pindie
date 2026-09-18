@@ -367,3 +367,21 @@ test("adapter disposal is idempotent", async () => {
 
   assert.equal(control.disposeCalls(), 1);
 });
+
+test("quota primitives always read and delegate to the current active Session", async () => {
+  const calls: unknown[][] = [];
+  const branchOne = [{ type: "custom", id: "one" }] as unknown as import("@earendil-works/pi-coding-agent").SessionEntry[];
+  const branchTwo = [{ type: "custom", id: "two" }] as unknown as import("@earendil-works/pi-coding-agent").SessionEntry[];
+  const first = { ...fakeSession("one"), model: { provider: "first", id: "m1" }, sessionManager: { getBranch: () => branchOne }, sendCustomMessage: async (...args: unknown[]) => { calls.push(args); } } as unknown as AgentSession;
+  const second = { ...fakeSession("two"), model: { provider: "openai-codex", id: "gpt-5-codex" }, sessionManager: { getBranch: () => branchTwo }, sendCustomMessage: async (...args: unknown[]) => { calls.push(args); } } as unknown as AgentSession;
+  const control = fakeRuntime(first);
+  const adapter = new PiRuntimeAdapter(control.runtime);
+  control.setSession(second);
+
+  assert.deepEqual(adapter.getActiveSessionModelIdentity(), { provider: "openai-codex", modelId: "gpt-5-codex" });
+  assert.equal(adapter.getActiveSessionBranch(), branchTwo);
+  const message = { customType: "test", content: "wake", display: false };
+  const options = { triggerTurn: true };
+  await adapter.sendCustomMessage(message, options);
+  assert.deepEqual(calls, [[message, options]]);
+});

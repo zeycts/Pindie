@@ -133,6 +133,8 @@ import {
   registerQuotaResumeIntegration,
   type QuotaResumePreferenceStore,
 } from "./quota-resume.ts";
+import { getQuotaResumePublisher } from "./quota-resume-control.ts";
+import { buildQuotaResumePlan } from "./quota-resume-incident.ts";
 import { createPindieMemoryCaptureTool } from "./tools/memory.ts";
 import {
   PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
@@ -303,6 +305,8 @@ function registerComposedPindieExtension(
   // publisher must never be able to target a later Host in this process.
   const committedRolloverPublisher = getCommittedRolloverPublisher();
   const sessionLifecyclePublisher = getSessionLifecyclePublisher();
+  const quotaResumePublisher = getQuotaResumePublisher();
+  let quotaPlanningGeneration = 0;
   const taskHandoffEnabled = options.enableTaskHandoff === true || committedRolloverPublisher !== null;
   // Composition supplies Core's production dependencies explicitly. Feature
   // dependencies are validated and assembled only when Self-Improvement is
@@ -436,7 +440,20 @@ function registerComposedPindieExtension(
     taskMetrics: core.taskMetrics,
     uiEnabled: featureSelection.presentation,
   });
-  const quotaResume = registerQuotaResumeIntegration(pi, options.quotaResumePreferenceStore!);
+  const cancelQuotaResume = (ctx: ExtensionContext): void => {
+    ++quotaPlanningGeneration;
+    if (quotaResumePublisher === null) return;
+    try {
+      quotaResumePublisher({ type: "cancel", sessionId: ctx.sessionManager.getSessionId() });
+    } catch {
+      // Host control may already be released during teardown.
+    }
+  };
+  const quotaResume = registerQuotaResumeIntegration(pi, options.quotaResumePreferenceStore!, {
+    onPreferenceChanged: (enabled, ctx) => {
+      if (!enabled) cancelQuotaResume(ctx);
+    },
+  });
   type LiveRemoteSession = { projectRoot: string; sessionId: string; ctx: ExtensionContext; generation: number };
   let liveRemoteSession: LiveRemoteSession | null = null;
   let nextRemoteLeaseGeneration = 0;
@@ -729,13 +746,17 @@ function registerComposedPindieExtension(
   });
 
   pi.on("session_tree", async (_event, ctx) => {
+    cancelQuotaResume(ctx);
     await quotaResume.restoreBranch(ctx);
   });
 
+  pi.on("input", (event, ctx) => {
+    cancelQuotaResume(ctx);
+    options.remoteCompanion?.companion.observeInput(event.source, event.streamingBehavior);
+  });
+  pi.on("model_select", (_event, ctx) => cancelQuotaResume(ctx));
+
   if (options.remoteCompanion) {
-    pi.on("input", (event) => {
-      options.remoteCompanion!.companion.observeInput(event.source, event.streamingBehavior);
-    });
     // Pi remains transcript truth: session history is projected after each
     // finalized message, serialized by RemoteCompanion behind any catch-up.
     pi.on("message_end", () => {
@@ -755,6 +776,7 @@ function registerComposedPindieExtension(
   }
 
   pi.on("session_shutdown", (event, ctx) => {
+    cancelQuotaResume(ctx);
     let nativeSessionId: string | null = null;
     try {
       nativeSessionId = ctx.sessionManager.getSessionId();
@@ -1335,6 +1357,31 @@ function registerComposedPindieExtension(
     presentation.clearActivityLingerRefresh();
     presentation.runActivity?.settle();
     presentation.refreshStatus(ctx);
+    if (quotaResumePublisher !== null && quotaResume.quotaAutoResumeEnabled) {
+      let branch: ReturnType<ExtensionContext["sessionManager"]["getBranch"]> | null = null;
+      try {
+        branch = ctx.sessionManager.getBranch();
+      } catch {
+        // A stale Extension context cannot authorize autonomous planning.
+      }
+      if (branch !== null) {
+        const planningGeneration = quotaPlanningGeneration;
+        void buildQuotaResumePlan({
+          ctx,
+          branch,
+          monitor: subscriptionUsageMonitor,
+          enabled: true,
+          now: continuityNow,
+        }).then((plan) => {
+          if (
+            plan === null ||
+            !quotaResume.quotaAutoResumeEnabled ||
+            planningGeneration !== quotaPlanningGeneration
+          ) return;
+          quotaResumePublisher({ type: "schedule", plan });
+        }).catch(() => undefined);
+      }
+    }
     void presentation.refreshSubscriptionUsage(ctx);
     if (options.remoteCompanion) {
       const lastEntry = entries.at(-1);

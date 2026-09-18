@@ -170,6 +170,22 @@ export class PiRuntimeAdapter {
     };
   }
 
+  getActiveSessionModelIdentity(): { provider: string; modelId: string } | null {
+    const model = this.activeSession.model;
+    return model ? { provider: model.provider, modelId: model.id } : null;
+  }
+
+  getActiveSessionBranch(): readonly SessionEntry[] {
+    return this.activeSession.sessionManager.getBranch();
+  }
+
+  sendCustomMessage(
+    message: Parameters<AgentSession["sendCustomMessage"]>[0],
+    options?: Parameters<AgentSession["sendCustomMessage"]>[1],
+  ): Promise<void> {
+    return this.activeSession.sendCustomMessage(message, options);
+  }
+
   prompt(text: string, options?: PromptOptions): Promise<void> {
     return this.activeSession.prompt(text, options);
   }

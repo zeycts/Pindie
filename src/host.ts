@@ -36,6 +36,14 @@ import {
   LongTaskRolloverSupervisor,
   type LongTaskRolloverSupervisorOptions,
 } from "./long-task-rollover.ts";
+import {
+  installQuotaResumeReceiver,
+  type QuotaResumeControlEvent,
+} from "./quota-resume-control.ts";
+import {
+  QuotaResumeSupervisor,
+  type QuotaResumeSupervisorOptions,
+} from "./quota-resume-supervisor.ts";
 
 export interface PindieResourcePaths {
   extensionPath: string;
@@ -67,6 +75,7 @@ export interface PindieHostOptions {
   sessionManager?: SessionManager;
   interactiveModeOptions?: InteractiveModeOptions;
   longTaskRollover?: LongTaskRolloverSupervisorOptions;
+  quotaResume?: QuotaResumeSupervisorOptions;
   env?: Record<string, string | undefined>;
   dependencies?: PindieHostDependencies;
 }
@@ -160,21 +169,39 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   let nativeRuntime: AgentSessionRuntime | undefined;
   let runtime: PiRuntimeAdapter | undefined;
   let rolloverSupervisor: LongTaskRolloverSupervisor | undefined;
+  let quotaResumeSupervisor: QuotaResumeSupervisor | undefined;
+  let releaseQuotaBridge: (() => void) | undefined;
   let releaseControlBridge: (() => void) | undefined;
-  releaseControlBridge = installCommittedRolloverReceiver(
-    (request: CommittedRolloverRequest) => {
-      if (!rolloverSupervisor) {
-        console.warn("[Pindie] Ignored a committed rollover request while Host runtime was bootstrapping.");
-        return;
-      }
-      rolloverSupervisor.request(request);
-    },
-    (boundary: SessionLifecycleBoundary) => {
-      rolloverSupervisor?.observeSessionLifecycle(boundary);
-    },
-  );
+  releaseQuotaBridge = installQuotaResumeReceiver((event: QuotaResumeControlEvent) => {
+    if (!quotaResumeSupervisor) {
+      console.warn("[Pindie] Ignored a quota resume event while Host runtime was bootstrapping.");
+      return;
+    }
+    if (event.type === "schedule") quotaResumeSupervisor.request(event.plan);
+    else quotaResumeSupervisor.cancel(event.sessionId);
+  });
+  try {
+    releaseControlBridge = installCommittedRolloverReceiver(
+      (request: CommittedRolloverRequest) => {
+        if (!rolloverSupervisor) {
+          console.warn("[Pindie] Ignored a committed rollover request while Host runtime was bootstrapping.");
+          return;
+        }
+        rolloverSupervisor.request(request);
+      },
+      (boundary: SessionLifecycleBoundary) => {
+        rolloverSupervisor?.observeSessionLifecycle(boundary);
+      },
+    );
+  } catch (error) {
+    releaseQuotaBridge();
+    throw error;
+  }
 
   const releaseHostControl = async (): Promise<void> => {
+    releaseQuotaBridge?.();
+    releaseQuotaBridge = undefined;
+    quotaResumeSupervisor?.dispose();
     releaseControlBridge?.();
     releaseControlBridge = undefined;
     await rolloverSupervisor?.dispose();
@@ -205,6 +232,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       sessionManager,
     });
     runtime = new PiRuntimeAdapter(nativeRuntime);
+    quotaResumeSupervisor = new QuotaResumeSupervisor(runtime, options.quotaResume);
     rolloverSupervisor = new LongTaskRolloverSupervisor(runtime, {
       ...options.longTaskRollover,
       taskMetrics,

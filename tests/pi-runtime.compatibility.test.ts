@@ -105,7 +105,7 @@ test("Pi 0.85.1 compatibility: idle custom trigger runs before_agent_start prefl
       providerContext = context;
       return fauxAssistantMessage("done");
     }]);
-    await harness.session.createReplacedSessionContext().sendMessage(
+    await harness.session.sendCustomMessage(
       { customType: "runtime-trigger", content: "wake up", display: false },
       { triggerTurn: true },
     );

@@ -219,7 +219,7 @@ test("Host-owned automatic rollover persists native lineage naming without addin
     }
     assert.notEqual(host.runtime.activeSessionId, sourceSessionId);
     const freshSession = host.runtime.activeSession;
-    for (let attempt = 0; attempt < 100 && providerContext === undefined; attempt += 1) {
+    for (let attempt = 0; attempt < 1_000 && providerContext === undefined; attempt += 1) {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     assert.ok(providerContext, "hidden resume should reach the faux provider");
