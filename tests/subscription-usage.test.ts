@@ -13,6 +13,7 @@ import {
   selectEarliestResetCreditExpiry,
   selectFiveHourWindow,
   selectWeeklyWindow,
+  SubscriptionUsageMonitor,
 } from "../src/subscription-usage.ts";
 
 const accountId = "account-for-test";
@@ -28,6 +29,10 @@ function context(): ExtensionContext {
       },
     },
   } as unknown as ExtensionContext;
+}
+
+function usageSnapshot() {
+  return { fetchedAt: Date.now(), windows: [] };
 }
 
 function realUsagePayload(primarySeconds: number, secondarySeconds: number) {
@@ -264,6 +269,127 @@ test("provider avoids details for zero count and retains summary when details fa
   assert.equal(snapshot?.resetCredits?.availableCount, 1);
   assert.equal(snapshot?.resetCredits?.credits, undefined);
   assert.equal(requests, 3);
+});
+
+test("subscription usage monitor caches successful normal refreshes and force bypasses the cache", async () => {
+  let now = 1_000;
+  let calls = 0;
+  const snapshot = { fetchedAt: now, windows: [] };
+  const monitor = new SubscriptionUsageMonitor({
+    async fetchUsage() {
+      calls += 1;
+      return snapshot;
+    },
+  }, () => now);
+
+  assert.equal(await monitor.refresh(context()), snapshot);
+  assert.equal(await monitor.refresh(context()), snapshot);
+  assert.equal(calls, 1);
+
+  now += 1;
+  assert.equal(await monitor.refresh(context(), { force: true }), snapshot);
+  assert.equal(calls, 2);
+});
+
+test("subscription usage monitor throttles failed normal attempts and retries after five minutes", async () => {
+  let now = 1_000;
+  let calls = 0;
+  const monitor = new SubscriptionUsageMonitor({
+    async fetchUsage() {
+      calls += 1;
+      throw new Error("unavailable");
+    },
+  }, () => now);
+
+  assert.equal(await monitor.refresh(context()), null);
+  assert.equal(calls, 1);
+  assert.equal(await monitor.refresh(context()), null);
+  assert.equal(calls, 1);
+
+  now += 5 * 60_000;
+  assert.equal(await monitor.refresh(context()), null);
+  assert.equal(calls, 2);
+});
+
+test("forced usage refresh bypasses failed-attempt throttle and throttles the next normal refresh", async () => {
+  let now = 1_000;
+  let calls = 0;
+  const monitor = new SubscriptionUsageMonitor({
+    async fetchUsage() {
+      calls += 1;
+      return null;
+    },
+  }, () => now);
+
+  assert.equal(await monitor.refresh(context()), null);
+  now += 1;
+  assert.equal(await monitor.refresh(context(), { force: true }), null);
+  assert.equal(calls, 2);
+
+  assert.equal(await monitor.refresh(context()), null);
+  assert.equal(calls, 2);
+});
+
+test("subscription usage monitor coalesces same-generation concurrent refreshes", async () => {
+  let release: ((snapshot: ReturnType<typeof usageSnapshot>) => void) | undefined;
+  let calls = 0;
+  const monitor = new SubscriptionUsageMonitor({
+    fetchUsage: () => {
+      calls += 1;
+      return new Promise((resolve) => { release = resolve; });
+    },
+  });
+  const first = monitor.refresh(context(), { force: true });
+  const second = monitor.refresh(context(), { force: true });
+  assert.equal(calls, 1);
+
+  const snapshot = usageSnapshot();
+  release!(snapshot);
+  assert.equal(await first, snapshot);
+  assert.equal(await second, snapshot);
+});
+
+test("failed forced usage refresh returns null while retaining only the older presentation snapshot", async () => {
+  let calls = 0;
+  const snapshot = { fetchedAt: 10, windows: [] };
+  const monitor = new SubscriptionUsageMonitor({
+    async fetchUsage() {
+      calls += 1;
+      if (calls === 1) return snapshot;
+      throw new Error("unavailable");
+    },
+  }, () => 10);
+
+  assert.equal(await monitor.refresh(context()), snapshot);
+  assert.equal(await monitor.refresh(context(), { force: true }), null);
+  assert.equal(monitor.snapshot, snapshot);
+});
+
+test("reset invalidates old monitor requests and permits an independent new generation", async () => {
+  const releases: Array<(snapshot: ReturnType<typeof usageSnapshot>) => void> = [];
+  let calls = 0;
+  const monitor = new SubscriptionUsageMonitor({
+    fetchUsage: () => {
+      calls += 1;
+      return new Promise((resolve) => { releases.push(resolve); });
+    },
+  });
+
+  const oldRequest = monitor.refresh(context(), { force: true });
+  monitor.reset();
+  assert.equal(monitor.snapshot, null);
+  const newRequest = monitor.refresh(context(), { force: true });
+  assert.equal(calls, 2);
+
+  const newer = usageSnapshot();
+  releases[1]!(newer);
+  assert.equal(await newRequest, newer);
+  assert.equal(monitor.snapshot, newer);
+
+  const older = usageSnapshot();
+  releases[0]!(older);
+  assert.equal(await oldRequest, null);
+  assert.equal(monitor.snapshot, newer);
 });
 
 test("provider fetches positive-count details once during the same refresh", async () => {

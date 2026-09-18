@@ -124,7 +124,11 @@ import {
   getSessionLifecyclePublisher,
 } from "./long-task-control.ts";
 import { PINDIE_TASK_HANDOFF_TOOL } from "./task-handoff-runtime.ts";
-import type { SubscriptionUsageProvider } from "./subscription-usage.ts";
+import {
+  chatGptSubscriptionUsageProvider,
+  SubscriptionUsageMonitor,
+  type SubscriptionUsageProvider,
+} from "./subscription-usage.ts";
 import {
   registerQuotaResumeIntegration,
   type QuotaResumePreferenceStore,
@@ -411,13 +415,17 @@ function registerComposedPindieExtension(
     });
     selfImprovement.attachCrossProjectLearning(crossProjectLearning.asAttachment());
   }
+  const subscriptionUsageMonitor = new SubscriptionUsageMonitor(
+    options.subscriptionUsageProvider ?? chatGptSubscriptionUsageProvider,
+    continuityNow,
+  );
   const presentation = new PresentationIntegration(pi, {
     getState: () => runtime.projectRoot === null ? null : runtime.state,
     getProjectRoot: () => runtime.projectRoot,
     getAuthoritativeState: () => run.authoritativeState,
     getStateUnavailableReason: () => run.stateUnavailableReason,
     getRunStale: () => run.agentRunIsStale,
-    subscriptionUsageProvider: options.subscriptionUsageProvider,
+    subscriptionUsageMonitor,
     getStatusWidth: options.getStatusWidth,
     now: options.now,
     activityLingerMs: options.activityLingerMs,

@@ -29,6 +29,83 @@ export interface SubscriptionUsageProvider {
   fetchUsage(ctx: ExtensionContext): Promise<SubscriptionUsageSnapshot | null>;
 }
 
+export interface SubscriptionUsageRefreshOptions {
+  force?: boolean;
+}
+
+export class SubscriptionUsageMonitor {
+  private static readonly CACHE_MS = 5 * 60_000;
+  private readonly provider: SubscriptionUsageProvider;
+  private readonly now: () => number;
+  private generation = 0;
+  private visibleSnapshot: SubscriptionUsageSnapshot | null = null;
+  private lastAttemptAt: number | null = null;
+  private inFlight: {
+    generation: number;
+    promise: Promise<SubscriptionUsageSnapshot | null>;
+  } | null = null;
+
+  constructor(provider: SubscriptionUsageProvider, now: () => number = Date.now) {
+    this.provider = provider;
+    this.now = now;
+  }
+
+  get snapshot(): SubscriptionUsageSnapshot | null {
+    return this.visibleSnapshot;
+  }
+
+  refresh(
+    ctx: ExtensionContext,
+    options: SubscriptionUsageRefreshOptions = {},
+  ): Promise<SubscriptionUsageSnapshot | null> {
+    const generation = this.generation;
+    const current = this.inFlight;
+    if (current?.generation === generation) return current.promise;
+
+    if (
+      !options.force &&
+      this.lastAttemptAt !== null &&
+      this.now() - this.lastAttemptAt < SubscriptionUsageMonitor.CACHE_MS
+    ) {
+      return Promise.resolve(this.visibleSnapshot);
+    }
+
+    this.lastAttemptAt = this.now();
+    const request = (async (): Promise<SubscriptionUsageSnapshot | null> => {
+      let next: SubscriptionUsageSnapshot | null;
+      try {
+        next = (await this.provider.fetchUsage(ctx)) ?? null;
+      } catch {
+        next = null;
+      }
+      if (generation !== this.generation) return null;
+      if (next !== null) this.visibleSnapshot = next;
+      return next;
+    })();
+    this.inFlight = { generation, promise: request };
+    void request.then(
+      () => {
+        if (this.inFlight?.generation === generation && this.inFlight.promise === request) {
+          this.inFlight = null;
+        }
+      },
+      () => {
+        if (this.inFlight?.generation === generation && this.inFlight.promise === request) {
+          this.inFlight = null;
+        }
+      },
+    );
+    return request;
+  }
+
+  reset(): void {
+    this.generation += 1;
+    this.visibleSnapshot = null;
+    this.lastAttemptAt = null;
+    this.inFlight = null;
+  }
+}
+
 export type SubscriptionUsageFetch = (
   url: string,
   init: RequestInit,

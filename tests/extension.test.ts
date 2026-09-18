@@ -4027,6 +4027,7 @@ test("subscription usage is runtime-only, cached, and does not affect State on f
     context("/repo"),
   );
 
+  // Normal attempts, including failures, retain the pre-Slice-B five-minute throttle.
   assert.equal(fetches, 1);
   assert.equal(harness.integration.stateUnavailableReason, null);
   assert.equal(harness.integration.runtime.state.task?.verification.stale, false);
