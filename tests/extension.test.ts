@@ -31,6 +31,10 @@ import {
   type QuotaResumeControlEvent,
 } from "../src/quota-resume-control.ts";
 import {
+  PINDIE_QUOTA_RESUME_MESSAGE,
+  PINDIE_QUOTA_RESUME_TYPE,
+} from "../src/quota-resume-supervisor.ts";
+import {
   createPolicySnapshot,
   createPolicySnapshotFromRevisions,
   createStrategyRevisionSelection,
@@ -884,6 +888,19 @@ function interactiveContext(
         if (throwOnSetStatus) throw new Error("Status renderer unavailable");
         statuses.push({ id, text });
       },
+    },
+  };
+}
+
+function withBranch(
+  ctx: Record<string, unknown>,
+  branch: unknown[],
+): Record<string, unknown> {
+  return {
+    ...ctx,
+    sessionManager: {
+      ...(ctx.sessionManager as Record<string, unknown>),
+      getBranch: () => branch,
     },
   };
 }
@@ -4160,6 +4177,175 @@ test("user input invalidates pending quota planning before it can re-arm", async
 
 test("same-Session reload shutdown invalidates pending quota planning before it can re-arm", async () => {
   await assertPendingQuotaPlanningCancelledBy("session_shutdown");
+});
+
+test("ordinary before_agent_start does not force-refresh subscription usage", async () => {
+  let fetches = 0;
+  const harness = createHarness(
+    [["/repo", activeState()]],
+    {},
+    {
+      subscriptionUsageProvider: {
+        async fetchUsage() {
+          fetches += 1;
+          return null;
+        },
+      },
+    },
+  );
+  const ctx = withBranch(context("/repo"), []);
+  await harness.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} },
+    ctx,
+  );
+  assert.equal(fetches, 0);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+});
+
+test("the latest quota-resume custom branch message force-refreshes usage", async () => {
+  let fetches = 0;
+  const harness = createHarness(
+    [["/repo", activeState()]],
+    {},
+    {
+      subscriptionUsageProvider: {
+        async fetchUsage() {
+          fetches += 1;
+          return {
+            fetchedAt: 2,
+            windows: [{ usedPercent: 20, windowMinutes: 300 }],
+          };
+        },
+      },
+    },
+  );
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const branch = [{
+    type: "message",
+    message: { role: "custom", customType: PINDIE_QUOTA_RESUME_TYPE },
+  }];
+  const ctx = withBranch(interactiveContext("/repo", statuses), branch);
+
+  await harness.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "not the marker", systemPrompt: "", systemPromptOptions: {} },
+    ctx,
+  );
+  await nextTurn();
+
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+  assert.equal(fetches, 1);
+  assert.match(statuses.at(-1)?.text ?? "", /5h 80%/);
+});
+
+test("Pi 0.85.1 quota custom-trigger preflight starts usage refresh without blocking Run preparation", async () => {
+  let markFetchStarted!: () => void;
+  let releaseFetch!: () => void;
+  const fetchStarted = new Promise<void>((resolve) => { markFetchStarted = resolve; });
+  const fetchRelease = new Promise<void>((resolve) => { releaseFetch = resolve; });
+  const harness = createHarness(
+    [["/repo", activeState()]],
+    {},
+    {
+      subscriptionUsageProvider: {
+        async fetchUsage() {
+          markFetchStarted();
+          await fetchRelease;
+          return { fetchedAt: 2, windows: [{ usedPercent: 20, windowMinutes: 300 }] };
+        },
+      },
+    },
+  );
+  const before = Promise.resolve(harness.api.handler("before_agent_start")(
+    {
+      type: "before_agent_start",
+      prompt: PINDIE_QUOTA_RESUME_MESSAGE,
+      systemPrompt: "",
+      systemPromptOptions: {},
+    },
+    withBranch(context("/repo"), []),
+  ));
+  await fetchStarted;
+  const preparation = await Promise.race([
+    before.then(() => "prepared"),
+    new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 50)),
+  ]);
+  assert.equal(preparation, "prepared");
+
+  releaseFetch();
+  await before;
+  await nextTurn();
+  const ctx = withBranch(context("/repo"), []);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+});
+
+test("historical quota-resume messages that are not latest do not force-refresh usage", async () => {
+  let fetches = 0;
+  const harness = createHarness(
+    [["/repo", activeState()]],
+    {},
+    {
+      subscriptionUsageProvider: {
+        async fetchUsage() {
+          fetches += 1;
+          return null;
+        },
+      },
+    },
+  );
+  const branch = [
+    { type: "message", message: { role: "custom", customType: PINDIE_QUOTA_RESUME_TYPE } },
+    { type: "message", message: { role: "assistant", content: [] } },
+  ];
+
+  const ctx = withBranch(context("/repo"), branch);
+  await harness.api.handler("before_agent_start")(
+    { type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} },
+    ctx,
+  );
+  assert.equal(fetches, 0);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+});
+
+test("failed quota-resume usage refresh is detached, fail-soft, and does not retry or mutate State", async () => {
+  let fetches = 0;
+  const harness = createHarness(
+    [["/repo", activeState()]],
+    {},
+    {
+      subscriptionUsageProvider: {
+        async fetchUsage() {
+          fetches += 1;
+          if (fetches === 1) {
+            return { fetchedAt: 1, windows: [{ usedPercent: 100, windowMinutes: 300 }] };
+          }
+          throw new Error("usage unavailable");
+        },
+      },
+    },
+  );
+  const statuses: Array<{ id: string; text: string | undefined }> = [];
+  const ctx = withBranch(interactiveContext("/repo", statuses), []);
+  await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+  await nextTurn();
+  const stateBefore = structuredClone(harness.integration.runtime.state);
+
+  await assert.doesNotReject(Promise.resolve(harness.api.handler("before_agent_start")(
+    {
+      type: "before_agent_start",
+      prompt: PINDIE_QUOTA_RESUME_MESSAGE,
+      systemPrompt: "",
+      systemPromptOptions: {},
+    },
+    ctx,
+  )));
+  await nextTurn();
+
+  assert.equal(fetches, 2);
+  assert.deepEqual(harness.integration.runtime.state, stateBefore);
+  assert.match(statuses.at(-1)?.text ?? "", /5h 0%/);
+  await nextTurn();
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+  assert.equal(fetches, 2);
 });
 
 test("subscription usage is runtime-only, cached, and does not affect State on fetch failure", async () => {

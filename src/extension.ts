@@ -138,6 +138,10 @@ import {
   getQuotaResumeStatusObserver,
 } from "./quota-resume-control.ts";
 import { buildQuotaResumePlan } from "./quota-resume-incident.ts";
+import {
+  PINDIE_QUOTA_RESUME_MESSAGE,
+  PINDIE_QUOTA_RESUME_TYPE,
+} from "./quota-resume-supervisor.ts";
 import { createPindieMemoryCaptureTool } from "./tools/memory.ts";
 import {
   PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
@@ -270,6 +274,33 @@ function safeSessionEntries(
     if (isStaleExtensionContextError(error)) return null;
     throw error;
   }
+}
+
+function isQuotaResumeBranchMessage(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || !("message" in value)) return false;
+  const message = (value as { message?: unknown }).message;
+  if (typeof message !== "object" || message === null) return false;
+  const candidate = message as { role?: unknown; customType?: unknown };
+  return candidate.role === "custom" && candidate.customType === PINDIE_QUOTA_RESUME_TYPE;
+}
+
+function isQuotaResumeAgentRun(
+  event: { prompt?: unknown },
+  ctx: ExtensionContext,
+): boolean {
+  try {
+    const branch = ctx.sessionManager.getBranch();
+    const latest = branch.at(-1);
+    if (isQuotaResumeBranchMessage(latest)) return true;
+  } catch {
+    // Compatibility fallback below is the factual signal exposed by the
+    // pinned Pi 0.85.1 idle custom-trigger path.
+  }
+
+  // Pi 0.85.1's patched idle custom-trigger path runs before the custom
+  // message is appended to SessionManager, so its preflight exposes the exact
+  // hidden message content rather than the customType on the current branch.
+  return event.prompt === PINDIE_QUOTA_RESUME_MESSAGE;
 }
 
 export function registerPindieExtension(
@@ -819,6 +850,9 @@ function registerComposedPindieExtension(
     let preparationGeneration: number | null = null;
     try {
       presentation.setStatusContext(ctx);
+      if (isQuotaResumeAgentRun(event, ctx)) {
+        void presentation.refreshSubscriptionUsage(ctx, { force: true }).catch(() => undefined);
+      }
       core.resetAgentRunBookkeeping();
       if (run.authoritativeState !== null) {
         try {
