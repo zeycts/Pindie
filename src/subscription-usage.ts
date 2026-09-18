@@ -39,7 +39,7 @@ export class SubscriptionUsageMonitor {
   private readonly now: () => number;
   private generation = 0;
   private visibleSnapshot: SubscriptionUsageSnapshot | null = null;
-  private lastSuccessfulFetchAt: number | null = null;
+  private lastAttemptAt: number | null = null;
   private inFlight: {
     generation: number;
     promise: Promise<SubscriptionUsageSnapshot | null>;
@@ -59,18 +59,18 @@ export class SubscriptionUsageMonitor {
     options: SubscriptionUsageRefreshOptions = {},
   ): Promise<SubscriptionUsageSnapshot | null> {
     const generation = this.generation;
+    const current = this.inFlight;
+    if (current?.generation === generation) return current.promise;
+
     if (
       !options.force &&
-      this.visibleSnapshot !== null &&
-      this.lastSuccessfulFetchAt !== null &&
-      this.now() - this.lastSuccessfulFetchAt < SubscriptionUsageMonitor.CACHE_MS
+      this.lastAttemptAt !== null &&
+      this.now() - this.lastAttemptAt < SubscriptionUsageMonitor.CACHE_MS
     ) {
       return Promise.resolve(this.visibleSnapshot);
     }
 
-    const current = this.inFlight;
-    if (current?.generation === generation) return current.promise;
-
+    this.lastAttemptAt = this.now();
     const request = (async (): Promise<SubscriptionUsageSnapshot | null> => {
       let next: SubscriptionUsageSnapshot | null;
       try {
@@ -79,10 +79,7 @@ export class SubscriptionUsageMonitor {
         next = null;
       }
       if (generation !== this.generation) return null;
-      if (next !== null) {
-        this.visibleSnapshot = next;
-        this.lastSuccessfulFetchAt = this.now();
-      }
+      if (next !== null) this.visibleSnapshot = next;
       return next;
     })();
     this.inFlight = { generation, promise: request };
@@ -104,7 +101,7 @@ export class SubscriptionUsageMonitor {
   reset(): void {
     this.generation += 1;
     this.visibleSnapshot = null;
-    this.lastSuccessfulFetchAt = null;
+    this.lastAttemptAt = null;
     this.inFlight = null;
   }
 }

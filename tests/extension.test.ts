@@ -4027,9 +4027,8 @@ test("subscription usage is runtime-only, cached, and does not affect State on f
     context("/repo"),
   );
 
-  // Failed monitor refreshes do not establish five-minute freshness, so the
-  // next presentation refresh retries instead of treating the failure as a cache hit.
-  assert.equal(fetches, 2);
+  // Normal attempts, including failures, retain the pre-Slice-B five-minute throttle.
+  assert.equal(fetches, 1);
   assert.equal(harness.integration.stateUnavailableReason, null);
   assert.equal(harness.integration.runtime.state.task?.verification.stale, false);
 });

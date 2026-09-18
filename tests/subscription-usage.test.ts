@@ -291,6 +291,45 @@ test("subscription usage monitor caches successful normal refreshes and force by
   assert.equal(calls, 2);
 });
 
+test("subscription usage monitor throttles failed normal attempts and retries after five minutes", async () => {
+  let now = 1_000;
+  let calls = 0;
+  const monitor = new SubscriptionUsageMonitor({
+    async fetchUsage() {
+      calls += 1;
+      throw new Error("unavailable");
+    },
+  }, () => now);
+
+  assert.equal(await monitor.refresh(context()), null);
+  assert.equal(calls, 1);
+  assert.equal(await monitor.refresh(context()), null);
+  assert.equal(calls, 1);
+
+  now += 5 * 60_000;
+  assert.equal(await monitor.refresh(context()), null);
+  assert.equal(calls, 2);
+});
+
+test("forced usage refresh bypasses failed-attempt throttle and throttles the next normal refresh", async () => {
+  let now = 1_000;
+  let calls = 0;
+  const monitor = new SubscriptionUsageMonitor({
+    async fetchUsage() {
+      calls += 1;
+      return null;
+    },
+  }, () => now);
+
+  assert.equal(await monitor.refresh(context()), null);
+  now += 1;
+  assert.equal(await monitor.refresh(context(), { force: true }), null);
+  assert.equal(calls, 2);
+
+  assert.equal(await monitor.refresh(context()), null);
+  assert.equal(calls, 2);
+});
+
 test("subscription usage monitor coalesces same-generation concurrent refreshes", async () => {
   let release: ((snapshot: ReturnType<typeof usageSnapshot>) => void) | undefined;
   let calls = 0;
