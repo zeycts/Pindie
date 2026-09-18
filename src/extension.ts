@@ -306,6 +306,7 @@ function registerComposedPindieExtension(
   const committedRolloverPublisher = getCommittedRolloverPublisher();
   const sessionLifecyclePublisher = getSessionLifecyclePublisher();
   const quotaResumePublisher = getQuotaResumePublisher();
+  let quotaPlanningGeneration = 0;
   const taskHandoffEnabled = options.enableTaskHandoff === true || committedRolloverPublisher !== null;
   // Composition supplies Core's production dependencies explicitly. Feature
   // dependencies are validated and assembled only when Self-Improvement is
@@ -440,6 +441,7 @@ function registerComposedPindieExtension(
     uiEnabled: featureSelection.presentation,
   });
   const cancelQuotaResume = (ctx: ExtensionContext): void => {
+    ++quotaPlanningGeneration;
     if (quotaResumePublisher === null) return;
     try {
       quotaResumePublisher({ type: "cancel", sessionId: ctx.sessionManager.getSessionId() });
@@ -1363,6 +1365,7 @@ function registerComposedPindieExtension(
         // A stale Extension context cannot authorize autonomous planning.
       }
       if (branch !== null) {
+        const planningGeneration = quotaPlanningGeneration;
         void buildQuotaResumePlan({
           ctx,
           branch,
@@ -1370,7 +1373,11 @@ function registerComposedPindieExtension(
           enabled: true,
           now: continuityNow,
         }).then((plan) => {
-          if (plan === null || !quotaResume.quotaAutoResumeEnabled) return;
+          if (
+            plan === null ||
+            !quotaResume.quotaAutoResumeEnabled ||
+            planningGeneration !== quotaPlanningGeneration
+          ) return;
           quotaResumePublisher({ type: "schedule", plan });
         }).catch(() => undefined);
       }

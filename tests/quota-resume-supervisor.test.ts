@@ -28,12 +28,25 @@ function harness() {
   let sessionId = "session";
   let model = { provider: "openai-codex", id: "gpt-5-codex" };
   let streaming = false, compacting = false, pending = 0;
+  let throwingRead: "facts" | "model" | "branch" | null = null;
   const sends: unknown[][] = [];
   let sendResult: Promise<void> = Promise.resolve();
   const session = {
-    get sessionId() { return sessionId; }, get model() { return model; },
+    get sessionId() {
+      if (throwingRead === "facts") throw new Error("active Session facts unavailable");
+      return sessionId;
+    },
+    get model() {
+      if (throwingRead === "model") throw new Error("active Session model unavailable");
+      return model;
+    },
     get isStreaming() { return streaming; }, get isCompacting() { return compacting; }, get pendingMessageCount() { return pending; },
-    sessionManager: { getBranch: () => branch },
+    sessionManager: {
+      getBranch: () => {
+        if (throwingRead === "branch") throw new Error("active Session branch unavailable");
+        return branch;
+      },
+    },
     sendCustomMessage: (...args: unknown[]) => { sends.push(args); return sendResult; },
   };
   const runtime = { get session() { return session; } } as unknown as AgentSessionRuntime;
@@ -46,6 +59,7 @@ function harness() {
   return { supervisor, callbacks, sends,
     setBranch: (value: SessionEntry[]) => { branch = value; }, setSession: (value: string) => { sessionId = value; },
     setModel: (provider: string, id: string) => { model = { provider, id }; }, setBusy: (s: boolean, c = false, p = 0) => { streaming = s; compacting = c; pending = p; },
+    throwOnRead: (value: "facts" | "model" | "branch" | null) => { throwingRead = value; },
     setSendResult: (value: Promise<void>) => { sendResult = value; },
   };
 }
@@ -70,6 +84,28 @@ test("invalid time, session, busy state, model, and anchor fail closed", () => {
     (h: ReturnType<typeof harness>) => { h.setModel("other", "gpt-5-codex"); h.supervisor.request(plan()); },
     (h: ReturnType<typeof harness>) => { h.setBranch([quota("other")]); h.supervisor.request(plan()); },
   ]) { const h = harness(); mutate(h); assert.equal(h.callbacks.length, 0); }
+});
+
+test("throwing active branch validation fails closed during request", () => {
+  const h = harness();
+  h.throwOnRead("branch");
+  assert.doesNotThrow(() => h.supervisor.request(plan()));
+  assert.equal(h.callbacks.length, 0);
+  assert.equal(h.sends.length, 0);
+});
+
+test("throwing runtime reads during wake abandon the lease without escaping or resuming", () => {
+  for (const read of ["facts", "model", "branch"] as const) {
+    const h = harness();
+    h.supervisor.request(plan());
+    h.throwOnRead(read);
+    assert.doesNotThrow(() => h.callbacks[0]!.callback(), read);
+    assert.equal(h.sends.length, 0, read);
+
+    h.throwOnRead(null);
+    h.callbacks[0]!.callback();
+    assert.equal(h.sends.length, 0, `${read} lease was not abandoned`);
+  }
 });
 
 test("a valid newer anchor replaces, cancel and stale callbacks cannot resume", () => {

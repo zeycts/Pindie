@@ -87,12 +87,17 @@ export class QuotaResumeSupervisor {
   }
 
   private matchesCurrentRuntime(plan: QuotaResumePlan): boolean {
-    const facts = this.runtime.getActiveSessionFacts();
-    const model = this.runtime.getActiveSessionModelIdentity();
-    if (facts.sessionId !== plan.sessionId || facts.isStreaming || facts.isCompacting || facts.pendingMessageCount !== 0 ||
-      model?.provider !== plan.provider || model.modelId !== plan.modelId) return false;
-    const incident = detectCodexQuotaIncident(this.runtime.getActiveSessionBranch());
-    return incident?.anchorEntryId === plan.anchorEntryId && incident.provider === plan.provider && incident.modelId === plan.modelId;
+    try {
+      const facts = this.runtime.getActiveSessionFacts();
+      const model = this.runtime.getActiveSessionModelIdentity();
+      if (facts.sessionId !== plan.sessionId || facts.isStreaming || facts.isCompacting || facts.pendingMessageCount !== 0 ||
+        model?.provider !== plan.provider || model.modelId !== plan.modelId) return false;
+      const incident = detectCodexQuotaIncident(this.runtime.getActiveSessionBranch());
+      return incident?.anchorEntryId === plan.anchorEntryId && incident.provider === plan.provider && incident.modelId === plan.modelId;
+    } catch (error) {
+      this.report(`Quota resume runtime validation failed: ${errorMessage(error)}`);
+      return false;
+    }
   }
 
   private wake(generation: number): void {
@@ -102,10 +107,7 @@ export class QuotaResumeSupervisor {
       this.clearLease();
       return;
     }
-    const finalFacts = this.runtime.getActiveSessionFacts();
-    const finalModel = this.runtime.getActiveSessionModelIdentity();
-    if (finalFacts.sessionId !== lease.plan.sessionId || finalFacts.isStreaming || finalFacts.isCompacting ||
-      finalFacts.pendingMessageCount !== 0 || finalModel?.provider !== lease.plan.provider || finalModel.modelId !== lease.plan.modelId) {
+    if (!this.matchesCurrentRuntime(lease.plan)) {
       this.clearLease();
       return;
     }
