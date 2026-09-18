@@ -12,9 +12,14 @@ import {
   SettingsManager,
   type AgentSession,
   type BeforeAgentStartEventResult,
+  type ExtensionContext,
   type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import {
+  PINDIE_QUOTA_RESUME_MESSAGE,
+  PINDIE_QUOTA_RESUME_TYPE,
+} from "../src/quota-resume-supervisor.ts";
 
 interface RealPiHarness {
   readonly session: AgentSession;
@@ -22,7 +27,10 @@ interface RealPiHarness {
   readonly root: string;
 }
 
-type BeforeAgentStartHook = () => BeforeAgentStartEventResult | undefined;
+type BeforeAgentStartHook = (
+  event: { prompt: string },
+  ctx: ExtensionContext,
+) => BeforeAgentStartEventResult | undefined;
 
 async function createRealPiHarness(
   beforeAgentStart?: BeforeAgentStartHook,
@@ -42,7 +50,7 @@ async function createRealPiHarness(
   const extensionFactories: InlineExtension[] = beforeAgentStart
     ? [
         (pi) => {
-          pi.on("before_agent_start", () => beforeAgentStart());
+          pi.on("before_agent_start", (event, ctx) => beforeAgentStart(event, ctx));
         },
       ]
     : [];
@@ -125,6 +133,35 @@ test("Pi 0.85.1 compatibility: idle custom trigger runs before_agent_start prefl
           && part.text === "injected custom message",
         );
     }));
+  } finally {
+    await disposeHarness(harness);
+  }
+});
+
+test("characterizes Pi 0.85.1 quota trigger: preflight exposes the hidden content before branch append", async () => {
+  let preflightPrompt: string | undefined;
+  let preflightBranch: readonly unknown[] | undefined;
+  const harness = await createRealPiHarness((event, ctx) => {
+    preflightPrompt = event.prompt;
+    preflightBranch = ctx.sessionManager.getBranch();
+    return undefined;
+  });
+
+  try {
+    harness.faux.setResponses([fauxAssistantMessage("done")]);
+    await harness.session.sendCustomMessage(
+      { customType: PINDIE_QUOTA_RESUME_TYPE, content: PINDIE_QUOTA_RESUME_MESSAGE, display: false },
+      { triggerTurn: true },
+    );
+
+    assert.equal(preflightPrompt, PINDIE_QUOTA_RESUME_MESSAGE);
+    assert.equal(preflightBranch?.some((entry) =>
+      typeof entry === "object" && entry !== null &&
+      "customType" in entry && entry.customType === PINDIE_QUOTA_RESUME_TYPE,
+    ), false);
+    const latest = harness.session.sessionManager.getBranch().at(-2);
+    assert.equal(latest?.type, "custom_message");
+    assert.equal((latest as { customType?: string } | undefined)?.customType, PINDIE_QUOTA_RESUME_TYPE);
   } finally {
     await disposeHarness(harness);
   }

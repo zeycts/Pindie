@@ -22,7 +22,10 @@ import {
   deriveStatusLayout,
   renderStatusLayout,
 } from "./status-line.ts";
-import { SubscriptionUsageMonitor } from "./subscription-usage.ts";
+import {
+  SubscriptionUsageMonitor,
+  type SubscriptionUsageRefreshOptions,
+} from "./subscription-usage.ts";
 import type { QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
 
 const PINDIE_STATUS_ID = "pindie-status";
@@ -186,10 +189,13 @@ export class PresentationIntegration {
     });
   }
 
-  async refreshSubscriptionUsage(ctx: ExtensionContext): Promise<void> {
+  async refreshSubscriptionUsage(
+    ctx: ExtensionContext,
+    options: SubscriptionUsageRefreshOptions = {},
+  ): Promise<void> {
     if (!this.uiEnabled) return;
     const statusContextGeneration = this.statusContextGeneration;
-    await this.subscriptionUsageMonitor.refresh(ctx);
+    await this.subscriptionUsageMonitor.refresh(ctx, options);
     if (statusContextGeneration === this.statusContextGeneration) this.refreshStatus(ctx);
   }
 
