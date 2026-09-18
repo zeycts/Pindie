@@ -261,9 +261,14 @@ export interface QuotaResumeIntegration {
   restoreBranch(ctx: ExtensionContext): Promise<void>;
 }
 
+export interface QuotaResumeIntegrationOptions {
+  readonly onPreferenceChanged?: (enabled: boolean, ctx: ExtensionContext) => void;
+}
+
 export function registerQuotaResumeIntegration(
   pi: ExtensionAPI,
   store: QuotaResumePreferenceStore,
+  options: QuotaResumeIntegrationOptions = {},
 ): QuotaResumeIntegration {
   let globalDefault = true;
   let sessionEnabled = true;
@@ -324,6 +329,7 @@ export function registerQuotaResumeIntegration(
           pi.appendEntry(PINDIE_QUOTA_RESUME_PREFERENCE_TYPE, { enabled: selected.enabled });
           sessionEnabled = selected.enabled;
         }
+        options.onPreferenceChanged?.(sessionEnabled, ctx);
       } catch (error) {
         ctx.ui.notify(errorMessage(error), "error");
       }

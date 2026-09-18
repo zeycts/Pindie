@@ -2227,7 +2227,7 @@ test("Host lifecycle wiring receives the native Session shutdown boundary", asyn
   }
 });
 
-test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
+test("Remote-disabled baseline registers only core and quota lifecycle hooks", () => {
   const { api } = createHarness();
 
   assert.equal(api.entryRenderers.has(PINDIE_REMOTE_NOTICE_TYPE), true);
@@ -2253,6 +2253,8 @@ test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
     "agent_settled",
     "before_agent_start",
     "context",
+    "input",
+    "model_select",
     "session_compact",
     "session_compact_failed",
     "session_shutdown",
@@ -2265,7 +2267,7 @@ test("Remote-disabled baseline registers no Remote lifecycle hooks", () => {
     "tool_result",
     "turn_end",
   ]);
-  assert.equal(api.handlers.has("input"), false);
+  assert.equal(api.handlers.has("input"), true);
 });
 
 test("production Discord Remote warnings append one TUI-only transcript notice per outage", async () => {
