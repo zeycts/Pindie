@@ -22,11 +22,7 @@ import {
   deriveStatusLayout,
   renderStatusLayout,
 } from "./status-line.ts";
-import {
-  chatGptSubscriptionUsageProvider,
-  type SubscriptionUsageProvider,
-  type SubscriptionUsageSnapshot,
-} from "./subscription-usage.ts";
+import { SubscriptionUsageMonitor } from "./subscription-usage.ts";
 
 const PINDIE_STATUS_ID = "pindie-status";
 
@@ -36,7 +32,7 @@ export interface PresentationIntegrationOptions {
   getAuthoritativeState: () => PindieState | null;
   getStateUnavailableReason: () => string | null;
   getRunStale: () => boolean;
-  subscriptionUsageProvider?: SubscriptionUsageProvider;
+  subscriptionUsageMonitor: SubscriptionUsageMonitor;
   getStatusWidth?: () => number | undefined;
   now?: () => number;
   activityLingerMs?: number;
@@ -66,7 +62,7 @@ export class PresentationIntegration {
   private readonly getAuthoritativeState: () => PindieState | null;
   private readonly getStateUnavailableReason: () => string | null;
   private readonly getRunStale: () => boolean;
-  private readonly subscriptionUsageProvider: SubscriptionUsageProvider;
+  private readonly subscriptionUsageMonitor: SubscriptionUsageMonitor;
   private readonly getStatusWidth: () => number | undefined;
   private readonly now: () => number;
   private readonly scheduleActivityRefresh: (
@@ -77,8 +73,7 @@ export class PresentationIntegration {
     timer: ReturnType<typeof setTimeout>,
   ) => void;
   private statusContext: ExtensionContext | null = null;
-  private subscriptionUsage: SubscriptionUsageSnapshot | null = null;
-  private lastUsageFetchAt: number | null = null;
+  private statusContextGeneration = 0;
   private activityLingerTimer: ReturnType<typeof setTimeout> | null = null;
   private activityLingerGeneration = 0;
 
@@ -97,8 +92,7 @@ export class PresentationIntegration {
     this.getAuthoritativeState = options.getAuthoritativeState;
     this.getStateUnavailableReason = options.getStateUnavailableReason;
     this.getRunStale = options.getRunStale;
-    this.subscriptionUsageProvider = options.subscriptionUsageProvider ??
-      chatGptSubscriptionUsageProvider;
+    this.subscriptionUsageMonitor = options.subscriptionUsageMonitor;
     this.getStatusWidth = options.getStatusWidth ??
       (() => process.stdout.columns);
     this.now = options.now ?? Date.now;
@@ -116,6 +110,7 @@ export class PresentationIntegration {
 
   setStatusContext(ctx: ExtensionContext | null): void {
     this.statusContext = this.uiEnabled ? ctx : null;
+    this.statusContextGeneration += 1;
   }
 
   resetTrackers(): void {
@@ -128,8 +123,7 @@ export class PresentationIntegration {
   }
 
   resetSubscriptionUsage(): void {
-    this.subscriptionUsage = null;
-    this.lastUsageFetchAt = null;
+    this.subscriptionUsageMonitor.reset();
   }
 
   clearStatus(ctx: ExtensionContext): void {
@@ -166,7 +160,7 @@ export class PresentationIntegration {
         runStale: this.runTimer.active &&
           this.getAuthoritativeState() !== null &&
           this.getRunStale(),
-        subscriptionUsage: this.subscriptionUsage,
+        subscriptionUsage: this.subscriptionUsageMonitor.snapshot,
       }, this.now());
       return renderStatusLayout(
         activeContext.ui.theme,
@@ -178,20 +172,9 @@ export class PresentationIntegration {
 
   async refreshSubscriptionUsage(ctx: ExtensionContext): Promise<void> {
     if (!this.uiEnabled) return;
-    if (
-      this.lastUsageFetchAt !== null &&
-      this.now() - this.lastUsageFetchAt < 5 * 60_000
-    ) {
-      return;
-    }
-    this.lastUsageFetchAt = this.now();
-    try {
-      const next = await this.subscriptionUsageProvider.fetchUsage(ctx);
-      if (next) this.subscriptionUsage = next;
-    } catch {
-      // Account observation is runtime-only and intentionally silent.
-    }
-    this.refreshStatus(ctx);
+    const statusContextGeneration = this.statusContextGeneration;
+    await this.subscriptionUsageMonitor.refresh(ctx);
+    if (statusContextGeneration === this.statusContextGeneration) this.refreshStatus(ctx);
   }
 
   applyRequestedThinkingLevel(): void {
