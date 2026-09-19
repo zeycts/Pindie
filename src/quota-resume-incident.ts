@@ -14,7 +14,16 @@ import {
 export const QUOTA_RESET_GRACE_MS = 30_000;
 export const MAX_QUOTA_USAGE_SNAPSHOT_AGE_MS = 60_000;
 
-const QUOTA_ERROR_SIGNATURE = /\b(?:the[\s_]+)?usage[\s_]+limit(?:[\s_]+has[\s_]+been)?[\s_]+reached\b|\b(?:Go|Free)UsageLimitError\b|\binsufficient_quota\b/iu;
+const QUOTA_ERROR_SIGNATURES = [
+  /\b(?:the[\s_]+)?usage[\s_]+limit(?:[\s_]+has[\s_]+been)?[\s_]+reached\b/iu,
+  /\b(?:Go|Free)UsageLimitError\b/iu,
+  /\binsufficient_quota\b/iu,
+  /\bhit[\s_]+your[\s_]+ChatGPT[\s_]+usage[\s_]+limit\b/iu,
+] as const;
+
+function isCodexSubscriptionQuotaError(errorMessage: string): boolean {
+  return QUOTA_ERROR_SIGNATURES.some((signature) => signature.test(errorMessage));
+}
 
 export interface CodexQuotaIncident {
   anchorEntryId: string;
@@ -56,7 +65,7 @@ export function detectCodexQuotaIncident(
     message.provider !== "openai-codex" ||
     message.stopReason !== "error" ||
     typeof message.errorMessage !== "string" ||
-    !QUOTA_ERROR_SIGNATURE.test(message.errorMessage) ||
+    !isCodexSubscriptionQuotaError(message.errorMessage) ||
     typeof message.model !== "string"
   ) {
     return null;
