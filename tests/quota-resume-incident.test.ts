@@ -15,6 +15,8 @@ import {
 } from "../src/subscription-usage.ts";
 
 const NOW = 1_700_000_000_000;
+const CURRENT_CODEX_QUOTA_ERROR =
+  "You have hit your ChatGPT usage limit (plus plan). Try again in ~148 min.";
 
 function assistantEntry(
   id: string,
@@ -128,19 +130,37 @@ function monitorFor(
   }, () => NOW);
 }
 
-test("detects a current real-shaped Codex quota error", () => {
+test("detects the current real-shaped Codex quota error", () => {
   assert.deepEqual(detectCodexQuotaIncident(quotaBranch({
-    errorMessage: "429: The usage limit has been reached for this account",
+    errorMessage: CURRENT_CODEX_QUOTA_ERROR,
   })), {
     anchorEntryId: "quota",
     provider: "openai-codex",
     modelId: "gpt-5-codex",
-    errorMessage: "429: The usage limit has been reached for this account",
+    errorMessage: CURRENT_CODEX_QUOTA_ERROR,
   });
 });
 
+test("recognizes current wording with plan and retry-time variants", () => {
+  for (const errorMessage of [
+    CURRENT_CODEX_QUOTA_ERROR,
+    "You have hit your ChatGPT usage limit (pro plan). Try again in ~2 min.",
+    "You have hit your ChatGPT usage limit",
+    "YOU HAVE HIT YOUR CHATGPT USAGE LIMIT (plus plan)",
+  ]) {
+    assert.ok(detectCodexQuotaIncident(quotaBranch({ errorMessage })), errorMessage);
+  }
+});
+
 test("requires the current assistant message to be OpenAI Codex and terminal", () => {
-  assert.equal(detectCodexQuotaIncident(quotaBranch({ provider: "openai" })), null);
+  assert.equal(detectCodexQuotaIncident(quotaBranch({
+    provider: "openai",
+    errorMessage: CURRENT_CODEX_QUOTA_ERROR,
+  })), null);
+  assert.equal(detectCodexQuotaIncident(quotaBranch({
+    provider: "anthropic",
+    errorMessage: CURRENT_CODEX_QUOTA_ERROR,
+  })), null);
   assert.equal(detectCodexQuotaIncident(quotaBranch({ stopReason: "stop" })), null);
 });
 
@@ -149,14 +169,21 @@ test("classifies only the narrow known quota signatures", () => {
     "connection limit reached",
     "server overloaded",
     "network failure",
+    "network error",
     "context_length_exceeded",
+    "context limit reached",
+    "token limit reached",
+    "request limit",
     "rate limit reached",
+    "rate limit exceeded",
     "HTTP 429 Too Many Requests",
+    "This unrelated limit string is not quota exhaustion",
   ]) {
     assert.equal(detectCodexQuotaIncident(quotaBranch({ errorMessage })), null, errorMessage);
   }
 
   for (const errorMessage of [
+    "The usage limit has been reached",
     "usage_limit_reached",
     "usage limit reached",
     "GoUsageLimitError: quota exhausted",
@@ -183,6 +210,23 @@ test("metadata after a quota assistant message does not hide the incident", () =
     ]);
     assert.equal(incident?.anchorEntryId, "quota");
   }
+});
+
+test("confirms current Codex quota from fresh five-hour usage, not retry text", async () => {
+  const fiveResetsAt = NOW + 5_000;
+  const plan = await buildQuotaResumePlan({
+    ctx: planningContext(),
+    branch: quotaBranch({ errorMessage: CURRENT_CODEX_QUOTA_ERROR }),
+    monitor: monitorFor(usageSnapshot({
+      fiveResetsAt,
+      weeklyUsedPercent: 1,
+    })),
+    enabled: true,
+    now: () => NOW,
+  });
+  assert.ok(plan);
+  assert.equal(plan.resumeAt, fiveResetsAt + QUOTA_RESET_GRACE_MS);
+  assert.notEqual(plan.resumeAt, NOW + 148 * 60_000);
 });
 
 test("derives five-hour-only resume time plus grace", async () => {
