@@ -123,12 +123,85 @@ test("Linux launch passes loopback-only unquoted arguments to spawn", async () =
   ]);
 });
 
-test("Linux stop tolerates an already-dead browser process", async () => {
+function fakeBrowserProcess(kill: (signal?: NodeJS.Signals) => boolean) {
+  const child = new EventEmitter() as EventEmitter & {
+    exitCode: number | null;
+    signalCode: NodeJS.Signals | null;
+    kill(signal?: NodeJS.Signals): boolean;
+  };
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = kill;
+  return child;
+}
+
+test("Linux stop sends SIGTERM and waits for child exit or close", async (context) => {
+  for (const event of ["exit", "close"] as const) {
+    await context.test(event, async () => {
+      const signals: Array<NodeJS.Signals | undefined> = [];
+      const child = fakeBrowserProcess((signal) => { signals.push(signal); return true; });
+      const host = createLinuxBrowserRealityHost({
+        stopGracePeriodMs: 1_000,
+        forceKillWaitMs: 1_000,
+      });
+      let stopped = false;
+      const stopping = host.stop({ pid: 999, process: child as never })
+        .then(() => { stopped = true; });
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(signals, ["SIGTERM"]);
+      assert.equal(stopped, false);
+      child.emit(event, 0, null);
+      await stopping;
+      assert.equal(stopped, true);
+    });
+  }
+});
+
+test("Linux stop tolerates already-exited and ESRCH browser processes", async () => {
   const host = createLinuxBrowserRealityHost();
-  await host.stop({
-    pid: 999,
-    process: {
-      kill: () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); },
-    } as never,
+  const exited = fakeBrowserProcess(() => { throw new Error("must not signal"); });
+  exited.exitCode = 0;
+  await host.stop({ pid: 998, process: exited as never });
+
+  const missing = fakeBrowserProcess(() => {
+    throw Object.assign(new Error("gone"), { code: "ESRCH" });
   });
+  await host.stop({ pid: 999, process: missing as never });
+});
+
+test("Linux stop falls back to SIGKILL and waits for forced exit", async () => {
+  const signals: Array<NodeJS.Signals | undefined> = [];
+  let child: ReturnType<typeof fakeBrowserProcess>;
+  child = fakeBrowserProcess((signal) => {
+    signals.push(signal);
+    if (signal === "SIGKILL") queueMicrotask(() => child.emit("exit", null, "SIGKILL"));
+    return true;
+  });
+  const host = createLinuxBrowserRealityHost({
+    stopGracePeriodMs: 5,
+    forceKillWaitMs: 100,
+  });
+
+  await host.stop({ pid: 999, process: child as never });
+
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("Linux stop remains bounded when no exit event follows SIGKILL", async () => {
+  const signals: Array<NodeJS.Signals | undefined> = [];
+  const child = fakeBrowserProcess((signal) => { signals.push(signal); return true; });
+  const host = createLinuxBrowserRealityHost({
+    stopGracePeriodMs: 5,
+    forceKillWaitMs: 5,
+  });
+  const startedAt = Date.now();
+
+  await assert.rejects(
+    host.stop({ pid: 999, process: child as never }),
+    /did not exit after SIGKILL/,
+  );
+
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(Date.now() - startedAt < 500, true);
 });

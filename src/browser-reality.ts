@@ -272,15 +272,18 @@ export function createBrowserRealityRuntime(
 
         try {
           await stop(browser);
-        } catch {
-          // Preserve the factual startup failure; cleanup is best effort.
+          browser = null;
+        } catch (error) {
+          lastFailure =
+            `Pindie Dev Browser did not expose ${browserUrl} and could not be stopped: ` +
+            safeFailure(error);
+          break;
         }
-        browser = null;
         lastFailure =
           `Pindie Dev Browser did not expose ${browserUrl} within ${START_TIMEOUT_MS}ms.`;
       }
 
-      if (ownsProfile) {
+      if (ownsProfile && browser === null) {
         try {
           await cleanOwnedProfile();
         } catch {
@@ -298,15 +301,17 @@ export function createBrowserRealityRuntime(
     dispose() {
       disposePromise ??= (async () => {
         const launched = browser;
-        browser = null;
+        let browserStopped = launched === null;
         if (launched) {
           try {
             await stop(launched);
+            browser = null;
+            browserStopped = true;
           } catch (error) {
             console.warn(`[Pindie] Could not stop Pindie Dev Browser: ${safeFailure(error)}`);
           }
         }
-        if (ownsProfile) {
+        if (ownsProfile && browserStopped) {
           try {
             await cleanOwnedProfile();
           } catch (error) {

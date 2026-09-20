@@ -191,6 +191,8 @@ export interface LinuxBrowserRealityHostDependencies {
   readonly access?: typeof access;
   readonly mkdir?: typeof mkdir;
   readonly rm?: typeof rm;
+  readonly stopGracePeriodMs?: number;
+  readonly forceKillWaitMs?: number;
 }
 
 export async function resolveLinuxBrowserExecutable(
@@ -231,6 +233,8 @@ export function createLinuxBrowserRealityHost(
   const makeDirectory = dependencies.mkdir ?? mkdir;
   const removeDirectory = dependencies.rm ?? rm;
   const checkAccess = dependencies.access ?? access;
+  const stopGracePeriodMs = dependencies.stopGracePeriodMs ?? 2_000;
+  const forceKillWaitMs = dependencies.forceKillWaitMs ?? 1_000;
   return {
     platform: "linux",
     allocatePort() {
@@ -267,11 +271,57 @@ export function createLinuxBrowserRealityHost(
       return { pid: child.pid, process: child };
     },
     async stop(browser) {
-      try {
-        browser.process ? browser.process.kill("SIGTERM") : process.kill(browser.pid, "SIGTERM");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      const child = browser.process;
+      if (!child) {
+        try {
+          process.kill(browser.pid, "SIGTERM");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+        return;
       }
+      if (child.exitCode !== null || child.signalCode !== null) return;
+
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        let forceTimer: NodeJS.Timeout | undefined;
+        const finish = (error?: unknown) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(graceTimer);
+          if (forceTimer) clearTimeout(forceTimer);
+          child.off("exit", exited);
+          child.off("close", exited);
+          if (error) reject(error);
+          else resolve();
+        };
+        const exited = () => finish();
+        const send = (signal: NodeJS.Signals): boolean => {
+          try {
+            return child.kill(signal);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+            finish(error);
+            return false;
+          }
+        };
+        const graceTimer = setTimeout(() => {
+          if (child.exitCode !== null || child.signalCode !== null) {
+            finish();
+            return;
+          }
+          if (!send("SIGKILL")) {
+            finish();
+            return;
+          }
+          forceTimer = setTimeout(() => finish(
+            new Error(`Chrome process ${browser.pid} did not exit after SIGKILL.`),
+          ), forceKillWaitMs);
+        }, stopGracePeriodMs);
+        child.once("exit", exited);
+        child.once("close", exited);
+        if (!send("SIGTERM")) finish();
+      });
     },
     async cleanupProfile(profileDirectory) {
       await removeDirectory(profileDirectory, { recursive: true, force: true });
