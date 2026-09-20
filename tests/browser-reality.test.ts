@@ -59,6 +59,10 @@ test("Browser Reality defaults on and headless without a fixed endpoint or share
   assert.equal(defaults.headless, true);
   assert.equal(defaults.browserUrl, undefined);
   assert.equal(defaults.profileDirectory, undefined);
+  assert.equal(defaults.chromeExecutable, undefined);
+  assert.equal(resolveBrowserRealityConfig({
+    PINDIE_BROWSER_EXECUTABLE: "/opt/chrome",
+  }).chromeExecutable, "/opt/chrome");
   assert.equal(resolveBrowserRealityConfig({ PINDIE_BROWSER_ENABLED: "false" }).enabled, false);
   for (const value of ["1", "true", "yes", "on"]) {
     assert.equal(resolveBrowserRealityConfig({ PINDIE_BROWSER_ENABLED: value }).enabled, true);
@@ -80,10 +84,11 @@ test("default launch arguments are headless and the explicit headful override om
 
   assert.equal(defaultArguments.includes("--headless"), true);
   assert.equal(headfulArguments.includes("--headless"), false);
+  assert.equal(defaultArguments.includes("--remote-debugging-address=127.0.0.1"), true);
   assert.equal(defaultArguments.includes("--remote-debugging-port=43123"), true);
   assert.equal(headfulArguments.includes("--remote-debugging-port=43123"), true);
-  assert.equal(defaultArguments.includes('--user-data-dir="C:\\Pindie\\runtime"'), true);
-  assert.equal(headfulArguments.includes('--user-data-dir="C:\\Pindie\\runtime"'), true);
+  assert.equal(defaultArguments.includes("--user-data-dir=C:\\Pindie\\runtime"), true);
+  assert.equal(headfulArguments.includes("--user-data-dir=C:\\Pindie\\runtime"), true);
 });
 
 test("explicitly disabled Browser Reality does not launch or probe Chrome", async () => {
@@ -184,6 +189,20 @@ test("occupied 9222 does not affect default allocation and an allocation race re
   await runtime.dispose();
 });
 
+test("an explicit developer-managed profile is never cleaned", async () => {
+  let cleanups = 0;
+  const runtime = createBrowserRealityRuntime(config(), {
+    probe: async (url) => url === config().browserUrl,
+    launch: async () => ({ pid: 41 }),
+    stop: async () => {},
+    cleanupProfile: async () => { cleanups += 1; },
+  });
+
+  assert.equal((await runtime.start()).available, false);
+  await runtime.dispose();
+  assert.equal(cleanups, 0);
+});
+
 test("Browser Reality starts one dedicated browser and stops it idempotently", async () => {
   let probes = 0;
   let launches = 0;
@@ -217,6 +236,57 @@ test("Browser Reality refuses an occupied endpoint instead of attaching to an un
   assert.equal(status.available, false);
   assert.match(status.reason ?? "", /refused to attach.*dedicated Dev Browser/i);
   assert.equal(launches, 0);
+});
+
+test("startup retry waits for the previous browser to stop before reusing its profile", async () => {
+  let launches = 0;
+  let resolveStop!: () => void;
+  const stopped = new Promise<void>((resolve) => { resolveStop = resolve; });
+  const runtime = createBrowserRealityRuntime(resolveBrowserRealityConfig({}), {
+    allocatePort: async () => 43_123 + launches,
+    allocateProfileDirectory: async () => "/tmp/pindie-shared-retry-profile",
+    probe: async () => launches === 2,
+    launch: async () => ({ pid: ++launches }),
+    stop: async () => stopped,
+    cleanupProfile: async () => {},
+    sleep: async () => {},
+    now: (() => {
+      const values = [0, 0, 10_001, 10_001, 10_001];
+      return () => values.shift() ?? 10_001;
+    })(),
+  });
+
+  const starting = runtime.start();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(launches, 1);
+  resolveStop();
+  assert.equal((await starting).available, true);
+  assert.equal(launches, 2);
+  await runtime.dispose();
+});
+
+test("startup does not retry or clean its profile when browser stop is unconfirmed", async () => {
+  let launches = 0;
+  let cleanups = 0;
+  const runtime = createBrowserRealityRuntime(resolveBrowserRealityConfig({}), {
+    allocatePort: async () => 43_123 + launches,
+    allocateProfileDirectory: async () => "/tmp/pindie-uncertain-stop-profile",
+    probe: async () => false,
+    launch: async () => ({ pid: ++launches }),
+    stop: async () => { throw new Error("process still running"); },
+    cleanupProfile: async () => { cleanups += 1; },
+    sleep: async () => {},
+    now: (() => {
+      const values = [0, 10_001];
+      return () => values.shift() ?? 10_001;
+    })(),
+  });
+
+  const status = await runtime.start();
+  assert.equal(status.available, false);
+  assert.match(status.reason ?? "", /could not be stopped.*process still running/i);
+  assert.equal(launches, 1);
+  assert.equal(cleanups, 0);
 });
 
 test("Browser launch failure remains a factual isolated runtime status", async () => {

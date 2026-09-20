@@ -513,16 +513,20 @@ The three continuation mechanisms have distinct boundaries:
 Browser Reality is a default-on, headless-by-default external development
 surface, not semantic State. `PINDIE_BROWSER_HEADLESS=false` is the minimal
 headful debugging override. Each Host owns only the dedicated
-`Pindie Dev Browser` process it starts, with a Windows-allocated loopback
-endpoint and isolated runtime profile; Hosts do not share or attach to an
-existing browser. A small Pi extension adapter
-exposes selected official Chrome DevTools MCP tools through Pi's concrete Tool
-Surface. Pindie's existing unknown/custom Tool Effect classification and
-Execution Gateway remain the execution authority.
+`Pindie Dev Browser` process it starts, with a loopback-only endpoint and
+isolated runtime profile; Hosts do not share or attach to an existing browser.
+A small platform boundary preserves the existing WSL lifecycle through Windows
+Chrome and PowerShell, while native Linux launches a local Chrome/Chromium
+process (normally headless). Linux requires a supported Chrome/Chromium
+executable, discovered from `PATH` or explicitly selected with
+`PINDIE_BROWSER_EXECUTABLE`. A small Pi extension adapter exposes selected
+official Chrome DevTools MCP tools through Pi's concrete Tool Surface. Pindie's
+existing unknown/custom Tool Effect classification and Execution Gateway remain
+the execution authority.
 
 ```text
-Windows dedicated Chrome profile (runtime-only external Reality)
-        ↓ official Chrome DevTools MCP
+Dedicated Windows Chrome (WSL) or local Chrome/Chromium (Linux)
+        ↓ loopback-only official Chrome DevTools MCP
 Pi browser_* concrete tools
         ↓ existing Pindie Gateway
 Model
