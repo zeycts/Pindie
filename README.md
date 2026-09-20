@@ -117,10 +117,10 @@ Both must be configured to enable Work Memory.
 
 ### Browser Reality
 
-On the supported WSL/Windows path, Browser Reality is default-on and headless
-by default. A normal Pindie startup starts a dedicated Windows Chrome profile
-without a visible browser window and exposes selected official Chrome DevTools
-MCP tools as `browser_*` Pi tools:
+Browser Reality is default-on and headless by default on WSL and native Linux.
+A normal Pindie startup starts a dedicated browser profile without a visible
+browser window and exposes selected official Chrome DevTools MCP tools as
+`browser_*` Pi tools:
 
 ```bash
 pnpm pindie
@@ -139,11 +139,16 @@ Explicitly opt out when Browser Reality is not wanted:
 PINDIE_BROWSER_ENABLED=false pnpm pindie
 ```
 
-This path requires WSL mirrored networking and Windows Chrome at
-`C:\Program Files\Google\Chrome\Application\chrome.exe`. Each Pindie Host asks
-Windows for its own loopback debug port and uses an isolated runtime profile
-under `%LOCALAPPDATA%\Pindie\Dev Browser`; normal shutdown stops only that
-Host's Chrome and removes its runtime profile. Optional advanced overrides are:
+On WSL, this path requires mirrored networking and uses dedicated Windows Chrome
+at `C:\Program Files\Google\Chrome\Application\chrome.exe`, with an isolated
+runtime profile under `%LOCALAPPDATA%\Pindie\Dev Browser`. On native Linux, a
+supported Chrome/Chromium executable must be installed; Pindie resolves
+`google-chrome-stable`, `google-chrome`, `chromium`, then `chromium-browser` from
+`PATH`, and stores isolated runtime profiles under
+`$XDG_CACHE_HOME/pindie/dev-browser` (or `~/.cache/pindie/dev-browser`). In both
+cases the DevTools endpoint is loopback-only, normal shutdown stops only that
+Host's browser, and owned runtime profiles are removed. Optional advanced
+overrides are:
 
 ```text
 PINDIE_BROWSER_HEADLESS
@@ -152,6 +157,7 @@ PINDIE_BROWSER_EXECUTABLE
 PINDIE_BROWSER_PROFILE_DIR
 ```
 
+`PINDIE_BROWSER_EXECUTABLE` explicitly overrides host executable discovery.
 `PINDIE_BROWSER_URL` must remain an HTTP loopback URL with an explicit port.
 When explicitly set, Pindie conservatively refuses an endpoint that is already
 running rather than attaching to an unknown browser. An explicit

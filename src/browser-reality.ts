@@ -1,6 +1,4 @@
-import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -8,12 +6,14 @@ import {
   DevToolsClient,
   type BrowserUseConfig,
 } from "@amaster.ai/pi-browser-use";
+import {
+  buildBrowserLaunchArguments,
+  createBrowserRealityHost,
+  type BrowserRealityHost,
+  type LaunchedBrowser,
+} from "./browser-reality-host.ts";
 
-const execFile = promisify(execFileCallback);
-
-const DEFAULT_WINDOWS_CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-const DEFAULT_POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
-const POWERSHELL_CWD = "/mnt/c/Windows";
+export { buildBrowserLaunchArguments } from "./browser-reality-host.ts";
 const START_TIMEOUT_MS = 10_000;
 const START_POLL_MS = 250;
 const DEFAULT_START_ATTEMPTS = 2;
@@ -38,7 +38,7 @@ export interface BrowserRealityConfig {
   readonly enabled: boolean;
   readonly headless: boolean;
   readonly browserUrl?: string;
-  readonly chromeExecutable: string;
+  readonly chromeExecutable?: string;
   readonly profileDirectory?: string;
 }
 
@@ -60,11 +60,8 @@ export interface BrowserRealityRuntime {
   dispose(): Promise<void>;
 }
 
-interface LaunchedBrowser {
-  readonly pid: number;
-}
-
 export interface BrowserRealityRuntimeDependencies {
+  host?: BrowserRealityHost;
   probe?(browserUrl: string): Promise<boolean>;
   allocatePort?(): Promise<number>;
   allocateProfileDirectory?(runtimeId: string): Promise<string>;
@@ -123,8 +120,9 @@ export function resolveBrowserRealityConfig(
     ...(env.PINDIE_BROWSER_URL?.trim()
       ? { browserUrl: env.PINDIE_BROWSER_URL.trim() }
       : {}),
-    chromeExecutable:
-      env.PINDIE_BROWSER_EXECUTABLE?.trim() || DEFAULT_WINDOWS_CHROME,
+    ...(env.PINDIE_BROWSER_EXECUTABLE?.trim()
+      ? { chromeExecutable: env.PINDIE_BROWSER_EXECUTABLE.trim() }
+      : {}),
     ...(env.PINDIE_BROWSER_PROFILE_DIR?.trim()
       ? { profileDirectory: env.PINDIE_BROWSER_PROFILE_DIR.trim() }
       : {}),
@@ -172,160 +170,20 @@ function safeFailure(error: unknown): string {
   return String(error);
 }
 
-function powershellLiteral(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
-async function defaultAllocatePort(): Promise<number> {
-  const script = [
-    "$ErrorActionPreference = 'Stop'",
-    "$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)",
-    "try {",
-    "  $listener.Start()",
-    "  Write-Output \"PORT:$($listener.LocalEndpoint.Port)\"",
-    "} finally {",
-    "  $listener.Stop()",
-    "}",
-  ].join("\n");
-  const result = await execFile(DEFAULT_POWERSHELL, [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    script,
-  ], {
-    cwd: POWERSHELL_CWD,
-    timeout: 10_000,
-    windowsHide: true,
-  });
-  const match = /(?:^|\n)PORT:(\d+)(?:\r?\n|$)/u.exec(result.stdout);
-  const port = match ? Number(match[1]) : 0;
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error("Windows did not allocate a loopback browser port.");
-  }
-  return port;
-}
-
-async function defaultAllocateProfileDirectory(runtimeId: string): Promise<string> {
-  const script = [
-    "$ErrorActionPreference = 'Stop'",
-    "$root = Join-Path $env:LOCALAPPDATA 'Pindie\\Dev Browser'",
-    `$profile = Join-Path $root ${powershellLiteral(runtimeId)}`,
-    "[Console]::OutputEncoding = [Text.UTF8Encoding]::new()",
-    "Write-Output \"PROFILE:$profile\"",
-  ].join("\n");
-  const result = await execFile(DEFAULT_POWERSHELL, [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    script,
-  ], {
-    cwd: POWERSHELL_CWD,
-    timeout: 10_000,
-    windowsHide: true,
-  });
-  const match = /(?:^|\n)PROFILE:(.+?)(?:\r?\n|$)/u.exec(result.stdout);
-  const profileDirectory = match?.[1]?.trim();
-  if (!profileDirectory) throw new Error("Windows did not provide a Dev Browser profile path.");
-  return profileDirectory;
-}
-
-export function buildBrowserLaunchArguments(
-  config: BrowserRealityConfig,
-): readonly string[] {
-  const endpoint = browserEndpoint(config);
-  if (typeof endpoint === "string") throw new Error(endpoint);
-  if (!config.profileDirectory) throw new Error("Pindie Dev Browser profile is unavailable.");
-  return Object.freeze([
-    `--remote-debugging-port=${endpoint.port}`,
-    `--user-data-dir="${config.profileDirectory}"`,
-    ...(config.headless ? ["--headless"] : []),
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-extensions",
-    "about:blank",
-  ]);
-}
-
-async function defaultLaunch(config: ActiveBrowserRealityConfig): Promise<LaunchedBrowser> {
-  const argumentsScript = buildBrowserLaunchArguments(config)
-    .map((argument) => `  ${powershellLiteral(argument)}`)
-    .join(",\n");
-  const script = [
-    "$ErrorActionPreference = 'Stop'",
-    "$arguments = @(",
-    argumentsScript,
-    ")",
-    `$process = Start-Process -FilePath ${powershellLiteral(config.chromeExecutable)} -ArgumentList $arguments -PassThru`,
-    "[Console]::OutputEncoding = [Text.UTF8Encoding]::new()",
-    "Write-Output \"PID:$($process.Id)\"",
-  ].join("\n");
-  const result = await execFile(DEFAULT_POWERSHELL, [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    script,
-  ], {
-    cwd: POWERSHELL_CWD,
-    env: process.env,
-    timeout: 10_000,
-    windowsHide: true,
-  });
-  const match = /(?:^|\n)PID:(\d+)(?:\r?\n|$)/u.exec(result.stdout);
-  if (!match) throw new Error("Windows Chrome did not report its process ID.");
-  return { pid: Number(match[1]) };
-}
-
-async function defaultStop(browser: LaunchedBrowser): Promise<void> {
-  const script = [
-    "$ErrorActionPreference = 'SilentlyContinue'",
-    `Stop-Process -Id ${browser.pid}`,
-  ].join("\n");
-  await execFile(DEFAULT_POWERSHELL, [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    script,
-  ], {
-    cwd: POWERSHELL_CWD,
-    timeout: 10_000,
-    windowsHide: true,
-  });
-}
-
-async function defaultCleanupProfile(profileDirectory: string): Promise<void> {
-  const script = [
-    "$ErrorActionPreference = 'SilentlyContinue'",
-    `$profile = ${powershellLiteral(profileDirectory)}`,
-    "for ($attempt = 0; $attempt -lt 20; $attempt++) {",
-    "  if (-not (Test-Path -LiteralPath $profile)) { exit 0 }",
-    "  Remove-Item -LiteralPath $profile -Recurse -Force",
-    "  Start-Sleep -Milliseconds 100",
-    "}",
-    "if (Test-Path -LiteralPath $profile) { exit 1 }",
-  ].join("\n");
-  await execFile(DEFAULT_POWERSHELL, [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    script,
-  ], {
-    cwd: POWERSHELL_CWD,
-    timeout: 10_000,
-    windowsHide: true,
-  });
-}
-
 export function createBrowserRealityRuntime(
   config: BrowserRealityConfig,
   dependencies: BrowserRealityRuntimeDependencies = {},
 ): BrowserRealityRuntime {
+  let selectedHost = dependencies.host;
+  const host = (): BrowserRealityHost => selectedHost ??= createBrowserRealityHost();
   const probe = dependencies.probe ?? defaultProbe;
-  const allocatePort = dependencies.allocatePort ?? defaultAllocatePort;
+  const allocatePort = dependencies.allocatePort ?? (() => host().allocatePort());
   const allocateProfileDirectory = dependencies.allocateProfileDirectory ??
-    defaultAllocateProfileDirectory;
-  const launch = dependencies.launch ?? defaultLaunch;
-  const stop = dependencies.stop ?? defaultStop;
-  const cleanupProfile = dependencies.cleanupProfile ?? defaultCleanupProfile;
+    ((runtimeId) => host().allocateProfileDirectory(runtimeId));
+  const launch = dependencies.launch ?? ((activeConfig) => host().launch(activeConfig));
+  const stop = dependencies.stop ?? ((browser) => host().stop(browser));
+  const cleanupProfile = dependencies.cleanupProfile ??
+    ((profileDirectory) => host().cleanupProfile(profileDirectory));
   const sleep = dependencies.sleep ?? ((milliseconds: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const now = dependencies.now ?? Date.now;

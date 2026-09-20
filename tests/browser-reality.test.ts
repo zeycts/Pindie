@@ -59,6 +59,10 @@ test("Browser Reality defaults on and headless without a fixed endpoint or share
   assert.equal(defaults.headless, true);
   assert.equal(defaults.browserUrl, undefined);
   assert.equal(defaults.profileDirectory, undefined);
+  assert.equal(defaults.chromeExecutable, undefined);
+  assert.equal(resolveBrowserRealityConfig({
+    PINDIE_BROWSER_EXECUTABLE: "/opt/chrome",
+  }).chromeExecutable, "/opt/chrome");
   assert.equal(resolveBrowserRealityConfig({ PINDIE_BROWSER_ENABLED: "false" }).enabled, false);
   for (const value of ["1", "true", "yes", "on"]) {
     assert.equal(resolveBrowserRealityConfig({ PINDIE_BROWSER_ENABLED: value }).enabled, true);
@@ -80,10 +84,11 @@ test("default launch arguments are headless and the explicit headful override om
 
   assert.equal(defaultArguments.includes("--headless"), true);
   assert.equal(headfulArguments.includes("--headless"), false);
+  assert.equal(defaultArguments.includes("--remote-debugging-address=127.0.0.1"), true);
   assert.equal(defaultArguments.includes("--remote-debugging-port=43123"), true);
   assert.equal(headfulArguments.includes("--remote-debugging-port=43123"), true);
-  assert.equal(defaultArguments.includes('--user-data-dir="C:\\Pindie\\runtime"'), true);
-  assert.equal(headfulArguments.includes('--user-data-dir="C:\\Pindie\\runtime"'), true);
+  assert.equal(defaultArguments.includes("--user-data-dir=C:\\Pindie\\runtime"), true);
+  assert.equal(headfulArguments.includes("--user-data-dir=C:\\Pindie\\runtime"), true);
 });
 
 test("explicitly disabled Browser Reality does not launch or probe Chrome", async () => {
@@ -182,6 +187,20 @@ test("occupied 9222 does not affect default allocation and an allocation race re
   assert.deepEqual(launched, ["http://127.0.0.1:42002"]);
   assert.equal(probed.includes("http://127.0.0.1:9222"), false);
   await runtime.dispose();
+});
+
+test("an explicit developer-managed profile is never cleaned", async () => {
+  let cleanups = 0;
+  const runtime = createBrowserRealityRuntime(config(), {
+    probe: async (url) => url === config().browserUrl,
+    launch: async () => ({ pid: 41 }),
+    stop: async () => {},
+    cleanupProfile: async () => { cleanups += 1; },
+  });
+
+  assert.equal((await runtime.start()).available, false);
+  await runtime.dispose();
+  assert.equal(cleanups, 0);
 });
 
 test("Browser Reality starts one dedicated browser and stops it idempotently", async () => {
