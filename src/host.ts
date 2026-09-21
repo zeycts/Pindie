@@ -189,7 +189,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
           console.warn("[Pindie] Ignored a committed rollover request while Host runtime was bootstrapping.");
           return;
         }
-        rolloverSupervisor.request(request);
+        return rolloverSupervisor.request(request);
       },
       (boundary: SessionLifecycleBoundary) => {
         rolloverSupervisor?.observeSessionLifecycle(boundary);
