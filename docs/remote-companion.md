@@ -265,11 +265,11 @@ Its inputs come from the existing Pindie Runtime/semantic snapshot, Run Activity
 
 The timeline should also emit high-value semantic milestones when they change:
 
-- Human Gate opened or materially changed;
-- Task became blocked;
+- Human Gate opened or materially changed — attention-worthy;
+- Task became blocked or materially changed — attention-worthy;
 - semantic authority became unavailable;
 - verification milestone changed meaningfully;
-- Task completed.
+- Task completed — attention-worthy at final settlement.
 
 Deduplication fingerprints are runtime-only presentation bookkeeping and are never persisted in `PindieState`.
 
@@ -282,6 +282,8 @@ Ordinary Discord timeline messages use `allowed_mentions: { parse: [] }`. An att
 If one attention event is split for Discord's message-size limit, only its first chunk retains the marker and mention. The remaining chunks are quiet, so one logical event produces at most one notification.
 
 Attention is presentation metadata only. It is not persisted in `PindieState`, routing metadata, or Pi Session transcript truth.
+
+Semantic attention is deliberately narrow: a Human Gate opening/material change, a blocked Task/material blocker change, and Task completion at `agent_settled`. Existing runtime milestone fingerprints deduplicate unchanged blocked and Gate states; because `waiting_human` takes precedence over blockers, a Gate state does not add a duplicate blocked attention event. Completion remains transition-driven and settlement-gated: a `done` transition sets completion pending, while only the final `agent_settled` path emits the attention milestone after catch-up and execution-summary flushing. Rebinding a Session whose Task is already done does not replay it.
 
 ## 12. Remote input semantics
 

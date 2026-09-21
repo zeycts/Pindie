@@ -275,7 +275,7 @@ export class RemoteCompanion {
     await this.serial(async () => {
       if (this.binding !== binding || !binding.completionPending) return;
       const session = await this.ensure(binding);
-      await this.surface.send(session.threadId, { entryId: "remote:completion:settled", kind: "milestone", text: "TASK COMPLETED" }, binding.abortController.signal);
+      await this.surface.send(session.threadId, { entryId: "remote:completion:settled", kind: "milestone", text: "TASK COMPLETED", attention: true }, binding.abortController.signal);
       this.requireCurrent(binding);
       binding.completionPending = false;
     });

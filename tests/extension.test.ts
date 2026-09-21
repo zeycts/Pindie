@@ -853,6 +853,14 @@ async function nextTurn(): Promise<void> {
   }
 }
 
+async function waitFor(condition: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for test condition.");
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function context(
   cwd: string,
   sessionEntries: unknown[] = [],
@@ -2347,6 +2355,111 @@ test("Remote-enabled wiring observes public input without altering Pindie tools"
   assert.ok(api.handlers.has("input")); assert.ok(api.handlers.has("message_end")); assert.equal(api.tools.size, 13);
   await api.handler("session_start")({ type: "session_start", reason: "startup" }, context("/repo", [{ id: "u", message: { role: "user", content: "hello" } }]));
   assert.ok(Array.isArray(sent));
+});
+
+test("semantic Remote milestones mark blocked and Human Gate attention without duplicate blocked state", async () => {
+  const events: Array<{ text: string; attention?: true }> = [];
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+    send: async (_thread, event) => { events.push({ text: event.text, attention: event.attention }); },
+    updateSessionPresentation: async () => undefined,
+  };
+  const routing = {
+    load: async () => null,
+    save: async () => undefined,
+    projectName: () => "repo",
+  } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+  const companion = new RemoteCompanion(surface, { routing });
+  const harness = createHarness([["/repo", activeState("Semantic attention")]], {}, {
+    remoteCompanion: { companion, guildId: "guild" },
+  });
+  const entries = [{ id: "prompt", message: { role: "user", content: "Work on the Task" } }];
+  await startSession(harness, "/repo", "startup", entries);
+  await waitFor(() => events.some((event) => event.text === "YOU\nWork on the Task"));
+  await beginAgentRun(harness, "/repo", entries);
+  assert.equal(events.some((event) => event.attention === true), false);
+
+  await harness.api.tool("pindie_task_progress").execute("block", {
+    blockers: ["External dependency unavailable"],
+    questions: [],
+    nextIntent: "Wait for the dependency",
+  });
+  await waitFor(() => events.some((event) => event.text.startsWith("TASK BLOCKED")));
+  assert.equal(events.filter((event) => event.text.startsWith("TASK BLOCKED")).length, 1);
+  assert.equal(events.find((event) => event.text.startsWith("TASK BLOCKED"))?.attention, true);
+
+  await harness.api.tool("pindie_task_progress").execute("repeat-block", {
+    blockers: ["External dependency unavailable"],
+    questions: [],
+    nextIntent: "Wait for the dependency",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(events.filter((event) => event.text.startsWith("TASK BLOCKED")).length, 1);
+
+  await harness.api.tool("pindie_gate_open").execute("gate", {
+    kind: "decision",
+    question: "Which dependency fallback should we use?",
+    options: ["Wait", "Fallback"],
+  });
+  await waitFor(() => events.some((event) => event.text.startsWith("HUMAN GATE")));
+  assert.equal(events.filter((event) => event.text.startsWith("TASK BLOCKED")).length, 1);
+  const gate = events.find((event) => event.text.startsWith("HUMAN GATE"));
+  assert.equal(gate?.attention, true);
+  assert.equal(events.filter((event) => event.attention === true).length, 2);
+  assert.equal(events.find((event) => event.text.startsWith("VERIFICATION"))?.attention, undefined);
+});
+
+test("Remote completion attention waits for settled catch-up and execution summary", async () => {
+  const events: Array<{ text: string; attention?: true }> = [];
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+    send: async (_thread, event) => { events.push({ text: event.text, attention: event.attention }); },
+    updateSessionPresentation: async () => undefined,
+  };
+  const routing = {
+    load: async () => null,
+    save: async () => undefined,
+    projectName: () => "repo",
+  } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+  const companion = new RemoteCompanion(surface, { routing });
+  const harness = createHarness([["/repo", verifiedState()]], {}, {
+    remoteCompanion: { companion, guildId: "guild" },
+  });
+  const entries: unknown[] = [{ id: "prompt", message: { role: "user", content: "Finish the Task" } }];
+  await startSession(harness, "/repo", "startup", entries);
+  await waitFor(() => events.some((event) => event.text === "YOU\nFinish the Task"));
+  await beginAgentRun(harness, "/repo", entries);
+
+  const completion = await harness.api.tool("pindie_task_complete").execute("complete", {
+    summary: "The finished result is ready.",
+  });
+  assert.equal(completion.terminate, true);
+  await waitFor(() => events.some((event) => event.text.startsWith("VERIFICATION")));
+  assert.equal(events.some((event) => event.text === "TASK COMPLETED"), false);
+
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo", entries));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(events.some((event) => event.text === "TASK COMPLETED"), false);
+
+  await harness.api.handler("tool_execution_start")(toolExecution("tool_execution_start", "final-check", "bash"), context("/repo", entries));
+  await harness.api.handler("tool_execution_end")(toolExecution("tool_execution_end", "final-check", "bash"), context("/repo", entries));
+  entries.push({ id: "answer", message: { role: "assistant", content: "The finished result is ready." } });
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
+  await waitFor(() => events.some((event) => event.text === "TASK COMPLETED"));
+
+  const answerIndex = events.findIndex((event) => event.text === "The finished result is ready.");
+  const summaryIndex = events.findIndex((event) => event.text.startsWith("EXECUTION\n"));
+  const completionIndex = events.findIndex((event) => event.text === "TASK COMPLETED");
+  assert.ok(answerIndex >= 0);
+  assert.ok(summaryIndex > answerIndex);
+  assert.ok(completionIndex > summaryIndex);
+  assert.equal(events[completionIndex]?.attention, true);
+
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(events.filter((event) => event.text === "TASK COMPLETED").length, 1);
 });
 
 test("Pi session_info_changed projects presentation rename for the mapped active Session", async () => {
