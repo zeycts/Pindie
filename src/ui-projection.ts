@@ -148,12 +148,21 @@ export type UiAttentionProjection =
       readonly reason: string;
     };
 
+interface LiveAssistantProjectionState {
+  /** The only live assistant that message_update/message_end may mutate. */
+  readonly activeId: string | null;
+  /** The next sequence is disposable and scoped to this Projection instance. */
+  readonly nextSequence: number;
+}
+
 export interface PindieUiProjection {
   readonly header: UiHeaderProjection;
   readonly status: UiStatusProjection;
   readonly timeline: readonly UiTimelineBlock[];
   readonly queue: UiQueueProjection;
   readonly attention: UiAttentionProjection | null;
+  /** Reducer-only metadata; views and persistence must ignore this field. */
+  readonly liveAssistant: LiveAssistantProjectionState;
 }
 
 export interface PindieUiProjectionInput {
@@ -177,7 +186,6 @@ export type UiPlainValue =
   | readonly UiPlainValue[]
   | { readonly [key: string]: UiPlainValue };
 
-const LIVE_ASSISTANT_SUFFIX = "assistant";
 const MAX_PLAIN_DEPTH = 5;
 const MAX_PLAIN_ITEMS = 64;
 const MAX_RESULT_SUMMARY_LENGTH = 4_000;
@@ -538,22 +546,80 @@ export function createProjection(
       pendingMessageCount: runtime.pendingMessageCount,
     },
     attention: projectAttention(input.presentation, semantic),
+    liveAssistant: {
+      activeId: null,
+      nextSequence: 1,
+    },
   };
 }
 
 /** Alias with the descriptive name used by the future controller. */
 export const createPindieUiProjection = createProjection;
 
-function liveAssistantId(state: PindieUiProjection): string {
-  return `live:${state.header.sessionId}:${LIVE_ASSISTANT_SUFFIX}`;
+function liveAssistantId(sessionId: string, sequence: number): string {
+  return `live:${sessionId}:assistant:${sequence}`;
 }
 
-function withoutLiveAssistant(
+function isLiveAssistant(block: UiTimelineBlock): block is UiMessageBlock {
+  return block.type === "message" && block.source === "live" && block.role === "assistant";
+}
+
+function findLiveAssistantIndex(
   timeline: readonly UiTimelineBlock[],
+  id: string,
+): number {
+  return timeline.findIndex((block) => isLiveAssistant(block) && block.id === id);
+}
+
+function findLatestLiveAssistantIndex(
+  timeline: readonly UiTimelineBlock[],
+  text?: string,
+): number {
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const block = timeline[index];
+    if (isLiveAssistant(block) && (text === undefined || block.text === text)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function beginLiveAssistant(
+  state: PindieUiProjection,
+): { readonly state: PindieUiProjection; readonly id: string } {
+  const sequence = state.liveAssistant.nextSequence;
+  const id = liveAssistantId(state.header.sessionId, sequence);
+  return {
+    id,
+    state: {
+      ...state,
+      liveAssistant: {
+        activeId: id,
+        nextSequence: sequence + 1,
+      },
+    },
+  };
+}
+
+function clearActiveLiveAssistant(state: PindieUiProjection): PindieUiProjection {
+  if (state.liveAssistant.activeId === null) return state;
+  return {
+    ...state,
+    liveAssistant: {
+      ...state.liveAssistant,
+      activeId: null,
+    },
+  };
+}
+
+function removeLiveAssistant(
+  timeline: readonly UiTimelineBlock[],
+  id: string,
 ): readonly UiTimelineBlock[] {
-  return timeline.filter((block) =>
-    !(block.type === "message" && block.source === "live" && block.role === "assistant")
-  );
+  const index = findLiveAssistantIndex(timeline, id);
+  return index < 0
+    ? timeline
+    : timeline.filter((_block, blockIndex) => blockIndex !== index);
 }
 
 function replaceOrAppendBlock(
@@ -569,48 +635,86 @@ function upsertLiveAssistant(
   timeline: readonly UiTimelineBlock[],
   next: UiMessageBlock,
 ): readonly UiTimelineBlock[] {
-  const index = timeline.findIndex((block) =>
-    block.type === "message" && block.source === "live" && block.role === "assistant",
-  );
-  if (index < 0) return [...withoutLiveAssistant(timeline), next];
-  return timeline.map((block, blockIndex) => blockIndex === index ? next : block)
-    .filter((block, blockIndex) =>
-      blockIndex === index || !(block.type === "message" && block.source === "live" && block.role === "assistant"),
-    );
+  const index = findLiveAssistantIndex(timeline, next.id);
+  if (index < 0) return [...timeline, next];
+  return timeline.map((block, blockIndex) => blockIndex === index ? next : block);
+}
+
+interface PersistedAssistantReconciliation {
+  readonly timeline: readonly UiTimelineBlock[];
+  readonly replacedLiveId: string | null;
 }
 
 function reconcilePersistedAssistant(
   timeline: readonly UiTimelineBlock[],
   next: UiMessageBlock,
-): readonly UiTimelineBlock[] {
-  let replaced = false;
+): PersistedAssistantReconciliation {
+  // Prefer an exact final-text match. If Pi's entry text differs, the
+  // current-most recent live assistant is the bounded v0.1 fallback.
+  const matchingIndex = next.text === ""
+    ? -1
+    : findLatestLiveAssistantIndex(timeline, next.text);
+  const candidateIndex = matchingIndex >= 0
+    ? matchingIndex
+    : findLatestLiveAssistantIndex(timeline);
+  const candidate = candidateIndex < 0 ? undefined : timeline[candidateIndex];
+  const replacedLiveId = candidate !== undefined && isLiveAssistant(candidate)
+    ? candidate.id
+    : null;
   const reconciled: UiTimelineBlock[] = [];
-  for (const block of timeline) {
-    const isLiveAssistant = block.type === "message" &&
-      block.source === "live" &&
-      block.role === "assistant";
-    const isSamePersistedBlock = block.type === next.type && block.id === next.id;
-    if (isLiveAssistant || isSamePersistedBlock) {
-      if (!replaced) {
+  let inserted = false;
+
+  for (let index = 0; index < timeline.length; index += 1) {
+    const block = timeline[index];
+    const isCandidate = index === candidateIndex;
+    const isSamePersistedBlock = block.type === "message" &&
+      block.source === "session" &&
+      block.id === next.id;
+    if (isCandidate || isSamePersistedBlock) {
+      if (!inserted) {
         reconciled.push(next);
-        replaced = true;
+        inserted = true;
       }
       continue;
     }
     reconciled.push(block);
   }
-  return replaced ? reconciled : [...reconciled, next];
+
+  if (!inserted) reconciled.push(next);
+  return { timeline: reconciled, replacedLiveId };
+}
+
+function removeCurrentOrLatestLiveAssistant(
+  state: PindieUiProjection,
+): PindieUiProjection {
+  const activeId = state.liveAssistant.activeId;
+  const index = activeId === null
+    ? findLatestLiveAssistantIndex(state.timeline)
+    : findLiveAssistantIndex(state.timeline, activeId);
+
+  // A current invisible/empty assistant has no block to remove; do not use an
+  // older finalized block as a substitute when an active identity is known.
+  if (index < 0) return activeId === null ? state : clearActiveLiveAssistant(state);
+
+  const block = state.timeline[index];
+  const nextState: PindieUiProjection = {
+    ...state,
+    timeline: state.timeline.filter((_candidate, blockIndex) => blockIndex !== index),
+  };
+  return isLiveAssistant(block) && block.id === activeId
+    ? clearActiveLiveAssistant(nextState)
+    : nextState;
 }
 
 function projectLiveAssistant(
-  state: PindieUiProjection,
+  id: string,
   message: MessageLike,
   lifecycle: UiMessageBlock["lifecycle"],
 ): UiMessageBlock {
   const text = messageText(message);
   return {
     type: "message",
-    id: liveAssistantId(state),
+    id,
     source: "live",
     role: "assistant",
     text,
@@ -670,23 +774,67 @@ function reduceMessageEvent(
   const message = messageLike(event.message);
   if (message === null || message.role !== "assistant") return state;
 
-  if (
-    event.type === "message_end" &&
-    (message.stopReason === "aborted" || !messageText(message))
-  ) {
-    return { ...state, timeline: withoutLiveAssistant(state.timeline) };
+  if (event.type === "message_start") {
+    const started = beginLiveAssistant(state);
+    // Thinking-only starts still establish the message-scoped identity. The
+    // first visible update will append its block with this same identity.
+    if (!messageText(message)) return started.state;
+    return {
+      ...started.state,
+      timeline: upsertLiveAssistant(
+        started.state.timeline,
+        projectLiveAssistant(started.id, message, "streaming"),
+      ),
+    };
   }
-  // Thinking-only partials do not create an empty human-facing MessageBlock.
-  if (!messageText(message)) return state;
 
+  const active = state.liveAssistant.activeId === null
+    ? beginLiveAssistant(state)
+    : { state, id: state.liveAssistant.activeId };
+  const activeState = active.state;
+  const activeId = active.id;
+
+  if (event.type === "message_end" && message.stopReason === "aborted") {
+    return clearActiveLiveAssistant({
+      ...activeState,
+      timeline: removeLiveAssistant(activeState.timeline, activeId),
+    });
+  }
+
+  const text = messageText(message);
   const lifecycle: UiMessageBlock["lifecycle"] = event.type === "message_end"
     ? message.stopReason === "error" ? "error" : "complete"
     : "streaming";
-  const block = projectLiveAssistant(state, message, lifecycle);
-  return {
-    ...state,
-    timeline: upsertLiveAssistant(state.timeline, block),
+  const activeIndex = findLiveAssistantIndex(activeState.timeline, activeId);
+
+  // Thinking-only partials do not create an empty human-facing MessageBlock.
+  // A normal/error end still finalizes any visible text already received.
+  if (!text) {
+    if (event.type !== "message_end" || activeIndex < 0) {
+      return event.type === "message_end" ? clearActiveLiveAssistant(activeState) : activeState;
+    }
+    const existing = activeState.timeline[activeIndex];
+    if (!isLiveAssistant(existing)) return clearActiveLiveAssistant(activeState);
+    const finalized: UiMessageBlock = {
+      ...existing,
+      lifecycle,
+      defaultDisplayMode: lifecycle === "error" ? "preview" : "full",
+    };
+    return clearActiveLiveAssistant({
+      ...activeState,
+      timeline: activeState.timeline.map((block, blockIndex) =>
+        blockIndex === activeIndex ? finalized : block),
+    });
+  }
+
+  const updated: PindieUiProjection = {
+    ...activeState,
+    timeline: upsertLiveAssistant(
+      activeState.timeline,
+      projectLiveAssistant(activeId, message, lifecycle),
+    ),
   };
+  return event.type === "message_end" ? clearActiveLiveAssistant(updated) : updated;
 }
 
 function reduceToolEvent(
@@ -726,15 +874,22 @@ function reduceEntryAppended(
   const isAssistantEntry = entry.type === "message" &&
     messageLike(entry.message)?.role === "assistant";
   if (block === null) {
-    const timeline = isAssistantEntry
-      ? withoutLiveAssistant(state.timeline)
-      : state.timeline;
-    return timeline === state.timeline ? state : { ...state, timeline };
+    return isAssistantEntry ? removeCurrentOrLatestLiveAssistant(state) : state;
   }
-  const timeline = isAssistantEntry
-    ? reconcilePersistedAssistant(state.timeline, block)
-    : replaceOrAppendBlock(state.timeline, block);
-  return { ...state, timeline };
+
+  if (!isAssistantEntry) {
+    return { ...state, timeline: replaceOrAppendBlock(state.timeline, block) };
+  }
+
+  const reconciliation = reconcilePersistedAssistant(state.timeline, block);
+  const liveAssistant = reconciliation.replacedLiveId === state.liveAssistant.activeId
+    ? { ...state.liveAssistant, activeId: null }
+    : state.liveAssistant;
+  return {
+    ...state,
+    timeline: reconciliation.timeline,
+    liveAssistant,
+  };
 }
 
 function updateRuntimeStatus(

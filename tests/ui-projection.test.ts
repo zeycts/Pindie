@@ -10,6 +10,7 @@ import type { PindiePresentationSnapshot } from "../src/presentation-integration
 import {
   createProjection,
   projectSessionHistory,
+  rebuildProjection,
   reduceProjectionEvent,
   type PindieUiProjectionInput,
   type UiMessageBlock,
@@ -396,41 +397,190 @@ test("assistant streaming updates one session-local live MessageBlock", () => {
     message: assistantMessage([{ type: "text", text: "first" }, { type: "thinking", thinking: "hidden" }]),
     assistantMessageEvent: {},
   }));
+  const firstBlock = messageBlocks(projection)[0];
+  assert.equal(firstBlock?.id, "live:session-1:assistant:1");
   projection = reduceProjectionEvent(projection, event({
     type: "message_update",
     message: assistantMessage([{ type: "text", text: "latest" }]),
     assistantMessageEvent: {},
+  }));
+  assert.equal(messageBlocks(projection).length, 1);
+  assert.equal(messageBlocks(projection)[0]?.id, firstBlock?.id);
+
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_end",
+    message: assistantMessage([{ type: "text", text: "latest" }], "stop"),
   }));
 
   assert.equal(projection.timeline.length, 1);
   const block = projection.timeline[0] as UiMessageBlock;
   assert.equal(block.type, "message");
   assert.equal(block.source, "live");
-  assert.equal(block.id, "live:session-1:assistant");
-  assert.equal(block.lifecycle, "streaming");
+  assert.equal(block.id, firstBlock?.id);
+  assert.equal(block.lifecycle, "complete");
   assert.equal(block.text, "latest");
 });
 
-test("entry_appended replaces the live assistant without a duplicate", () => {
+test("sequential assistant messages remain distinct completed live blocks", () => {
   let projection = createProjection(input());
   projection = reduceProjectionEvent(projection, event({
     type: "message_start",
-    message: assistantMessage([{ type: "text", text: "streaming" }]),
+    message: assistantMessage([]),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_update",
+    message: assistantMessage([{ type: "text", text: "answer A" }]),
+    assistantMessageEvent: {},
   }));
   projection = reduceProjectionEvent(projection, event({
     type: "message_end",
-    message: assistantMessage([{ type: "text", text: "final answer" }], "stop"),
+    message: assistantMessage([{ type: "text", text: "answer A" }], "stop"),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_start",
+    message: assistantMessage([]),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_update",
+    message: assistantMessage([{ type: "text", text: "answer B" }]),
+    assistantMessageEvent: {},
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_end",
+    message: assistantMessage([{ type: "text", text: "answer B" }], "stop"),
+  }));
+
+  assert.deepEqual(messageBlocks(projection).map((block) => ({
+    id: block.id,
+    text: block.text,
+    lifecycle: block.lifecycle,
+  })), [
+    { id: "live:session-1:assistant:1", text: "answer A", lifecycle: "complete" },
+    { id: "live:session-1:assistant:2", text: "answer B", lifecycle: "complete" },
+  ]);
+});
+
+test("aborting the current assistant removes only that live block", () => {
+  let projection = createProjection(input());
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_start",
+    message: assistantMessage([{ type: "text", text: "answer A" }]),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_end",
+    message: assistantMessage([{ type: "text", text: "answer A" }], "stop"),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_start",
+    message: assistantMessage([{ type: "text", text: "answer B partial" }]),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_update",
+    message: assistantMessage([{ type: "text", text: "answer B latest" }]),
+    assistantMessageEvent: {},
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_end",
+    message: assistantMessage([{ type: "text", text: "answer B latest" }], "aborted"),
+  }));
+
+  assert.deepEqual(messageBlocks(projection).map((block) => ({
+    id: block.id,
+    text: block.text,
+    lifecycle: block.lifecycle,
+  })), [{
+    id: "live:session-1:assistant:1",
+    text: "answer A",
+    lifecycle: "complete",
+  }]);
+});
+
+test("assistant error history remains visible after the stream ends", () => {
+  let projection = createProjection(input());
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_start",
+    message: assistantMessage([{ type: "text", text: "failed answer" }]),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_end",
+    message: assistantMessage([{ type: "text", text: "failed answer" }], "error"),
+  }));
+
+  assert.deepEqual(messageBlocks(projection).map((block) => ({
+    id: block.id,
+    text: block.text,
+    lifecycle: block.lifecycle,
+  })), [{
+    id: "live:session-1:assistant:1",
+    text: "failed answer",
+    lifecycle: "error",
+  }]);
+});
+
+test("entry_appended reconciles only the matching latest live assistant", () => {
+  let projection = createProjection(input());
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_start",
+    message: assistantMessage([{ type: "text", text: "answer A" }]),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_end",
+    message: assistantMessage([{ type: "text", text: "answer A" }], "stop"),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_start",
+    message: assistantMessage([{ type: "text", text: "answer B" }]),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_end",
+    message: assistantMessage([{ type: "text", text: "answer B" }], "stop"),
   }));
   projection = reduceProjectionEvent(projection, event({
     type: "entry_appended",
-    entry: assistantEntry("persisted-assistant", "final answer"),
+    entry: assistantEntry("persisted-assistant-b", "answer B"),
   }));
 
   assert.deepEqual(messageBlocks(projection).map((block) => ({
     id: block.id,
     source: block.source,
     text: block.text,
-  })), [{ id: "persisted-assistant", source: "session", text: "final answer" }]);
+  })), [
+    { id: "live:session-1:assistant:1", source: "live", text: "answer A" },
+    { id: "persisted-assistant-b", source: "session", text: "answer B" },
+  ]);
+});
+
+test("mismatched persisted assistant reconciliation preserves older live history", () => {
+  let projection = createProjection(input());
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_start",
+    message: assistantMessage([{ type: "text", text: "answer A" }]),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_end",
+    message: assistantMessage([{ type: "text", text: "answer A" }], "stop"),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_start",
+    message: assistantMessage([{ type: "text", text: "answer B" }]),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_end",
+    message: assistantMessage([{ type: "text", text: "answer B" }], "stop"),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "entry_appended",
+    entry: assistantEntry("persisted-assistant-b", "persisted B wording"),
+  }));
+
+  assert.deepEqual(messageBlocks(projection).map((block) => ({
+    id: block.id,
+    source: block.source,
+    text: block.text,
+  })), [
+    { id: "live:session-1:assistant:1", source: "live", text: "answer A" },
+    { id: "persisted-assistant-b", source: "session", text: "persisted B wording" },
+  ]);
 });
 
 test("tool calls remain separate and repeated updates replace one WorkBlock", () => {
@@ -548,6 +698,52 @@ test("rebuilding for a new Session ID discards live blocks and queue observation
   assert.equal(freshProjection.queue.state, "unknown");
   assert.equal(freshProjection.queue.steering, null);
   assert.equal(freshProjection.timeline.some((block) => block.id.includes("session-1")), false);
+});
+
+test("full rebuild replaces ephemeral assistant identities with Session entry IDs", () => {
+  let projection = createProjection(input());
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_start",
+    message: assistantMessage([{ type: "text", text: "answer A" }]),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_end",
+    message: assistantMessage([{ type: "text", text: "answer A" }], "stop"),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_start",
+    message: assistantMessage([{ type: "text", text: "answer B" }]),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_end",
+    message: assistantMessage([{ type: "text", text: "answer B" }], "stop"),
+  }));
+
+  assert.deepEqual(messageBlocks(projection).map((block) => block.id), [
+    "live:session-1:assistant:1",
+    "live:session-1:assistant:2",
+  ]);
+
+  const rebuilt = rebuildProjection(input({
+    session: {
+      ...input().session,
+      branch: [
+        assistantEntry("entry-a", "answer A"),
+        assistantEntry("entry-b", "answer B"),
+      ],
+    },
+  }));
+
+  assert.deepEqual(messageBlocks(rebuilt).map((block) => ({
+    id: block.id,
+    source: block.source,
+    text: block.text,
+  })), [
+    { id: "entry-a", source: "session", text: "answer A" },
+    { id: "entry-b", source: "session", text: "answer B" },
+  ]);
+  assert.equal(rebuilt.timeline.some((block) => block.id.startsWith("live:")), false);
+  assert.deepEqual(rebuilt.liveAssistant, { activeId: null, nextSequence: 1 });
 });
 
 test("projection operations isolate source Session entries, messages, and tool results", () => {
