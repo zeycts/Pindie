@@ -170,9 +170,13 @@ test("same-basename projects and resumed/new Sessions retain identity mappings",
   assert.ok((await store.load("/one/app"))?.sessions.two); assert.notEqual(store.path("/one/app"), store.path("/two/app")); assert.notEqual((await store.load("/one/app"))?.channelId, (await store.load("/two/app"))?.channelId);
 });
 
-test("long timeline messages split in content order", () => {
-  const text = `${"a".repeat(1_899)} b`; const parts = splitTimelineEvent({ entryId: "id", kind: "assistant", text }, 1_900);
+test("long timeline messages split in content order and attention only pings on the first chunk", () => {
+  const text = `${"a".repeat(1_899)} b`;
+  const parts = splitTimelineEvent({ entryId: "id", kind: "milestone", text, attention: true }, 1_900);
   assert.equal(parts.map((part) => part.text).join(""), text);
+  assert.equal(parts.length, 2);
+  assert.equal(parts[0]?.attention, true);
+  assert.equal(parts[1]?.attention, false);
 });
 
 test("unrelated extension input is neutral rather than guessed as Remote", async () => {
