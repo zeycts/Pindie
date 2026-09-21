@@ -74,16 +74,17 @@ The target topology is:
 Pindie Host
    └─ PindieInteractiveMode
           │
-          ├─ UI Projection
-          ├─ Action Registry / Dispatcher
-          ├─ Attention presentation
-          └─ @earendil-works/pi-tui
-                 ↓
-          PiRuntimeAdapter
-                 ↓
-          Pi AgentSessionRuntime
-                 ↓
-          Agent Loop / Models / Tools / Skills
+          ├─ Projection / Views ─────────→ @earendil-works/pi-tui
+          │
+          ├─ Attention / Extension UI ──→ @earendil-works/pi-tui
+          │
+          └─ Action Dispatcher
+                    ↓
+             PiRuntimeAdapter
+                    ↓
+             Pi AgentSessionRuntime
+                    ↓
+             Agent Loop / Models / Tools / Skills
 ```
 
 This is an ownership inversion at the interaction layer only.
