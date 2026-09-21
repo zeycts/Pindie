@@ -137,7 +137,10 @@ import {
   getQuotaResumePublisher,
   getQuotaResumeStatusObserver,
 } from "./quota-resume-control.ts";
-import { buildQuotaResumePlan } from "./quota-resume-incident.ts";
+import {
+  buildQuotaResumePlan,
+  detectCodexQuotaIncident,
+} from "./quota-resume-incident.ts";
 import {
   PINDIE_QUOTA_RESUME_MESSAGE,
   PINDIE_QUOTA_RESUME_TYPE,
@@ -342,6 +345,7 @@ function registerComposedPindieExtension(
   const quotaResumePublisher = getQuotaResumePublisher();
   const quotaResumeStatusObserver = getQuotaResumeStatusObserver();
   let quotaPlanningGeneration = 0;
+  let agentRunLifecycleGeneration = 0;
   const taskHandoffEnabled = options.enableTaskHandoff === true || committedRolloverPublisher !== null;
   // Composition supplies Core's production dependencies explicitly. Feature
   // dependencies are validated and assembled only when Self-Improvement is
@@ -718,6 +722,7 @@ function registerComposedPindieExtension(
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    ++agentRunLifecycleGeneration;
     await quotaResume.restoreSession(ctx);
     const nativeSessionId = options.remoteCompanion || taskHandoffEnabled
       ? ctx.sessionManager.getSessionId()
@@ -785,15 +790,20 @@ function registerComposedPindieExtension(
   });
 
   pi.on("session_tree", async (_event, ctx) => {
+    ++agentRunLifecycleGeneration;
     cancelQuotaResume(ctx);
     await quotaResume.restoreBranch(ctx);
   });
 
   pi.on("input", (event, ctx) => {
+    ++agentRunLifecycleGeneration;
     cancelQuotaResume(ctx);
     options.remoteCompanion?.companion.observeInput(event.source, event.streamingBehavior);
   });
-  pi.on("model_select", (_event, ctx) => cancelQuotaResume(ctx));
+  pi.on("model_select", (_event, ctx) => {
+    ++agentRunLifecycleGeneration;
+    cancelQuotaResume(ctx);
+  });
 
   if (options.remoteCompanion) {
     // Pi remains transcript truth: session history is projected after each
@@ -815,6 +825,7 @@ function registerComposedPindieExtension(
   }
 
   pi.on("session_shutdown", (event, ctx) => {
+    ++agentRunLifecycleGeneration;
     cancelQuotaResume(ctx);
     releaseQuotaStatusObserver?.();
     releaseQuotaStatusObserver = null;
@@ -847,6 +858,7 @@ function registerComposedPindieExtension(
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    ++agentRunLifecycleGeneration;
     let preparationGeneration: number | null = null;
     try {
       presentation.setStatusContext(ctx);
@@ -1391,6 +1403,32 @@ function registerComposedPindieExtension(
     const entries = safeSessionEntries(ctx);
     if (!entries) return;
 
+    const settlementLifecycleGeneration = agentRunLifecycleGeneration;
+    const settlementRemoteLease = liveRemoteSession;
+    let settlementSessionId: string | null = null;
+    try {
+      settlementSessionId = ctx.sessionManager.getSessionId();
+    } catch {
+      // A context without a stable native Session identity cannot emit a final
+      // attention milestone.
+    }
+    const isCurrentSettlement = (): boolean => {
+      if (
+        settlementSessionId === null ||
+        agentRunLifecycleGeneration !== settlementLifecycleGeneration ||
+        run.hasActiveAgentRun
+      ) return false;
+      try {
+        if (
+          ctx.sessionManager.getSessionId() !== settlementSessionId ||
+          ctx.hasPendingMessages()
+        ) return false;
+      } catch {
+        return false;
+      }
+      return !options.remoteCompanion || liveRemoteSession === settlementRemoteLease;
+    };
+
     presentation.setStatusContext(ctx);
     const result = await core.settleAgentRun(
       ctx,
@@ -1402,16 +1440,27 @@ function registerComposedPindieExtension(
     presentation.clearActivityLingerRefresh();
     presentation.runActivity?.settle();
     presentation.refreshStatus(ctx);
-    if (quotaResumePublisher !== null && quotaResume.quotaAutoResumeEnabled) {
+
+    // Quota planning remains detached for ordinary lifecycle work, but only a
+    // detected quota incident starts the external usage refresh. Remote final
+    // delivery waits for this narrow successor decision before classifying a
+    // genuine stop.
+    let quotaSuccessorPromise: Promise<boolean> | null = null;
+    if (
+      result.facts !== null &&
+      result.facts.settlementGeneration !== null &&
+      quotaResumePublisher !== null &&
+      quotaResume.quotaAutoResumeEnabled
+    ) {
       let branch: ReturnType<ExtensionContext["sessionManager"]["getBranch"]> | null = null;
       try {
         branch = ctx.sessionManager.getBranch();
       } catch {
         // A stale Extension context cannot authorize autonomous planning.
       }
-      if (branch !== null) {
+      if (branch !== null && detectCodexQuotaIncident(branch) !== null) {
         const planningGeneration = quotaPlanningGeneration;
-        void buildQuotaResumePlan({
+        quotaSuccessorPromise = buildQuotaResumePlan({
           ctx,
           branch,
           monitor: subscriptionUsageMonitor,
@@ -1421,21 +1470,57 @@ function registerComposedPindieExtension(
           if (
             plan === null ||
             !quotaResume.quotaAutoResumeEnabled ||
-            planningGeneration !== quotaPlanningGeneration
-          ) return;
-          quotaResumePublisher({ type: "schedule", plan });
-        }).catch(() => undefined);
+            planningGeneration !== quotaPlanningGeneration ||
+            !isCurrentSettlement()
+          ) return false;
+          try {
+            return quotaResumePublisher({ type: "schedule", plan }) === true;
+          } catch {
+            return false;
+          }
+        }).catch(() => false);
+        void quotaSuccessorPromise;
       }
     }
     void presentation.refreshSubscriptionUsage(ctx);
     if (options.remoteCompanion) {
+      const remote = options.remoteCompanion.companion;
       const lastEntry = entries.at(-1);
-      void options.remoteCompanion.companion.status(remoteStatusFacts())
-        .then(() => options.remoteCompanion!.companion.catchUp(entries))
-        .then(async () => {
-          if (lastEntry) await options.remoteCompanion!.companion.flushExecution(lastEntry.id);
-          await options.remoteCompanion!.companion.settleCompletion();
-        });
+      const finalizeRemoteSettlement = async (): Promise<void> => {
+        const quotaSuccessorCommitted = quotaSuccessorPromise === null
+          ? false
+          : await quotaSuccessorPromise;
+        if (!isCurrentSettlement()) return;
+
+        await remote.status(remoteStatusFacts());
+        if (!isCurrentSettlement()) return;
+        await remote.catchUp(entries);
+        if (!isCurrentSettlement()) return;
+        if (lastEntry) await remote.flushExecution(lastEntry.id);
+        if (!isCurrentSettlement()) return;
+        await remote.settleCompletion(isCurrentSettlement);
+        if (!isCurrentSettlement()) return;
+
+        const facts = result.facts;
+        const finalTaskIsActive = facts !== null &&
+          facts.settlementGeneration !== null &&
+          facts.snapshot?.authority === "coherent" &&
+          facts.snapshot.taskStatus === "active" &&
+          facts.task !== null &&
+          getTaskStatus({ task: facts.task }) === "active";
+        if (
+          !finalTaskIsActive ||
+          result.automaticSuccessorCommitted ||
+          quotaSuccessorCommitted
+        ) return;
+
+        await remote.milestone(
+          `stopped:${settlementLifecycleGeneration}:${facts!.settlementGeneration}`,
+          "PINDIE STOPPED\nTask remains active. No automatic continuation is scheduled.",
+          { attention: true, isCurrent: isCurrentSettlement },
+        );
+      };
+      void finalizeRemoteSettlement().catch(() => undefined);
     }
     if (runtime.projectRoot === null) return;
 

@@ -137,6 +137,8 @@ export type CoreSettlementStatus = "ignored" | "invalidated" | "settled";
 export interface CoreSettlementResult {
   readonly status: CoreSettlementStatus;
   readonly facts: CoreSettlementFacts | null;
+  /** Runtime-only acknowledgement that Host accepted an automatic rollover request. */
+  readonly automaticSuccessorCommitted: boolean;
 }
 
 export interface CoreAuthorizationResult {
@@ -493,7 +495,7 @@ export class CoreIntegration {
     observer?: CoreSettlementObserver,
   ): Promise<CoreSettlementResult> {
     if (this.run.hasActiveAgentRun && !this.run.claimAgentRunSettlement()) {
-      return { status: "ignored", facts: null };
+      return { status: "ignored", facts: null, automaticSuccessorCommitted: false };
     }
 
     const settlementGeneration = this.run.activeAgentRunGeneration;
@@ -503,6 +505,7 @@ export class CoreIntegration {
       settlementGeneration === null && !this.run.hasActiveAgentRun;
     const isSettlementStillCurrent = (): boolean =>
       isCurrentSettlement() || isSafeNoGenerationSettlement();
+    let automaticSuccessorCommitted = false;
 
     try {
       try {
@@ -525,12 +528,12 @@ export class CoreIntegration {
             run: (signal) => this.run.refreshAuthoritativeState(signal),
           });
           if (!isSettlementStillCurrent()) {
-            return { status: "invalidated", facts: null };
+            return { status: "invalidated", facts: null, automaticSuccessorCommitted: false };
           }
           finalDerivation = this.run.deriveSnapshot();
         } catch {
           if (!isSettlementStillCurrent()) {
-            return { status: "invalidated", facts: null };
+            return { status: "invalidated", facts: null, automaticSuccessorCommitted: false };
           }
           finalDerivation = {
             ok: false,
@@ -540,7 +543,7 @@ export class CoreIntegration {
       }
 
       if (!isSettlementStillCurrent()) {
-        return { status: "invalidated", facts: null };
+        return { status: "invalidated", facts: null, automaticSuccessorCommitted: false };
       }
 
       const finalState = cloneState(this.run.authoritativeState);
@@ -579,23 +582,25 @@ export class CoreIntegration {
       }
 
       if (!isSettlementStillCurrent()) {
-        return { status: "invalidated", facts };
+        return { status: "invalidated", facts, automaticSuccessorCommitted: false };
       }
 
       try {
         await runBoundedOperation({
           label: "Pindie Task handoff settlement",
           timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
-          run: (signal) => this.settleTaskHandoff(ctx, settlementGeneration, signal),
+          run: async (signal) => {
+            automaticSuccessorCommitted = await this.settleTaskHandoff(ctx, settlementGeneration, signal);
+          },
         });
       } catch (error) {
         console.warn(`[Pindie] Task handoff settlement failed closed: ${errorMessage(error)}`);
       }
 
       if (!isSettlementStillCurrent()) {
-        return { status: "invalidated", facts };
+        return { status: "invalidated", facts, automaticSuccessorCommitted: false };
       }
-      return { status: "settled", facts };
+      return { status: "settled", facts, automaticSuccessorCommitted };
     } finally {
       if (isSettlementStillCurrent()) {
         this.handoff.clear();
@@ -612,9 +617,9 @@ export class CoreIntegration {
     ctx: ExtensionContext,
     settlementGeneration: number | null,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const pending = this.handoff.pendingHandoff;
-    if (pending === null) return;
+    if (pending === null) return false;
 
     const failClosed = (): void => this.handoff.clearHandoffIfCurrent(pending);
     try {
@@ -625,7 +630,7 @@ export class CoreIntegration {
         !this.handoff.isPendingFor(pending.sourceSessionId, pending.agentRunGeneration)
       ) {
         failClosed();
-        return;
+        return false;
       }
 
       let currentSessionId: string;
@@ -633,11 +638,11 @@ export class CoreIntegration {
         currentSessionId = ctx.sessionManager.getSessionId();
         if (ctx.hasPendingMessages()) {
           failClosed();
-          return;
+          return false;
         }
       } catch {
         failClosed();
-        return;
+        return false;
       }
       if (
         currentSessionId !== pending.sourceSessionId ||
@@ -645,7 +650,7 @@ export class CoreIntegration {
         this.runtime.projectRoot === null
       ) {
         failClosed();
-        return;
+        return false;
       }
 
       signal?.throwIfAborted();
@@ -656,7 +661,7 @@ export class CoreIntegration {
         !this.handoff.isPendingFor(pending.sourceSessionId, pending.agentRunGeneration)
       ) {
         failClosed();
-        return;
+        return false;
       }
 
       const derivation = this.run.deriveSnapshot();
@@ -664,7 +669,7 @@ export class CoreIntegration {
       const task = state?.task ?? null;
       if (!derivation.ok || derivation.snapshot.authority !== "coherent") {
         failClosed();
-        return;
+        return false;
       }
       if (
         derivation.snapshot.taskStatus !== "active" ||
@@ -675,18 +680,18 @@ export class CoreIntegration {
         taskContractFingerprint(task) !== pending.taskFingerprint
       ) {
         failClosed();
-        return;
+        return false;
       }
 
       try {
         signal?.throwIfAborted();
         if (ctx.hasPendingMessages()) {
           failClosed();
-          return;
+          return false;
         }
       } catch {
         failClosed();
-        return;
+        return false;
       }
 
       let checkpoint;
@@ -711,23 +716,25 @@ export class CoreIntegration {
         !this.handoff.isPendingFor(pending.sourceSessionId, pending.agentRunGeneration)
       ) {
         failClosed();
-        return;
+        return false;
       }
       signal?.throwIfAborted();
+      let automaticSuccessorCommitted = false;
       if (this.committedRolloverPublisher !== null) {
         try {
           if (checkpoint.sourceSessionId !== pending.sourceSessionId) {
             throw new Error("Committed continuity checkpoint Session identity did not match the pending handoff.");
           }
-          this.committedRolloverPublisher({
+          automaticSuccessorCommitted = this.committedRolloverPublisher({
             sourceSessionId: checkpoint.sourceSessionId,
             checkpoint,
-          });
+          }) === true;
         } catch (error) {
           console.warn(`[Pindie] Committed Task continuity checkpoint could not reach Host rollover control: ${errorMessage(error)}`);
         }
       }
       failClosed();
+      return automaticSuccessorCommitted;
     } catch (error) {
       failClosed();
       throw error;

@@ -9,8 +9,8 @@ export interface QuotaResumeWaitingStatus {
   readonly resumeAt: number;
 }
 
-export type QuotaResumeReceiver = (event: QuotaResumeControlEvent) => void;
-export type QuotaResumePublisher = (event: QuotaResumeControlEvent) => void;
+export type QuotaResumeReceiver = (event: QuotaResumeControlEvent) => unknown;
+export type QuotaResumePublisher = (event: QuotaResumeControlEvent) => unknown;
 
 export interface QuotaResumeHostLease {
   release(): void;
@@ -81,7 +81,7 @@ export function getQuotaResumePublisher(): QuotaResumePublisher | null {
     if (!leaseIsActive(lease)) {
       throw new Error("Pindie Host quota resume control bridge lease is no longer active.");
     }
-    lease.receiver(event);
+    return lease.receiver(event);
   };
 }
 

@@ -2462,6 +2462,380 @@ test("Remote completion attention waits for settled catch-up and execution summa
   assert.equal(events.filter((event) => event.text === "TASK COMPLETED").length, 1);
 });
 
+test("final active settlement emits one ordered STOPPED attention after catch-up and execution summary", async () => {
+  const events: Array<{ text: string; attention?: true }> = [];
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+    send: async (_thread, event) => { events.push({ text: event.text, attention: event.attention }); },
+    updateSessionPresentation: async () => undefined,
+  };
+  const routing = {
+    load: async () => null,
+    save: async () => undefined,
+    projectName: () => "repo",
+  } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+  const companion = new RemoteCompanion(surface, { routing });
+  const harness = createHarness([['/repo', activeState("Stop me")]], {}, {
+    remoteCompanion: { companion, guildId: "guild" },
+  });
+  const entries: unknown[] = [{ id: "prompt", message: { role: "user", content: "Stop me" } }];
+  await startSession(harness, "/repo", "startup", entries);
+  await waitFor(() => events.some((event) => event.text === "YOU\nStop me"));
+  await beginAgentRun(harness, "/repo", entries);
+  await harness.api.handler("tool_execution_start")(toolExecution("tool_execution_start", "stop-check", "bash"), context("/repo", entries));
+  await harness.api.handler("tool_execution_end")(toolExecution("tool_execution_end", "stop-check", "bash"), context("/repo", entries));
+  entries.push({ id: "answer", message: { role: "assistant", content: "The work is still unfinished." } });
+  await harness.api.handler("agent_end")(agentEnd("aborted"), context("/repo", entries));
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
+  await waitFor(() => events.some((event) => event.text.startsWith("PINDIE STOPPED")));
+
+  const answerIndex = events.findIndex((event) => event.text === "The work is still unfinished.");
+  const summaryIndex = events.findIndex((event) => event.text.startsWith("EXECUTION\n"));
+  const stoppedIndex = events.findIndex((event) => event.text.startsWith("PINDIE STOPPED"));
+  assert.ok(answerIndex >= 0);
+  assert.ok(summaryIndex > answerIndex);
+  assert.ok(stoppedIndex > summaryIndex);
+  assert.equal(events[stoppedIndex]?.attention, true);
+  assert.match(events[stoppedIndex]?.text ?? "", /Task remains active/);
+  assert.doesNotMatch(events[stoppedIndex]?.text ?? "", /completed|failed|blocked/i);
+});
+
+test("agent_end continuation stays quiet until the existing continuation is exhausted", async () => {
+  const events: string[] = [];
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+    send: async (_thread, event) => { events.push(event.text); },
+    updateSessionPresentation: async () => undefined,
+  };
+  const routing = {
+    load: async () => null,
+    save: async () => undefined,
+    projectName: () => "repo",
+  } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+  const companion = new RemoteCompanion(surface, { routing });
+  const harness = createHarness([['/repo', activeState("Continue")]], {}, {
+    remoteCompanion: { companion, guildId: "guild" },
+  });
+  const entries: unknown[] = [{ id: "prompt", message: { role: "user", content: "Continue" } }];
+  await startSession(harness, "/repo", "startup", entries);
+  await waitFor(() => events.includes("YOU\nContinue"));
+  await beginAgentRun(harness, "/repo", entries);
+
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo", entries));
+  assert.equal(harness.api.sentMessages.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(events.some((text) => text.startsWith("PINDIE STOPPED")), false);
+
+  await harness.api.handler("agent_end")(agentEnd(), context("/repo", entries));
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
+  await waitFor(() => events.some((text) => text.startsWith("PINDIE STOPPED")));
+  assert.equal(harness.api.sentMessages.length, 1);
+});
+
+test("blocked, Human Gate, idle, and completed settlement states do not emit STOPPED", async () => {
+  for (const [label, state] of [
+    ["blocked", blockedState()],
+    ["gate", gatedState()],
+    ["idle", EMPTY_STATE],
+    ["done", completedState()],
+  ] as const) {
+    const events: string[] = [];
+    const surface: RemoteSurface = {
+      ensureProject: async () => ({ channelId: "channel" }),
+      ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+      send: async (_thread, event) => { events.push(event.text); },
+      updateSessionPresentation: async () => undefined,
+    };
+    const routing = {
+      load: async () => null,
+      save: async () => undefined,
+      projectName: () => "repo",
+    } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+    const companion = new RemoteCompanion(surface, { routing });
+    const harness = createHarness([['/repo', state]], {}, {
+      remoteCompanion: { companion, guildId: "guild" },
+    });
+    const entries: unknown[] = [{ id: `prompt-${label}`, message: { role: "user", content: label } }];
+    await startSession(harness, "/repo", "startup", entries);
+    await beginAgentRun(harness, "/repo", entries);
+    await harness.api.handler("agent_end")(agentEnd("aborted"), context("/repo", entries));
+    await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(events.some((text) => text.startsWith("PINDIE STOPPED")), false, label);
+  }
+});
+
+test("repeated settlement is deduplicated while a distinct Agent Run can stop again", async () => {
+  const events: string[] = [];
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+    send: async (_thread, event) => { events.push(event.text); },
+    updateSessionPresentation: async () => undefined,
+  };
+  const routing = {
+    load: async () => null,
+    save: async () => undefined,
+    projectName: () => "repo",
+  } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+  const companion = new RemoteCompanion(surface, { routing });
+  const harness = createHarness([['/repo', activeState("Repeat stop")]], {}, {
+    remoteCompanion: { companion, guildId: "guild" },
+  });
+  const entries: unknown[] = [{ id: "prompt", message: { role: "user", content: "Repeat stop" } }];
+  await startSession(harness, "/repo", "startup", entries);
+  await beginAgentRun(harness, "/repo", entries);
+  await harness.api.handler("agent_end")(agentEnd("aborted"), context("/repo", entries));
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
+  await waitFor(() => events.filter((text) => text.startsWith("PINDIE STOPPED")).length === 1);
+
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(events.filter((text) => text.startsWith("PINDIE STOPPED")).length, 1);
+
+  await beginAgentRun(harness, "/repo", entries);
+  await harness.api.handler("agent_end")(agentEnd("aborted"), context("/repo", entries));
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
+  await waitFor(() => events.filter((text) => text.startsWith("PINDIE STOPPED")).length === 2);
+});
+
+test("pending work and a newer Agent Run suppress an obsolete STOPPED settlement", async () => {
+  const events: string[] = [];
+  let pauseFinalOutput = false;
+  let finalOutputEntered!: () => void;
+  let releaseFinalOutput!: () => void;
+  const finalOutputReady = new Promise<void>((resolve) => { finalOutputEntered = resolve; });
+  const finalOutputRelease = new Promise<void>((resolve) => { releaseFinalOutput = resolve; });
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+    send: async (_thread, event) => {
+      events.push(event.text);
+      if (pauseFinalOutput && event.text === "final output") {
+        finalOutputEntered();
+        await finalOutputRelease;
+      }
+    },
+    updateSessionPresentation: async () => undefined,
+  };
+  const routing = {
+    load: async () => null,
+    save: async () => undefined,
+    projectName: () => "repo",
+  } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+  const companion = new RemoteCompanion(surface, { routing });
+  const harness = createHarness([['/repo', activeState("Race")]], {}, {
+    remoteCompanion: { companion, guildId: "guild" },
+  });
+  const entries: unknown[] = [{ id: "prompt", message: { role: "user", content: "Race" } }];
+  await startSession(harness, "/repo", "startup", entries);
+  await beginAgentRun(harness, "/repo", entries);
+  entries.push({ id: "answer", message: { role: "assistant", content: "final output" } });
+  pauseFinalOutput = true;
+  const settlement = harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
+  await finalOutputReady;
+  await beginAgentRun(harness, "/repo", entries);
+  releaseFinalOutput();
+  await settlement;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(events.some((text) => text.startsWith("PINDIE STOPPED")), false);
+
+  const pendingContext = context("/repo", entries, true);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, pendingContext);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(events.some((text) => text.startsWith("PINDIE STOPPED")), false);
+});
+
+test("a replaced Session cannot receive an obsolete STOPPED milestone", async () => {
+  const events: string[] = [];
+  let finalOutputEntered!: () => void;
+  let releaseFinalOutput!: () => void;
+  const finalOutputReady = new Promise<void>((resolve) => { finalOutputEntered = resolve; });
+  const finalOutputRelease = new Promise<void>((resolve) => { releaseFinalOutput = resolve; });
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async (_channel, sessionId) => ({ threadId: `thread-${sessionId}`, anchorMessageId: "anchor", headerMessageId: null }),
+    send: async (_thread, event) => {
+      events.push(event.text);
+      if (event.text === "old final output") {
+        finalOutputEntered();
+        await finalOutputRelease;
+      }
+    },
+    updateSessionPresentation: async () => undefined,
+  };
+  const routing = {
+    load: async () => null,
+    save: async () => undefined,
+    projectName: () => "repo",
+  } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+  const companion = new RemoteCompanion(surface, { routing });
+  const harness = createHarness([["/repo", activeState("Replacement")]], {}, {
+    remoteCompanion: { companion, guildId: "guild" },
+  });
+  const oldEntries: unknown[] = [{ id: "prompt", message: { role: "user", content: "Replacement" } }];
+  await startSession(harness, "/repo", "startup", oldEntries);
+  await beginAgentRun(harness, "/repo", oldEntries);
+  oldEntries.push({ id: "answer", message: { role: "assistant", content: "old final output" } });
+  const settlement = harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", oldEntries));
+  await finalOutputReady;
+
+  await harness.api.handler("session_shutdown")(
+    { type: "session_shutdown", reason: "new" },
+    context("/repo", oldEntries, false, "remote-session"),
+  );
+  await harness.api.handler("session_start")(
+    { type: "session_start", reason: "new" },
+    context("/repo", [], false, "new-session"),
+  );
+  releaseFinalOutput();
+  await settlement;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(events.some((text) => text.startsWith("PINDIE STOPPED")), false);
+});
+
+test("accepted Quota Auto Resume suppresses STOPPED while failed scheduling does not", async () => {
+  const now = 1_700_000_000_000;
+  const quotaEntry = {
+    type: "message",
+    id: "quota",
+    parentId: "prompt",
+    timestamp: new Date(now).toISOString(),
+    message: {
+      role: "assistant",
+      content: [],
+      provider: "openai-codex",
+      model: "gpt-5-codex",
+      usage: {},
+      stopReason: "error",
+      errorMessage: "The usage limit has been reached",
+      timestamp: now,
+    },
+  } as SessionEntry;
+  const branch = [
+    { type: "message", id: "prompt", parentId: null, timestamp: new Date(now - 1).toISOString(), message: { role: "user", content: "Continue after quota" } },
+    quotaEntry,
+  ] as SessionEntry[];
+
+  for (const accepted of [true, false]) {
+    const events: string[] = [];
+    const schedules: QuotaResumeControlEvent[] = [];
+    const release = installQuotaResumeReceiver((event) => {
+      schedules.push(event);
+      return event.type === "schedule" ? accepted : undefined;
+    });
+    try {
+      const surface: RemoteSurface = {
+        ensureProject: async () => ({ channelId: "channel" }),
+        ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+        send: async (_thread, event) => { events.push(event.text); },
+        updateSessionPresentation: async () => undefined,
+      };
+      const routing = {
+        load: async () => null,
+        save: async () => undefined,
+        projectName: () => "repo",
+      } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+      const companion = new RemoteCompanion(surface, { routing });
+      const harness = createHarness([["/repo", activeState("Quota stop")]], {}, {
+        now: () => now,
+        quotaResumePreferenceStore: {
+          loadDefault: async () => true,
+          saveDefault: async () => undefined,
+        },
+        subscriptionUsageProvider: {
+          fetchUsage: async () => ({
+            fetchedAt: now,
+            windows: [
+              { usedPercent: 100, windowMinutes: 300, resetsAt: now + 60_000 },
+              { usedPercent: 50, windowMinutes: 10_080, resetsAt: now + 600_000 },
+            ],
+          }),
+        },
+        remoteCompanion: { companion, guildId: "guild" },
+      });
+      const ctx = {
+        ...context("/repo", branch),
+        sessionManager: {
+          getEntries: () => branch,
+          getBranch: () => branch,
+          getSessionId: () => "remote-session",
+          getSessionName: () => undefined,
+        },
+      };
+      await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+      await waitFor(() => events.includes("YOU\nContinue after quota"));
+      await harness.api.handler("before_agent_start")(
+        { type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} },
+        ctx,
+      );
+      await harness.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+      await waitFor(() => schedules.some((event) => event.type === "schedule"));
+      if (accepted) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(events.some((text) => text.startsWith("PINDIE STOPPED")), false, JSON.stringify({ accepted, events, schedules }));
+      } else {
+        await waitFor(() => events.some((text) => text.startsWith("PINDIE STOPPED")));
+      }
+    } finally {
+      release.release();
+    }
+  }
+});
+
+test("committed Long Task rollover suppresses STOPPED, while a rejected handoff leaves it eligible", async () => {
+  for (const accepted of [true, false]) {
+    const events: string[] = [];
+    let published = 0;
+    const release = installCommittedRolloverReceiver(() => {
+      published += 1;
+      return accepted;
+    });
+    try {
+      const surface: RemoteSurface = {
+        ensureProject: async () => ({ channelId: "channel" }),
+        ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+        send: async (_thread, event) => { events.push(event.text); },
+        updateSessionPresentation: async () => undefined,
+      };
+      const routing = {
+        load: async () => null,
+        save: async () => undefined,
+        projectName: () => "repo",
+      } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+      const companion = new RemoteCompanion(surface, { routing });
+      const harness = createHarness([["/repo", activeState("Rollover")]], {}, {
+        remoteCompanion: { companion, guildId: "guild" },
+        enableTaskHandoff: true,
+      });
+      const entries: unknown[] = [{ id: "prompt", message: { role: "user", content: "Rollover" } }];
+      await startSession(harness, "/repo", "startup", entries);
+      await waitFor(() => events.includes("YOU\nRollover"));
+      await beginAgentRun(harness, "/repo", entries);
+      const input = handoffInput("Continue after rollover");
+      assert.equal(await callGuard(harness, toolCall("pindie_task_handoff", input, `rollover-${accepted}`)), undefined);
+      await harness.api.tool("pindie_task_handoff").execute(`rollover-${accepted}`, input);
+      await harness.api.handler("tool_result")(
+        toolResult("pindie_task_handoff", false, `rollover-${accepted}`),
+        context("/repo", entries),
+      );
+      await harness.api.handler("agent_end")(agentEnd(), context("/repo", entries));
+      await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
+      assert.equal(published, 1);
+      if (accepted) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(events.some((text) => text.startsWith("PINDIE STOPPED")), false, JSON.stringify({ accepted, events, published }));
+      } else {
+        await waitFor(() => events.some((text) => text.startsWith("PINDIE STOPPED")));
+      }
+    } finally {
+      release();
+    }
+  }
+});
+
 test("Pi session_info_changed projects presentation rename for the mapped active Session", async () => {
   const titles: string[] = [];
   let markPresentationReady!: () => void;

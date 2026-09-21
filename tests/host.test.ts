@@ -519,6 +519,28 @@ test("Host disposal publishes final null before releasing the quota bridge", asy
   assert.equal(getQuotaResumeStatusObserver(), null);
 });
 
+test("Host rollover wiring propagates supervisor acceptance through the publisher", async () => {
+  const scheduler = new ManualScheduler();
+  const control = fakeRuntime();
+  const host = await createPindieHost({
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+    longTaskRollover: { schedule: scheduler.schedule },
+    dependencies: {
+      createAgentSessionRuntime: async () => control.runtime,
+      createInteractiveMode: () => ({ run: async () => {} }),
+    },
+  });
+
+  try {
+    const publisher = getCommittedRolloverPublisher();
+    assert.ok(publisher);
+    assert.equal(publisher(committedRequest("session-1")), true);
+    assert.equal(scheduler.callbacks.length, 1);
+  } finally {
+    await host.dispose();
+  }
+});
+
 test("Host lifecycle boundaries reset rollover state even when native Session identity is reused", async () => {
   const scheduler = new ManualScheduler();
   const control = fakeRuntime();
