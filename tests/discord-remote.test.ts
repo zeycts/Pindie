@@ -193,7 +193,7 @@ test("a new DiscordRemote generation does not inherit the old gateway outage lat
   remote.stop();
 });
 
-test("Discord REST receives AbortSignal, disables mentions, and starts a message thread with real options", async () => {
+test("Discord REST suppresses ordinary mentions and only pings the configured user for attention events", async () => {
   const calls: Array<{ method: string; route: string; options: any }> = []; let next = 0;
   const raw = {
     get: async (route: string, options: any) => { calls.push({ method: "get", route, options }); return route === "/channels/thread" ? { id: "thread", guild_id: config.guildId, parent_id: "channel", type: ChannelType.PublicThread } : { id: "channel", guild_id: config.guildId, type: ChannelType.GuildText }; },
@@ -203,11 +203,21 @@ test("Discord REST receives AbortSignal, disables mentions, and starts a message
   const client = new FakeClient(); Object.assign(client.rest, raw);
   const remote = new DiscordRemote(config, { createClient: () => client, setTimer: () => 1 as any, clearTimer: () => undefined }); await remote.start(async () => "sent");
   const controller = new AbortController(); const project = await remote.ensureProject("p", "project", null, controller.signal); const session = await remote.ensureSession(project.channelId, "s", "Title", null, controller.signal);
-  await remote.send(session.threadId, { entryId: "a", kind: "assistant", text: "answer" }, controller.signal);
+  await remote.send(session.threadId, { entryId: "a", kind: "assistant", text: "@everyone ordinary answer" }, controller.signal);
+  await remote.send(session.threadId, { entryId: "blocked", kind: "milestone", text: "TASK BLOCKED", attention: true }, controller.signal);
   await remote.updateSessionPresentation(session, presentation(), controller.signal); await remote.flushPresentation(session.threadId);
+
   assert.ok(calls.length > 0 && calls.every((call) => call.options.signal === controller.signal));
   const messageWrites = calls.filter((call) => call.route.includes("/messages") && !call.route.endsWith("/threads"));
-  assert.ok(messageWrites.length > 0); for (const call of messageWrites) assert.deepEqual(call.options.body.allowed_mentions, { parse: [] });
+  const ordinary = messageWrites.find((call) => call.options.body.content === "@everyone ordinary answer");
+  assert.ok(ordinary);
+  assert.deepEqual(ordinary.options.body.allowed_mentions, { parse: [] });
+
+  const attention = messageWrites.find((call) => call.options.body.content === `<@${config.userId}>\nTASK BLOCKED`);
+  assert.ok(attention);
+  assert.deepEqual(attention.options.body.allowed_mentions, { parse: [], users: [config.userId] });
+  assert.equal(messageWrites.some((call) => call.options.body.allowed_mentions?.users?.some((id: string) => id !== config.userId)), false);
+
   const thread = calls.find((call) => call.route.endsWith("/threads")); assert.ok(thread); assert.equal("type" in thread.options.body, false); assert.equal(thread.options.body.auto_archive_duration, 1440);
 });
 
