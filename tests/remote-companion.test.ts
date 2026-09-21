@@ -5,13 +5,13 @@ import { join } from "node:path";
 import test from "node:test";
 import { RemoteCompanion, type RemoteSessionPresentation, type RemoteStatusFacts, type RemoteSurface } from "../src/remote-companion.ts";
 import { RemoteRoutingStore } from "../src/remote-routing.ts";
-import { ExecutionAggregator, mirrorEntry, splitTimelineEvent } from "../src/session-mirror.ts";
+import { ExecutionAggregator, mirrorEntry, splitTimelineEvent, type TimelineEvent } from "../src/session-mirror.ts";
 
 class Surface implements RemoteSurface {
-  projects = 0; sessions = 0; sent: string[] = []; titles: string[] = []; presentations: RemoteSessionPresentation[] = []; fail = false; replace = false; replaceChannel = false; unique = false; uniqueChannel = false;
+  projects = 0; sessions = 0; sent: string[] = []; events: TimelineEvent[] = []; titles: string[] = []; presentations: RemoteSessionPresentation[] = []; fail = false; replace = false; replaceChannel = false; unique = false; uniqueChannel = false;
   async ensureProject(id: string, _name: string, existing: string | null) { if (this.fail) throw new Error("offline"); this.projects++; return { channelId: this.replaceChannel ? "channel-replacement" : (existing ?? (this.uniqueChannel ? `channel-${id}` : "channel")), replaced: this.replaceChannel }; }
   async ensureSession(_channel: string, id: string, title: string) { if (this.fail) throw new Error("offline"); this.sessions++; this.titles.push(title); return { threadId: this.replace ? "replacement" : (this.unique ? `thread-${id}` : "thread"), anchorMessageId: "anchor", headerMessageId: "header", replaced: this.replace }; }
-  async send(_thread: string, event: { text: string }) { if (this.fail) throw new Error("offline"); this.sent.push(event.text); }
+  async send(_thread: string, event: TimelineEvent) { if (this.fail) throw new Error("offline"); this.events.push(structuredClone(event)); this.sent.push(event.text); }
   async updateSessionPresentation(_session: unknown, presentation: RemoteSessionPresentation) { if (this.fail) throw new Error("offline"); this.presentations.push(structuredClone(presentation)); }
 }
 const activeStatus = (overrides: Partial<RemoteStatusFacts> = {}): RemoteStatusFacts => ({ taskGoal: "Task", taskStatus: "active", activity: null, verificationStatus: "pending", elapsedMs: null, semanticAuthority: "coherent", localUiPrompt: false, ...overrides });
@@ -243,8 +243,10 @@ test("local UI rejects ordinary input but permits stop, and stale bindings are i
 
 test("blocked and unavailable milestones deduplicate by their runtime fingerprint", async () => {
   const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() }); await remote.bind("/milestones", "guild", "session");
-  await remote.milestone("blocked:one", "TASK BLOCKED\none"); await remote.milestone("blocked:one", "TASK BLOCKED\none"); await remote.milestone("authority:unavailable", "PINDIE AUTHORITY UNAVAILABLE"); await remote.milestone("authority:unavailable", "PINDIE AUTHORITY UNAVAILABLE");
+  await remote.milestone("blocked:one", "TASK BLOCKED\none", { attention: true }); await remote.milestone("blocked:one", "TASK BLOCKED\none", { attention: true }); await remote.milestone("authority:unavailable", "PINDIE AUTHORITY UNAVAILABLE"); await remote.milestone("authority:unavailable", "PINDIE AUTHORITY UNAVAILABLE");
   assert.deepEqual(surface.sent, ["TASK BLOCKED\none", "PINDIE AUTHORITY UNAVAILABLE"]);
+  assert.equal(surface.events[0]?.attention, true);
+  assert.equal(surface.events[1]?.attention, undefined);
 });
 
 test("Human Gate deduplication commits only after successful delivery", async () => {
@@ -253,12 +255,13 @@ test("Human Gate deduplication commits only after successful delivery", async ()
   const key = "gate:Choose\0A\0B";
   const event = remote.humanGate("Choose", ["A", "B"]);
   surface.fail = true;
-  await remote.milestone(key, event.text);
+  await remote.milestone(key, event.text, { attention: true });
   surface.fail = false;
   const retry = remote.humanGate("Choose", ["A", "B"]);
-  await remote.milestone(key, retry.text);
-  await remote.milestone(key, retry.text);
+  await remote.milestone(key, retry.text, { attention: true });
+  await remote.milestone(key, retry.text, { attention: true });
   assert.equal(surface.sent.filter((text) => text === "HUMAN GATE\nChoose\nA · B").length, 1);
+  assert.equal(surface.events[0]?.attention, true);
 });
 
 test("session replacement stops an in-flight old binding before stale Session projection", async (t) => {
@@ -301,11 +304,39 @@ test("completion is transition-driven, settled once, and resumed completion is n
   assert.deepEqual(surface.sent, []);
   await remote.settleCompletion(); await remote.settleCompletion();
   assert.deepEqual(surface.sent, ["TASK COMPLETED"]);
+  assert.equal(surface.events[0]?.attention, true);
 
   const resumedSurface = new Surface(); const resumed = new RemoteCompanion(resumedSurface, { routing: isolatedRouting() });
   await resumed.bind("/resumed", "guild", "session", { status: activeStatus({ taskStatus: "done", verificationStatus: "passed" }) });
   await resumed.settleCompletion();
   assert.deepEqual(resumedSurface.sent, []);
+});
+
+test("settled completion follows the final visible output and execution summary", async () => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() });
+  await remote.bind("/ordered-completion", "guild", "session", { status: activeStatus() });
+  await remote.status(activeStatus({ taskStatus: "done", verificationStatus: "passed" }));
+  await remote.catchUp([
+    { id: "prompt", message: { role: "user", content: "Finish the Task" } },
+    { id: "answer", message: { role: "assistant", content: "The finished result." } },
+  ]);
+  remote.recordTool("bash");
+  await remote.flushExecution("summary");
+  await remote.settleCompletion();
+  assert.deepEqual(surface.events.map((event) => event.text), [
+    "YOU\nFinish the Task",
+    "The finished result.",
+    "EXECUTION\nbash ×1",
+    "TASK COMPLETED",
+  ]);
+  assert.equal(surface.events.at(-1)?.attention, true);
+  assert.equal(surface.events.slice(0, -1).some((event) => event.attention === true), false);
+});
+
+test("ordinary milestones stay quiet while attention remains explicit", async () => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() }); await remote.bind("/quiet", "guild", "session");
+  await remote.milestone("verification:passed", "VERIFICATION · PASSED");
+  assert.equal(surface.events[0]?.attention, undefined);
 });
 
 test("milestones deduplicate and stale threads reset cursor", async (t) => {
