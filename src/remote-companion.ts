@@ -23,7 +23,11 @@ export interface RemoteSurface {
   /** One transport-independent seam for editing the existing anchor/header in place. */
   updateSessionPresentation(session: Pick<RemoteSessionRouting, "threadId" | "anchorMessageId" | "headerMessageId">, presentation: RemoteSessionPresentation, signal: AbortSignal): Promise<void>;
 }
-export interface RemoteMilestoneOptions { attention?: true; }
+export interface RemoteMilestoneOptions {
+  attention?: true;
+  /** Runtime-only finalization guard; a replaced/new Run must suppress delivery. */
+  isCurrent?: () => boolean;
+}
 export interface RemotePi {
   isIdle(): boolean;
   abort(): void;
@@ -75,6 +79,15 @@ function titleFor(binding: Pick<Binding, "sessionId" | "sessionName" | "sessionP
   const activeTaskGoal = ["active", "blocked", "waiting_human"].includes(binding.status.taskStatus) ? binding.taskGoal?.trim() : undefined;
   const value = binding.sessionName?.trim() || binding.sessionPrompt?.split(/\r?\n/, 1)[0]?.trim() || activeTaskGoal || `Session ${binding.sessionId.slice(0, 8)}`;
   return value.slice(0, 100);
+}
+
+function isLifecycleCurrent(guard: (() => boolean) | undefined): boolean {
+  if (guard === undefined) return true;
+  try {
+    return guard();
+  } catch {
+    return false;
+  }
 }
 
 /** Session-scoped Remote projection/control coordinator. It owns no transcript or Pi queue. */
@@ -257,24 +270,26 @@ export class RemoteCompanion {
   }
   async milestone(key: string, text: string, options: RemoteMilestoneOptions = {}): Promise<void> {
     const binding = this.binding;
-    if (!binding || this.milestones.has(key)) return;
+    if (!binding || this.milestones.has(key) || !isLifecycleCurrent(options.isCurrent)) return;
     await this.serial(async () => {
-      if (this.binding !== binding || this.milestones.has(key)) return;
+      if (this.binding !== binding || this.milestones.has(key) || !isLifecycleCurrent(options.isCurrent)) return;
       const session = await this.ensure(binding);
       const event: TimelineEvent = { entryId: `remote:${key}`, kind: "milestone", text, ...(options.attention === true ? { attention: true } : {}) };
       for (const part of splitTimelineEvent(event)) {
+        if (!isLifecycleCurrent(options.isCurrent)) return;
         await this.surface.send(session.threadId, part, binding.abortController.signal);
         this.requireCurrent(binding);
       }
       this.milestones.add(key);
     });
   }
-  async settleCompletion(): Promise<void> {
+  async settleCompletion(isCurrent?: () => boolean): Promise<void> {
     const binding = this.binding;
-    if (!binding?.completionPending) return;
+    if (!binding?.completionPending || !isLifecycleCurrent(isCurrent)) return;
     await this.serial(async () => {
-      if (this.binding !== binding || !binding.completionPending) return;
+      if (this.binding !== binding || !binding.completionPending || !isLifecycleCurrent(isCurrent)) return;
       const session = await this.ensure(binding);
+      if (!isLifecycleCurrent(isCurrent)) return;
       await this.surface.send(session.threadId, { entryId: "remote:completion:settled", kind: "milestone", text: "TASK COMPLETED", attention: true }, binding.abortController.signal);
       this.requireCurrent(binding);
       binding.completionPending = false;

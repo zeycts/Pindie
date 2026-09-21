@@ -53,9 +53,9 @@ export class QuotaResumeSupervisor {
     this.onWaitingChange = options.onWaitingChange ?? (() => undefined);
   }
 
-  request(plan: QuotaResumePlan): void {
-    if (this.disposed || !this.validPlan(plan) || !this.matchesCurrentRuntime(plan)) return;
-    if (this.lease?.plan.sessionId === plan.sessionId && this.lease.plan.anchorEntryId === plan.anchorEntryId) return;
+  request(plan: QuotaResumePlan): boolean {
+    if (this.disposed || !this.validPlan(plan) || !this.matchesCurrentRuntime(plan)) return false;
+    if (this.lease?.plan.sessionId === plan.sessionId && this.lease.plan.anchorEntryId === plan.anchorEntryId) return true;
 
     this.clearLease();
     const generation = ++this.generation;
@@ -64,10 +64,11 @@ export class QuotaResumeSupervisor {
       cancelTimer = this.schedule(plan.resumeAt - this.now(), () => this.wake(generation));
     } catch (error) {
       this.report(`Quota resume could not be scheduled: ${errorMessage(error)}`);
-      return;
+      return false;
     }
     this.lease = { generation, plan, cancelTimer };
     this.publishWaiting({ sessionId: plan.sessionId, resumeAt: plan.resumeAt });
+    return true;
   }
 
   cancel(sessionId: string): void {

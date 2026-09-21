@@ -285,6 +285,8 @@ Attention is presentation metadata only. It is not persisted in `PindieState`, r
 
 Semantic attention is deliberately narrow: a Human Gate opening/material change, a blocked Task/material blocker change, and Task completion at `agent_settled`. Existing runtime milestone fingerprints deduplicate unchanged blocked and Gate states; because `waiting_human` takes precedence over blockers, a Gate state does not add a duplicate blocked attention event. Completion remains transition-driven and settlement-gated: a `done` transition sets completion pending, while only the final `agent_settled` path emits the attention milestone after catch-up and execution-summary flushing. Rebinding a Session whose Task is already done does not replay it.
 
+A `STOPPED` milestone means the Task is still `active` after final settlement and no automatic successor remains. `agent_end` alone is not stopped: an existing Pi-native continuation suppresses premature attention. An accepted Quota Auto Resume schedule and a committed Long Task rollover likewise suppress stopped attention. `blocked`, `waiting_human`, and `done` use their own existing attention milestones. `stopped` is runtime presentation only and is never persisted in `PindieState`; it is emitted only after transcript catch-up and the final execution summary.
+
 ## 12. Remote input semantics
 
 Remote input operates only on the active mapped thread.

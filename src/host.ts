@@ -179,8 +179,8 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       console.warn("[Pindie] Ignored a quota resume event while Host runtime was bootstrapping.");
       return;
     }
-    if (event.type === "schedule") quotaResumeSupervisor.request(event.plan);
-    else quotaResumeSupervisor.cancel(event.sessionId);
+    if (event.type === "schedule") return quotaResumeSupervisor.request(event.plan);
+    quotaResumeSupervisor.cancel(event.sessionId);
   });
   try {
     releaseControlBridge = installCommittedRolloverReceiver(

@@ -5,8 +5,8 @@ export interface CommittedRolloverRequest {
   readonly checkpoint: TaskContinuityV1;
 }
 
-export type CommittedRolloverReceiver = (request: CommittedRolloverRequest) => void;
-export type CommittedRolloverPublisher = (request: CommittedRolloverRequest) => void;
+export type CommittedRolloverReceiver = (request: CommittedRolloverRequest) => unknown;
+export type CommittedRolloverPublisher = (request: CommittedRolloverRequest) => unknown;
 
 export type SessionLifecycleReason = "quit" | "reload" | "new" | "resume" | "fork";
 
@@ -69,7 +69,7 @@ export function getCommittedRolloverPublisher(): CommittedRolloverPublisher | nu
     if (bridgeState.activeLease?.token !== lease.token) {
       throw new Error("Pindie Host committed rollover control bridge lease is no longer active.");
     }
-    lease.receiver(request);
+    return lease.receiver(request);
   };
 }
 

@@ -74,10 +74,10 @@ export class LongTaskRolloverSupervisor {
     this.taskMetrics = options.taskMetrics ?? null;
   }
 
-  request(request: CommittedRolloverRequest): void {
-    if (this.disposed || this.inProgress || this.pendingRequest !== null) return;
+  request(request: CommittedRolloverRequest): boolean {
+    if (this.disposed || this.inProgress || this.pendingRequest !== null) return false;
     this.pendingRequest = request;
-    if (this.scheduled) return;
+    if (this.scheduled) return true;
     this.scheduled = true;
     try {
       this.schedule(() => {
@@ -107,7 +107,9 @@ export class LongTaskRolloverSupervisor {
       this.pendingRequest = null;
       this.breakChain();
       this.report(`Automatic Long Task rollover could not be scheduled: ${errorMessage(error)}`);
+      return false;
     }
+    return true;
   }
 
   async dispose(): Promise<void> {
