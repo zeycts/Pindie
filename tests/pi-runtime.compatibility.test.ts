@@ -12,10 +12,13 @@ import {
   SettingsManager,
   type AgentSession,
   type BeforeAgentStartEventResult,
+  type ExtensionAPI,
   type ExtensionContext,
   type InlineExtension,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
   PINDIE_QUOTA_RESUME_MESSAGE,
   PINDIE_QUOTA_RESUME_TYPE,
@@ -30,10 +33,12 @@ interface RealPiHarness {
 type BeforeAgentStartHook = (
   event: { prompt: string },
   ctx: ExtensionContext,
+  pi: ExtensionAPI,
 ) => BeforeAgentStartEventResult | undefined;
 
 async function createRealPiHarness(
   beforeAgentStart?: BeforeAgentStartHook,
+  customTools: ToolDefinition[] = [],
 ): Promise<RealPiHarness> {
   const root = await mkdtemp(join(tmpdir(), "pindie-pi-compatibility-"));
   const cwd = join(root, "project");
@@ -50,7 +55,7 @@ async function createRealPiHarness(
   const extensionFactories: InlineExtension[] = beforeAgentStart
     ? [
         (pi) => {
-          pi.on("before_agent_start", (event, ctx) => beforeAgentStart(event, ctx));
+          pi.on("before_agent_start", (event, ctx) => beforeAgentStart(event, ctx, pi));
         },
       ]
     : [];
@@ -73,7 +78,8 @@ async function createRealPiHarness(
     model: faux.getModel(),
     resourceLoader,
     sessionManager: SessionManager.inMemory(cwd),
-    noTools: "all",
+    noTools: customTools.length > 0 ? "builtin" : "all",
+    customTools,
   });
   await session.bindExtensions({});
 
@@ -89,13 +95,34 @@ function nextTurn(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+function providerSystemPrompt(context: { messages?: readonly unknown[] } | undefined): string | undefined {
+  const systemMessage = context?.messages?.find((message) =>
+    typeof message === "object" && message !== null &&
+    (message as { role?: unknown }).role === "system",
+  );
+  if (typeof systemMessage !== "object" || systemMessage === null) return undefined;
+  const content = (systemMessage as { content?: unknown }).content;
+  return typeof content === "string" ? content : undefined;
+}
+
+const compatibilityTool: ToolDefinition = {
+  name: "compatibility-tool",
+  label: "Compatibility tool",
+  description: "A harmless tool used to verify Pi's active tool loadout.",
+  promptSnippet: "compatibility-tool",
+  parameters: Type.Object({}),
+  execute: async () => ({
+    content: [{ type: "text", text: "compatibility tool" }],
+  }),
+};
+
 // Temporary downstream compatibility contract for the idle custom-triggered
 // turn path. It protects behavior Pindie needs until earendil-works/pi#8262
 // lands in a pinned Pi release. When it does: remove the downstream patch, then
 // keep/adapt this contract test against Pi's native behavior.
-test("Pi 0.85.1 compatibility: idle custom trigger runs before_agent_start preflight and applies its result", async () => {
+test("Pi 0.86.1 compatibility: idle custom trigger runs before_agent_start preflight and applies its result", async () => {
   let beforeAgentStartCalls = 0;
-  let providerContext: { systemPrompt?: string; messages?: readonly unknown[] } | undefined;
+  let providerContext: { messages?: readonly unknown[] } | undefined;
   const harness = await createRealPiHarness(() => {
     beforeAgentStartCalls += 1;
     return {
@@ -118,10 +145,10 @@ test("Pi 0.85.1 compatibility: idle custom trigger runs before_agent_start prefl
       { triggerTurn: true },
     );
 
-    // Without the downstream 0.85.1 patch, the native idle path enters
+    // Without the downstream 0.86.1 patch, the native idle path enters
     // _runAgentPrompt() directly and skips this hook and its result.
     assert.equal(beforeAgentStartCalls, 1);
-    assert.equal(providerContext?.systemPrompt, "downstream compatibility system prompt");
+    assert.equal(providerSystemPrompt(providerContext), "downstream compatibility system prompt");
     assert.ok(providerContext?.messages?.some((message) => {
       if (typeof message !== "object" || message === null) return false;
       const candidate = message as { content?: unknown };
@@ -138,7 +165,34 @@ test("Pi 0.85.1 compatibility: idle custom trigger runs before_agent_start prefl
   }
 });
 
-test("characterizes Pi 0.85.1 quota trigger: preflight exposes the hidden content before branch append", async () => {
+test("Pi 0.86.1 compatibility: idle custom trigger preserves the live active tool loadout", async () => {
+  let providerContext: { messages?: readonly unknown[] } | undefined;
+  const harness = await createRealPiHarness((_event, _ctx, pi) => {
+    pi.setActiveTools(["compatibility-tool"]);
+  }, [compatibilityTool]);
+
+  try {
+    harness.faux.setResponses([(context) => {
+      providerContext = context;
+      return fauxAssistantMessage("done");
+    }]);
+    await harness.session.sendCustomMessage(
+      { customType: "runtime-trigger", content: "wake up", display: false },
+      { triggerTurn: true },
+    );
+
+    assert.deepEqual(harness.session.getActiveToolNames(), ["compatibility-tool"]);
+    const providerSystemMessage = providerContext?.messages?.find((message) =>
+      typeof message === "object" && message !== null &&
+      (message as { role?: unknown }).role === "system",
+    );
+    assert.match(JSON.stringify(providerSystemMessage), /compatibility-tool/);
+  } finally {
+    await disposeHarness(harness);
+  }
+});
+
+test("characterizes Pi 0.86.1 quota trigger: preflight exposes the hidden content before branch append", async () => {
   let preflightPrompt: string | undefined;
   let preflightBranch: readonly unknown[] | undefined;
   const harness = await createRealPiHarness((event, ctx) => {
@@ -167,7 +221,7 @@ test("characterizes Pi 0.85.1 quota trigger: preflight exposes the hidden conten
   }
 });
 
-test("characterizes Pi 0.85.1: custom trigger Promise covers the full Agent Run", async () => {
+test("characterizes Pi 0.86.1: custom trigger Promise covers the full Agent Run", async () => {
   let resolveResponse: ((message: ReturnType<typeof fauxAssistantMessage>) => void) | undefined;
   const responseSettled = new Promise<ReturnType<typeof fauxAssistantMessage>>((resolve) => {
     resolveResponse = resolve;

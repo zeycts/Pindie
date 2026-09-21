@@ -1,0 +1,42 @@
+diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
+--- a/dist/core/agent-session.js
++++ b/dist/core/agent-session.js
+@@ -1230,7 +1230,37 @@
+             }
+         }
+         else if (options?.triggerTurn) {
+-            await this._runAgentPrompt(appMessage);
++            // Compatibility patch for Pi 0.86.1: idle custom-triggered turns
++            // still need the normal before_agent_start preflight, but must use
++            // Pi's transcript-aware prompt and tool-loadout preparation.
++            const images = typeof appMessage.content === "string"
++                ? undefined
++                : appMessage.content.filter((part) => part.type === "image");
++            const messages = [appMessage];
++            const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
++            const result = await this._extensionRunner.emitBeforeAgentStart(contentText(appMessage.content), images && images.length > 0 ? images : undefined, this._baseSystemPromptOptions);
++            // Match prompt(): a live setActiveTools() loadout remains authoritative
++            // unless the before_agent_start handler explicitly edits selectedTools.
++            const handlerEditedTools = result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
++                result.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
++            if (!handlerEditedTools)
++                result.systemPromptOptions.selectedTools = this.getActiveToolNames();
++            for (const msg of result.messages) {
++                messages.push({
++                    role: "custom",
++                    customType: msg.customType,
++                    // Untyped extensions can pass null/missing content; normalize at ingestion.
++                    content: msg.content ?? [],
++                    display: msg.display,
++                    details: msg.details,
++                    timestamp: Date.now(),
++                });
++            }
++            const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
++            this._runSystemPromptOptions = result.systemPromptOptions;
++            if (updateMessage)
++                messages.unshift(updateMessage);
++            await this._runAgentPrompt(messages);
+         }
+         else if (this.isStreaming) {
+             // Appending now would put the message between an assistant tool call and its

@@ -297,10 +297,10 @@ function isQuotaResumeAgentRun(
     if (isQuotaResumeBranchMessage(latest)) return true;
   } catch {
     // Compatibility fallback below is the factual signal exposed by the
-    // pinned Pi 0.85.1 idle custom-trigger path.
+    // pinned Pi 0.86.1 idle custom-trigger path.
   }
 
-  // Pi 0.85.1's patched idle custom-trigger path runs before the custom
+  // Pi 0.86.1's patched idle custom-trigger path runs before the custom
   // message is appended to SessionManager, so its preflight exposes the exact
   // hidden message content rather than the customType on the current branch.
   return event.prompt === PINDIE_QUOTA_RESUME_MESSAGE;

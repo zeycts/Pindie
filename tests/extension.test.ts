@@ -4724,7 +4724,7 @@ test("the latest quota-resume custom branch message force-refreshes usage", asyn
   assert.match(statuses.at(-1)?.text ?? "", /5h 80%/);
 });
 
-test("Pi 0.85.1 quota custom-trigger preflight starts usage refresh without blocking Run preparation", async () => {
+test("Pi 0.86.1 quota custom-trigger preflight starts usage refresh without blocking Run preparation", async () => {
   let markFetchStarted!: () => void;
   let releaseFetch!: () => void;
   const fetchStarted = new Promise<void>((resolve) => { markFetchStarted = resolve; });
