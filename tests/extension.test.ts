@@ -1276,6 +1276,19 @@ test("configured extension composes Memory and Discord options in one registrati
   assert.equal(explicitApi.tools.has("pindie_memory_capture"), true);
 });
 
+test("configured registration returns only the narrow presentation reader", () => {
+  const api = new CapturedExtensionAPI();
+  const integration = registerConfiguredPindieExtension(
+    api as unknown as ExtensionAPI,
+    {},
+    {},
+  );
+
+  assert.equal(typeof integration.presentation.snapshot, "function");
+  assert.equal("setQuotaResumeWaiting" in integration.presentation, false);
+  assert.equal(integration.presentation.snapshot().projectRoot, null);
+});
+
 test("registered Work Memory capture uses the runtime root, authoritative State, and Harness clock", async () => {
   const sink = new ExtensionTestMemorySink();
   const captureDate = new Date(2026, 8, 5, 12, 0, 0);

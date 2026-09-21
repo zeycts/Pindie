@@ -35,7 +35,10 @@ import {
   PINDIE_CONTINUATION_PROBE_TYPE,
   shouldProbeContinuation,
 } from "./continuation.ts";
-import { PresentationIntegration } from "./presentation-integration.ts";
+import {
+  PresentationIntegration,
+  type PindiePresentationReader,
+} from "./presentation-integration.ts";
 import { PINDIE_REMOTE_NOTICE_TYPE, renderPindieRemoteNotice } from "./remote-notice.ts";
 import { CrossProjectLearningIntegration } from "./cross-project-learning-integration.ts";
 import { SelfImprovementIntegration } from "./self-improvement-integration.ts";
@@ -214,6 +217,7 @@ export interface PindieExtensionOptions {
 
 export interface PindieExtensionIntegration {
   readonly featureSelection: PindieFeatureSelection;
+  readonly presentation: PindiePresentationReader;
   readonly core: CoreIntegration;
   readonly runtime: PindieRuntime;
   readonly runActivity: RunActivityTracker | null;
@@ -463,6 +467,7 @@ function registerComposedPindieExtension(
     continuityNow,
   );
   const presentation = new PresentationIntegration(pi, {
+    getSemanticSnapshot: () => run.deriveSnapshot(),
     getState: () => runtime.projectRoot === null ? null : runtime.state,
     getProjectRoot: () => runtime.projectRoot,
     getAuthoritativeState: () => run.authoritativeState,
@@ -479,6 +484,9 @@ function registerComposedPindieExtension(
     taskMetrics: core.taskMetrics,
     uiEnabled: featureSelection.presentation,
   });
+  const presentationReader: PindiePresentationReader = {
+    snapshot: () => presentation.snapshot(),
+  };
   let releaseQuotaStatusObserver = quotaResumeStatusObserver?.subscribe((status) => {
     presentation.setQuotaResumeWaiting(status);
   }) ?? null;
@@ -1534,6 +1542,7 @@ function registerComposedPindieExtension(
 
   return {
     featureSelection,
+    presentation: presentationReader,
     core,
     runtime,
     reasoning: presentation.reasoning,
@@ -1567,10 +1576,10 @@ export function registerConfiguredPindieExtension(
   pi: ExtensionAPI,
   options: PindieExtensionOptions = {},
   env: Record<string, string | undefined> = process.env,
-): void {
+): PindieExtensionIntegration {
   const composition = composeConfiguredPindieExtension(options, env);
   for (const warning of composition.warnings) console.warn(warning);
-  registerComposedPindieExtension(
+  return registerComposedPindieExtension(
     pi,
     composition.extensionOptions,
     composition.featureSelection,

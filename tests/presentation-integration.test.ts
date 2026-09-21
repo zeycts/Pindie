@@ -10,15 +10,20 @@ import {
   type SubscriptionUsageSnapshot,
 } from "../src/subscription-usage.ts";
 import { TaskMetricsTracker } from "../src/task-metrics.ts";
+import type { SemanticDerivationResult } from "../src/semantics.ts";
 
 function createPresentation(options: {
   uiEnabled?: boolean;
+  semantic?: SemanticDerivationResult;
+  semanticSource?: () => SemanticDerivationResult;
   provider?: SubscriptionUsageProvider;
   now?: () => number;
   monitor?: SubscriptionUsageMonitor;
 } = {}) {
   const pi = { getThinkingLevel: () => "medium", setThinkingLevel: () => undefined } as unknown as ExtensionAPI;
+  const semantic = options.semantic ?? { ok: false, error: "test semantic source" };
   return new PresentationIntegration(pi, {
+    getSemanticSnapshot: options.semanticSource ?? (() => semantic),
     getState: () => ({ task: null }),
     getProjectRoot: () => "/repo",
     getAuthoritativeState: () => ({ task: null }),
@@ -63,6 +68,57 @@ function usageSnapshot(usedPercent: number, fetchedAt = 1): SubscriptionUsageSna
   };
 }
 
+test("presentation snapshot passes through the injected semantic source", () => {
+  const semantic: SemanticDerivationResult = { ok: false, error: "sentinel semantic result" };
+  const presentation = createPresentation({ semantic });
+
+  assert.strictEqual(presentation.snapshot().semantic, semantic);
+});
+
+test("presentation snapshot includes the existing status facts", async () => {
+  const usage = usageSnapshot(20, 2);
+  const presentation = createPresentation({
+    monitor: new SubscriptionUsageMonitor({ fetchUsage: async () => usage }),
+  });
+  const ui = uiContext("session");
+  presentation.setStatusContext(ui.ctx);
+  presentation.runTimer.start();
+  presentation.runCost.start([]);
+  presentation.reasoning?.setAuto();
+  presentation.runActivity?.start();
+  presentation.runActivity?.toolExecutionStart("call", "bash");
+
+  await presentation.refreshSubscriptionUsage(ui.ctx);
+  const snapshot = presentation.snapshot();
+
+  assert.deepEqual(snapshot.status.state, { task: null });
+  assert.equal(snapshot.status.stateUnavailableReason, null);
+  assert.equal(snapshot.status.reasoningMode, "auto");
+  assert.equal(snapshot.status.activity, "running");
+  assert.equal(snapshot.status.consumption?.scope, "run");
+  assert.equal(snapshot.status.consumption?.cost, 0);
+  assert.deepEqual(snapshot.status.subscriptionUsage, usage);
+  assert.equal(snapshot.status.quotaResumeWaiting, false);
+});
+
+test("refreshStatus renders from the shared structured presentation snapshot", () => {
+  const semantic: SemanticDerivationResult = { ok: false, error: "shared semantic result" };
+  let reads = 0;
+  const presentation = createPresentation({
+    semanticSource: () => {
+      reads += 1;
+      return semantic;
+    },
+  });
+  const ui = uiContext("session");
+  presentation.setStatusContext(ui.ctx);
+
+  presentation.refreshStatus(ui.ctx);
+
+  assert.equal(reads, 1);
+  assert.match(ui.statuses.at(-1) ?? "", /idle/);
+});
+
 test("matching authoritative waiting renders and notifies exactly once", () => {
   const presentation = createPresentation();
   const ui = uiContext("session");
@@ -70,6 +126,9 @@ test("matching authoritative waiting renders and notifies exactly once", () => {
   presentation.setQuotaResumeWaiting({ sessionId: "session", resumeAt: 123 });
   presentation.setQuotaResumeWaiting({ sessionId: "session", resumeAt: 123 });
 
+  const snapshot = presentation.snapshot();
+  assert.equal(snapshot.status.quotaResumeWaiting, true);
+  assert.deepEqual(snapshot.quotaResumeWaiting, { sessionId: "session", resumeAt: 123 });
   assert.match(ui.statuses.at(-1) ?? "", /waiting · quota/);
   assert.deepEqual(ui.notifications, [{ message: notice, type: "info" }]);
 
@@ -84,6 +143,9 @@ test("other-Session waiting neither renders nor notifies", () => {
   presentation.setStatusContext(ui.ctx);
   presentation.setQuotaResumeWaiting({ sessionId: "other", resumeAt: 123 });
 
+  const snapshot = presentation.snapshot();
+  assert.equal(snapshot.status.quotaResumeWaiting, false);
+  assert.equal(snapshot.quotaResumeWaiting, null);
   assert.doesNotMatch(ui.statuses.at(-1) ?? "", /waiting · quota/);
   assert.deepEqual(ui.notifications, []);
 });
@@ -95,6 +157,70 @@ test("presentation-disabled waiting produces no status or notification", () => {
   presentation.setQuotaResumeWaiting({ sessionId: "session", resumeAt: 123 });
   assert.deepEqual(ui.statuses, []);
   assert.deepEqual(ui.notifications, []);
+});
+
+test("snapshot without a current status context does not leak a quota lease", () => {
+  const presentation = createPresentation();
+  presentation.setQuotaResumeWaiting({ sessionId: "stale-session", resumeAt: 123 });
+
+  const snapshot = presentation.snapshot();
+
+  assert.equal(snapshot.status.quotaResumeWaiting, false);
+  assert.equal(snapshot.quotaResumeWaiting, null);
+});
+
+test("snapshot with an unknown Session identity excludes the quota lease", () => {
+  const presentation = createPresentation();
+  const staleContext = {
+    hasUI: true,
+    sessionManager: {
+      getSessionId: () => { throw new Error("stale ExtensionContext"); },
+      getEntries: () => { throw new Error("stale ExtensionContext"); },
+    },
+    ui: {
+      theme: { fg: (_tone: string, text: string) => text },
+      setStatus: () => undefined,
+      notify: () => undefined,
+    },
+  } as unknown as ExtensionContext;
+  presentation.setStatusContext(staleContext);
+  presentation.setQuotaResumeWaiting({ sessionId: "stale-session", resumeAt: 123 });
+
+  const snapshot = presentation.snapshot();
+
+  assert.equal(snapshot.status.quotaResumeWaiting, false);
+  assert.equal(snapshot.quotaResumeWaiting, null);
+  assert.equal(snapshot.status.consumption, null);
+});
+
+test("snapshot performs no Extension UI operation", () => {
+  let uiCalls = 0;
+  const presentation = createPresentation();
+  const context = {
+    hasUI: true,
+    sessionManager: {
+      getSessionId: () => "session",
+      getEntries: () => [],
+    },
+    ui: {
+      get theme(): never {
+        uiCalls += 1;
+        throw new Error("snapshot must not read the UI theme");
+      },
+      setStatus: () => {
+        uiCalls += 1;
+        throw new Error("snapshot must not set status");
+      },
+      notify: () => {
+        uiCalls += 1;
+        throw new Error("snapshot must not notify");
+      },
+    },
+  } as unknown as ExtensionContext;
+  presentation.setStatusContext(context);
+
+  assert.doesNotThrow(() => presentation.snapshot());
+  assert.equal(uiCalls, 0);
 });
 
 test("forced subscription refresh replaces stale visible quota presentation", async () => {

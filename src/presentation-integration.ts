@@ -21,16 +21,30 @@ import {
 import {
   deriveStatusLayout,
   renderStatusLayout,
+  type PindieStatusSnapshot,
 } from "./status-line.ts";
 import {
   SubscriptionUsageMonitor,
   type SubscriptionUsageRefreshOptions,
 } from "./subscription-usage.ts";
 import type { QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
+import type { SemanticDerivationResult } from "./semantics.ts";
 
 const PINDIE_STATUS_ID = "pindie-status";
 
+export interface PindiePresentationReader {
+  snapshot(): PindiePresentationSnapshot;
+}
+
+export interface PindiePresentationSnapshot {
+  readonly semantic: SemanticDerivationResult;
+  readonly status: PindieStatusSnapshot;
+  readonly quotaResumeWaiting: QuotaResumeWaitingStatus | null;
+  readonly projectRoot: string | null;
+}
+
 export interface PresentationIntegrationOptions {
+  getSemanticSnapshot: () => SemanticDerivationResult;
   getState: () => PindieState | null;
   getProjectRoot: () => string | null;
   getAuthoritativeState: () => PindieState | null;
@@ -61,6 +75,7 @@ export class PresentationIntegration {
   readonly runCost: RunCostTracker;
   readonly runTimer: RunTimer;
   readonly taskMetrics: TaskMetricsTracker;
+  private readonly getSemanticSnapshot: () => SemanticDerivationResult;
   private readonly getState: () => PindieState | null;
   private readonly getProjectRoot: () => string | null;
   private readonly getAuthoritativeState: () => PindieState | null;
@@ -93,6 +108,7 @@ export class PresentationIntegration {
           lingerMs: options.activityLingerMs,
         })
       : null;
+    this.getSemanticSnapshot = options.getSemanticSnapshot;
     this.getState = options.getState;
     this.getProjectRoot = options.getProjectRoot;
     this.getAuthoritativeState = options.getAuthoritativeState;
@@ -112,6 +128,75 @@ export class PresentationIntegration {
       if (options.clearActivityRefresh) options.clearActivityRefresh(timer);
       else clearTimeout(timer);
     };
+  }
+
+  snapshot(): PindiePresentationSnapshot {
+    return this.readSnapshot(this.statusContext);
+  }
+
+  private readSnapshot(ctx: ExtensionContext | null): PindiePresentationSnapshot {
+    const quotaResumeWaiting = this.quotaWaitingFor(ctx);
+    return {
+      semantic: this.getSemanticSnapshot(),
+      status: {
+        consumption: this.consumptionStatus(ctx),
+        reasoningMode: this.reasoning?.snapshot.mode ?? null,
+        activity: this.runActivity?.activity ?? null,
+        state: this.getState(),
+        stateUnavailableReason: this.getStateUnavailableReason(),
+        runStale: this.runTimer.active &&
+          this.getAuthoritativeState() !== null &&
+          this.getRunStale(),
+        quotaResumeWaiting: quotaResumeWaiting !== null,
+        subscriptionUsage: this.subscriptionUsageMonitor.snapshot,
+      },
+      quotaResumeWaiting,
+      projectRoot: this.getProjectRoot(),
+    };
+  }
+
+  private consumptionStatus(
+    ctx: ExtensionContext | null,
+  ): PindieStatusSnapshot["consumption"] {
+    const runDurationMs = this.runTimer.durationMs;
+    if (runDurationMs === null || ctx === null) return null;
+
+    let entries: readonly SessionEntry[];
+    try {
+      entries = ctx.sessionManager.getEntries();
+    } catch {
+      // A stale ExtensionContext cannot provide reliable Session measurements.
+      return null;
+    }
+
+    try {
+      const runCost = this.runCost.snapshot(entries);
+      const runMetrics = {
+        durationMs: runDurationMs,
+        cost: runCost?.cost ?? 0,
+      };
+      const taskMetrics = this.taskMetrics.snapshot(runMetrics);
+      return taskMetrics === null
+        ? { scope: "run", ...runMetrics }
+        : { scope: "task", ...taskMetrics };
+    } catch {
+      // Runtime telemetry is best effort and must not make the read port unsafe.
+      return null;
+    }
+  }
+
+  private quotaWaitingFor(
+    ctx: ExtensionContext | null,
+  ): QuotaResumeWaitingStatus | null {
+    const waiting = this.quotaResumeWaiting;
+    if (waiting === null || ctx === null) return null;
+    try {
+      if (waiting.sessionId !== ctx.sessionManager.getSessionId()) return null;
+    } catch {
+      // A stale or otherwise unavailable context has no safe Session identity.
+      return null;
+    }
+    return { sessionId: waiting.sessionId, resumeAt: waiting.resumeAt };
   }
 
   setStatusContext(ctx: ExtensionContext | null): void {
@@ -152,35 +237,8 @@ export class PresentationIntegration {
   refreshStatus(ctx = this.statusContext): void {
     if (!this.uiEnabled) return;
     this.presentStatusBestEffort(ctx, (activeContext) => {
-      const runDurationMs = this.runTimer.durationMs;
-      const runCost = this.runCost.snapshot(
-        activeContext.sessionManager.getEntries(),
-      );
-      const runMetrics = runDurationMs === null
-        ? null
-        : {
-            durationMs: runDurationMs,
-            cost: runCost?.cost ?? 0,
-          };
-      const taskMetrics = runMetrics === null
-        ? null
-        : this.taskMetrics.snapshot(runMetrics);
-      const layout = deriveStatusLayout({
-        consumption: runMetrics === null
-          ? null
-          : taskMetrics === null
-            ? { scope: "run", ...runMetrics }
-            : { scope: "task", ...taskMetrics },
-        reasoningMode: this.reasoning?.snapshot.mode ?? null,
-        activity: this.runActivity?.activity ?? null,
-        state: this.getState(),
-        stateUnavailableReason: this.getStateUnavailableReason(),
-        runStale: this.runTimer.active &&
-          this.getAuthoritativeState() !== null &&
-          this.getRunStale(),
-        quotaResumeWaiting: this.quotaWaitingMatches(activeContext),
-        subscriptionUsage: this.subscriptionUsageMonitor.snapshot,
-      }, this.now());
+      const snapshot = this.readSnapshot(activeContext);
+      const layout = deriveStatusLayout(snapshot.status, this.now());
       return renderStatusLayout(
         activeContext.ui.theme,
         layout,
@@ -366,13 +424,7 @@ export class PresentationIntegration {
   }
 
   private quotaWaitingMatches(ctx: ExtensionContext): boolean {
-    const waiting = this.quotaResumeWaiting;
-    if (waiting === null) return false;
-    try {
-      return waiting.sessionId === ctx.sessionManager.getSessionId();
-    } catch {
-      return false;
-    }
+    return this.quotaWaitingFor(ctx) !== null;
   }
 
   private notifyQuotaWaitingBestEffort(): void {
