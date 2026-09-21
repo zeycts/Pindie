@@ -118,6 +118,159 @@ test("PiRuntimeAdapter replaces a real Pindie Pi session", async () => {
   }
 });
 
+test("PiRuntimeAdapter lifecycle binding observes real replacement ordering and clears cleanly", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pindie-runtime-lifecycle-"));
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+  let runtime: AgentSessionRuntime | undefined;
+
+  try {
+    await mkdir(cwd);
+    await mkdir(agentDir);
+    runtime = await createAgentSessionRuntime(createPindieRuntimeFactory(), {
+      cwd,
+      agentDir,
+      sessionManager: SessionManager.inMemory(cwd),
+    });
+    const adapter = new PiRuntimeAdapter(runtime);
+    const sessionA = adapter.activeSession;
+    const events: string[] = [];
+
+    adapter.setActiveSessionClientLifecycle({
+      beforeSessionInvalidate: () => {
+        events.push(`before:${adapter.activeSessionId}`);
+      },
+      rebindSession: async () => {
+        events.push(`rebind:${adapter.activeSessionId}`);
+      },
+    });
+
+    const replacement = await adapter.replaceWithFreshSession();
+    assert.deepEqual(replacement, { cancelled: false });
+    const sessionB = adapter.activeSession;
+    assert.notEqual(sessionA, sessionB);
+    assert.deepEqual(events, [`before:${sessionA.sessionId}`, `rebind:${sessionB.sessionId}`]);
+
+    adapter.setActiveSessionClientLifecycle();
+    await adapter.replaceWithFreshSession();
+    const sessionC = adapter.activeSession;
+    assert.notEqual(sessionB, sessionC);
+    assert.deepEqual(events, [`before:${sessionA.sessionId}`, `rebind:${sessionB.sessionId}`]);
+
+    await adapter.dispose();
+    runtime = undefined;
+  } finally {
+    await runtime?.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Host presentation reader lease follows Session replacement and disposal", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pindie-presentation-lease-"));
+  const home = join(root, "home");
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+  const previousHome = process.env.HOME;
+  let host: Awaited<ReturnType<typeof createPindieHost>> | undefined;
+
+  try {
+    await mkdir(cwd);
+    await mkdir(agentDir);
+    await mkdir(home);
+    process.env.HOME = home;
+    host = await createPindieHost({
+      cwd,
+      agentDir,
+      sessionManager: SessionManager.inMemory(cwd),
+      env: { PINDIE_BROWSER_ENABLED: "false" },
+      dependencies: {
+        createInteractiveMode: () => ({ run: async () => {} }),
+      },
+    });
+
+    const firstReader = host.presentation.current();
+    assert.ok(firstReader);
+    assert.deepEqual(Object.keys(host.presentation), ["current"]);
+    assert.equal("set" in host.presentation, false);
+    assert.equal("clear" in host.presentation, false);
+
+    await host.runtime.replaceWithFreshSession();
+    const secondReader = host.presentation.current();
+    assert.ok(secondReader);
+    assert.notEqual(firstReader, secondReader);
+    assert.equal(host.presentation.current(), secondReader);
+
+    await host.dispose();
+    assert.equal(host.presentation.current(), null);
+    host = undefined;
+  } finally {
+    await host?.dispose();
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Host presentation reader lease stays null when replacement construction fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pindie-presentation-lease-failure-"));
+  const home = join(root, "home");
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+  const previousHome = process.env.HOME;
+  const replacementFailure = new Error("fresh Pindie runtime failed");
+  let serviceCalls = 0;
+  let replacementStarted!: () => void;
+  const replacementStartedPromise = new Promise<void>((resolve) => {
+    replacementStarted = resolve;
+  });
+  let releaseFailure!: () => void;
+  const failureGate = new Promise<void>((resolve) => {
+    releaseFailure = resolve;
+  });
+  let host: Awaited<ReturnType<typeof createPindieHost>> | undefined;
+
+  try {
+    await mkdir(cwd);
+    await mkdir(agentDir);
+    await mkdir(home);
+    process.env.HOME = home;
+    host = await createPindieHost({
+      cwd,
+      agentDir,
+      sessionManager: SessionManager.inMemory(cwd),
+      env: { PINDIE_BROWSER_ENABLED: "false" },
+      dependencies: {
+        createAgentSessionServices: async (serviceOptions) => {
+          serviceCalls += 1;
+          if (serviceCalls > 1) {
+            replacementStarted();
+            await failureGate;
+            throw replacementFailure;
+          }
+          return createAgentSessionServices(serviceOptions);
+        },
+        createInteractiveMode: () => ({ run: async () => {} }),
+      },
+    });
+
+    assert.ok(host.presentation.current());
+    const replacement = host.runtime.replaceWithFreshSession();
+    await replacementStartedPromise;
+    assert.equal(host.presentation.current(), null);
+    releaseFailure();
+    await assert.rejects(replacement, replacementFailure);
+
+    await host.dispose();
+    host = undefined;
+  } finally {
+    releaseFailure?.();
+    await host?.dispose();
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Host-owned automatic rollover persists native lineage naming without adding it to LLM context", async () => {
   const root = await mkdtemp(join(tmpdir(), "pindie-session-lineage-name-"));
   const home = join(root, "home");

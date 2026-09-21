@@ -43,7 +43,7 @@ interface FakeRuntimeControl {
   readonly nativeCallCount: () => number;
   readonly messages: Array<{ message: unknown; options: unknown }>;
   readonly events: string[];
-  readonly facts: { isStreaming: boolean; isCompacting: boolean; pendingMessageCount: number };
+  readonly facts: { isStreaming: boolean; isCompacting: boolean; isIdle: boolean; pendingMessageCount: number };
   setReplacement(handler: (options?: SessionReplacementOptions) => Promise<SessionReplacementResult>): void;
   setSessionId(id: string): void;
   setActiveSessionPresentation(presentation: FakeSessionPresentation): void;
@@ -74,13 +74,14 @@ function fakeSession(
     },
     get isStreaming() { return facts.isStreaming; },
     get isCompacting() { return facts.isCompacting; },
+    get isIdle() { return facts.isIdle; },
     get pendingMessageCount() { return facts.pendingMessageCount; },
     getContextUsage: () => undefined,
   } as unknown as AgentSession;
 }
 
 function fakeRuntime(): FakeRuntimeControl {
-  const facts = { isStreaming: false, isCompacting: false, pendingMessageCount: 0 };
+  const facts = { isStreaming: false, isCompacting: false, isIdle: true, pendingMessageCount: 0 };
   const calls: SessionReplacementOptions[] = [];
   const messages: Array<{ message: unknown; options: unknown }> = [];
   const events: string[] = [];

@@ -28,7 +28,13 @@ interface FakeRuntimeControl {
 function fakeSession(
   id: string,
   usage?: ContextUsage,
-  facts: { isStreaming?: boolean; isCompacting?: boolean; pendingMessageCount?: number } = {},
+  facts: {
+    isStreaming?: boolean;
+    isCompacting?: boolean;
+    isIdle?: boolean;
+    pendingMessageCount?: number;
+    thinkingLevel?: AgentSession["thinkingLevel"];
+  } = {},
   presentation: { name?: string; entries?: unknown[] } = {},
 ): AgentSession {
   let sessionName = presentation.name;
@@ -42,7 +48,15 @@ function fakeSession(
     getContextUsage: () => usage,
     get isStreaming() { return facts.isStreaming ?? false; },
     get isCompacting() { return facts.isCompacting ?? false; },
+    get isIdle() {
+      return facts.isIdle ?? (!(facts.isStreaming ?? false) && !(facts.isCompacting ?? false));
+    },
     get pendingMessageCount() { return facts.pendingMessageCount ?? 0; },
+    get thinkingLevel() { return facts.thinkingLevel ?? "off"; },
+    subscribe: () => () => {},
+    abort: async () => {},
+    clearQueue: () => ({ steering: [], followUp: [] }),
+    bindExtensions: async () => {},
     prompt: async () => {},
     steer: async () => {},
     followUp: async () => {},
@@ -268,6 +282,163 @@ test("native withSession remains callable by the Pi runtime", async () => {
   assert.equal(callbackCalled, true);
 });
 
+test("active Session subscriptions stay native and Session-scoped", () => {
+  type SessionListener = Parameters<AgentSession["subscribe"]>[0];
+  function trackedSession(id: string) {
+    let listener: SessionListener | undefined;
+    let unsubscribed = false;
+    const unsubscribe = () => {
+      unsubscribed = true;
+      listener = undefined;
+    };
+    const session = {
+      ...fakeSession(id),
+      subscribe: (next: SessionListener) => {
+        listener = next;
+        return unsubscribe;
+      },
+    } as unknown as AgentSession;
+    return {
+      session,
+      unsubscribe,
+      wasUnsubscribed: () => unsubscribed,
+      emit: () => listener?.({ type: "agent_settled" } as never),
+    };
+  }
+
+  const first = trackedSession("session-1");
+  const second = trackedSession("session-2");
+  const control = fakeRuntime(first.session);
+  const adapter = new PiRuntimeAdapter(control.runtime);
+  const observed: string[] = [];
+
+  const firstUnsubscribe = adapter.subscribeActiveSession(() => observed.push("first"));
+  assert.equal(firstUnsubscribe, first.unsubscribe);
+  first.emit();
+  control.setSession(second.session);
+  first.emit();
+  second.emit();
+  assert.deepEqual(observed, ["first", "first"]);
+
+  const secondUnsubscribe = adapter.subscribeActiveSession(() => observed.push("second"));
+  assert.equal(secondUnsubscribe, second.unsubscribe);
+  second.emit();
+  assert.deepEqual(observed, ["first", "first", "second"]);
+  firstUnsubscribe();
+  secondUnsubscribe();
+  assert.equal(first.wasUnsubscribed(), true);
+  assert.equal(second.wasUnsubscribed(), true);
+});
+
+test("abortActiveSession delegates and waits for the native abort Promise", async () => {
+  let resolveAbort!: () => void;
+  let abortCalls = 0;
+  const nativeAbort = new Promise<void>((resolve) => {
+    resolveAbort = resolve;
+  });
+  const session = {
+    ...fakeSession("session-1"),
+    abort: () => {
+      abortCalls += 1;
+      return nativeAbort;
+    },
+  } as unknown as AgentSession;
+  const adapter = new PiRuntimeAdapter(fakeRuntime(session).runtime);
+  let settled = false;
+
+  const aborting = adapter.abortActiveSession().then(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  assert.equal(abortCalls, 1);
+  assert.equal(settled, false);
+  resolveAbort();
+  await aborting;
+  assert.equal(settled, true);
+});
+
+test("clearActiveSessionQueue preserves native queue provenance and clears the active Session", () => {
+  const cleared: string[] = [];
+  const firstQueue = { steering: ["steer A"], followUp: ["follow A"] };
+  const secondQueue = { steering: ["steer B"], followUp: ["follow B"] };
+  const first = {
+    ...fakeSession("session-1"),
+    clearQueue: () => {
+      cleared.push("first");
+      return firstQueue;
+    },
+  } as unknown as AgentSession;
+  const second = {
+    ...fakeSession("session-2"),
+    clearQueue: () => {
+      cleared.push("second");
+      return secondQueue;
+    },
+  } as unknown as AgentSession;
+  const control = fakeRuntime(first);
+  const adapter = new PiRuntimeAdapter(control.runtime);
+
+  assert.deepEqual(adapter.clearActiveSessionQueue(), firstQueue);
+  control.setSession(second);
+  assert.deepEqual(adapter.clearActiveSessionQueue(), secondQueue);
+  assert.deepEqual(cleared, ["first", "second"]);
+});
+
+test("bindActiveSessionExtensions and thinking-level reads target the active Session", async () => {
+  const bindings = {} as Parameters<AgentSession["bindExtensions"]>[0];
+  let receivedBindings: unknown;
+  const bindingPromise = Promise.resolve();
+  const first = {
+    ...fakeSession("session-1", undefined, { thinkingLevel: "high" }),
+    bindExtensions: (value: Parameters<AgentSession["bindExtensions"]>[0]) => {
+      receivedBindings = value;
+      return bindingPromise;
+    },
+  } as unknown as AgentSession;
+  const second = fakeSession("session-2", undefined, { thinkingLevel: "low" });
+  const control = fakeRuntime(first);
+  const adapter = new PiRuntimeAdapter(control.runtime);
+
+  assert.equal(adapter.getActiveSessionThinkingLevel(), "high");
+  assert.equal(adapter.bindActiveSessionExtensions(bindings), bindingPromise);
+  await bindingPromise;
+  assert.equal(receivedBindings, bindings);
+
+  control.setSession(second);
+  assert.equal(adapter.getActiveSessionThinkingLevel(), "low");
+});
+
+test("setActiveSessionClientLifecycle delegates single native callback slots", () => {
+  const calls: string[] = [];
+  const beforeHandlers: Array<(() => void) | undefined> = [];
+  const rebindHandlers: Array<((session: AgentSession) => Promise<void>) | undefined> = [];
+  const first = fakeSession("session-1");
+  const second = fakeSession("session-2");
+  let activeSession = first;
+  const runtime = {
+    get session() { return activeSession; },
+    setBeforeSessionInvalidate: (handler?: () => void) => { beforeHandlers.push(handler); },
+    setRebindSession: (handler?: (session: AgentSession) => Promise<void>) => { rebindHandlers.push(handler); },
+    newSession: async () => ({ cancelled: false }),
+    dispose: async () => undefined,
+  } as unknown as AgentSessionRuntime;
+  const adapter = new PiRuntimeAdapter(runtime);
+
+  adapter.setActiveSessionClientLifecycle({
+    beforeSessionInvalidate: () => calls.push("before"),
+    rebindSession: async () => calls.push(`rebind:${adapter.activeSessionId}`),
+  });
+  beforeHandlers[0]?.();
+  assert.ok(rebindHandlers[0]);
+  activeSession = second;
+  void rebindHandlers[0]!(first);
+  assert.deepEqual(calls, ["before", "rebind:session-2"]);
+
+  adapter.setActiveSessionClientLifecycle();
+  assert.equal(beforeHandlers[1], undefined);
+  assert.equal(rebindHandlers[1], undefined);
+});
+
 test("cancelled replacement preserves Pi cancellation and active identity", async () => {
   const first = fakeSession("session-1");
   const control = fakeRuntime(first);
@@ -346,6 +517,7 @@ test("active runtime facts always read the current Session", () => {
     sessionId: "session-1",
     isStreaming: true,
     isCompacting: false,
+    isIdle: false,
     pendingMessageCount: 2,
   });
 
@@ -355,6 +527,7 @@ test("active runtime facts always read the current Session", () => {
     sessionId: "session-2",
     isStreaming: false,
     isCompacting: true,
+    isIdle: false,
     pendingMessageCount: 0,
   });
 });
