@@ -4,7 +4,7 @@ import { DiscordGatewayClient } from "./discord-gateway.ts";
 import type { DiscordRemoteConfig, DiscordRemoteConfigResult } from "./remote-config.ts";
 import type { RemoteSessionPresentation, RemoteSurface } from "./remote-companion.ts";
 import type { RemoteSessionRouting } from "./remote-routing.ts";
-import type { TimelineEvent } from "./session-mirror.ts";
+import { splitTimelineEvent, type TimelineEvent } from "./session-mirror.ts";
 
 export { discordRemoteConfig } from "./remote-config.ts";
 export type { DiscordRemoteConfig, DiscordRemoteConfigResult } from "./remote-config.ts";
@@ -24,6 +24,7 @@ type DiscordChannelData = {
   thread_metadata?: { archived?: boolean };
 };
 type DiscordMessageData = { id: string };
+type DiscordAllowedMentions = { parse: []; users?: string[] };
 type DiscordRawRest = {
   get(route: string, options?: { signal?: AbortSignal }): Promise<unknown>;
   post(route: string, options?: { body?: unknown; signal?: AbortSignal }): Promise<unknown>;
@@ -41,7 +42,7 @@ export interface DiscordClientSeam {
 export interface DiscordRestSeam {
   fetchChannel(channelId: string, signal: AbortSignal): Promise<DiscordChannelData | null>;
   createProjectChannel(guildId: string, name: string, signal: AbortSignal): Promise<DiscordChannelData>;
-  createMessage(channelId: string, content: string, signal: AbortSignal): Promise<DiscordMessageData>;
+  createMessage(channelId: string, content: string, signal: AbortSignal, allowedMentions?: DiscordAllowedMentions): Promise<DiscordMessageData>;
   startThread(channelId: string, messageId: string, name: string, signal: AbortSignal): Promise<DiscordChannelData>;
   editChannel(channelId: string, body: { name?: string; archived?: boolean }, signal: AbortSignal): Promise<void>;
   editMessage(channelId: string, messageId: string, content: string, signal: AbortSignal): Promise<void>;
@@ -56,8 +57,8 @@ class DiscordJsRest implements DiscordRestSeam {
   async createProjectChannel(guildId: string, name: string, signal: AbortSignal): Promise<DiscordChannelData> {
     return await this.rest.post(Routes.guildChannels(guildId), { body: { name, type: ChannelType.GuildText }, signal }) as DiscordChannelData;
   }
-  async createMessage(channelId: string, content: string, signal: AbortSignal): Promise<DiscordMessageData> {
-    return await this.rest.post(Routes.channelMessages(channelId), { body: { content, allowed_mentions: { parse: [] } }, signal }) as DiscordMessageData;
+  async createMessage(channelId: string, content: string, signal: AbortSignal, allowedMentions: DiscordAllowedMentions = { parse: [] }): Promise<DiscordMessageData> {
+    return await this.rest.post(Routes.channelMessages(channelId), { body: { content, allowed_mentions: allowedMentions }, signal }) as DiscordMessageData;
   }
   async startThread(channelId: string, messageId: string, name: string, signal: AbortSignal): Promise<DiscordChannelData> {
     return await this.rest.post(Routes.threads(channelId, messageId), { body: { name, auto_archive_duration: 1440 }, signal }) as DiscordChannelData;
@@ -208,7 +209,12 @@ export class DiscordRemote implements RemoteSurface {
     if (event.kind === "user" && isDiscordOrigin(event.origin)) return;
     const rest = this.requireRest(signal); const thread = await rest.fetchChannel(threadId, signal); abortIfNeeded(signal);
     if (!thread || thread.guild_id !== this.config.guildId || thread.type !== ChannelType.PublicThread) throw new Error("Discord Session thread is unavailable.");
-    await rest.createMessage(threadId, event.text, signal); abortIfNeeded(signal);
+    for (const part of splitTimelineEvent(event)) {
+      const attention = part.attention === true;
+      const content = attention ? `<@${this.config.userId}> ${part.text}` : part.text;
+      const allowedMentions: DiscordAllowedMentions = attention ? { parse: [], users: [this.config.userId] } : { parse: [] };
+      await rest.createMessage(threadId, content, signal, allowedMentions); abortIfNeeded(signal);
+    }
   }
 
   async updateSessionPresentation(session: Pick<RemoteSessionRouting, "threadId" | "anchorMessageId" | "headerMessageId">, presentation: RemoteSessionPresentation, signal: AbortSignal): Promise<void> {
