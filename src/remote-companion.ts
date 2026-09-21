@@ -23,6 +23,7 @@ export interface RemoteSurface {
   /** One transport-independent seam for editing the existing anchor/header in place. */
   updateSessionPresentation(session: Pick<RemoteSessionRouting, "threadId" | "anchorMessageId" | "headerMessageId">, presentation: RemoteSessionPresentation, signal: AbortSignal): Promise<void>;
 }
+export interface RemoteMilestoneOptions { attention?: true; }
 export interface RemotePi {
   isIdle(): boolean;
   abort(): void;
@@ -254,14 +255,17 @@ export class RemoteCompanion {
     }
     return origin === "discord-steer" ? "steer" : origin === "discord-follow-up" ? "follow-up" : "sent";
   }
-  async milestone(key: string, text: string): Promise<void> {
+  async milestone(key: string, text: string, options: RemoteMilestoneOptions = {}): Promise<void> {
     const binding = this.binding;
     if (!binding || this.milestones.has(key)) return;
     await this.serial(async () => {
       if (this.binding !== binding || this.milestones.has(key)) return;
       const session = await this.ensure(binding);
-      await this.surface.send(session.threadId, { entryId: `remote:${key}`, kind: "milestone", text }, binding.abortController.signal);
-      this.requireCurrent(binding);
+      const event: TimelineEvent = { entryId: `remote:${key}`, kind: "milestone", text, ...(options.attention === true ? { attention: true } : {}) };
+      for (const part of splitTimelineEvent(event)) {
+        await this.surface.send(session.threadId, part, binding.abortController.signal);
+        this.requireCurrent(binding);
+      }
       this.milestones.add(key);
     });
   }

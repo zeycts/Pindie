@@ -31,14 +31,14 @@ class FakeClient implements DiscordClientSeam {
   private add(event: string, listener: (...args: any[]) => void) { this.handlers.set(event, [...(this.handlers.get(event) ?? []), listener]); }
 }
 
-type RestCall = { kind: string; channelId?: string; messageId?: string; content?: string; body?: unknown; signal: AbortSignal };
+type RestCall = { kind: string; channelId?: string; messageId?: string; content?: string; allowedMentions?: unknown; body?: unknown; signal: AbortSignal };
 class FakeRest implements DiscordRestSeam {
   readonly channels = new Map<string, any>();
   readonly calls: RestCall[] = [];
   next = 0;
   async fetchChannel(channelId: string, requestSignal: AbortSignal) { this.calls.push({ kind: "fetch", channelId, signal: requestSignal }); return this.channels.get(channelId) ?? null; }
   async createProjectChannel(_guildId: string, name: string, requestSignal: AbortSignal) { const channel = { id: `channel-${++this.next}`, guild_id: config.guildId, type: ChannelType.GuildText, name }; this.channels.set(channel.id, channel); this.calls.push({ kind: "create-project", channelId: channel.id, signal: requestSignal }); return channel; }
-  async createMessage(channelId: string, content: string, requestSignal: AbortSignal) { const message = { id: `message-${++this.next}` }; this.calls.push({ kind: "create-message", channelId, messageId: message.id, content, signal: requestSignal }); return message; }
+  async createMessage(channelId: string, content: string, requestSignal: AbortSignal, allowedMentions?: unknown) { const message = { id: `message-${++this.next}` }; this.calls.push({ kind: "create-message", channelId, messageId: message.id, content, allowedMentions, signal: requestSignal }); return message; }
   async startThread(channelId: string, messageId: string, name: string, requestSignal: AbortSignal) { const thread = { id: `thread-${++this.next}`, guild_id: config.guildId, parent_id: channelId, type: ChannelType.PublicThread, thread_metadata: { archived: false }, name }; this.channels.set(thread.id, thread); this.calls.push({ kind: "start-thread", channelId, messageId, content: name, signal: requestSignal }); return thread; }
   async editChannel(channelId: string, body: { name?: string; archived?: boolean }, requestSignal: AbortSignal) { this.calls.push({ kind: "edit-channel", channelId, body, signal: requestSignal }); }
   async editMessage(channelId: string, messageId: string, content: string, requestSignal: AbortSignal) { this.calls.push({ kind: "edit-message", channelId, messageId, content, signal: requestSignal }); }
@@ -208,7 +208,35 @@ test("Discord REST receives AbortSignal, disables mentions, and starts a message
   assert.ok(calls.length > 0 && calls.every((call) => call.options.signal === controller.signal));
   const messageWrites = calls.filter((call) => call.route.includes("/messages") && !call.route.endsWith("/threads"));
   assert.ok(messageWrites.length > 0); for (const call of messageWrites) assert.deepEqual(call.options.body.allowed_mentions, { parse: [] });
+  await remote.send(session.threadId, { entryId: "attention", kind: "milestone", text: "model text @everyone <@111111111111111111>", attention: true }, controller.signal);
+  const attentionWrite = calls.filter((call) => call.route.includes("/messages") && !call.route.endsWith("/threads")).at(-1);
+  assert.deepEqual(attentionWrite?.options.body.allowed_mentions, { parse: [], users: [config.userId] });
+  assert.equal(attentionWrite?.options.body.content, `<@${config.userId}> model text @everyone <@111111111111111111>`);
   const thread = calls.find((call) => call.route.endsWith("/threads")); assert.ok(thread); assert.equal("type" in thread.options.body, false); assert.equal(thread.options.body.auto_archive_duration, 1440);
+});
+
+test("ordinary events suppress mentions and explicit attention only allows the configured user", async () => {
+  const rest = new FakeRest(); rest.thread(); const { remote } = await setup(rest);
+  const ordinary = "ordinary @everyone @here <@&222222222222222222> <@111111111111111111>";
+  const attention = "attention @everyone <@111111111111111111>";
+  await remote.send("thread", { entryId: "ordinary", kind: "assistant", text: ordinary }, signal());
+  await remote.send("thread", { entryId: "attention", kind: "milestone", text: attention, attention: true }, signal());
+  const writes = rest.calls.filter((call) => call.kind === "create-message");
+  assert.deepEqual(writes.map((call) => call.allowedMentions), [{ parse: [] }, { parse: [], users: [config.userId] }]);
+  assert.equal(writes[0]?.content, ordinary);
+  assert.equal(writes[1]?.content, `<@${config.userId}> ${attention}`);
+});
+
+test("a long attention event preserves order and notifies only on its first chunk", async () => {
+  const rest = new FakeRest(); rest.thread(); const { remote } = await setup(rest);
+  const text = "a".repeat(1_900) + "\nsecond chunk @everyone <@111111111111111111>";
+  await remote.send("thread", { entryId: "long-attention", kind: "milestone", text, attention: true }, signal());
+  const writes = rest.calls.filter((call) => call.kind === "create-message");
+  assert.ok(writes.length > 1);
+  const mention = `<@${config.userId}> `;
+  assert.equal(writes.map((call, index) => index === 0 ? call.content!.slice(mention.length) : call.content).join(""), text);
+  assert.deepEqual(writes[0]?.allowedMentions, { parse: [], users: [config.userId] });
+  assert.ok(writes.slice(1).every((call) => JSON.stringify(call.allowedMentions) === JSON.stringify({ parse: [] })));
 });
 
 test("channel/session creation, reuse, unarchive, and confirmed stale replacement stay endpoint-scoped", async () => {

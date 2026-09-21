@@ -273,6 +273,16 @@ The timeline should also emit high-value semantic milestones when they change:
 
 Deduplication fingerprints are runtime-only presentation bookkeeping and are never persisted in `PindieState`.
 
+### Attention delivery
+
+A `TimelineEvent` may carry an explicit runtime-only `attention` marker when Pindie has already decided that the configured human should be actively interrupted. `RemoteSurface` and the Discord transport deliver that presentation metadata; they do not decide attention eligibility.
+
+Ordinary Discord timeline messages use `allowed_mentions: { parse: [] }`. An attention event prefixes the configured `PINDIE_DISCORD_USER_ID` mention and allows exactly that user ID while keeping automatic parsing disabled. Text from the model, user, or event cannot add `@everyone`, role, or arbitrary-user notifications.
+
+If one attention event is split for Discord's message-size limit, only its first chunk retains the marker and mention. The remaining chunks are quiet, so one logical event produces at most one notification.
+
+Attention is presentation metadata only. It is not persisted in `PindieState`, routing metadata, or Pi Session transcript truth.
+
 ## 12. Remote input semantics
 
 Remote input operates only on the active mapped thread.

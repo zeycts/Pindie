@@ -3,7 +3,7 @@ import { isPindieContinuationProbeMessage } from "./continuation.ts";
 export type PromptOrigin = "tui" | "discord" | "discord-steer" | "discord-follow-up" | "neutral";
 export interface MirrorEntry { id: string; type?: string; message?: { role?: string; content?: unknown; display?: boolean; customType?: string; stopReason?: string }; }
 /** `origin` is runtime-only transport presentation context, never transcript state. */
-export interface TimelineEvent { entryId: string; kind: "user" | "assistant" | "execution" | "milestone"; text: string; origin?: PromptOrigin; }
+export interface TimelineEvent { entryId: string; kind: "user" | "assistant" | "execution" | "milestone"; text: string; origin?: PromptOrigin; /** Runtime-only Pindie presentation metadata; transport never infers this from text. */ attention?: true; }
 
 function text(content: unknown): string {
   if (typeof content === "string") return content;
@@ -30,11 +30,15 @@ export function mirrorEntry(entry: MirrorEntry, origin: PromptOrigin = "neutral"
 export function splitTimelineEvent(event: TimelineEvent, limit = 1_900): TimelineEvent[] {
   if (event.text.length <= limit) return [event];
   const chunks: TimelineEvent[] = []; let remaining = event.text;
+  const quietEvent = (): TimelineEvent => {
+    const { attention: _attention, ...quiet } = event;
+    return quiet;
+  };
   while (remaining.length > limit) {
     const boundary = Math.max(remaining.lastIndexOf("\n", limit), remaining.lastIndexOf(" ", limit), limit);
-    chunks.push({ ...event, text: remaining.slice(0, boundary) }); remaining = remaining.slice(boundary);
+    chunks.push({ ...(chunks.length === 0 ? event : quietEvent()), text: remaining.slice(0, boundary) }); remaining = remaining.slice(boundary);
   }
-  chunks.push({ ...event, text: remaining }); return chunks;
+  chunks.push({ ...(chunks.length === 0 ? event : quietEvent()), text: remaining }); return chunks;
 }
 
 export class ExecutionAggregator {
