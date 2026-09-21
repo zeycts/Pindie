@@ -96,7 +96,13 @@ export interface ActiveSessionFacts {
   readonly sessionId: string;
   readonly isStreaming: boolean;
   readonly isCompacting: boolean;
+  readonly isIdle: boolean;
   readonly pendingMessageCount: number;
+}
+
+export interface ActiveSessionClientLifecycle {
+  beforeSessionInvalidate?: () => void;
+  rebindSession?: () => Promise<void>;
 }
 
 /**
@@ -166,8 +172,63 @@ export class PiRuntimeAdapter {
       sessionId: session.sessionId,
       isStreaming: session.isStreaming,
       isCompacting: session.isCompacting,
+      isIdle: session.isIdle,
       pendingMessageCount: session.pendingMessageCount,
     };
+  }
+
+  /**
+   * Subscribe to the native Session active at call time.
+   *
+   * The returned unsubscribe function is scoped to that Session and does not
+   * migrate when the native runtime replaces it. A custom interactive client
+   * must unsubscribe before invalidation and subscribe again after rebind.
+   */
+  subscribeActiveSession(
+    listener: Parameters<AgentSession["subscribe"]>[0],
+  ): ReturnType<AgentSession["subscribe"]> {
+    return this.activeSession.subscribe(listener);
+  }
+
+  /** Abort the native Session active at call time and await Pi's completion. */
+  abortActiveSession(): Promise<void> {
+    return this.activeSession.abort();
+  }
+
+  /** Clear Pi's native queues for the Session active at call time. */
+  clearActiveSessionQueue(): ReturnType<AgentSession["clearQueue"]> {
+    return this.activeSession.clearQueue();
+  }
+
+  /** Bind extension UI and command bindings on the Session active at call time. */
+  bindActiveSessionExtensions(
+    bindings: Parameters<AgentSession["bindExtensions"]>[0],
+  ): ReturnType<AgentSession["bindExtensions"]> {
+    return this.activeSession.bindExtensions(bindings);
+  }
+
+  /** Read Pi's native thinking level for the Session active at call time. */
+  getActiveSessionThinkingLevel(): AgentSession["thinkingLevel"] {
+    return this.activeSession.thinkingLevel;
+  }
+
+  /**
+   * Bind the one custom interactive client's Session lifecycle callbacks.
+   *
+   * AgentSessionRuntime exposes single callback slots, not a multi-subscriber
+   * lifecycle event bus. Host/InteractiveMode ownership must install or clear
+   * this binding as one coherent client; the rebind callback reads
+   * adapter.activeSession after Pi applies the replacement.
+   */
+  setActiveSessionClientLifecycle(
+    lifecycle?: ActiveSessionClientLifecycle,
+  ): void {
+    this.nativeRuntime.setBeforeSessionInvalidate(lifecycle?.beforeSessionInvalidate);
+    this.nativeRuntime.setRebindSession(
+      lifecycle?.rebindSession === undefined
+        ? undefined
+        : async () => lifecycle.rebindSession!(),
+    );
   }
 
   getActiveSessionModelIdentity(): { provider: string; modelId: string } | null {

@@ -1,6 +1,6 @@
 # Pindie TUI v0.1 — Architecture and Implementation Contract
 
-Status: planned architecture contract; implementation has not started.
+Status: implementation in progress; Slice A complete.
 
 Baseline: Pindie main after Pi 0.86.1 compatibility upgrade.
 
@@ -760,7 +760,7 @@ Only remove the fallback after a separate stability period.
 
 Implementation should proceed in this order.
 
-### Slice A — Presentation Read Port
+### Slice A — Presentation Read Port (implemented)
 
 Goal:
 
@@ -779,13 +779,13 @@ Work:
 
 Acceptance:
 
-- behavior-neutral;
+- implementation complete; behavior-neutral;
 - existing Pi InteractiveMode unchanged;
 - no duplicate semantic derivation;
 - exact quota wait projection;
 - focused tests and full check green.
 
-### Slice B — Runtime Client Seam
+### Slice B — Runtime Client Seam (current implementation Slice)
 
 Goal: give a future Host-owned interactive client only the Pi runtime controls it needs.
 

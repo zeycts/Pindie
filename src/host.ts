@@ -21,6 +21,7 @@ import {
 } from "./browser-reality.ts";
 import { PiRuntimeAdapter } from "./pi-runtime.ts";
 import { registerConfiguredPindieExtension } from "./extension.ts";
+import type { PindiePresentationReader } from "./presentation-integration.ts";
 import {
   resolvePindieFeatureSelection,
   type PindieFeatureSelectionOverrides,
@@ -82,9 +83,14 @@ export interface PindieHostOptions {
   dependencies?: PindieHostDependencies;
 }
 
+export interface PindiePresentationReaderLease {
+  current(): PindiePresentationReader | null;
+}
+
 export interface PindieHost {
   readonly runtime: PiRuntimeAdapter;
   readonly interactiveMode: PindieInteractiveMode;
+  readonly presentation: PindiePresentationReaderLease;
   run(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -106,6 +112,7 @@ export function createPindieRuntimeFactory(
     readonly featureSelection?: PindieFeatureSelectionOverrides;
     readonly storageRoots?: PindieStorageRootOverrides;
     readonly browserExtensionFactory?: (pi: ExtensionAPI) => void;
+    readonly onPresentationReaderChange?: (reader: PindiePresentationReader | null) => void;
   } = {},
 ): CreateAgentSessionRuntimeFactory {
   const createServices = dependencies.createAgentSessionServices ?? createAgentSessionServices;
@@ -116,6 +123,10 @@ export function createPindieRuntimeFactory(
   );
 
   return async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
+    // Replacement construction is fail-closed: the outgoing reader is no
+    // longer current before any new Session-bound runtime work begins.
+    compositionOptions.onPresentationReaderChange?.(null);
+    let pendingPresentationReader: PindiePresentationReader | null = null;
     const services = await createServices({
       cwd,
       agentDir,
@@ -125,11 +136,15 @@ export function createPindieRuntimeFactory(
           : [],
         extensionFactories: [{
           name: "pindie",
-          factory: (pi) => registerConfiguredPindieExtension(pi, {
-            taskMetrics,
-            featureSelection: compositionOptions.featureSelection,
-            storageRoots: compositionOptions.storageRoots,
-          }),
+          factory: (pi) => {
+            const integration = registerConfiguredPindieExtension(pi, {
+              taskMetrics,
+              featureSelection: compositionOptions.featureSelection,
+              storageRoots: compositionOptions.storageRoots,
+            });
+            pendingPresentationReader = integration.presentation;
+            return integration;
+          },
         }, ...(compositionOptions.browserExtensionFactory
           ? [{
               name: "pindie-browser-reality",
@@ -143,6 +158,10 @@ export function createPindieRuntimeFactory(
       sessionManager,
       sessionStartEvent,
     });
+    // Publish only after the complete runtime factory succeeds. If extension
+    // or Session construction fails, the lease remains null rather than
+    // claiming a partially constructed Session is current.
+    compositionOptions.onPresentationReaderChange?.(pendingPresentationReader);
 
     return {
       ...created,
@@ -174,6 +193,10 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   let quotaResumeSupervisor: QuotaResumeSupervisor | undefined;
   let quotaBridgeLease: QuotaResumeHostLease | undefined;
   let releaseControlBridge: (() => void) | undefined;
+  let currentPresentationReader: PindiePresentationReader | null = null;
+  const presentation: PindiePresentationReaderLease = {
+    current: () => currentPresentationReader,
+  };
   quotaBridgeLease = installQuotaResumeReceiver((event: QuotaResumeControlEvent) => {
     if (!quotaResumeSupervisor) {
       console.warn("[Pindie] Ignored a quota resume event while Host runtime was bootstrapping.");
@@ -229,6 +252,9 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
             }),
           }
         : {}),
+      onPresentationReaderChange: (reader) => {
+        currentPresentationReader = reader;
+      },
     }), {
       cwd,
       agentDir,
@@ -257,10 +283,15 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     let disposePromise: Promise<void> | undefined;
     const dispose = (): Promise<void> => {
       disposePromise ??= (async () => {
+        // Do not leave a Session-bound reader visible while Host teardown is
+        // releasing the native runtime. The second assignment covers any
+        // cleanup path that publishes during asynchronous teardown.
+        currentPresentationReader = null;
         await releaseHostControl();
         try {
           await runtime!.dispose();
         } finally {
+          currentPresentationReader = null;
           await browserReality?.dispose();
         }
       })();
@@ -270,6 +301,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     return {
       runtime,
       interactiveMode,
+      presentation,
       run: async () => {
         try {
           await interactiveMode.run();
@@ -280,6 +312,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       dispose,
     };
   } catch (error) {
+    currentPresentationReader = null;
     await releaseHostControl();
     if (runtime ?? nativeRuntime) {
       try {
