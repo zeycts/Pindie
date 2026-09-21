@@ -41,7 +41,7 @@ export interface DiscordClientSeam {
 export interface DiscordRestSeam {
   fetchChannel(channelId: string, signal: AbortSignal): Promise<DiscordChannelData | null>;
   createProjectChannel(guildId: string, name: string, signal: AbortSignal): Promise<DiscordChannelData>;
-  createMessage(channelId: string, content: string, signal: AbortSignal): Promise<DiscordMessageData>;
+  createMessage(channelId: string, content: string, signal: AbortSignal, allowedUserIds?: readonly string[]): Promise<DiscordMessageData>;
   startThread(channelId: string, messageId: string, name: string, signal: AbortSignal): Promise<DiscordChannelData>;
   editChannel(channelId: string, body: { name?: string; archived?: boolean }, signal: AbortSignal): Promise<void>;
   editMessage(channelId: string, messageId: string, content: string, signal: AbortSignal): Promise<void>;
@@ -56,8 +56,19 @@ class DiscordJsRest implements DiscordRestSeam {
   async createProjectChannel(guildId: string, name: string, signal: AbortSignal): Promise<DiscordChannelData> {
     return await this.rest.post(Routes.guildChannels(guildId), { body: { name, type: ChannelType.GuildText }, signal }) as DiscordChannelData;
   }
-  async createMessage(channelId: string, content: string, signal: AbortSignal): Promise<DiscordMessageData> {
-    return await this.rest.post(Routes.channelMessages(channelId), { body: { content, allowed_mentions: { parse: [] } }, signal }) as DiscordMessageData;
+  async createMessage(
+    channelId: string,
+    content: string,
+    signal: AbortSignal,
+    allowedUserIds: readonly string[] = [],
+  ): Promise<DiscordMessageData> {
+    const allowedMentions = allowedUserIds.length === 0
+      ? { parse: [] as string[] }
+      : { parse: [] as string[], users: [...allowedUserIds] };
+    return await this.rest.post(
+      Routes.channelMessages(channelId),
+      { body: { content, allowed_mentions: allowedMentions }, signal },
+    ) as DiscordMessageData;
   }
   async startThread(channelId: string, messageId: string, name: string, signal: AbortSignal): Promise<DiscordChannelData> {
     return await this.rest.post(Routes.threads(channelId, messageId), { body: { name, auto_archive_duration: 1440 }, signal }) as DiscordChannelData;
@@ -208,7 +219,15 @@ export class DiscordRemote implements RemoteSurface {
     if (event.kind === "user" && isDiscordOrigin(event.origin)) return;
     const rest = this.requireRest(signal); const thread = await rest.fetchChannel(threadId, signal); abortIfNeeded(signal);
     if (!thread || thread.guild_id !== this.config.guildId || thread.type !== ChannelType.PublicThread) throw new Error("Discord Session thread is unavailable.");
-    await rest.createMessage(threadId, event.text, signal); abortIfNeeded(signal);
+    const attention = event.attention === true;
+    const content = attention ? `<@${this.config.userId}>\n${event.text}` : event.text;
+    await rest.createMessage(
+      threadId,
+      content,
+      signal,
+      attention ? [this.config.userId] : undefined,
+    );
+    abortIfNeeded(signal);
   }
 
   async updateSessionPresentation(session: Pick<RemoteSessionRouting, "threadId" | "anchorMessageId" | "headerMessageId">, presentation: RemoteSessionPresentation, signal: AbortSignal): Promise<void> {
