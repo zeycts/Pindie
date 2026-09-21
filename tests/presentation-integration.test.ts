@@ -11,9 +11,11 @@ import {
 } from "../src/subscription-usage.ts";
 import { TaskMetricsTracker } from "../src/task-metrics.ts";
 import type { SemanticDerivationResult } from "../src/semantics.ts";
+import type { PindieState } from "../src/state.ts";
 
 function createPresentation(options: {
   uiEnabled?: boolean;
+  state?: PindieState | null;
   semantic?: SemanticDerivationResult;
   semanticSource?: () => SemanticDerivationResult;
   provider?: SubscriptionUsageProvider;
@@ -21,12 +23,13 @@ function createPresentation(options: {
   monitor?: SubscriptionUsageMonitor;
 } = {}) {
   const pi = { getThinkingLevel: () => "medium", setThinkingLevel: () => undefined } as unknown as ExtensionAPI;
+  const state = options.state ?? { task: null };
   const semantic = options.semantic ?? { ok: false, error: "test semantic source" };
   return new PresentationIntegration(pi, {
     getSemanticSnapshot: options.semanticSource ?? (() => semantic),
-    getState: () => ({ task: null }),
+    getState: () => state,
     getProjectRoot: () => "/repo",
-    getAuthoritativeState: () => ({ task: null }),
+    getAuthoritativeState: () => state,
     getStateUnavailableReason: () => null,
     getRunStale: () => false,
     subscriptionUsageMonitor: options.monitor ?? new SubscriptionUsageMonitor(
@@ -67,6 +70,124 @@ function usageSnapshot(usedPercent: number, fetchedAt = 1): SubscriptionUsageSna
     windows: [{ usedPercent, windowMinutes: 300 }],
   };
 }
+
+function stateFixture(): PindieState {
+  return {
+    task: {
+      goal: "Original goal",
+      constraints: ["Original constraint"],
+      successCriteria: [{ id: "criterion-1", description: "Original criterion" }],
+      openLoops: {
+        blockers: ["Original blocker"],
+        questions: ["Original question"],
+        nextIntent: "Original next intent",
+      },
+      verification: {
+        stale: false,
+        checks: [{
+          name: "Original check",
+          status: "passed",
+          covers: ["criterion-1"],
+          evidence: "Original evidence",
+        }],
+      },
+      humanGate: {
+        kind: "decision",
+        question: "Original question",
+        options: ["Original option"],
+      },
+      completed: false,
+    },
+  };
+}
+
+function usageSnapshotWithCredits(): SubscriptionUsageSnapshot {
+  return {
+    fetchedAt: 1,
+    windows: [{ usedPercent: 20, windowMinutes: 300, resetsAt: 10 }],
+    resetCredits: {
+      availableCount: 1,
+      credits: [{
+        id: "credit-1",
+        resetType: "codex_rate_limits",
+        status: "available",
+        grantedAt: 2,
+        expiresAt: 3,
+      }],
+    },
+  };
+}
+
+test("presentation State snapshots detach every mutable nested value", () => {
+  const authoritativeState = stateFixture();
+  const presentation = createPresentation({ state: authoritativeState });
+  const firstState = presentation.snapshot().status.state!;
+  const authoritativeTask = authoritativeState.task!;
+  const firstTask = firstState.task!;
+
+  assert.notStrictEqual(firstState, authoritativeState);
+  assert.notStrictEqual(firstTask, authoritativeTask);
+  assert.notStrictEqual(firstTask.constraints, authoritativeTask.constraints);
+  assert.notStrictEqual(firstTask.successCriteria, authoritativeTask.successCriteria);
+  assert.notStrictEqual(firstTask.successCriteria[0], authoritativeTask.successCriteria[0]);
+  assert.notStrictEqual(firstTask.openLoops, authoritativeTask.openLoops);
+  assert.notStrictEqual(firstTask.openLoops.blockers, authoritativeTask.openLoops.blockers);
+  assert.notStrictEqual(firstTask.openLoops.questions, authoritativeTask.openLoops.questions);
+  assert.notStrictEqual(firstTask.verification, authoritativeTask.verification);
+  assert.notStrictEqual(firstTask.verification.checks, authoritativeTask.verification.checks);
+  assert.notStrictEqual(firstTask.verification.checks[0], authoritativeTask.verification.checks[0]);
+  assert.notStrictEqual(firstTask.verification.checks[0].covers, authoritativeTask.verification.checks[0].covers);
+  assert.notStrictEqual(firstTask.humanGate, authoritativeTask.humanGate);
+  assert.notStrictEqual(firstTask.humanGate!.options, authoritativeTask.humanGate!.options);
+
+  firstTask.goal = "Mutated goal";
+  firstTask.constraints.push("Mutated constraint");
+  firstTask.successCriteria[0].description = "Mutated criterion";
+  firstTask.openLoops.blockers.push("Mutated blocker");
+  firstTask.openLoops.questions.push("Mutated question");
+  firstTask.verification.checks[0].covers.push("mutated-criterion");
+  firstTask.humanGate!.options!.push("Mutated option");
+
+  const secondState = presentation.snapshot().status.state!;
+  assert.deepEqual(secondState, authoritativeState);
+  assert.equal(authoritativeTask.goal, "Original goal");
+  assert.deepEqual(authoritativeTask.constraints, ["Original constraint"]);
+  assert.deepEqual(authoritativeTask.openLoops.blockers, ["Original blocker"]);
+  assert.deepEqual(authoritativeTask.verification.checks[0].covers, ["criterion-1"]);
+  assert.deepEqual(authoritativeTask.humanGate!.options, ["Original option"]);
+});
+
+test("subscription usage snapshots detach the monitor cache", async () => {
+  const authoritativeUsage = usageSnapshotWithCredits();
+  const monitor = new SubscriptionUsageMonitor({
+    fetchUsage: async () => authoritativeUsage,
+  });
+  const presentation = createPresentation({ monitor });
+  const ui = uiContext("session");
+  presentation.setStatusContext(ui.ctx);
+  await presentation.refreshSubscriptionUsage(ui.ctx);
+
+  const monitorSnapshot = monitor.snapshot!;
+  const firstUsage = presentation.snapshot().status.subscriptionUsage!;
+  assert.notStrictEqual(firstUsage, monitorSnapshot);
+  assert.notStrictEqual(firstUsage.windows, monitorSnapshot.windows);
+  assert.notStrictEqual(firstUsage.windows[0], monitorSnapshot.windows[0]);
+  assert.notStrictEqual(firstUsage.resetCredits, monitorSnapshot.resetCredits);
+  assert.notStrictEqual(firstUsage.resetCredits!.credits, monitorSnapshot.resetCredits!.credits);
+  assert.notStrictEqual(firstUsage.resetCredits!.credits![0], monitorSnapshot.resetCredits!.credits![0]);
+
+  firstUsage.windows[0].usedPercent = 99;
+  firstUsage.windows.push({ usedPercent: 88, windowMinutes: 60 });
+  firstUsage.resetCredits!.credits!.push({
+    id: "mutated-credit",
+    resetType: "codex_rate_limits",
+    status: "available",
+  });
+
+  const secondUsage = presentation.snapshot().status.subscriptionUsage!;
+  assert.deepEqual(secondUsage, authoritativeUsage);
+  assert.deepEqual(monitor.snapshot, authoritativeUsage);
+});
 
 test("presentation snapshot passes through the injected semantic source", () => {
   const semantic: SemanticDerivationResult = { ok: false, error: "sentinel semantic result" };

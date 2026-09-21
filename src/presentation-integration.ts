@@ -26,11 +26,68 @@ import {
 import {
   SubscriptionUsageMonitor,
   type SubscriptionUsageRefreshOptions,
+  type SubscriptionUsageSnapshot,
 } from "./subscription-usage.ts";
 import type { QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
 import type { SemanticDerivationResult } from "./semantics.ts";
 
 const PINDIE_STATUS_ID = "pindie-status";
+
+function snapshotPindieState(state: PindieState | null): PindieState | null {
+  if (state === null) return null;
+  const task = state.task;
+  if (task === null) return { task: null };
+
+  return {
+    task: {
+      goal: task.goal,
+      constraints: [...task.constraints],
+      successCriteria: task.successCriteria.map((criterion) => ({ ...criterion })),
+      openLoops: {
+        blockers: [...task.openLoops.blockers],
+        questions: [...task.openLoops.questions],
+        nextIntent: task.openLoops.nextIntent,
+      },
+      verification: {
+        stale: task.verification.stale,
+        checks: task.verification.checks.map((check) => ({
+          ...check,
+          covers: [...check.covers],
+        })),
+      },
+      humanGate: task.humanGate === null
+        ? null
+        : {
+            ...task.humanGate,
+            ...(task.humanGate.options === undefined
+              ? {}
+              : { options: [...task.humanGate.options] }),
+          },
+      completed: task.completed,
+    },
+  };
+}
+
+function snapshotSubscriptionUsage(
+  snapshot: SubscriptionUsageSnapshot | null,
+): SubscriptionUsageSnapshot | null {
+  if (snapshot === null) return null;
+  const resetCredits = snapshot.resetCredits;
+  return {
+    ...snapshot,
+    windows: snapshot.windows.map((window) => ({ ...window })),
+    ...(resetCredits === undefined
+      ? {}
+      : {
+          resetCredits: {
+            ...resetCredits,
+            ...(resetCredits.credits === undefined
+              ? {}
+              : { credits: resetCredits.credits.map((credit) => ({ ...credit })) }),
+          },
+        }),
+  };
+}
 
 export interface PindiePresentationReader {
   snapshot(): PindiePresentationSnapshot;
@@ -142,13 +199,13 @@ export class PresentationIntegration {
         consumption: this.consumptionStatus(ctx),
         reasoningMode: this.reasoning?.snapshot.mode ?? null,
         activity: this.runActivity?.activity ?? null,
-        state: this.getState(),
+        state: snapshotPindieState(this.getState()),
         stateUnavailableReason: this.getStateUnavailableReason(),
         runStale: this.runTimer.active &&
           this.getAuthoritativeState() !== null &&
           this.getRunStale(),
         quotaResumeWaiting: quotaResumeWaiting !== null,
-        subscriptionUsage: this.subscriptionUsageMonitor.snapshot,
+        subscriptionUsage: snapshotSubscriptionUsage(this.subscriptionUsageMonitor.snapshot),
       },
       quotaResumeWaiting,
       projectRoot: this.getProjectRoot(),
