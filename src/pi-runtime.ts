@@ -1,9 +1,10 @@
-import type {
-  AgentSession,
-  AgentSessionRuntime,
-  ContextUsage,
-  PromptOptions,
-  SessionEntry,
+import {
+  SessionManager,
+  type AgentSession,
+  type AgentSessionRuntime,
+  type ContextUsage,
+  type PromptOptions,
+  type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import type { ImageContent } from "@earendil-works/pi-ai/compat";
 
@@ -103,6 +104,25 @@ export interface ActiveSessionFacts {
 export interface ActiveSessionClientLifecycle {
   beforeSessionInvalidate?: () => void;
   rebindSession?: () => Promise<void>;
+}
+
+export interface ActiveSessionModelChoice {
+  readonly provider: string;
+  readonly modelId: string;
+  readonly displayName: string;
+  readonly current: boolean;
+  readonly scopedThinkingLevel?: AgentSession["thinkingLevel"];
+}
+
+export interface ActiveProjectSessionChoice {
+  readonly path: string;
+  readonly id: string;
+  readonly name?: string;
+  readonly created: Date;
+  readonly modified: Date;
+  readonly messageCount: number;
+  readonly firstMessage: string;
+  readonly current: boolean;
 }
 
 /**
@@ -270,6 +290,54 @@ export class PiRuntimeAdapter {
   getActiveSessionModelIdentity(): { provider: string; modelId: string } | null {
     const model = this.activeSession.model;
     return model ? { provider: model.provider, modelId: model.id } : null;
+  }
+
+  getActiveSessionModelChoices(): readonly ActiveSessionModelChoice[] {
+    const session = this.activeSession;
+    const registry = session.extensionRunner.getModelRegistry();
+    const available = registry.getAvailable();
+    const availableIds = new Set(available.map((model) => `${model.provider}\u0000${model.id}`));
+    const scoped = session.scopedModels;
+    const universe: ReadonlyArray<{
+      model: (typeof available)[number];
+      thinkingLevel?: AgentSession["thinkingLevel"];
+    }> = scoped.length > 0
+      ? scoped.filter(({ model }) => availableIds.has(`${model.provider}\u0000${model.id}`))
+      : available.map((model) => ({ model }));
+    return universe.map(({ model, thinkingLevel }) => ({
+      provider: model.provider,
+      modelId: model.id,
+      displayName: model.name ?? model.id,
+      current: session.model?.provider === model.provider && session.model?.id === model.id,
+      ...(thinkingLevel === undefined ? {} : { scopedThinkingLevel: thinkingLevel }),
+    }));
+  }
+
+  async setActiveSessionModel(provider: string, modelId: string): Promise<void> {
+    const session = this.activeSession;
+    const registry = session.extensionRunner.getModelRegistry();
+    const model = registry.find(provider, modelId);
+    if (model === undefined || !registry.getAvailable().some((candidate) =>
+      candidate.provider === provider && candidate.id === modelId)) {
+      throw new Error(`Model is no longer available: ${provider}/${modelId}`);
+    }
+    await session.setModel(model);
+  }
+
+  async getActiveProjectSessionChoices(): Promise<readonly ActiveProjectSessionChoice[]> {
+    const session = this.activeSession;
+    const manager = session.sessionManager;
+    const sessions = await SessionManager.list(manager.getCwd(), manager.getSessionDir());
+    return sessions.map((candidate) => ({
+      path: candidate.path,
+      id: candidate.id,
+      ...(candidate.name === undefined ? {} : { name: candidate.name }),
+      created: new Date(candidate.created),
+      modified: new Date(candidate.modified),
+      messageCount: candidate.messageCount,
+      firstMessage: candidate.firstMessage,
+      current: candidate.path === session.sessionFile || candidate.id === session.sessionId,
+    }));
   }
 
   getActiveSessionBranch(): readonly SessionEntry[] {

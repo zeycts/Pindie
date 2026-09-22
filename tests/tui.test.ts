@@ -166,6 +166,10 @@ class FakeView implements PindieTuiViewPort {
   setExtensionWorkingVisible(): void {}
   setExtensionWorkingIndicator(_options?: WorkingIndicatorOptions): void {}
   setExtensionHiddenThinkingLabel(): void {}
+  setExtensionStringWidget(): void {}
+  addExtensionAutocompleteProvider(): void {}
+  getExtensionToolsExpanded(): boolean { return false; }
+  setExtensionToolsExpanded(): void {}
   setTerminalTitle(): void {}
   restoreBaseTerminalTitle(): void {}
   pasteToComposer(text: string): void { this.editorText += text; }
@@ -220,6 +224,10 @@ class FakeRuntime {
   readonly abortSessionIds: string[] = [];
   abortWait: Promise<void> | null = null;
   readonly commandCalls: string[] = [];
+  readonly modelChanges: Array<{ provider: string; modelId: string; sessionId: string }> = [];
+  readonly sessionSwitches: string[] = [];
+  modelChoices: readonly import("../src/pi-runtime.ts").ActiveSessionModelChoice[] = [];
+  sessionChoices: readonly import("../src/pi-runtime.ts").ActiveProjectSessionChoice[] = [];
 
   get activeSessionId(): string {
     return this.sessionId;
@@ -249,8 +257,18 @@ class FakeRuntime {
   newSession(): Promise<{ cancelled: boolean }> { this.commandCalls.push("newSession"); return Promise.resolve({ cancelled: false }); }
   forkActiveSession(): Promise<{ cancelled: boolean }> { this.commandCalls.push("fork"); return Promise.resolve({ cancelled: false }); }
   navigateActiveSessionTree(): Promise<{ cancelled: boolean }> { this.commandCalls.push("navigateTree"); return Promise.resolve({ cancelled: false }); }
-  switchActiveSession(): Promise<{ cancelled: boolean }> { this.commandCalls.push("switchSession"); return Promise.resolve({ cancelled: false }); }
+  switchActiveSession(path?: string): Promise<{ cancelled: boolean }> {
+    this.commandCalls.push("switchSession");
+    if (path !== undefined) this.sessionSwitches.push(path);
+    return Promise.resolve({ cancelled: false });
+  }
   reloadActiveSession(): Promise<void> { this.commandCalls.push("reload"); return Promise.resolve(); }
+  getActiveSessionModelChoices(): readonly import("../src/pi-runtime.ts").ActiveSessionModelChoice[] { return this.modelChoices; }
+  setActiveSessionModel(provider: string, modelId: string): Promise<void> {
+    this.modelChanges.push({ provider, modelId, sessionId: this.sessionId });
+    return Promise.resolve();
+  }
+  getActiveProjectSessionChoices(): Promise<readonly import("../src/pi-runtime.ts").ActiveProjectSessionChoice[]> { return Promise.resolve(this.sessionChoices); }
 
   bindActiveSessionExtensions(bindings: unknown): Promise<void> {
     this.bindings.push(bindings);
@@ -1734,11 +1752,196 @@ test("Extension terminal input, Composer access, status, notify, and deferred fa
   assert.match(rendered, /◆ Indexing project/);
   assert.match(rendered, /Warning · careful/);
   assert.equal(projection.timeline.length, 0);
-  assert.throws(() => ui.setWidget("x", ["no"]), UnsupportedExtensionUICapabilityError);
+  ui.setWidget("x", ["bounded widget"]);
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /bounded widget/);
+  assert.throws(() => ui.setWidget("factory", () => ({ render: () => [], invalidate: () => {} })), UnsupportedExtensionUICapabilityError);
 
   ui.invalidate();
   terminal.emit("x");
   assert.equal(view.getEditorText(), "draft + pastedx");
+  view.stop();
+});
+
+test("Extension string widgets are ordered, bounded, removable, and Session-scoped", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  const projection = viewProjection({ sessionId: "widget-a" });
+  view.apply(projection);
+  view.start();
+  const ui = new PindieExtensionUIBridge(view);
+  ui.setWidget("above", Array.from({ length: 20 }, (_, index) => `above-${index}`));
+  ui.setWidget("below", ["below-editor"], { placement: "belowEditor" });
+  await waitForTuiRender();
+  const rendered = terminal.writes.join("");
+  assert.match(rendered, /above-0/);
+  assert.doesNotMatch(rendered, /above-10/);
+  assert.match(rendered, /below-editor/);
+  assert.equal(projection.timeline.length, 0);
+
+  terminal.writes.length = 0;
+  ui.setWidget("above", ["replacement"]);
+  ui.setWidget("below", undefined);
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /replacement/);
+  assert.doesNotMatch(terminal.writes.join(""), /below-editor/);
+  ui.invalidate();
+  terminal.writes.length = 0;
+  view.apply(viewProjection({ sessionId: "widget-b" }));
+  await waitForTuiRender();
+  assert.doesNotMatch(terminal.writes.join(""), /replacement/);
+  view.stop();
+});
+
+test("tools-expanded affects only WorkBlocks and explicit fold overrides win", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  const projection = commandViewProjection("tools-expanded", "full tool output");
+  view.apply(projection);
+  view.start();
+  const ui = new PindieExtensionUIBridge(view);
+  assert.equal(ui.getToolsExpanded(), false);
+  ui.setToolsExpanded(true);
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /full tool output/);
+  assert.equal(projection.timeline[0]?.defaultDisplayMode, "compact");
+  terminal.emit("\u001bh");
+  terminal.emit("h");
+  terminal.writes.length = 0;
+  view.apply(projection);
+  await waitForTuiRender();
+  assert.doesNotMatch(terminal.writes.join(""), /full tool output/);
+  ui.invalidate();
+  assert.equal(new PindieExtensionUIBridge(view).getToolsExpanded(), false);
+  view.stop();
+});
+
+test("Extension autocomplete wrappers accept through the public base and reset with the Session", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal, cwd: process.cwd() });
+  view.apply(viewProjection());
+  view.start();
+  const ui = new PindieExtensionUIBridge(view);
+  ui.addAutocompleteProvider((current) => ({
+    triggerCharacters: ["#"],
+    async getSuggestions(lines, cursorLine, cursorCol, options) {
+      const prefix = lines[cursorLine]?.slice(0, cursorCol).match(/#[0-9]*$/u)?.[0];
+      if (prefix !== undefined) {
+        return { items: [{ value: "#123", label: "#123" }], prefix };
+      }
+      return current.getSuggestions(lines, cursorLine, cursorCol, options);
+    },
+    applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+      return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+    },
+  }));
+
+  view.setEditorText("fix ");
+  terminal.emit("#");
+  await waitForTuiRender();
+  terminal.emit("1");
+  terminal.emit("2");
+  await waitForTuiRender();
+  terminal.emit("\r");
+  assert.equal(view.getEditorText(), "fix #123");
+
+  for (const invoke of [
+    () => ui.setHeader(() => ({ render: () => [], invalidate: () => {} })),
+    () => ui.setFooter(() => ({ render: () => [], invalidate: () => {} })),
+    () => ui.getAllThemes(),
+    () => ui.getEditorComponent(),
+  ]) assert.throws(invoke, UnsupportedExtensionUICapabilityError);
+
+  ui.invalidate();
+  view.setEditorText("fix ");
+  terminal.writes.length = 0;
+  for (const character of "#12") terminal.emit(character);
+  await flush();
+  assert.equal(view.getEditorText(), "fix #12");
+  assert.doesNotMatch(terminal.writes.join(""), /#123/);
+
+  view.stop();
+});
+
+test("model and Session pickers search, preserve drafts, and delegate selections", async () => {
+  const terminal = new FakeTerminal();
+  const modelSelections: string[] = [];
+  const sessionSelections: string[] = [];
+  const now = new Date("2026-09-22T00:00:00.000Z");
+  const view = new PindieTuiView({
+    terminal,
+    onRequestModelPicker: async () => [
+      { provider: "OpenAI", modelId: "gpt-current", displayName: "Current", current: true },
+      { provider: "OpenAI", modelId: "gpt-sol", displayName: "Sol", current: false },
+    ],
+    onSelectModel: (sessionId, choice) => modelSelections.push(`${sessionId}:${choice.modelId}`),
+    onRequestSessionPicker: async () => [
+      { path: "/a", id: "picker-session", created: now, modified: now, messageCount: 2, firstMessage: "Current", current: true },
+      { path: "/b", id: "older", name: "Other work", created: now, modified: new Date(now.getTime() - 1), messageCount: 4, firstMessage: "Other", current: false },
+    ],
+    onSelectSession: (sessionId, choice) => sessionSelections.push(`${sessionId}:${choice.path}`),
+  });
+  view.apply(viewProjection({ sessionId: "picker-session" }));
+  view.start();
+  view.setEditorText("draft survives");
+  terminal.emit("\u001bm");
+  await flush();
+  assert.equal(view.getInteractionState().activeOverlay, "model-picker");
+  terminal.emit("s"); terminal.emit("o"); terminal.emit("l");
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /OpenAI · Sol/);
+  terminal.emit("\r");
+  assert.deepEqual(modelSelections, ["picker-session:gpt-sol"]);
+  assert.equal(view.getEditorText(), "draft survives");
+
+  terminal.emit("\u001bn");
+  await flush();
+  assert.equal(view.getInteractionState().activeOverlay, "session-picker");
+  terminal.emit("o"); terminal.emit("t"); terminal.emit("h");
+  terminal.emit("\r");
+  assert.deepEqual(sessionSelections, ["picker-session:/b"]);
+  terminal.emit("\u001bm");
+  await flush();
+  terminal.emit("\u001b");
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  assert.equal(view.getEditorText(), "draft survives");
+  view.stop();
+});
+
+test("async Session picker does not open after the same Session becomes running", async () => {
+  const terminal = new FakeTerminal();
+  const selections: string[] = [];
+  let resolveChoices!: (choices: readonly import("../src/pi-runtime.ts").ActiveProjectSessionChoice[]) => void;
+  const pendingChoices = new Promise<readonly import("../src/pi-runtime.ts").ActiveProjectSessionChoice[]>((resolve) => {
+    resolveChoices = resolve;
+  });
+  const view = new PindieTuiView({
+    terminal,
+    onRequestSessionPicker: () => pendingChoices,
+    onSelectSession: (_sessionId, choice) => selections.push(choice.path),
+  });
+  view.apply(viewProjection({ sessionId: "picker-race" }));
+  view.start();
+  view.setEditorText("draft survives");
+
+  terminal.emit("\u001bn");
+  await flush();
+  view.apply(viewProjection({ sessionId: "picker-race", running: true }));
+  resolveChoices([{
+    path: "/other",
+    id: "other",
+    created: new Date("2026-09-22T00:00:00.000Z"),
+    modified: new Date("2026-09-22T00:00:00.000Z"),
+    messageCount: 1,
+    firstMessage: "Other",
+    current: false,
+  }]);
+  await flush();
+
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  assert.equal(view.getInteractionState().focusMode, "composer");
+  assert.equal(view.getEditorText(), "draft survives");
+  assert.deepEqual(selections, []);
   view.stop();
 });
 
@@ -1838,6 +2041,43 @@ test("owned mode runs /reasoning through the generic ExtensionUIContext bridge",
   assert.match(terminal.writes.join(""), /Reasoning: auto/);
 
   terminal.emit("\u0004");
+  await running;
+});
+
+test("picker controller mutations are current-epoch idle-only and current choices are no-ops", async () => {
+  const harness = createHarness();
+  const running = harness.mode.run();
+  await flush();
+  const currentModel = { provider: "openai", modelId: "current", displayName: "Current", current: true };
+  const nextModel = { provider: "openai", modelId: "next", displayName: "Next", current: false };
+  const currentSession = { path: "/a", id: "session-a", created: new Date(), modified: new Date(), messageCount: 1, firstMessage: "A", current: true };
+  const nextSession = { ...currentSession, path: "/b", id: "session-b", current: false };
+
+  harness.view.options.onSelectModel?.("session-a", currentModel);
+  harness.view.options.onSelectSession?.("session-a", currentSession);
+  assert.deepEqual(harness.runtime.modelChanges, []);
+  assert.deepEqual(harness.runtime.sessionSwitches, []);
+
+  harness.view.options.onSelectModel?.("session-a", nextModel);
+  await flush();
+  assert.deepEqual(harness.runtime.modelChanges, [{ provider: "openai", modelId: "next", sessionId: "session-a" }]);
+
+  harness.runtime.facts = { ...harness.runtime.facts, isIdle: false, isStreaming: true };
+  harness.view.options.onSelectSession?.("session-a", nextSession);
+  assert.deepEqual(harness.runtime.sessionSwitches, []);
+  assert.match(harness.view.notices.at(-1) ?? "", /no longer safely idle/);
+
+  harness.runtime.facts = { ...harness.runtime.facts, isIdle: true, isStreaming: false };
+  harness.runtime.lifecycle?.beforeSessionInvalidate?.();
+  harness.runtime.replaceSession("session-b");
+  await harness.runtime.lifecycle!.rebindSession!();
+  harness.view.options.onSelectModel?.("session-a", nextModel);
+  harness.view.options.onSelectSession?.("session-a", nextSession);
+  await flush();
+  assert.equal(harness.runtime.modelChanges.length, 1);
+  assert.deepEqual(harness.runtime.sessionSwitches, []);
+
+  harness.view.exit();
   await running;
 });
 

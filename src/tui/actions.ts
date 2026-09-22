@@ -10,6 +10,8 @@ export type PindieActionId =
   | "palette.open"
   | "timeline.toggle"
   | "composer.follow-up"
+  | "model.pick"
+  | "session.pick"
   | "run.abort"
   | "app.exit"
   | "timeline.next"
@@ -70,6 +72,26 @@ export const PINDIE_ACTIONS: readonly PindieActionDefinition[] = [
     keys: [{ key: Key.alt("h"), label: "Alt+H" }],
     palette: true,
     hintPriority: 70,
+  },
+  {
+    id: "model.pick",
+    label: "Model",
+    description: "Choose an available model for the current Session.",
+    contexts: ["composer"],
+    keys: [{ key: Key.alt("m"), label: "Alt+M" }],
+    palette: true,
+    hintPriority: 85,
+    hintContexts: ["composer"],
+  },
+  {
+    id: "session.pick",
+    label: "Session",
+    description: "Switch to a recent Session in the current project.",
+    contexts: ["composer"],
+    keys: [{ key: Key.alt("n"), label: "Alt+N" }],
+    palette: true,
+    hintPriority: 84,
+    hintContexts: ["composer"],
   },
   {
     id: "composer.follow-up",
@@ -261,7 +283,7 @@ export const PINDIE_ACTIONS: readonly PindieActionDefinition[] = [
 export const PINDIE_ACTION_REGISTRY: ReadonlyMap<PindieActionId, PindieActionDefinition> =
   new Map(PINDIE_ACTIONS.map((action) => [action.id, action]));
 
-export type PindieOverlayKind = "command-palette" | "block-viewer" | "extension-dialog";
+export type PindieOverlayKind = "command-palette" | "block-viewer" | "model-picker" | "session-picker" | "extension-dialog";
 
 export interface PindieInteractionState {
   readonly focusMode: "composer" | "timeline" | "attention";
@@ -271,6 +293,7 @@ export interface PindieInteractionState {
 /** Facts used for availability; callers derive run state from native Projection facts. */
 export interface PindieActionAvailability {
   readonly runActive: boolean;
+  readonly nativeIdle: boolean;
   readonly composerEmpty: boolean;
   readonly hasSelectedBlock: boolean;
   readonly activeOverlay: PindieOverlayKind | null;
@@ -318,6 +341,9 @@ export function isPindieActionAvailable(
       return data.activeOverlay === null;
     case "composer.follow-up":
       return data.activeOverlay === null && !data.composerEmpty;
+    case "model.pick":
+    case "session.pick":
+      return data.activeOverlay === null && data.nativeIdle;
     case "run.abort":
       return data.activeOverlay === null && data.runActive;
     case "app.exit":

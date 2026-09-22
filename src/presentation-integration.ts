@@ -294,6 +294,12 @@ export class PresentationIntegration {
   refreshStatus(ctx = this.statusContext): void {
     if (!this.uiEnabled) return;
     this.presentStatusBestEffort(ctx, (activeContext) => {
+      // The owned TUI renders authoritative status directly from Projection.
+      // Pi 0.86.1 does not expose its active Theme singleton at package root, so
+      // do not ask that bridge for a fake Theme merely to duplicate this line.
+      if ((activeContext.ui as ExtensionContext["ui"] & {
+        pindieOwnedThemeFormatting?: boolean;
+      }).pindieOwnedThemeFormatting === false) return undefined;
       const snapshot = this.readSnapshot(activeContext);
       const layout = deriveStatusLayout(snapshot.status, this.now());
       return renderStatusLayout(

@@ -1,6 +1,6 @@
 # Pindie TUI v0.1 — Architecture and Implementation Contract
 
-Status: Slices A–E, F1, F2a, and F2b1 are implemented; F2b2 is next and G remains intentionally deferred.
+Status: Slices A–F are implemented; Slice G is next and remains intentionally deferred.
 
 Baseline: Pindie main after Pi 0.86.1 compatibility upgrade.
 
@@ -869,7 +869,7 @@ Implemented in the feature-gated Pindie TUI:
 
 F1 deliberately does not bind model/session pickers or `Alt+M`/`Alt+N`, and it does not implement interactive Attention or the Extension UI bridge. Pi's public Editor remains the owner of all text-editing mechanics.
 
-### Slice F2 — Attention and Extension UI (implementation in progress)
+### Slice F2 — Attention and Extension UI (implemented)
 
 #### F2a — Semantic Attention Interaction (implemented)
 
@@ -903,21 +903,39 @@ Implemented `ExtensionUIContext` capabilities:
 
 The command-context mapping is exact: `waitForIdle → AgentSession.waitForIdle`, `newSession → AgentSessionRuntime.newSession`, `fork → AgentSessionRuntime.fork`, `navigateTree → AgentSession.navigateTree`, `switchSession → AgentSessionRuntime.switchSession`, and `reload → AgentSession.reload`. Session-replacing actions rely exclusively on the existing runtime `beforeSessionInvalidate` / `rebindSession` lifecycle.
 
-Explicitly deferred to F2b2 (each currently throws `UnsupportedExtensionUICapabilityError`; none is silently accepted):
+F2b1 deliberately left the remaining contribution and picker compatibility surface to F2b2. Its final status is recorded below.
 
-- `setWidget`, `setFooter`, and `setHeader`;
-- `custom`;
-- `addAutocompleteProvider`, `setEditorComponent`, and `getEditorComponent`;
-- `theme`, `getAllThemes`, `getTheme`, and `setTheme`;
-- `getToolsExpanded` and `setToolsExpanded`.
+##### F2b2 — UI Contributions + Pickers (implemented)
 
-##### F2b2 — UI Contributions + Pickers (next)
+Implemented:
 
-Implement:
+- keyed, ordered `string[]` widgets above/below the ordinary Composer, clipped to a bounded contribution region;
+- stacked ordinary-Composer autocomplete providers over the public `CombinedAutocompleteProvider([], cwd)` baseline, preserving its completion-application and file/path behavior without recreating private `InteractiveMode` command setup;
+- Session-scoped global WorkBlock expansion, with precedence `per-Block fold override → tools-expanded → Projection default`;
+- searchable Model and current-project Session overlays, sourced and mutated only through public Pi Session/runtime APIs; direct Model selection delegates only to `AgentSession.setModel()`, so Pi owns the resulting thinking-level policy;
+- shared Action Registry bindings `Alt+M → model.pick` and `Alt+N → session.pick`;
+- current-Session, native-idle, semantic-Attention, Extension-interaction, and Session-epoch guards both after asynchronous Picker loading and again before selection mutation.
 
-- widget/header/footer and custom UI compatibility;
-- theme, custom editor, autocomplete, and tools-expanded compatibility;
-- model/session picker and their `Alt+M`/`Alt+N` bindings.
+Pindie's Extension contribution interpretation keeps its mandatory semantic Header and Status authoritative. A future public-compatible header/footer contribution would be additive rather than replacing those regions.
+
+Final Pi 0.86.1 `ExtensionUIContext` capability matrix:
+
+| Capability | F2 status |
+| --- | --- |
+| `select`, `confirm`, `input`, `editor` | implemented through the shared Session-scoped Extension interaction serializer |
+| `notify`, terminal input, status/working/title, Composer text/paste | implemented |
+| `setWidget(key, string[], options)` | implemented; keyed replacement/removal, insertion order, above/below placement, bounded rendering |
+| `setWidget(key, componentFactory, options)` | explicitly unsupported: package-root exports no active `Theme` instance required by the factory |
+| `setHeader` | explicitly unsupported: package-root exports no active `Theme` instance; Pindie would treat it as an additive Header contribution |
+| `setFooter` | explicitly unsupported: package-root exports neither an active `Theme` instance nor a constructible public `FooterDataProvider`; Pindie would treat it as an additive Status contribution |
+| `custom` | explicitly unsupported: package-root exports neither active `Theme` nor app `KeybindingsManager` values required by the factory contract |
+| `addAutocompleteProvider` | implemented for the ordinary Composer; providers stack in registration order over the public `CombinedAutocompleteProvider([], cwd)` file/path and completion-application baseline |
+| `setEditorComponent`, `getEditorComponent` | explicitly unsupported: package-root does not export `getEditorTheme()` or a runtime app `KeybindingsManager` value/constructor needed for faithful factory construction |
+| `theme` | explicitly unsupported: `Theme` class is public but the active singleton is not exported |
+| `getAllThemes`, `getTheme`, `setTheme` | explicitly unsupported: enumeration, lookup, and switching helpers are not package-root exports |
+| `getToolsExpanded`, `setToolsExpanded` | implemented as Session-scoped UI-local WorkBlock density preference |
+
+All contribution state is owned by the active Extension UI bridge/View and is cleared on Session invalidation. No contribution mutates `PindieState`, `PindieUiProjection`, or semantic Timeline. Unsupported paths throw `UnsupportedExtensionUICapabilityError`; none silently no-op.
 
 ### Slice G — Human Signal Unification and Cutover
 
