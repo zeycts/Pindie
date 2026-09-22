@@ -1,6 +1,6 @@
 # Pindie TUI v0.1 — Architecture and Implementation Contract
 
-Status: implementation in progress; Slices A–E complete.
+Status: Slices A–E and F1 are implemented; F2 and G remain intentionally deferred.
 
 Baseline: Pindie main after Pi 0.86.1 compatibility upgrade.
 
@@ -468,15 +468,15 @@ Default v0.1 profile:
 Composer
 Enter       Send Intent / Steer
 Alt+U       Follow-up / After
-Alt+Enter   Follow-up compatibility alias when terminal supports it
 Shift+Enter New line
+Alt+Enter   New line (Pi Editor; not a Pindie action)
 Esc         Stop active Run
 
 Global
 Alt+P       Command Palette
 Alt+H       History / Timeline
-Alt+M       Model Picker
-Alt+N       Session Picker
+Alt+M       Model Picker (reserved for F2; not bound in F1)
+Alt+N       Session Picker (reserved for F2; not bound in F1)
 ```
 
 Do not add more global bindings merely because keys are available.
@@ -497,6 +497,8 @@ Esc         return
 Low-frequency actions belong in the Command Palette.
 
 All bindings must remain configurable. A future keyboard diagnostic may show which key sequence actually reached Pindie; it must not pretend to know which upstream layer swallowed an unseen key.
+
+F1 registers only Pindie application actions. Pi's public `Editor` remains the owner of text editing, including Enter/newline handling, cursor movement, paste, IME, autocomplete, and undo. The F1 input listener consumes declared Pindie bindings and forwards undeclared input to the Editor; it does not register an Alt+Enter Follow-up alias.
 
 ## 7. Attention and notification policy
 
@@ -619,7 +621,7 @@ Do not reimplement text editing.
 
 Use Pi's public `CustomEditor` / keybinding primitives where appropriate so multiline editing, paste handling, IME behavior, autocomplete, and terminal input details remain upstream-owned.
 
-Pindie owns submission semantics and action routing, not text-editor mechanics.
+F1 uses Pi's public `Editor` directly. Pindie owns submission semantics and application-action routing, not text-editor mechanics; F2's Extension UI bridge must preserve the same ownership boundary.
 
 ## 9. Extension UI boundary
 
@@ -833,7 +835,7 @@ Minimum dogfoodable shell:
 - Session rebind correctness.
 
 Implemented behind `PINDIE_TUI=1`; the default Pi `InteractiveMode` remains the fallback.
-Full interactive Extension UI / Attention interaction lands in Slice F.
+Full interactive Extension UI / Attention interaction lands in Slice F2.
 Do not implement every advanced Block/Overlay before first dogfood.
 
 ### Slice E — Semantic Timeline (implemented)
@@ -854,19 +856,27 @@ Implemented:
 - semantic Task/Verification/Completion projection;
 - structured Human Gate anchors and completion truth checks.
 
-### Slice F — Interaction and Attention (next implementation Slice)
+### Slice F1 — Interaction Core (implemented)
+
+Implemented in the feature-gated Pindie TUI:
+
+- renderer-light Action Registry for Pindie application actions, key resolution, palette entries, and contextual hints;
+- default sparse right-hand Alt bindings (`Alt+P`, `Alt+H`, and `Alt+U`);
+- Composer/Timeline focus, stable Block selection, visibility scrolling, and UI-local fold overrides;
+- searchable registry-derived Command Palette;
+- full Block Viewer and copy;
+- Session-epoch reset of selection, folds, overlays, and focus.
+
+F1 deliberately does not bind model/session pickers or `Alt+M`/`Alt+N`, and it does not implement interactive Attention or the Extension UI bridge. Pi's public Editor remains the owner of all text-editing mechanics.
+
+### Slice F2 — Attention and Extension UI (not implemented)
 
 Implement:
 
-- Action Registry;
-- default right-hand Alt keymap;
-- Timeline focus/navigation;
-- Command Palette;
-- model/session picker;
-- Block Viewer;
-- Human Gate;
-- runtime permission;
-- Extension UI bridge.
+- interactive Human Gate;
+- runtime permission UI;
+- `ExtensionUIContext` bridge and `commandContextActions`;
+- model/session picker and their `Alt+M`/`Alt+N` bindings.
 
 ### Slice G — Human Signal Unification and Cutover
 
