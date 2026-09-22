@@ -228,9 +228,21 @@ export class PindieInteractiveMode {
     }
   }
 
+  private currentSessionBinding(): SessionBinding | null {
+    const binding = this.sessionBinding;
+    const projection = this.projection;
+    if (
+      binding === null ||
+      projection === null ||
+      binding.sessionId !== this.runtime.activeSessionId ||
+      projection.header.sessionId !== binding.sessionId
+    ) return null;
+    return binding;
+  }
+
   private appendLocalUserDelivery(text: string, delivery: UiUserDelivery): void {
     const projection = this.projection;
-    const binding = this.sessionBinding;
+    const binding = this.currentSessionBinding();
     if (projection === null || binding === null) return;
     const id = `live:${binding.sessionId}:user:${this.userSequence}`;
     this.userSequence += 1;
@@ -249,6 +261,12 @@ export class PindieInteractiveMode {
   private deliverUserText(text: string, source: "normal" | "followUp"): void {
     const trimmed = text.trim();
     if (trimmed.length === 0) return;
+
+    if (this.currentSessionBinding() === null) {
+      this.view.setEditorText(text);
+      this.view.showNotice("Session switching; input kept in Composer.");
+      return;
+    }
 
     let facts;
     try {

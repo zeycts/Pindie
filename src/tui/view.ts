@@ -165,6 +165,7 @@ export class PindieTuiView implements PindieTuiViewPort {
   private readonly onFollowUp?: (text: string) => void;
   private readonly onAbort?: () => void;
   private readonly onExit?: () => void;
+  private attention: string | null = null;
   private notice: string | null = null;
   private started = false;
   private removeInputListener: (() => void) | null = null;
@@ -254,12 +255,8 @@ export class PindieTuiView implements PindieTuiViewPort {
       this.timeline.addChild(new Text("", 0, 0));
     }
 
-    this.composer.clear();
-    this.composer.addChild(new Text("Composer", 1, 0));
-    const attention = formatAttention(projection);
-    if (attention !== null) this.composer.addChild(new Text(attention, 1, 0));
-    if (this.notice !== null) this.composer.addChild(new Text(`Notice · ${this.notice}`, 1, 0));
-    this.composer.addChild(this.editor);
+    this.attention = formatAttention(projection);
+    this.renderComposer();
     this.requestRender();
   }
 
@@ -278,7 +275,16 @@ export class PindieTuiView implements PindieTuiViewPort {
 
   showNotice(message: string): void {
     this.notice = message;
+    this.renderComposer();
     this.requestRender();
+  }
+
+  private renderComposer(): void {
+    this.composer.clear();
+    this.composer.addChild(new Text("Composer", 1, 0));
+    if (this.attention !== null) this.composer.addChild(new Text(this.attention, 1, 0));
+    if (this.notice !== null) this.composer.addChild(new Text(`Notice · ${this.notice}`, 1, 0));
+    this.composer.addChild(this.editor);
   }
 
   requestRender(): void {

@@ -117,7 +117,7 @@ class FakeRuntime {
     listener: (event: AgentSessionEvent) => void;
     active: boolean;
   }> = [];
-  readonly deliveryCalls: Array<{ type: string; text: string }> = [];
+  readonly deliveryCalls: Array<{ type: string; text: string; sessionId: string }> = [];
   lifecycle: ActiveSessionClientLifecycle | undefined;
   lifecycleHistory: Array<ActiveSessionClientLifecycle | undefined> = [];
   clearQueueCalls = 0;
@@ -167,17 +167,17 @@ class FakeRuntime {
   }
 
   prompt(text: string): Promise<void> {
-    this.deliveryCalls.push({ type: "prompt", text });
+    this.deliveryCalls.push({ type: "prompt", text, sessionId: this.sessionId });
     return Promise.resolve();
   }
 
   steer(text: string): Promise<void> {
-    this.deliveryCalls.push({ type: "steer", text });
+    this.deliveryCalls.push({ type: "steer", text, sessionId: this.sessionId });
     return Promise.resolve();
   }
 
   followUp(text: string): Promise<void> {
-    this.deliveryCalls.push({ type: "followUp", text });
+    this.deliveryCalls.push({ type: "followUp", text, sessionId: this.sessionId });
     return Promise.resolve();
   }
 
@@ -338,6 +338,39 @@ test("PindieInteractiveMode safely replaces Session subscriptions and projection
   await running;
 });
 
+test("input fails closed and remains editable during Session replacement", async () => {
+  const harness = createHarness();
+  const running = harness.mode.run();
+  await flush();
+
+  const oldSubscription = harness.runtime.subscriptions[0]!;
+  harness.runtime.lifecycle?.beforeSessionInvalidate?.();
+  assert.equal(oldSubscription.active, false);
+
+  // Real pi-tui Editor.submitValue clears before invoking onSubmit.
+  harness.view.editorText = "";
+  harness.view.submit("keep this instruction");
+  assert.deepEqual(harness.runtime.deliveryCalls, []);
+  assert.equal(harness.view.editorText, "keep this instruction");
+  assert.match(harness.view.notices.at(-1) ?? "", /Session switching/);
+
+  harness.view.editorText = "follow up after switch";
+  harness.view.followUp("follow up after switch");
+  assert.deepEqual(harness.runtime.deliveryCalls, []);
+  assert.equal(harness.view.editorText, "follow up after switch");
+  assert.match(harness.view.notices.at(-1) ?? "", /input kept in Composer/);
+
+  harness.runtime.replaceSession("session-b");
+  await harness.runtime.lifecycle!.rebindSession!();
+  harness.view.submit("keep this instruction");
+  assert.deepEqual(harness.runtime.deliveryCalls, [
+    { type: "prompt", text: "keep this instruction", sessionId: "session-b" },
+  ]);
+
+  harness.view.exit();
+  await running;
+});
+
 test("Prompt, Steer, and Follow-up use native active Session facts and echo delivery provenance", async () => {
   const harness = createHarness();
   const running = harness.mode.run();
@@ -356,10 +389,10 @@ test("Prompt, Steer, and Follow-up use native active Session facts and echo deli
   harness.view.followUp("working after");
 
   assert.deepEqual(harness.runtime.deliveryCalls, [
-    { type: "prompt", text: "idle prompt" },
-    { type: "prompt", text: "idle after" },
-    { type: "steer", text: "working steer" },
-    { type: "followUp", text: "working after" },
+    { type: "prompt", text: "idle prompt", sessionId: "session-a" },
+    { type: "prompt", text: "idle after", sessionId: "session-a" },
+    { type: "steer", text: "working steer", sessionId: "session-a" },
+    { type: "followUp", text: "working after", sessionId: "session-a" },
   ]);
   assert.deepEqual(
     harness.view.applied.at(-1)!.timeline
@@ -498,6 +531,11 @@ test("PindieTuiView renders the four Slice D regions and restores terminal lifec
   assert.match(rendered, /Composer/);
   assert.match(rendered, /Status/);
   assert.equal(terminal.started, true);
+
+  terminal.writes.length = 0;
+  view.showNotice("Delivery failed: test");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.match(terminal.writes.join(""), /Delivery failed: test/);
 
   view.setEditorText("follow-up text");
   terminal.emit("\x1bu");
