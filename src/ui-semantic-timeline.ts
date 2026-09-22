@@ -153,7 +153,6 @@ export interface UiSemanticToolResult {
 }
 
 const MAX_TEXT_LENGTH = 4_000;
-const MAX_ARRAY_ITEMS = 64;
 const MAX_DECISIONS = 8;
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -167,8 +166,13 @@ function boundedText(value: string, limit = MAX_TEXT_LENGTH): string {
   return `${value.slice(0, Math.max(0, limit - 1))}…`;
 }
 
+function fullString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
 function stringValue(value: unknown): string | null {
-  return typeof value === "string" ? boundedText(value) : null;
+  const text = fullString(value);
+  return text === null ? null : boundedText(text);
 }
 
 function requiredString(value: unknown): string | null {
@@ -176,16 +180,25 @@ function requiredString(value: unknown): string | null {
   return text === null || text.length === 0 ? null : text;
 }
 
-function stringArray(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  const values = value.slice(0, MAX_ARRAY_ITEMS);
-  if (!values.every((candidate) => typeof candidate === "string")) return null;
-  return values.map((candidate) => boundedText(candidate));
+function requiredFullString(value: unknown): string | null {
+  const text = fullString(value);
+  return text === null || text.length === 0 ? null : text;
 }
 
-function optionalStringArray(value: unknown): string[] | null {
+/** Copy and structurally inspect every string in an authoritative array. */
+function fullStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const values: string[] = [];
+  for (const candidate of value) {
+    if (typeof candidate !== "string") return null;
+    values.push(candidate);
+  }
+  return values;
+}
+
+function fullOptionalStringArray(value: unknown): string[] | null {
   if (value === undefined) return [];
-  return stringArray(value);
+  return fullStringArray(value);
 }
 
 function optionalString(value: unknown): string | null {
@@ -202,9 +215,9 @@ function gateKind(value: unknown): HumanGate["kind"] | null {
 function safeCheck(value: unknown): UiSemanticVerificationCheck | null {
   const source = record(value);
   if (source === null) return null;
-  const name = requiredString(source.name);
-  const covers = stringArray(source.covers);
-  const evidence = stringValue(source.evidence);
+  const name = requiredFullString(source.name);
+  const covers = fullStringArray(source.covers);
+  const evidence = fullString(source.evidence);
   if (
     name === null ||
     (source.status !== "passed" && source.status !== "failed") ||
@@ -219,10 +232,10 @@ function safeCheck(value: unknown): UiSemanticVerificationCheck | null {
   };
 }
 
-function safeChecks(value: unknown): UiSemanticVerificationCheck[] | null {
+function fullChecks(value: unknown): UiSemanticVerificationCheck[] | null {
   if (!Array.isArray(value)) return null;
   const checks: UiSemanticVerificationCheck[] = [];
-  for (const candidate of value.slice(0, MAX_ARRAY_ITEMS)) {
+  for (const candidate of value) {
     const check = safeCheck(candidate);
     if (check === null) return null;
     checks.push(check);
@@ -235,21 +248,21 @@ function safeGate(value: unknown): UiSemanticGateSnapshot | null | undefined {
   const source = record(value);
   if (source === null) return undefined;
   const kind = gateKind(source.kind);
-  const question = requiredString(source.question);
-  const options = optionalStringArray(source.options);
+  const question = requiredFullString(source.question);
+  const options = fullOptionalStringArray(source.options);
   if (kind === null || question === null || options === null) return undefined;
   return { kind, question, options };
 }
 
-function safeTaskState(value: unknown): PindieTask | null | undefined {
+function fullTaskState(value: unknown): PindieTask | null | undefined {
   if (value === null) return null;
   const source = record(value);
   if (source === null) return undefined;
 
-  const goal = requiredString(source.goal);
-  const constraints = stringArray(source.constraints);
+  const goal = requiredFullString(source.goal);
+  const constraints = fullStringArray(source.constraints);
   const criteriaSource = Array.isArray(source.successCriteria)
-    ? source.successCriteria.slice(0, MAX_ARRAY_ITEMS)
+    ? source.successCriteria
     : null;
   const openLoops = record(source.openLoops);
   const verification = record(source.verification);
@@ -267,20 +280,18 @@ function safeTaskState(value: unknown): PindieTask | null | undefined {
   const successCriteria: PindieTask["successCriteria"] = [];
   for (const candidate of criteriaSource) {
     const criterion = record(candidate);
-    const id = criterion === null ? null : requiredString(criterion.id);
-    const description = criterion === null ? null : requiredString(criterion.description);
+    const id = criterion === null ? null : requiredFullString(criterion.id);
+    const description = criterion === null ? null : requiredFullString(criterion.description);
     if (id === null || description === null) return undefined;
     successCriteria.push({ id, description });
   }
 
-  const blockers = stringArray(openLoops.blockers);
-  const questions = stringArray(openLoops.questions);
+  const blockers = fullStringArray(openLoops.blockers);
+  const questions = fullStringArray(openLoops.questions);
   const nextIntentValue = openLoops.nextIntent;
-  const nextIntent = typeof nextIntentValue === "string"
-    ? boundedText(nextIntentValue)
-    : null;
+  const nextIntent = fullString(nextIntentValue);
   const stale = verification.stale;
-  const checks = safeChecks(verification.checks);
+  const checks = fullChecks(verification.checks);
   if (
     blockers === null ||
     questions === null ||
@@ -358,7 +369,7 @@ function readState(details: unknown): {
     return { state: null, error: "Semantic result did not include a valid details.state." };
   }
 
-  const task = safeTaskState(stateRecord.task);
+  const task = fullTaskState(stateRecord.task);
   if (task === undefined) {
     return { state: null, error: "Semantic result contained malformed Task State." };
   }
@@ -453,10 +464,10 @@ function taskArguments(value: unknown): {
   readonly handoff: UiSemanticTaskHandoff | null;
 } {
   const source = record(value);
-  const criteria = source === null ? null : stringArray(source.successCriteria);
-  const blockers = source === null ? null : stringArray(source.blockers);
-  const questions = source === null ? null : stringArray(source.questions);
-  const decisions = source === null ? null : stringArray(source.decisions);
+  const criteria = source === null ? null : fullStringArray(source.successCriteria);
+  const blockers = source === null ? null : fullStringArray(source.blockers);
+  const questions = source === null ? null : fullStringArray(source.questions);
+  const decisions = source === null ? null : fullStringArray(source.decisions);
   const progressSummary = source === null ? null : requiredString(source.progressSummary);
   const nextIntent = source === null ? null : optionalString(source.nextIntent);
   const handoff = progressSummary === null || decisions === null
@@ -493,7 +504,7 @@ function gateArguments(value: unknown): {
   readonly options: readonly string[];
 } {
   const source = record(value);
-  const options = source === null ? [] : optionalStringArray(source.options);
+  const options = source === null ? [] : fullOptionalStringArray(source.options);
   return {
     gateKind: source === null ? null : gateKind(source.kind),
     question: source === null ? null : stringValue(source.question),

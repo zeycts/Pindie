@@ -443,6 +443,109 @@ test("projects a blocked Task from resulting State without creating Attention", 
   assert.equal(refreshed.attention, null);
 });
 
+test("keeps a blocker beyond the former presentation bound in semantic truth", () => {
+  const blockers = Array.from({ length: 65 }, (_, index) => `blocker-${index + 1}`);
+  const blocked = semanticState({ blockers });
+  let projection = createProjection(input({ presentation: null }));
+  projection = applySemanticLive(projection, "blocked-tail", "pindie_task_progress", {
+    blockers,
+    questions: [],
+  }, semanticToolResult(blocked));
+
+  const task = semanticBlocks(projection).find(
+    (block): block is UiTaskSemanticBlock => block.category === "task",
+  );
+  assert.equal(task?.taskStatus, "blocked");
+  assert.equal(task?.blockers[64], "blocker-65");
+});
+
+test("keeps verification pending for 65 criteria when only the first 64 are covered", () => {
+  const covered = Array.from({ length: 64 }, (_, index) => `c${index + 1}`);
+  const verified = semanticState({
+    criteriaCount: 65,
+    checks: [{
+      name: "first-64",
+      status: "passed",
+      covers: covered,
+      evidence: "The first 64 criteria passed.",
+    }],
+  });
+  let projection = createProjection(input({ presentation: null }));
+  projection = applySemanticLive(projection, "verify-tail", "pindie_verification_record", {
+    check: {
+      name: "first-64",
+      status: "passed",
+      covers: covered,
+      evidenceRefs: ["evidence-first-64"],
+    },
+  }, semanticToolResult(verified));
+
+  const verification = semanticBlocks(projection).find(
+    (block): block is UiVerificationSemanticBlock => block.category === "verification",
+  );
+  assert.equal(verification?.verificationStatus, "pending");
+  assert.equal(verification?.totalCriteria, 65);
+  assert.equal(verification?.coveredCriteria.length, 64);
+  assert.notEqual(verification?.verificationStatus, "passed");
+});
+
+test("does not create successful Completion from a truncated uncovered criterion tail", () => {
+  const covered = Array.from({ length: 64 }, (_, index) => `c${index + 1}`);
+  const incomplete = semanticState({
+    criteriaCount: 65,
+    checks: [{
+      name: "first-64",
+      status: "passed",
+      covers: covered,
+      evidence: "The first 64 criteria passed.",
+    }],
+    completed: true,
+  });
+  let projection = createProjection(input({ presentation: null }));
+  projection = applySemanticLive(projection, "completion-tail", "pindie_task_complete", {
+    summary: "Should not complete",
+  }, semanticToolResult(incomplete));
+
+  const completion = semanticBlocks(projection).find(
+    (block): block is UiCompletionSemanticBlock => block.category === "completion",
+  );
+  assert.equal(completion?.lifecycle, "failed");
+  assert.match(completion?.error ?? "", /invalid Pindie State/);
+  assert.notEqual(completion?.lifecycle, "complete");
+});
+
+test("fails closed on malformed semantic data after the former presentation bound", () => {
+  const malformed = semanticState({
+    checks: Array.from({ length: 65 }, (_, index) => ({
+      name: `check-${index + 1}`,
+      status: "passed" as const,
+      covers: ["c1"],
+      evidence: "valid",
+    })),
+  });
+  (malformed.task!.verification.checks as unknown[])[64] = {
+    name: "check-65",
+    status: "passed",
+    covers: ["c1"],
+  };
+  let projection = createProjection(input({ presentation: null }));
+  projection = applySemanticLive(projection, "malformed-tail", "pindie_verification_record", {
+    check: {
+      name: "check-65",
+      status: "passed",
+      covers: ["c1"],
+      evidenceRefs: ["evidence-malformed-tail"],
+    },
+  }, semanticToolResult(malformed));
+
+  const verification = semanticBlocks(projection).find(
+    (block): block is UiVerificationSemanticBlock => block.category === "verification",
+  );
+  assert.equal(verification?.lifecycle, "failed");
+  assert.match(verification?.error ?? "", /malformed Task State/);
+  assert.notEqual(verification?.verificationStatus, "passed");
+});
+
 test("projects one Verification episode from resulting State and keeps success visible", () => {
   const task = semanticState({ goal: "Verify the timeline", criteriaCount: 3 });
   let projection = createProjection(input({ presentation: null }));
