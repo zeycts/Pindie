@@ -80,6 +80,7 @@ export class PindieInteractiveMode {
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private userSequence = 1;
   private abortInFlight = false;
+  private attentionResponseInFlight = false;
   private exitResolver: (() => void) | null = null;
   private exitRequested = false;
   private stopped = false;
@@ -98,6 +99,7 @@ export class PindieInteractiveMode {
       startupNotices: startupNotices(options),
       onSubmit: (text) => this.handleSubmit(text),
       onFollowUp: (text) => this.handleFollowUp(text),
+      onAttentionResponse: (text) => this.handleAttentionResponse(text),
       onAbort: () => this.handleAbort(),
       onExit: () => this.requestExit(),
     };
@@ -150,9 +152,8 @@ export class PindieInteractiveMode {
 
   private extensionBindings() {
     return {
-      // F1 intentionally omits uiContext. Pi's documented no-op context
-      // remains in effect until F2 provides the complete Extension UI bridge
-      // (select/confirm/input/editor/custom/dialogs).
+      // F2a owns semantic Pindie Attention and intentionally omits uiContext.
+      // F2b owns Pi ExtensionUIContext and runtime-permission compatibility.
       mode: "tui" as const,
       abortHandler: () => this.handleAbort(),
       shutdownHandler: () => this.requestExit(),
@@ -189,6 +190,7 @@ export class PindieInteractiveMode {
     this.projection = null;
     this.bindingGeneration += 1;
     this.userSequence = 1;
+    this.attentionResponseInFlight = false;
   }
 
   private unsubscribeSession(): void {
@@ -262,6 +264,15 @@ export class PindieInteractiveMode {
     const trimmed = text.trim();
     if (trimmed.length === 0) return;
 
+    const attention = this.projection?.attention ?? null;
+    if (attention !== null) {
+      this.view.setEditorText(text);
+      this.view.showNotice(attention.kind === "human-gate"
+        ? "Decision required; respond through Attention."
+        : "Semantic authority unavailable; input kept in Composer.");
+      return;
+    }
+
     if (this.currentSessionBinding() === null) {
       this.view.setEditorText(text);
       this.view.showNotice("Session switching; input kept in Composer.");
@@ -293,6 +304,46 @@ export class PindieInteractiveMode {
       });
     } catch (error) {
       this.view.showNotice(`Delivery failed: ${errorMessage(error)}`);
+    }
+  }
+
+  private handleAttentionResponse(text: string): void {
+    const response = text.trim();
+    if (response.length === 0 || this.attentionResponseInFlight) return;
+    if (this.currentSessionBinding() === null) {
+      this.view.showNotice("Session switching; Attention response kept.");
+      return;
+    }
+    if (this.projection?.attention?.kind !== "human-gate") {
+      this.view.showNotice("Decision is no longer current; response kept.");
+      return;
+    }
+
+    let facts;
+    try {
+      facts = this.runtime.getActiveSessionFacts();
+    } catch (error) {
+      this.view.showNotice(`Unable to read active Session: ${errorMessage(error)}`);
+      return;
+    }
+    if (!facts.isIdle) {
+      this.view.showNotice("Agent is not safely idle; Attention response kept.");
+      return;
+    }
+
+    this.attentionResponseInFlight = true;
+    this.appendLocalUserDelivery(response, "prompt");
+    try {
+      void Promise.resolve(this.runtime.prompt(response))
+        .catch((error: unknown) => {
+          this.view.showNotice(`Attention delivery failed: ${errorMessage(error)}`);
+        })
+        .finally(() => {
+          this.attentionResponseInFlight = false;
+        });
+    } catch (error) {
+      this.attentionResponseInFlight = false;
+      this.view.showNotice(`Attention delivery failed: ${errorMessage(error)}`);
     }
   }
 

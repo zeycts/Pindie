@@ -22,10 +22,10 @@ import {
 
 import {
   contextualHintActions,
-  hasDeclaredPindieActionForInput,
   isPindieActionAvailable,
   paletteActions,
   resolveActionForInput,
+  shouldConsumePindieInput,
   type PindieActionAvailability,
   type PindieActionDefinition,
   type PindieActionId,
@@ -38,6 +38,7 @@ import {
 } from "../ui-timeline.ts";
 import type {
   PindieUiProjection,
+  UiAttentionProjection,
   UiDisplayMode,
   UiMessageBlock,
   UiObservationItem,
@@ -65,13 +66,14 @@ export interface PindieTuiViewOptions {
   readonly startupNotices?: readonly string[];
   readonly onSubmit?: (text: string) => void;
   readonly onFollowUp?: (text: string) => void;
+  readonly onAttentionResponse?: (text: string) => void;
   readonly onAbort?: () => void;
   readonly onExit?: () => void;
   readonly copyText?: (text: string) => Promise<void>;
 }
 
 export interface PindieTuiInteractionSnapshot {
-  readonly focusMode: "composer" | "timeline";
+  readonly focusMode: "composer" | "timeline" | "attention";
   readonly selectedBlockId: string | null;
   readonly foldOverrides: ReadonlyMap<string, UiDisplayMode>;
   readonly activeOverlay: PindieOverlayKind | null;
@@ -441,11 +443,17 @@ function formatStatus(
     : `Status · ${parts.join(" · ")}\nHints · ${hintText.join(" · ")}`;
 }
 
-function formatAttention(projection: PindieUiProjection): string | null {
-  const attention = projection.attention;
+function attentionIdentity(attention: UiAttentionProjection | null): string | null {
   if (attention === null) return null;
-  if (attention.kind === "human-gate") return `Decision required: ${attention.question}`;
-  return `Semantic authority unavailable: ${attention.reason}`;
+  return attention.kind === "authority-unavailable"
+    ? `authority-unavailable\u0000${attention.reason}`
+    : [attention.kind, attention.gateKind, attention.question, ...(attention.options ?? [])].join("\u0000");
+}
+
+function gateOptions(attention: UiAttentionProjection | null): readonly string[] {
+  if (attention?.kind !== "human-gate") return [];
+  if (attention.options !== undefined && attention.options.length > 0) return attention.options;
+  return attention.gateKind === "approval" ? ["Approve", "Reject"] : [];
 }
 
 function blockTitle(block: UiTimelineBlock): string {
@@ -520,23 +528,27 @@ export class PindieTuiView implements PindieTuiViewPort {
   private readonly header: Text;
   private readonly timelineContent: Container;
   private readonly timelineScroll: ScrollView;
-  private readonly composer: VStack;
+  private readonly inputRegion: VStack;
   private readonly editor: Editor;
+  private readonly attentionEditor: Editor;
   private readonly status: Text;
   private readonly startupNotices: readonly string[];
   private readonly onSubmit?: (text: string) => void;
   private readonly onFollowUp?: (text: string) => void;
+  private readonly onAttentionResponse?: (text: string) => void;
   private readonly onAbort?: () => void;
   private readonly onExit?: () => void;
   private readonly copyText: (text: string) => Promise<void>;
-  private attention: string | null = null;
   private notice: string | null = null;
   private started = false;
   private removeInputListener: (() => void) | null = null;
   private projection: PindieUiProjection | null = null;
   private currentSessionId: string | null = null;
-  private focusMode: "composer" | "timeline" = "composer";
+  private focusMode: "composer" | "timeline" | "attention" = "composer";
   private selectedBlockId: string | null = null;
+  private attentionSelectedIndex = 0;
+  private attentionResponseDraft = "";
+  private attentionIdentity: string | null = null;
   private readonly foldOverrides = new Map<string, UiDisplayMode>();
   private activeOverlay: PindieOverlayKind | null = null;
   private overlayHandle: OverlayHandle | null = null;
@@ -561,7 +573,8 @@ export class PindieTuiView implements PindieTuiViewPort {
       overscroll: "chain",
     });
     this.editor = new Editor(tui, editorTheme, { paddingX: 1 });
-    this.composer = new VStack([
+    this.attentionEditor = new Editor(tui, editorTheme, { paddingX: 1 });
+    this.inputRegion = new VStack([
       new Text("Composer", 1, 0),
       this.editor,
     ]);
@@ -569,7 +582,7 @@ export class PindieTuiView implements PindieTuiViewPort {
     const layout = new VStack([
       { component: this.header, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
       { component: this.timelineScroll, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-      { component: this.composer, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
+      { component: this.inputRegion, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
       { component: this.status, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
     ]);
     tui.setLayoutRoot(layout);
@@ -577,6 +590,7 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.startupNotices = [...(options.startupNotices ?? [])];
     this.onSubmit = options.onSubmit;
     this.onFollowUp = options.onFollowUp;
+    this.onAttentionResponse = options.onAttentionResponse;
     this.onAbort = options.onAbort;
     this.onExit = options.onExit;
     this.copyText = options.copyText ?? copyToClipboard;
@@ -607,12 +621,27 @@ export class PindieTuiView implements PindieTuiViewPort {
     const sessionChanged = this.currentSessionId !== null &&
       this.currentSessionId !== projection.header.sessionId;
     const previousProjection = this.projection;
+    const previousAttention = previousProjection?.attention ?? null;
+    const nextAttentionIdentity = attentionIdentity(projection.attention);
+    const attentionChanged = this.attentionIdentity !== nextAttentionIdentity;
     if (sessionChanged) {
       this.closeOverlay();
-      this.focusMode = "composer";
       this.selectedBlockId = null;
       this.foldOverrides.clear();
-      this.tui.setFocus(this.editor);
+      this.resetAttentionMechanics();
+    } else if (attentionChanged) {
+      this.resetAttentionMechanics();
+    }
+
+    const humanGateAppeared = previousAttention?.kind !== "human-gate" &&
+      projection.attention?.kind === "human-gate";
+    if (sessionChanged || humanGateAppeared) this.closeOverlay();
+    if (sessionChanged) {
+      this.focusMode = projection.attention === null ? "composer" : "attention";
+    } else if (projection.attention !== null && (attentionChanged || this.focusMode === "composer")) {
+      this.focusMode = "attention";
+    } else if (projection.attention === null && previousAttention !== null) {
+      this.focusMode = "composer";
     }
 
     const nextIds = new Set(projection.timeline.map((block) => block.id));
@@ -633,12 +662,13 @@ export class PindieTuiView implements PindieTuiViewPort {
 
     this.currentSessionId = projection.header.sessionId;
     this.projection = projection;
+    this.attentionIdentity = nextAttentionIdentity;
     this.header.setText(formatHeader(projection));
-    this.attention = formatAttention(projection);
     this.renderTimeline();
     this.renderComposer();
     this.refreshOpenOverlay();
     this.renderStatus();
+    this.restoreLogicalFocus();
     this.requestRender();
   }
 
@@ -690,6 +720,8 @@ export class PindieTuiView implements PindieTuiViewPort {
       composerEmpty: this.editor.getExpandedText().length === 0,
       hasSelectedBlock: this.selectedBlock() !== null,
       activeOverlay: this.activeOverlay,
+      attentionHasOptions: gateOptions(this.projection?.attention ?? null).length > 0,
+      attentionCanSubmit: this.canSubmitAttention(),
     };
   }
 
@@ -713,17 +745,21 @@ export class PindieTuiView implements PindieTuiViewPort {
     }
     if (this.activeOverlay === "block-viewer") return { consume: true };
 
-    // Declared but unavailable Pindie bindings remain consumed. This keeps
-    // Ctrl+D/Escape from silently becoming a different upstream action while
-    // preserving all undeclared Editor input.
-    if (hasDeclaredPindieActionForInput(this.interactionState(), data)) {
-      return { consume: true };
-    }
+    // Registry ownership decides whether an unavailable binding still consumes
+    // input. Reserved actions fail closed, while inapplicable option navigation
+    // returns j/k/Up/Down to the free-form Pi Editor.
+    if (shouldConsumePindieInput(
+      this.actionAvailability(),
+      this.interactionState(),
+      data,
+    )) return { consume: true };
 
-    if (this.focusMode === "composer") {
-      // Editor owns the actual text mutation. Recompute availability-dependent
-      // hints after its normal input handler has run.
+    if (this.focusMode === "composer" || this.focusMode === "attention") {
+      // Pi Editor owns text mutation, including multiline, paste, and IME.
       queueMicrotask(() => {
+        if (this.focusMode === "attention") {
+          this.attentionResponseDraft = this.attentionEditor.getExpandedText();
+        }
         this.renderStatus();
         this.requestRender();
       });
@@ -739,7 +775,7 @@ export class PindieTuiView implements PindieTuiViewPort {
         this.openCommandPalette();
         return;
       case "timeline.toggle":
-        if (this.focusMode === "timeline") this.returnToComposer();
+        if (this.focusMode === "timeline") this.returnToPrimarySurface();
         else this.enterTimeline();
         return;
       case "composer.follow-up":
@@ -775,7 +811,19 @@ export class PindieTuiView implements PindieTuiViewPort {
         void this.copySelectedBlock();
         return;
       case "timeline.back":
-        this.returnToComposer();
+        this.returnToPrimarySurface();
+        return;
+      case "attention.next":
+        this.moveAttentionSelection(1);
+        return;
+      case "attention.previous":
+        this.moveAttentionSelection(-1);
+        return;
+      case "attention.submit":
+        this.submitAttentionResponse();
+        return;
+      case "attention.escape":
+        this.showNotice("Decision remains open. Alt+H inspects Timeline.");
         return;
       case "overlay.close":
         this.closeOverlay();
@@ -802,9 +850,9 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.requestRender();
   }
 
-  private returnToComposer(): void {
-    this.focusMode = "composer";
-    this.tui.setFocus(this.editor);
+  private returnToPrimarySurface(): void {
+    this.focusMode = this.projection?.attention === null ? "composer" : "attention";
+    this.restoreLogicalFocus();
     this.timelineScroll.scrollToEnd();
     this.renderTimeline();
     this.renderComposer();
@@ -895,11 +943,32 @@ export class PindieTuiView implements PindieTuiViewPort {
   }
 
   private renderComposer(): void {
-    this.composer.clear();
-    this.composer.addChild(new Text("Composer", 1, 0));
-    if (this.attention !== null) this.composer.addChild(new Text(this.attention, 1, 0));
-    if (this.notice !== null) this.composer.addChild(new Text(`Notice · ${this.notice}`, 1, 0));
-    this.composer.addChild(this.editor);
+    this.inputRegion.clear();
+    const attention = this.projection?.attention ?? null;
+    if (attention === null) {
+      this.inputRegion.addChild(new Text("Composer", 1, 0));
+      if (this.notice !== null) this.inputRegion.addChild(new Text(`Notice · ${this.notice}`, 1, 0));
+      this.inputRegion.addChild(this.editor);
+      return;
+    }
+
+    this.inputRegion.addChild(new Text("Attention", 1, 0));
+    if (attention.kind === "authority-unavailable") {
+      this.inputRegion.addChild(new Text(`Semantic authority unavailable\n${attention.reason}`, 1, 0));
+    } else {
+      const heading = attention.gateKind === "approval" ? "Approval required" :
+        attention.gateKind === "input" ? "Input required" : "Decision required";
+      this.inputRegion.addChild(new Text(`${heading}\n${attention.question}`, 1, 0));
+      const options = gateOptions(attention);
+      if (options.length > 0) {
+        const rendered = options.map((option, index) =>
+          `${index === this.attentionSelectedIndex ? "›" : " "} ${option}`).join("\n");
+        this.inputRegion.addChild(new Text(rendered, 1, 0));
+      } else {
+        this.inputRegion.addChild(this.attentionEditor);
+      }
+    }
+    if (this.notice !== null) this.inputRegion.addChild(new Text(`Notice · ${this.notice}`, 1, 0));
   }
 
   private renderStatus(): void {
@@ -1052,7 +1121,48 @@ export class PindieTuiView implements PindieTuiViewPort {
   }
 
   private restoreLogicalFocus(): void {
-    this.tui.setFocus(this.focusMode === "composer" ? this.editor : null);
+    const attention = this.projection?.attention ?? null;
+    const freeFormGate = this.focusMode === "attention" &&
+      attention?.kind === "human-gate" && gateOptions(attention).length === 0;
+    this.tui.setFocus(this.focusMode === "composer"
+      ? this.editor
+      : freeFormGate ? this.attentionEditor : null);
+  }
+
+  private resetAttentionMechanics(): void {
+    this.notice = null;
+    this.attentionSelectedIndex = 0;
+    this.attentionResponseDraft = "";
+    this.attentionEditor.setText("");
+  }
+
+  private canSubmitAttention(): boolean {
+    const attention = this.projection?.attention ?? null;
+    if (attention?.kind !== "human-gate") return false;
+    return gateOptions(attention).length > 0 || this.attentionEditor.getExpandedText().trim().length > 0;
+  }
+
+  private moveAttentionSelection(delta: number): void {
+    const options = gateOptions(this.projection?.attention ?? null);
+    if (options.length === 0) return;
+    this.attentionSelectedIndex = Math.max(0, Math.min(options.length - 1, this.attentionSelectedIndex + delta));
+    this.renderComposer();
+    this.requestRender();
+  }
+
+  private submitAttentionResponse(): void {
+    const attention = this.projection?.attention ?? null;
+    if (attention?.kind !== "human-gate") return;
+    const options = gateOptions(attention);
+    const response = options.length > 0
+      ? options[this.attentionSelectedIndex] ?? ""
+      : this.attentionEditor.getExpandedText().trim();
+    if (response.length === 0) return;
+    this.attentionResponseDraft = this.attentionEditor.getExpandedText();
+    this.onAttentionResponse?.(response);
+    // Keep free-form intent until authoritative Projection changes the Gate.
+    if (options.length === 0) this.attentionEditor.setText(this.attentionResponseDraft);
+    this.requestRender();
   }
 
   private async copySelectedBlock(): Promise<void> {

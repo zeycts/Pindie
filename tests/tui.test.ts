@@ -153,6 +153,10 @@ class FakeView implements PindieTuiViewPort {
     this.options.onAbort?.();
   }
 
+  attentionResponse(text: string): void {
+    this.options.onAttentionResponse?.(text);
+  }
+
   exit(): void {
     this.options.onExit?.();
   }
@@ -177,6 +181,7 @@ class FakeRuntime {
     active: boolean;
   }> = [];
   readonly deliveryCalls: Array<{ type: string; text: string; sessionId: string }> = [];
+  promptWait: Promise<void> | null = null;
   lifecycle: ActiveSessionClientLifecycle | undefined;
   lifecycleHistory: Array<ActiveSessionClientLifecycle | undefined> = [];
   clearQueueCalls = 0;
@@ -229,7 +234,7 @@ class FakeRuntime {
 
   prompt(text: string): Promise<void> {
     this.deliveryCalls.push({ type: "prompt", text, sessionId: this.sessionId });
-    return Promise.resolve();
+    return this.promptWait ?? Promise.resolve();
   }
 
   steer(text: string): Promise<void> {
@@ -285,7 +290,8 @@ function flush(): Promise<void> {
 
 function createHarness() {
   const runtime = new FakeRuntime();
-  const presentation = { current: () => null };
+  let currentPresentation: any = null;
+  const presentation = { current: () => currentPresentation };
   let view: FakeView | undefined;
   let refreshCallback: (() => void) | undefined;
   let clearRefreshCalls = 0;
@@ -310,6 +316,9 @@ function createHarness() {
     mode,
     runtime,
     presentation,
+    setPresentation(value: unknown): void {
+      currentPresentation = value === null ? null : { snapshot: () => value };
+    },
     get view(): FakeView {
       assert.ok(view);
       return view;
@@ -920,6 +929,41 @@ function viewProjection(options: {
   });
 }
 
+function withAttention(
+  projection: PindieUiProjection,
+  attention: PindieUiProjection["attention"],
+): PindieUiProjection {
+  return { ...projection, attention };
+}
+
+function gatePresentation(gate: HumanGate | null): any {
+  return {
+    semantic: {
+      ok: true,
+      snapshot: {
+        authority: "coherent",
+        taskStatus: gate === null ? "active" : "waiting_human",
+        verificationStatus: "pending",
+        hasBlockers: false,
+        hasQuestions: false,
+        completionReady: false,
+      },
+    },
+    status: {
+      consumption: null,
+      reasoningMode: "auto",
+      activity: null,
+      state: tuiState({ humanGate: gate }),
+      stateUnavailableReason: null,
+      runStale: false,
+      quotaResumeWaiting: false,
+      subscriptionUsage: null,
+    },
+    quotaResumeWaiting: null,
+    projectRoot: "/project",
+  };
+}
+
 function commandViewProjection(
   sessionId = "command-session",
   output = "command output",
@@ -1138,6 +1182,265 @@ test("Command Palette searches registry actions and dispatches the shared action
 
   terminal.emit("\u001b");
   assert.equal(view.getInteractionState().focusMode, "composer");
+  view.stop();
+});
+
+test("Human Gate Attention selects exact options while preserving the Composer draft", async () => {
+  const terminal = new FakeTerminal();
+  const responses: string[] = [];
+  const view = new PindieTuiView({ terminal, onAttentionResponse: (text) => responses.push(text) });
+  const base = viewProjection({ sessionId: "gate-options" });
+  view.apply(base);
+  view.start();
+  view.setEditorText("also remember to update docs");
+  const gated = withAttention(base, {
+    kind: "human-gate",
+    gateKind: "decision",
+    question: "Choose compatibility policy",
+    options: ["A", "B", "C"],
+  });
+  view.apply(gated);
+  assert.equal(view.getInteractionState().focusMode, "attention");
+  assert.equal(view.getEditorText(), "also remember to update docs");
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /Choose compatibility policy/);
+  assert.match(terminal.writes.join(""), /A/);
+  assert.match(terminal.writes.join(""), /B/);
+  assert.match(terminal.writes.join(""), /C/);
+  terminal.emit("j");
+  terminal.emit("\u001b[B");
+  terminal.emit("k");
+  terminal.emit("\u001b[A");
+  terminal.emit("\r");
+  assert.deepEqual(responses, ["A"]);
+  assert.equal(gated.attention?.kind, "human-gate");
+  assert.equal(view.getEditorText(), "also remember to update docs");
+  view.stop();
+});
+
+test("free-form Attention keeps j/k and Up/Down owned by Pi Editor", () => {
+  const terminal = new FakeTerminal();
+  const responses: string[] = [];
+  const view = new PindieTuiView({ terminal, onAttentionResponse: (text) => responses.push(text) });
+  const base = viewProjection({ sessionId: "free-form-keys" });
+  view.apply(withAttention(base, {
+    kind: "human-gate",
+    gateKind: "input",
+    question: "Enter a project key",
+  }));
+  view.start();
+  for (const character of "project") terminal.emit(character);
+  terminal.emit("\u001b\r");
+  for (const character of "key") terminal.emit(character);
+  terminal.emit("\u001b[A");
+  terminal.emit("!");
+  terminal.emit("\u001b[B");
+  terminal.emit("?");
+  terminal.emit("\r");
+  assert.deepEqual(responses, ["pro!ject\nkey?"]);
+  view.stop();
+});
+
+test("approval defaults and free-form Gate input remain separate from Composer", () => {
+  const terminal = new FakeTerminal();
+  const responses: string[] = [];
+  const view = new PindieTuiView({ terminal, onAttentionResponse: (text) => responses.push(text) });
+  const base = viewProjection({ sessionId: "gate-input" });
+  view.apply(base);
+  view.start();
+  view.setEditorText("existing draft");
+  view.apply(withAttention(base, {
+    kind: "human-gate",
+    gateKind: "approval",
+    question: "Approve release?",
+  }));
+  terminal.emit("j");
+  terminal.emit("\r");
+  assert.deepEqual(responses, ["Reject"]);
+
+  view.apply(withAttention(base, {
+    kind: "human-gate",
+    gateKind: "input",
+    question: "Which credentials?",
+  }));
+  for (const character of "Use the staging credentials") terminal.emit(character);
+  terminal.emit("\r");
+  assert.equal(responses.at(-1), "Use the staging credentials");
+  assert.equal(view.getEditorText(), "existing draft");
+  view.apply(base);
+  assert.equal(view.getInteractionState().focusMode, "composer");
+  assert.equal(view.getEditorText(), "existing draft");
+  view.stop();
+});
+
+test("Gate Escape is non-destructive and Timeline inspection returns to Attention", async () => {
+  const terminal = new FakeTerminal();
+  let aborts = 0;
+  const view = new PindieTuiView({ terminal, onAbort: () => { aborts += 1; } });
+  const gated = withAttention(commandViewProjection("gate-inspect"), {
+    kind: "human-gate",
+    gateKind: "input",
+    question: "Provide context",
+  });
+  view.apply(gated);
+  view.start();
+  terminal.emit("draft response");
+  await flush();
+  terminal.emit("\u001b");
+  terminal.emit("\u001b");
+  assert.equal(view.getInteractionState().focusMode, "attention");
+  assert.equal(aborts, 0);
+  const mechanics = view as unknown as { attentionResponseDraft: string };
+  assert.equal(mechanics.attentionResponseDraft, "draft response");
+  terminal.emit("\u001bh");
+  assert.equal(view.getInteractionState().focusMode, "timeline");
+  terminal.emit("\r");
+  assert.equal(view.getInteractionState().activeOverlay, "block-viewer");
+  terminal.emit("\u001b");
+  assert.equal(view.getInteractionState().focusMode, "timeline");
+  terminal.emit("\u001b");
+  assert.equal(view.getInteractionState().focusMode, "attention");
+  assert.equal(aborts, 0);
+  view.apply(withAttention(gated, null));
+  assert.equal(view.getInteractionState().focusMode, "composer");
+  view.stop();
+});
+
+test("authority-unavailable Attention blocks Composer and permits Timeline inspection", async () => {
+  const terminal = new FakeTerminal();
+  const submissions: string[] = [];
+  const view = new PindieTuiView({ terminal, onSubmit: (text) => submissions.push(text) });
+  const attention = withAttention(commandViewProjection("authority-attention"), {
+    kind: "authority-unavailable",
+    reason: "state lease unavailable",
+  });
+  view.apply(attention);
+  view.start();
+  terminal.emit("cannot send");
+  terminal.emit("\r");
+  assert.deepEqual(submissions, []);
+  assert.equal(view.getInteractionState().focusMode, "attention");
+  terminal.emit("\u001bh");
+  assert.equal(view.getInteractionState().focusMode, "timeline");
+  terminal.emit("\u001b");
+  assert.equal(view.getInteractionState().focusMode, "attention");
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /state lease unavailable/);
+  view.stop();
+});
+
+test("controller delivers one idle Gate response as a prompt and fails closed otherwise", async () => {
+  const harness = createHarness();
+  harness.setPresentation(gatePresentation({ kind: "decision", question: "Choose", options: ["A", "B"] }));
+  const running = harness.mode.run();
+  await flush();
+
+  let releasePrompt!: () => void;
+  harness.runtime.promptWait = new Promise<void>((resolve) => { releasePrompt = resolve; });
+  harness.view.attentionResponse("B");
+  harness.view.attentionResponse("B");
+  assert.deepEqual(harness.runtime.deliveryCalls, [
+    { type: "prompt", text: "B", sessionId: "session-a" },
+  ]);
+  const echoed = harness.view.applied.at(-1)!.timeline.at(-1);
+  assert.equal(echoed?.type, "message");
+  assert.equal(echoed?.role, "user");
+  assert.equal(echoed?.text, "B");
+  assert.equal(echoed?.delivery, "prompt");
+  releasePrompt();
+  await flush();
+  harness.view.attentionResponse("A");
+  assert.equal(harness.runtime.deliveryCalls.length, 2);
+  await flush();
+
+  harness.setPresentation(null);
+  harness.refreshCallback();
+  harness.view.attentionResponse("B");
+  assert.equal(harness.runtime.deliveryCalls.length, 2);
+  assert.match(harness.view.notices.at(-1) ?? "", /no longer current/);
+
+  harness.setPresentation(gatePresentation({ kind: "decision", question: "Choose", options: ["A", "B"] }));
+  harness.refreshCallback();
+  harness.runtime.facts = { ...harness.runtime.facts, isIdle: false, isStreaming: true };
+  harness.view.attentionResponse("B");
+  assert.equal(harness.runtime.deliveryCalls.length, 2);
+  assert.match(harness.view.notices.at(-1) ?? "", /not safely idle/);
+
+  harness.runtime.lifecycle?.beforeSessionInvalidate?.();
+  harness.view.attentionResponse("B");
+  assert.equal(harness.runtime.deliveryCalls.length, 2);
+  assert.match(harness.view.notices.at(-1) ?? "", /Session switching/);
+
+  harness.view.exit();
+  await running;
+});
+
+test("normal Composer delivery cannot bypass a current Human Gate", async () => {
+  const harness = createHarness();
+  harness.setPresentation(gatePresentation({ kind: "input", question: "Respond here" }));
+  const running = harness.mode.run();
+  await flush();
+  harness.view.submit("hidden composer draft");
+  harness.view.followUp("hidden follow-up");
+  assert.deepEqual(harness.runtime.deliveryCalls, []);
+  assert.equal(harness.view.editorText, "hidden follow-up");
+  assert.match(harness.view.notices.at(-1) ?? "", /respond through Attention/);
+  harness.view.exit();
+  await running;
+});
+
+test("normal Composer delivery fails closed under authority-unavailable Attention", async () => {
+  const harness = createHarness();
+  const unavailable = gatePresentation(null);
+  unavailable.status.stateUnavailableReason = "state lease unavailable";
+  harness.setPresentation(unavailable);
+  const running = harness.mode.run();
+  await flush();
+  assert.equal(harness.view.applied.at(-1)?.attention?.kind, "authority-unavailable");
+
+  harness.view.submit("draft");
+  assert.equal(harness.view.editorText, "draft");
+  harness.view.followUp("after");
+  assert.equal(harness.view.editorText, "after");
+  assert.deepEqual(harness.runtime.deliveryCalls, []);
+  assert.match(harness.view.notices.at(-1) ?? "", /Semantic authority unavailable/);
+
+  harness.view.exit();
+  await running;
+});
+
+test("Session replacement discards Attention mechanics and derives fresh primary focus", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  const sessionA = withAttention(viewProjection({ sessionId: "attention-a" }), {
+    kind: "human-gate",
+    gateKind: "input",
+    question: "Session A response?",
+  });
+  view.apply(sessionA);
+  view.start();
+  terminal.emit("session A draft");
+  await flush();
+  const mechanics = view as unknown as {
+    attentionResponseDraft: string;
+    attentionSelectedIndex: number;
+  };
+  assert.equal(mechanics.attentionResponseDraft, "session A draft");
+
+  view.apply(viewProjection({ sessionId: "attention-b" }));
+  assert.equal(view.getInteractionState().focusMode, "composer");
+  assert.equal(mechanics.attentionResponseDraft, "");
+  assert.equal(mechanics.attentionSelectedIndex, 0);
+
+  view.apply(withAttention(viewProjection({ sessionId: "attention-c" }), {
+    kind: "human-gate",
+    gateKind: "decision",
+    question: "Session C choice?",
+    options: ["C1", "C2"],
+  }));
+  assert.equal(view.getInteractionState().focusMode, "attention");
+  assert.equal(mechanics.attentionResponseDraft, "");
+  assert.equal(mechanics.attentionSelectedIndex, 0);
   view.stop();
 });
 
