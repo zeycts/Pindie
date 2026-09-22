@@ -264,9 +264,12 @@ export class PindieInteractiveMode {
     const trimmed = text.trim();
     if (trimmed.length === 0) return;
 
-    if (this.projection?.attention?.kind === "human-gate") {
+    const attention = this.projection?.attention ?? null;
+    if (attention !== null) {
       this.view.setEditorText(text);
-      this.view.showNotice("Decision required; respond through Attention.");
+      this.view.showNotice(attention.kind === "human-gate"
+        ? "Decision required; respond through Attention."
+        : "Semantic authority unavailable; input kept in Composer.");
       return;
     }
 

@@ -1208,10 +1208,36 @@ test("Human Gate Attention selects exact options while preserving the Composer d
   assert.match(terminal.writes.join(""), /B/);
   assert.match(terminal.writes.join(""), /C/);
   terminal.emit("j");
+  terminal.emit("\u001b[B");
+  terminal.emit("k");
+  terminal.emit("\u001b[A");
   terminal.emit("\r");
-  assert.deepEqual(responses, ["B"]);
+  assert.deepEqual(responses, ["A"]);
   assert.equal(gated.attention?.kind, "human-gate");
   assert.equal(view.getEditorText(), "also remember to update docs");
+  view.stop();
+});
+
+test("free-form Attention keeps j/k and Up/Down owned by Pi Editor", () => {
+  const terminal = new FakeTerminal();
+  const responses: string[] = [];
+  const view = new PindieTuiView({ terminal, onAttentionResponse: (text) => responses.push(text) });
+  const base = viewProjection({ sessionId: "free-form-keys" });
+  view.apply(withAttention(base, {
+    kind: "human-gate",
+    gateKind: "input",
+    question: "Enter a project key",
+  }));
+  view.start();
+  for (const character of "project") terminal.emit(character);
+  terminal.emit("\u001b\r");
+  for (const character of "key") terminal.emit(character);
+  terminal.emit("\u001b[A");
+  terminal.emit("!");
+  terminal.emit("\u001b[B");
+  terminal.emit("?");
+  terminal.emit("\r");
+  assert.deepEqual(responses, ["pro!ject\nkey?"]);
   view.stop();
 });
 
@@ -1359,6 +1385,26 @@ test("normal Composer delivery cannot bypass a current Human Gate", async () => 
   assert.deepEqual(harness.runtime.deliveryCalls, []);
   assert.equal(harness.view.editorText, "hidden follow-up");
   assert.match(harness.view.notices.at(-1) ?? "", /respond through Attention/);
+  harness.view.exit();
+  await running;
+});
+
+test("normal Composer delivery fails closed under authority-unavailable Attention", async () => {
+  const harness = createHarness();
+  const unavailable = gatePresentation(null);
+  unavailable.status.stateUnavailableReason = "state lease unavailable";
+  harness.setPresentation(unavailable);
+  const running = harness.mode.run();
+  await flush();
+  assert.equal(harness.view.applied.at(-1)?.attention?.kind, "authority-unavailable");
+
+  harness.view.submit("draft");
+  assert.equal(harness.view.editorText, "draft");
+  harness.view.followUp("after");
+  assert.equal(harness.view.editorText, "after");
+  assert.deepEqual(harness.runtime.deliveryCalls, []);
+  assert.match(harness.view.notices.at(-1) ?? "", /Semantic authority unavailable/);
+
   harness.view.exit();
   await running;
 });

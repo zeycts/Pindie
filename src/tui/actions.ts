@@ -36,6 +36,8 @@ export interface PindieActionDefinition {
   readonly keys: readonly {
     readonly key: KeyId;
     readonly label: string;
+    /** Whether this binding still owns input when its action is unavailable. */
+    readonly consumeWhenUnavailable?: boolean;
   }[];
   readonly palette: boolean;
   readonly hintPriority?: number;
@@ -186,7 +188,10 @@ export const PINDIE_ACTIONS: readonly PindieActionDefinition[] = [
     label: "Next Option",
     description: "Select the next Attention response option.",
     contexts: ["attention"],
-    keys: [{ key: "j", label: "j" }, { key: Key.down, label: "↓" }],
+    keys: [
+      { key: "j", label: "j", consumeWhenUnavailable: false },
+      { key: Key.down, label: "↓", consumeWhenUnavailable: false },
+    ],
     palette: false,
     hintPriority: 100,
   },
@@ -195,7 +200,10 @@ export const PINDIE_ACTIONS: readonly PindieActionDefinition[] = [
     label: "Previous Option",
     description: "Select the previous Attention response option.",
     contexts: ["attention"],
-    keys: [{ key: "k", label: "k" }, { key: Key.up, label: "↑" }],
+    keys: [
+      { key: "k", label: "k", consumeWhenUnavailable: false },
+      { key: Key.up, label: "↑", consumeWhenUnavailable: false },
+    ],
     palette: false,
     hintPriority: 99,
   },
@@ -357,14 +365,22 @@ export function resolveActionForInput(
   return null;
 }
 
-/** True when the current surface declares the input, even if it is unavailable. */
-export function hasDeclaredPindieActionForInput(
+/** Whether the highest-priority declared binding owns this input now. */
+export function shouldConsumePindieInput(
+  data: PindieActionAvailability,
   interactionState: PindieInteractionState,
   input: string,
 ): boolean {
-  return contextsForInteraction(interactionState).some((context) =>
-    PINDIE_ACTIONS.some((action) =>
-      actionHasContext(action, context) && actionMatchesInput(action, input)));
+  for (const context of contextsForInteraction(interactionState)) {
+    for (const action of PINDIE_ACTIONS) {
+      if (!actionHasContext(action, context)) continue;
+      const binding = action.keys.find((candidate) => matchesKey(input, candidate.key));
+      if (binding === undefined) continue;
+      return isPindieActionAvailable(action.id, data) ||
+        binding.consumeWhenUnavailable !== false;
+    }
+  }
+  return false;
 }
 
 function paletteContext(

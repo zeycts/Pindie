@@ -22,10 +22,10 @@ import {
 
 import {
   contextualHintActions,
-  hasDeclaredPindieActionForInput,
   isPindieActionAvailable,
   paletteActions,
   resolveActionForInput,
+  shouldConsumePindieInput,
   type PindieActionAvailability,
   type PindieActionDefinition,
   type PindieActionId,
@@ -745,12 +745,14 @@ export class PindieTuiView implements PindieTuiViewPort {
     }
     if (this.activeOverlay === "block-viewer") return { consume: true };
 
-    // Declared but unavailable Pindie bindings remain consumed. This keeps
-    // Ctrl+D/Escape from silently becoming a different upstream action while
-    // preserving all undeclared Editor input.
-    if (hasDeclaredPindieActionForInput(this.interactionState(), data)) {
-      return { consume: true };
-    }
+    // Registry ownership decides whether an unavailable binding still consumes
+    // input. Reserved actions fail closed, while inapplicable option navigation
+    // returns j/k/Up/Down to the free-form Pi Editor.
+    if (shouldConsumePindieInput(
+      this.actionAvailability(),
+      this.interactionState(),
+      data,
+    )) return { consume: true };
 
     if (this.focusMode === "composer" || this.focusMode === "attention") {
       // Pi Editor owns text mutation, including multiline, paste, and IME.

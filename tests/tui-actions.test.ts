@@ -8,6 +8,7 @@ import {
   PINDIE_ACTIONS,
   PINDIE_ACTION_REGISTRY,
   resolveActionForInput,
+  shouldConsumePindieInput,
   type PindieActionAvailability,
   type PindieInteractionState,
 } from "../src/tui/actions.ts";
@@ -75,6 +76,15 @@ test("Attention actions own option navigation, submission, and non-destructive E
   assert.equal(resolveActionForInput(data, attention, alt("h")), "timeline.toggle");
   assert.equal(resolveActionForInput(data, attention, alt("p")), "palette.open");
   assert.equal(paletteActions(data, attention).some((action) => action.id === "composer.follow-up"), false);
+
+  const freeForm = availability({ attentionHasOptions: false, attentionCanSubmit: false });
+  for (const input of ["j", "k", "\u001b[A", "\u001b[B"]) {
+    assert.equal(resolveActionForInput(freeForm, attention, input), null);
+    assert.equal(shouldConsumePindieInput(freeForm, attention, input), false);
+  }
+  assert.equal(shouldConsumePindieInput(freeForm, attention, "\r"), true);
+  assert.equal(shouldConsumePindieInput(availability(), composer, "\u001b"), true);
+  assert.equal(shouldConsumePindieInput(availability({ composerEmpty: false }), composer, "\u0004"), true);
 });
 
 test("Escape priority is overlay, Timeline, then Composer abort", () => {
