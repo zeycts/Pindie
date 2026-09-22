@@ -24,6 +24,7 @@ import {
   type PindieInteractiveModeOptions,
 } from "../src/tui/pindie-interactive-mode.ts";
 import {
+  formatBlock,
   PindieTuiView,
   type PindieTuiViewOptions,
   type PindieTuiViewPort,
@@ -180,6 +181,8 @@ class FakeRuntime {
   lifecycleHistory: Array<ActiveSessionClientLifecycle | undefined> = [];
   clearQueueCalls = 0;
   abortCalls = 0;
+  readonly clearQueueSessionIds: string[] = [];
+  readonly abortSessionIds: string[] = [];
   abortWait: Promise<void> | null = null;
 
   get activeSessionId(): string {
@@ -241,6 +244,7 @@ class FakeRuntime {
 
   clearActiveSessionQueue(): { steering: string[]; followUp: string[] } {
     this.clearQueueCalls += 1;
+    this.clearQueueSessionIds.push(this.sessionId);
     const queue = {
       steering: [...this.queue.steering],
       followUp: [...this.queue.followUp],
@@ -251,6 +255,7 @@ class FakeRuntime {
 
   abortActiveSession(): Promise<void> {
     this.abortCalls += 1;
+    this.abortSessionIds.push(this.sessionId);
     return this.abortWait ?? Promise.resolve();
   }
 
@@ -431,6 +436,52 @@ test("input fails closed and remains editable during Session replacement", async
   await running;
 });
 
+test("Abort fails closed during replacement and targets Session B after rebind", async () => {
+  const harness = createHarness();
+  harness.runtime.facts = {
+    sessionId: "session-a",
+    isStreaming: true,
+    isCompacting: false,
+    isIdle: false,
+    pendingMessageCount: 0,
+  };
+  const running = harness.mode.run();
+  await flush();
+
+  assert.equal(harness.view.applied.at(-1)?.header.sessionId, "session-a");
+  assert.equal(harness.view.applied.at(-1)?.status.isIdle, false);
+  harness.view.editorText = "draft survives replacement";
+
+  harness.runtime.lifecycle?.beforeSessionInvalidate?.();
+  harness.view.abort();
+
+  assert.equal(harness.runtime.clearQueueCalls, 0);
+  assert.equal(harness.runtime.abortCalls, 0);
+  assert.match(harness.view.notices.at(-1) ?? "", /Session switching/);
+  assert.equal(harness.view.editorText, "draft survives replacement");
+
+  harness.runtime.replaceSession("session-b");
+  harness.runtime.facts = {
+    sessionId: "session-b",
+    isStreaming: true,
+    isCompacting: false,
+    isIdle: false,
+    pendingMessageCount: 0,
+  };
+  await harness.runtime.lifecycle!.rebindSession!();
+  assert.equal(harness.view.applied.at(-1)?.header.sessionId, "session-b");
+  assert.equal(harness.view.applied.at(-1)?.status.isIdle, false);
+
+  harness.view.abort();
+  assert.equal(harness.runtime.clearQueueCalls, 1);
+  assert.equal(harness.runtime.abortCalls, 1);
+  assert.deepEqual(harness.runtime.clearQueueSessionIds, ["session-b"]);
+  assert.deepEqual(harness.runtime.abortSessionIds, ["session-b"]);
+
+  harness.view.exit();
+  await running;
+});
+
 test("Prompt, Steer, and Follow-up use native active Session facts and echo delivery provenance", async () => {
   const harness = createHarness();
   const running = harness.mode.run();
@@ -570,9 +621,9 @@ test("PindieTuiView renders the four Slice D regions and restores terminal lifec
       thinkingLevel: "high",
       runtime: {
         sessionId: "render-session",
-        isStreaming: false,
+        isStreaming: true,
         isCompacting: false,
-        isIdle: true,
+        isIdle: false,
         pendingMessageCount: 0,
       },
       branch: [],
@@ -596,6 +647,11 @@ test("PindieTuiView renders the four Slice D regions and restores terminal lifec
   view.showNotice("Delivery failed: test");
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.match(terminal.writes.join(""), /Delivery failed: test/);
+
+  view.setEditorText("native editor line");
+  terminal.emit("\x1b\r");
+  terminal.emit("continued");
+  assert.equal(view.getEditorText(), "native editor line\ncontinued");
 
   view.setEditorText("follow-up text");
   terminal.emit("\x1bu");
@@ -835,5 +891,280 @@ test("PindieTuiView renders structured Task, Verification, Gate, and Completion 
   assert.match(finalRendered, /migration tests/);
   assert.doesNotMatch(`${openRendered}${finalRendered}`, /pindie_(?:task|verification|gate)_/);
 
+  view.stop();
+});
+
+function viewProjection(options: {
+  readonly sessionId?: string;
+  readonly branch?: readonly SessionEntry[];
+  readonly running?: boolean;
+} = {}): PindieUiProjection {
+  const sessionId = options.sessionId ?? "interaction-session";
+  const running = options.running ?? false;
+  return createProjection({
+    presentation: null,
+    session: {
+      sessionId,
+      displayIdentity: `Session ${sessionId}`,
+      model: { provider: "test", modelId: "model" },
+      thinkingLevel: "high",
+      runtime: {
+        sessionId,
+        isStreaming: running,
+        isCompacting: false,
+        isIdle: !running,
+        pendingMessageCount: 0,
+      },
+      branch: options.branch ?? [],
+    },
+  });
+}
+
+function commandViewProjection(
+  sessionId = "command-session",
+  output = "command output",
+  running = false,
+): PindieUiProjection {
+  let projection = viewProjection({ sessionId, running });
+  projection = reduceProjectionEvent(projection, event({
+    type: "tool_execution_start",
+    toolCallId: "command-block",
+    toolName: "bash",
+    args: { command: "printf output" },
+  }));
+  return reduceProjectionEvent(projection, event({
+    type: "tool_execution_end",
+    toolCallId: "command-block",
+    toolName: "bash",
+    result: { content: [{ type: "text", text: output }] },
+    isError: false,
+  }));
+}
+
+function waitForTuiRender(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 30));
+}
+
+test("Timeline focus selects the latest stable Block and clamps navigation", () => {
+  const terminal = new FakeTerminal();
+  const branch = [
+    userEntry("block-a", "A"),
+    userEntry("block-b", "B"),
+    userEntry("block-c", "C"),
+  ];
+  const view = new PindieTuiView({ terminal });
+  view.apply(viewProjection({ branch }));
+  view.start();
+
+  terminal.emit("\u001bh");
+  assert.deepEqual(view.getInteractionState(), {
+    focusMode: "timeline",
+    selectedBlockId: "block-c",
+    foldOverrides: new Map(),
+    activeOverlay: null,
+  });
+  terminal.emit("k");
+  assert.equal(view.getInteractionState().selectedBlockId, "block-b");
+  terminal.emit("k");
+  assert.equal(view.getInteractionState().selectedBlockId, "block-a");
+  terminal.emit("k");
+  assert.equal(view.getInteractionState().selectedBlockId, "block-a");
+  terminal.emit("j");
+  assert.equal(view.getInteractionState().selectedBlockId, "block-b");
+
+  const updated = viewProjection({
+    branch: [
+      userEntry("block-a", "A"),
+      userEntry("block-b", "B updated"),
+      userEntry("block-c", "C"),
+    ],
+  });
+  view.apply(updated);
+  assert.equal(view.getInteractionState().selectedBlockId, "block-b");
+
+  view.stop();
+});
+
+test("Escape resolves overlay, Timeline back, then Composer abort without chaining", async () => {
+  const terminal = new FakeTerminal();
+  let aborts = 0;
+  const view = new PindieTuiView({ terminal, onAbort: () => { aborts += 1; } });
+  view.apply(commandViewProjection("escape-session", "viewer output", true));
+  view.start();
+
+  terminal.emit("\u001bh");
+  terminal.emit("\r");
+  assert.equal(view.getInteractionState().activeOverlay, "block-viewer");
+  terminal.emit("\u001b");
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  assert.equal(view.getInteractionState().focusMode, "timeline");
+  assert.equal(aborts, 0);
+
+  terminal.emit("\u001b");
+  assert.equal(view.getInteractionState().focusMode, "composer");
+  assert.equal(aborts, 0);
+  terminal.emit("\u001b");
+  assert.equal(aborts, 1);
+
+  await waitForTuiRender();
+  view.stop();
+});
+
+test("fold overrides survive Projection updates and are pruned by Block ID", () => {
+  const terminal = new FakeTerminal();
+  let projection = commandViewProjection("fold-session", "first output");
+  const originalBlock = projection.timeline[0];
+  assert.equal(originalBlock?.type, "work");
+  assert.equal(originalBlock?.defaultDisplayMode, "compact");
+  const view = new PindieTuiView({ terminal });
+  view.apply(projection);
+  view.start();
+  terminal.emit("\u001bh");
+
+  terminal.emit("l");
+  assert.equal(view.getInteractionState().foldOverrides.get("command-block"), "full");
+  assert.equal(originalBlock?.defaultDisplayMode, "compact");
+
+  projection = reduceProjectionEvent(projection, event({
+    type: "tool_execution_update",
+    toolCallId: "command-block",
+    toolName: "bash",
+    args: { command: "printf output" },
+    partialResult: { content: [{ type: "text", text: "updated output" }] },
+  }));
+  view.apply(projection);
+  assert.equal(view.getInteractionState().foldOverrides.get("command-block"), "full");
+
+  terminal.emit("h");
+  assert.equal(view.getInteractionState().foldOverrides.get("command-block"), "compact");
+  terminal.emit("e");
+  assert.equal(view.getInteractionState().foldOverrides.get("command-block"), "full");
+
+  view.apply(viewProjection({ sessionId: "fold-session" }));
+  assert.equal(view.getInteractionState().foldOverrides.has("command-block"), false);
+  assert.equal(view.getInteractionState().selectedBlockId, null);
+  view.stop();
+});
+
+test("Message compact formatting is a bounded rendering mode", () => {
+  const projection = viewProjection({
+    branch: [userEntry("message-block", "first meaningful line\nsecond line")],
+  });
+  const block = projection.timeline[0];
+  assert.equal(block?.type, "message");
+  assert.match(formatBlock(block!, "compact"), /user · first meaningful line…/);
+  assert.doesNotMatch(formatBlock(block!, "compact"), /second line/);
+  assert.match(formatBlock(block!, "full"), /second line/);
+});
+
+test("Block Viewer refreshes from Projection and copy always uses Full density", async () => {
+  const terminal = new FakeTerminal();
+  const copied: string[] = [];
+  let rejectCopy = false;
+  const view = new PindieTuiView({
+    terminal,
+    copyText: async (text) => {
+      if (rejectCopy) throw new Error("clipboard unavailable");
+      copied.push(text);
+    },
+  });
+  let projection = commandViewProjection("viewer-session", "initial full output");
+  view.apply(projection);
+  view.start();
+  terminal.emit("\u001bh");
+  terminal.emit("\r");
+  assert.equal(view.getInteractionState().selectedBlockId, "command-block");
+  assert.equal(view.getInteractionState().foldOverrides.size, 0);
+  terminal.writes.length = 0;
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /initial full output/);
+
+  projection = reduceProjectionEvent(projection, event({
+    type: "tool_execution_update",
+    toolCallId: "command-block",
+    toolName: "bash",
+    args: { command: "printf output" },
+    partialResult: { content: [{ type: "text", text: "fresh viewer output" }] },
+  }));
+  view.apply(projection);
+  terminal.writes.length = 0;
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /fresh viewer output/);
+
+  terminal.emit("\u001b");
+  assert.equal(view.getInteractionState().focusMode, "timeline");
+  terminal.emit("y");
+  await waitForTuiRender();
+  assert.match(copied[0] ?? "", /fresh viewer output/);
+  assert.equal(view.getInteractionState().activeOverlay, null);
+
+  rejectCopy = true;
+  terminal.emit("y");
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /Copy failed: clipboard unavailable/);
+
+  view.apply(viewProjection({ sessionId: "viewer-session" }));
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  view.stop();
+});
+
+test("Command Palette searches registry actions and dispatches the shared action path", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  view.apply(viewProjection({ sessionId: "palette-session" }));
+  view.start();
+  view.setEditorText("draft survives palette");
+
+  terminal.emit("\u001bp");
+  assert.equal(view.getInteractionState().activeOverlay, "command-palette");
+  terminal.emit("s");
+  terminal.emit("e");
+  terminal.emit("n");
+  terminal.emit("d");
+  await waitForTuiRender();
+  const palette = view as unknown as {
+    paletteList: SelectList | null;
+  };
+  assert.match(palette.paletteList?.getSelectedItem()?.value ?? "", /\u0000composer\.follow-up\u0000/);
+
+  // Clear the public Input through its normal editing binding, search for the
+  // same action that Alt+H resolves, and execute it with SelectList Enter.
+  terminal.emit("\u0015");
+  for (const character of "toggle") terminal.emit(character);
+  terminal.emit("\r");
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  assert.equal(view.getInteractionState().focusMode, "timeline");
+  assert.equal(view.getEditorText(), "draft survives palette");
+
+  terminal.emit("\u001b");
+  assert.equal(view.getInteractionState().focusMode, "composer");
+  view.stop();
+});
+
+test("Session epoch resets all UI-local interaction state and restores Editor focus", () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  view.apply(viewProjection({
+    sessionId: "session-a",
+    branch: [userEntry("session-a-block-a", "A"), userEntry("session-a-block-b", "B")],
+  }));
+  view.start();
+  terminal.emit("\u001bh");
+  terminal.emit("l");
+  terminal.emit("\r");
+  assert.equal(view.getInteractionState().activeOverlay, "block-viewer");
+
+  view.apply(viewProjection({
+    sessionId: "session-b",
+    branch: [userEntry("session-b-block", "B")],
+  }));
+  assert.deepEqual(view.getInteractionState(), {
+    focusMode: "composer",
+    selectedBlockId: null,
+    foldOverrides: new Map(),
+    activeOverlay: null,
+  });
+  terminal.emit("x");
+  assert.equal(view.getEditorText(), "x");
   view.stop();
 });

@@ -1,25 +1,44 @@
 import { basename } from "node:path";
 
+import { copyToClipboard } from "@earendil-works/pi-coding-agent";
 import {
   Container,
   Editor,
+  Input,
   Key,
   matchesKey,
   ProcessTerminal,
   ScrollView,
+  SelectList,
   Text,
   TuiAltScreen,
+  type Component,
+  type OverlayHandle,
+  type SelectItem,
   type Terminal,
   type TUI,
   VStack,
 } from "@earendil-works/pi-tui";
 
 import {
+  contextualHintActions,
+  hasDeclaredPindieActionForInput,
+  isPindieActionAvailable,
+  paletteActions,
+  resolveActionForInput,
+  type PindieActionAvailability,
+  type PindieActionDefinition,
+  type PindieActionId,
+  type PindieInteractionState,
+  type PindieOverlayKind,
+} from "./actions.ts";
+import {
   commandText,
   toolPath,
 } from "../ui-timeline.ts";
 import type {
   PindieUiProjection,
+  UiDisplayMode,
   UiMessageBlock,
   UiObservationItem,
   UiObservationWorkBlock,
@@ -48,6 +67,14 @@ export interface PindieTuiViewOptions {
   readonly onFollowUp?: (text: string) => void;
   readonly onAbort?: () => void;
   readonly onExit?: () => void;
+  readonly copyText?: (text: string) => Promise<void>;
+}
+
+export interface PindieTuiInteractionSnapshot {
+  readonly focusMode: "composer" | "timeline";
+  readonly selectedBlockId: string | null;
+  readonly foldOverrides: ReadonlyMap<string, UiDisplayMode>;
+  readonly activeOverlay: PindieOverlayKind | null;
 }
 
 const editorTheme = {
@@ -71,24 +98,55 @@ function formatDuration(durationMs: number): string {
   return `${seconds}s`;
 }
 
-function formatBlock(block: UiTimelineBlock): string {
+function firstMeaningfulLine(value: string): string {
+  const line = value
+    .split(/\r?\n/u)
+    .map((candidate) => candidate.trim())
+    .find((candidate) => candidate.length > 0) ?? "";
+  if (line.length <= 120) return line;
+  return `${line.slice(0, 119)}…`;
+}
+
+function compactPreview(value: string): string {
+  const preview = firstMeaningfulLine(value);
+  if (preview.length === 0) return "(empty)";
+  const meaningfulLines = value.split(/\r?\n/u).filter((line) => line.trim().length > 0);
+  return meaningfulLines.length > 1 && !preview.endsWith("…") ? `${preview}…` : preview;
+}
+
+function formatBlockWithMode(block: UiTimelineBlock, displayMode: UiDisplayMode): string {
   switch (block.type) {
     case "message":
-      return formatMessageBlock(block);
+      return formatMessageBlock(block, displayMode);
     case "work":
-      return formatWorkBlock(block);
+      return formatWorkBlock(block, displayMode);
     case "semantic":
-      return formatSemanticBlock(block);
+      return formatSemanticBlock(block, displayMode);
     case "runtime":
-      return formatRuntimeBlock(block);
+      return formatRuntimeBlock(block, displayMode);
   }
 }
 
-function formatMessageBlock(block: UiMessageBlock): string {
+/** Format a block using the supplied effective density without mutating it. */
+export function formatBlock(
+  block: UiTimelineBlock,
+  displayMode = block.defaultDisplayMode,
+): string {
+  return formatBlockWithMode(block, displayMode);
+}
+
+function formatMessageBlock(
+  block: UiMessageBlock,
+  displayMode: UiDisplayMode = block.defaultDisplayMode,
+): string {
   const role = block.role === "user"
     ? `user${block.delivery === undefined ? "" : ` · ${block.delivery}`}`
     : block.role;
-  return `${block.source === "live" ? "●" : "○"} ${role}\n${block.text}`;
+  const marker = block.source === "live" ? "●" : "○";
+  if (displayMode === "compact") {
+    return `${marker} ${role} · ${compactPreview(block.text)}`;
+  }
+  return `${marker} ${role}\n${block.text}`;
 }
 
 function workMarker(lifecycle: UiWorkBlock["lifecycle"]): string {
@@ -132,12 +190,15 @@ function formatObservationItem(item: UiObservationItem): string {
   return `${marker} ${item.label}${detail ? `\n${indent(detail)}` : ""}`;
 }
 
-function formatObservationBlock(block: UiObservationWorkBlock): string {
+function formatObservationBlock(
+  block: UiObservationWorkBlock,
+  displayMode: UiDisplayMode = block.defaultDisplayMode,
+): string {
   const marker = workMarker(block.lifecycle);
-  if (block.defaultDisplayMode === "compact") {
+  if (displayMode === "compact") {
     return `${marker} ${block.title}\n${indent(observationSummary(block))}`;
   }
-  if (block.defaultDisplayMode === "preview") {
+  if (displayMode === "preview") {
     const items = block.items.map((item) => {
       const summary = item.result?.summary.trim();
       return summary === undefined || summary.length === 0
@@ -161,9 +222,12 @@ function formatInputPreview(block: UiToolWorkBlock): string | null {
   }
 }
 
-function formatToolWorkBlock(block: UiToolWorkBlock): string {
+function formatToolWorkBlock(
+  block: UiToolWorkBlock,
+  displayMode: UiDisplayMode = block.defaultDisplayMode,
+): string {
   const primary = `${workMarker(block.lifecycle)} ${block.title}`;
-  if (block.defaultDisplayMode === "compact") return primary;
+  if (displayMode === "compact") return primary;
 
   const lines = [primary];
   const input = formatInputPreview(block);
@@ -175,10 +239,13 @@ function formatToolWorkBlock(block: UiToolWorkBlock): string {
   return lines.join("\n");
 }
 
-function formatWorkBlock(block: UiWorkBlock): string {
+function formatWorkBlock(
+  block: UiWorkBlock,
+  displayMode: UiDisplayMode = block.defaultDisplayMode,
+): string {
   return block.kind === "observation"
-    ? formatObservationBlock(block)
-    : formatToolWorkBlock(block);
+    ? formatObservationBlock(block, displayMode)
+    : formatToolWorkBlock(block, displayMode);
 }
 
 function semanticMarker(block: UiSemanticBlock): string {
@@ -205,7 +272,13 @@ function taskHeading(block: Extract<UiSemanticBlock, { category: "task" }>): str
 
 function formatTaskSemanticBlock(
   block: Extract<UiSemanticBlock, { category: "task" }>,
+  displayMode: UiDisplayMode = block.defaultDisplayMode,
 ): string {
+  if (displayMode === "compact") {
+    const status = block.taskStatus === "blocked" ? "blocked · " : "";
+    return `${semanticMarker(block)} ${status}Task · ${compactPreview(block.goal ?? "Task")}`;
+  }
+
   const lines = [`${semanticMarker(block)} ${taskHeading(block)}`];
   if (block.goal !== null) lines.push(indent(block.goal));
   if (block.blockers.length > 0) {
@@ -239,9 +312,11 @@ function verificationHeading(
 
 function formatVerificationSemanticBlock(
   block: Extract<UiSemanticBlock, { category: "verification" }>,
+  displayMode: UiDisplayMode = block.defaultDisplayMode,
 ): string {
   const lines = [`${semanticMarker(block)} ${verificationHeading(block)}`];
-  const checks = block.defaultDisplayMode === "preview" && block.pendingCheck !== null
+  if (displayMode === "compact") return lines[0]!;
+  const checks = displayMode === "preview" && block.pendingCheck !== null
     ? [block.pendingCheck]
     : block.checks;
   for (const check of checks) {
@@ -257,12 +332,16 @@ function formatVerificationSemanticBlock(
 
 function formatHumanGateSemanticBlock(
   block: Extract<UiSemanticBlock, { category: "human-gate" }>,
+  displayMode: UiDisplayMode = block.defaultDisplayMode,
 ): string {
   const heading = block.lifecycle === "running"
     ? "Opening decision"
     : block.lifecycle === "failed"
       ? "Decision failed"
       : block.state === "resolved" ? "Decision resolved" : "Decision required";
+  if (displayMode === "compact") {
+    return `${semanticMarker(block)} ${heading} · ${compactPreview(block.question ?? "")}`;
+  }
   const lines = [`${semanticMarker(block)} ${heading}`];
   if (block.question !== null) lines.push(indent(block.question));
   if (block.options.length > 0 && block.state === "open") {
@@ -274,10 +353,14 @@ function formatHumanGateSemanticBlock(
 
 function formatCompletionSemanticBlock(
   block: Extract<UiSemanticBlock, { category: "completion" }>,
+  displayMode: UiDisplayMode = block.defaultDisplayMode,
 ): string {
   const heading = block.lifecycle === "running"
     ? "Completing Task"
     : block.lifecycle === "failed" ? "Completion failed" : "Completed";
+  if (displayMode === "compact") {
+    return `${semanticMarker(block)} ${heading} · ${compactPreview(block.summary)}`;
+  }
   const lines = [`${semanticMarker(block)} ${heading}`, indent(block.summary)];
   if (block.checks.length > 0) {
     lines.push("", "Verification");
@@ -290,17 +373,25 @@ function formatCompletionSemanticBlock(
   return lines.join("\n");
 }
 
-function formatSemanticBlock(block: UiSemanticBlock): string {
+function formatSemanticBlock(
+  block: UiSemanticBlock,
+  displayMode: UiDisplayMode = block.defaultDisplayMode,
+): string {
   switch (block.category) {
-    case "task": return formatTaskSemanticBlock(block);
-    case "verification": return formatVerificationSemanticBlock(block);
-    case "human-gate": return formatHumanGateSemanticBlock(block);
-    case "completion": return formatCompletionSemanticBlock(block);
+    case "task": return formatTaskSemanticBlock(block, displayMode);
+    case "verification": return formatVerificationSemanticBlock(block, displayMode);
+    case "human-gate": return formatHumanGateSemanticBlock(block, displayMode);
+    case "completion": return formatCompletionSemanticBlock(block, displayMode);
   }
 }
 
-function formatRuntimeBlock(block: UiRuntimeBlock): string {
-  return `· ${block.title}${block.detail ? `\n${block.detail}` : ""}`;
+function formatRuntimeBlock(
+  block: UiRuntimeBlock,
+  displayMode: UiDisplayMode = block.defaultDisplayMode,
+): string {
+  return displayMode === "compact"
+    ? `· ${block.title}`
+    : `· ${block.title}${block.detail ? `\n${block.detail}` : ""}`;
 }
 
 function projectLabel(projectRoot: string | null): string {
@@ -320,7 +411,10 @@ function formatHeader(projection: PindieUiProjection): string {
   ].join("\n");
 }
 
-function formatStatus(projection: PindieUiProjection): string {
+function formatStatus(
+  projection: PindieUiProjection,
+  hints: readonly PindieActionDefinition[],
+): string {
   const { status } = projection;
   const parts = [status.isIdle ? "idle" : status.isCompacting ? "compacting" : "running"];
   if (status.activity !== null) parts.push(status.activity);
@@ -338,7 +432,13 @@ function formatStatus(projection: PindieUiProjection): string {
       status.semanticAuthority === "presentation-unavailable") {
     parts.push("semantic unavailable");
   }
-  return `Status · ${parts.join(" · ")}`;
+  const hintText = hints.map((action) => {
+    const key = action.keys[0]?.label ?? "";
+    return key.length === 0 ? action.label : `${key} ${action.label}`;
+  });
+  return hintText.length === 0
+    ? `Status · ${parts.join(" · ")}`
+    : `Status · ${parts.join(" · ")}\nHints · ${hintText.join(" · ")}`;
 }
 
 function formatAttention(projection: PindieUiProjection): string | null {
@@ -348,16 +448,78 @@ function formatAttention(projection: PindieUiProjection): string | null {
   return `Semantic authority unavailable: ${attention.reason}`;
 }
 
+function blockTitle(block: UiTimelineBlock): string {
+  switch (block.type) {
+    case "message": return block.role;
+    case "work": return block.kind;
+    case "semantic": return block.category;
+    case "runtime": return block.category;
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Overlay content is rendered outside the main pi-tui layout tree. This small
+ * public-API adapter gives a ScrollView the bounded viewport it would receive
+ * in the main layout, then returns only the visible slice.
+ */
+class BlockViewerOverlay implements Component {
+  private readonly title: Text;
+  private readonly maxHeight: number;
+  private readonly scroll: ScrollView;
+  private readonly requestRender: () => void;
+
+  constructor(
+    title: string,
+    scroll: ScrollView,
+    maxHeight: number,
+    requestRender: () => void,
+  ) {
+    this.title = new Text(title, 1, 0);
+    this.maxHeight = Math.max(2, maxHeight);
+    this.scroll = scroll;
+    this.requestRender = requestRender;
+  }
+
+  render(width: number): string[] {
+    const titleLines = this.title.render(width);
+    const contentLines = this.scroll.render(width);
+    const viewportHeight = Math.max(
+      1,
+      Math.min(contentLines.length, this.maxHeight - titleLines.length),
+    );
+    this.scroll.updateLayout(contentLines.length, viewportHeight, this.requestRender);
+    return [
+      ...titleLines,
+      ...contentLines.slice(this.scroll.scrollTop, this.scroll.scrollTop + viewportHeight),
+    ];
+  }
+
+  invalidate(): void {
+    this.title.invalidate();
+    this.scroll.invalidate();
+  }
+}
+
+interface BlockLineRange {
+  readonly start: number;
+  readonly end: number;
+}
+
 /**
  * Small Pindie-owned view over public pi-tui primitives.
  *
- * This class only renders the supplied projection and reports gestures. It has
- * no runtime, Session, semantic State, or queue ownership.
+ * The projection remains authoritative for facts. Focus, selection, scrolling,
+ * fold overrides, draft, and overlays are ephemeral UI-local interaction state.
  */
 export class PindieTuiView implements PindieTuiViewPort {
   private readonly tui: TUI;
   private readonly header: Text;
-  private readonly timeline: Container;
+  private readonly timelineContent: Container;
+  private readonly timelineScroll: ScrollView;
   private readonly composer: VStack;
   private readonly editor: Editor;
   private readonly status: Text;
@@ -366,18 +528,34 @@ export class PindieTuiView implements PindieTuiViewPort {
   private readonly onFollowUp?: (text: string) => void;
   private readonly onAbort?: () => void;
   private readonly onExit?: () => void;
+  private readonly copyText: (text: string) => Promise<void>;
   private attention: string | null = null;
   private notice: string | null = null;
   private started = false;
   private removeInputListener: (() => void) | null = null;
+  private projection: PindieUiProjection | null = null;
+  private currentSessionId: string | null = null;
+  private focusMode: "composer" | "timeline" = "composer";
+  private selectedBlockId: string | null = null;
+  private readonly foldOverrides = new Map<string, UiDisplayMode>();
+  private activeOverlay: PindieOverlayKind | null = null;
+  private overlayHandle: OverlayHandle | null = null;
+  private readonly blockLineRanges = new Map<string, BlockLineRange>();
+  private palettePanel: VStack | null = null;
+  private paletteInput: Input | null = null;
+  private paletteList: SelectList | null = null;
+  private paletteQuery = "";
+  private viewerBlockId: string | null = null;
+  private viewerContent: Container | null = null;
+  private viewerScroll: ScrollView | null = null;
 
   constructor(options: PindieTuiViewOptions = {}) {
     const terminal = options.terminal ?? new ProcessTerminal();
     const tui = new TuiAltScreen(terminal);
     this.tui = tui;
     this.header = new Text("Pindie", 1, 0);
-    this.timeline = new Container();
-    const timelineScroll = new ScrollView(this.timeline, {
+    this.timelineContent = new Container();
+    this.timelineScroll = new ScrollView(this.timelineContent, {
       follow: "end",
       primary: true,
       overscroll: "chain",
@@ -390,7 +568,7 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.status = new Text("Status · idle", 1, 0);
     const layout = new VStack([
       { component: this.header, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
-      { component: timelineScroll, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+      { component: this.timelineScroll, basis: 0, grow: 1, shrink: 1, minSize: 1 },
       { component: this.composer, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
       { component: this.status, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
     ]);
@@ -401,33 +579,15 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.onFollowUp = options.onFollowUp;
     this.onAbort = options.onAbort;
     this.onExit = options.onExit;
+    this.copyText = options.copyText ?? copyToClipboard;
     this.editor.onSubmit = (text) => this.onSubmit?.(text);
-    this.removeInputListener = tui.addInputListener((data) => {
-      // These are deliberately temporary Slice D shell bindings. Slice F's
-      // Action Registry will replace this isolated direct-key path.
-      if (matchesKey(data, Key.alt("u"))) {
-        this.onFollowUp?.(this.editor.getExpandedText());
-        return { consume: true };
-      }
-      if (matchesKey(data, Key.escape)) {
-        // Escape is always consumed so it cannot exit the application or fall
-        // through to a renderer scroll/search action. The controller decides
-        // whether an active native Run exists.
-        this.onAbort?.();
-        return { consume: true };
-      }
-      if (matchesKey(data, Key.ctrl("d"))) {
-        if (this.editor.getExpandedText().length === 0) this.onExit?.();
-        return { consume: true };
-      }
-      return undefined;
-    });
+    this.removeInputListener = tui.addInputListener((data) => this.handleInput(data));
   }
 
   start(): void {
     if (this.started) return;
     this.started = true;
-    this.tui.setFocus(this.editor);
+    this.restoreLogicalFocus();
     this.tui.start();
     // The first normal frame may be throttled behind the TUI render interval;
     // force the initial projection onto the terminal before accepting input.
@@ -437,27 +597,48 @@ export class PindieTuiView implements PindieTuiViewPort {
   stop(): void {
     this.removeInputListener?.();
     this.removeInputListener = null;
+    this.closeOverlay();
     if (!this.started) return;
     this.started = false;
     this.tui.stop();
   }
 
   apply(projection: PindieUiProjection): void {
+    const sessionChanged = this.currentSessionId !== null &&
+      this.currentSessionId !== projection.header.sessionId;
+    const previousProjection = this.projection;
+    if (sessionChanged) {
+      this.closeOverlay();
+      this.focusMode = "composer";
+      this.selectedBlockId = null;
+      this.foldOverrides.clear();
+      this.tui.setFocus(this.editor);
+    }
+
+    const nextIds = new Set(projection.timeline.map((block) => block.id));
+    if (this.selectedBlockId !== null && !nextIds.has(this.selectedBlockId)) {
+      const previousIndex = previousProjection?.timeline.findIndex((block) =>
+        block.id === this.selectedBlockId) ?? -1;
+      const replacementIndex = previousIndex < 0
+        ? projection.timeline.length - 1
+        : Math.min(previousIndex, projection.timeline.length - 1);
+      this.selectedBlockId = projection.timeline[replacementIndex]?.id ?? null;
+    }
+    for (const id of this.foldOverrides.keys()) {
+      if (!nextIds.has(id)) this.foldOverrides.delete(id);
+    }
+    if (this.focusMode === "timeline" && this.selectedBlockId === null) {
+      this.selectedBlockId = projection.timeline.at(-1)?.id ?? null;
+    }
+
+    this.currentSessionId = projection.header.sessionId;
+    this.projection = projection;
     this.header.setText(formatHeader(projection));
-    this.status.setText(formatStatus(projection));
-
-    this.timeline.clear();
-    this.timeline.addChild(new Text("Timeline", 1, 0));
-    for (const notice of this.startupNotices) {
-      this.timeline.addChild(new Text(`Notice · ${notice}`, 1, 0));
-    }
-    for (const block of projection.timeline) {
-      this.timeline.addChild(new Text(formatBlock(block), 1, 0));
-      this.timeline.addChild(new Text("", 0, 0));
-    }
-
     this.attention = formatAttention(projection);
+    this.renderTimeline();
     this.renderComposer();
+    this.refreshOpenOverlay();
+    this.renderStatus();
     this.requestRender();
   }
 
@@ -467,6 +648,7 @@ export class PindieTuiView implements PindieTuiViewPort {
 
   setEditorText(text: string): void {
     this.editor.setText(text);
+    this.renderStatus();
     this.requestRender();
   }
 
@@ -480,6 +662,238 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.requestRender();
   }
 
+  getInteractionState(): PindieTuiInteractionSnapshot {
+    return {
+      focusMode: this.focusMode,
+      selectedBlockId: this.selectedBlockId,
+      foldOverrides: new Map(this.foldOverrides),
+      activeOverlay: this.activeOverlay,
+    };
+  }
+
+  requestRender(): void {
+    if (this.started) this.tui.requestRender();
+  }
+
+  private interactionState(): PindieInteractionState {
+    return {
+      focusMode: this.focusMode,
+      activeOverlay: this.activeOverlay,
+    };
+  }
+
+  private actionAvailability(): PindieActionAvailability {
+    return {
+      // This is intentionally derived from the native Projection fact rather
+      // than a local "running" flag.
+      runActive: this.projection?.status.isIdle === false,
+      composerEmpty: this.editor.getExpandedText().length === 0,
+      hasSelectedBlock: this.selectedBlock() !== null,
+      activeOverlay: this.activeOverlay,
+    };
+  }
+
+  private handleInput(data: string): { consume: boolean } | undefined {
+    const action = resolveActionForInput(
+      this.actionAvailability(),
+      this.interactionState(),
+      data,
+    );
+    if (action !== null) {
+      this.dispatchAction(action);
+      return { consume: true };
+    }
+
+    // The overlay owns every input not consumed by its registry actions. This
+    // prevents a palette/viewer key from leaking into the Composer or
+    // Timeline underneath it.
+    if (this.activeOverlay === "command-palette") {
+      this.handlePaletteInput(data);
+      return { consume: true };
+    }
+    if (this.activeOverlay === "block-viewer") return { consume: true };
+
+    // Declared but unavailable Pindie bindings remain consumed. This keeps
+    // Ctrl+D/Escape from silently becoming a different upstream action while
+    // preserving all undeclared Editor input.
+    if (hasDeclaredPindieActionForInput(this.interactionState(), data)) {
+      return { consume: true };
+    }
+
+    if (this.focusMode === "composer") {
+      // Editor owns the actual text mutation. Recompute availability-dependent
+      // hints after its normal input handler has run.
+      queueMicrotask(() => {
+        this.renderStatus();
+        this.requestRender();
+      });
+    }
+    return undefined;
+  }
+
+  private dispatchAction(action: PindieActionId): void {
+    if (!isPindieActionAvailable(action, this.actionAvailability())) return;
+
+    switch (action) {
+      case "palette.open":
+        this.openCommandPalette();
+        return;
+      case "timeline.toggle":
+        if (this.focusMode === "timeline") this.returnToComposer();
+        else this.enterTimeline();
+        return;
+      case "composer.follow-up":
+        this.onFollowUp?.(this.editor.getExpandedText());
+        return;
+      case "run.abort":
+        this.onAbort?.();
+        return;
+      case "app.exit":
+        this.onExit?.();
+        return;
+      case "timeline.next":
+        this.moveSelection(1);
+        return;
+      case "timeline.previous":
+        this.moveSelection(-1);
+        return;
+      case "timeline.collapse":
+        this.setSelectedFold("compact");
+        return;
+      case "timeline.expand":
+        this.setSelectedFold("full");
+        return;
+      case "timeline.toggle-fold":
+        this.setSelectedFold(this.effectiveDisplayMode(this.selectedBlock()!) === "full"
+          ? "compact"
+          : "full");
+        return;
+      case "timeline.inspect":
+        this.openBlockViewer();
+        return;
+      case "timeline.copy":
+        void this.copySelectedBlock();
+        return;
+      case "timeline.back":
+        this.returnToComposer();
+        return;
+      case "overlay.close":
+        this.closeOverlay();
+        return;
+      case "overlay.next":
+        this.viewerScroll?.scrollBy(1);
+        this.requestRender();
+        return;
+      case "overlay.previous":
+        this.viewerScroll?.scrollBy(-1);
+        this.requestRender();
+        return;
+    }
+  }
+
+  private enterTimeline(): void {
+    this.focusMode = "timeline";
+    this.selectedBlockId = this.projection?.timeline.at(-1)?.id ?? null;
+    this.tui.setFocus(null);
+    this.timelineScroll.scrollToEnd();
+    this.renderTimeline();
+    this.renderStatus();
+    this.ensureSelectedBlockVisible();
+    this.requestRender();
+  }
+
+  private returnToComposer(): void {
+    this.focusMode = "composer";
+    this.tui.setFocus(this.editor);
+    this.timelineScroll.scrollToEnd();
+    this.renderTimeline();
+    this.renderComposer();
+    this.renderStatus();
+    this.requestRender();
+  }
+
+  private selectedBlock(): UiTimelineBlock | null {
+    if (this.projection === null || this.selectedBlockId === null) return null;
+    return this.projection.timeline.find((block) => block.id === this.selectedBlockId) ?? null;
+  }
+
+  private moveSelection(delta: number): void {
+    const timeline = this.projection?.timeline ?? [];
+    if (timeline.length === 0) return;
+    const currentIndex = this.selectedBlockId === null
+      ? timeline.length - 1
+      : timeline.findIndex((block) => block.id === this.selectedBlockId);
+    const nextIndex = Math.max(
+      0,
+      Math.min(timeline.length - 1, (currentIndex < 0 ? timeline.length - 1 : currentIndex) + delta),
+    );
+    this.selectedBlockId = timeline[nextIndex]?.id ?? null;
+    this.renderTimeline();
+    this.ensureSelectedBlockVisible();
+    this.renderStatus();
+    this.requestRender();
+  }
+
+  private setSelectedFold(displayMode: UiDisplayMode): void {
+    const block = this.selectedBlock();
+    if (block === null) return;
+    this.foldOverrides.set(block.id, displayMode);
+    this.renderTimeline();
+    this.ensureSelectedBlockVisible();
+    this.requestRender();
+  }
+
+  private effectiveDisplayMode(block: UiTimelineBlock): UiDisplayMode {
+    return this.foldOverrides.get(block.id) ?? block.defaultDisplayMode;
+  }
+
+  private renderTimeline(): void {
+    this.timelineContent.clear();
+    this.blockLineRanges.clear();
+    this.timelineContent.addChild(new Text("Timeline", 1, 0));
+    let lineCursor = 1;
+    for (const notice of this.startupNotices) {
+      const component = new Text(`Notice · ${notice}`, 1, 0);
+      this.timelineContent.addChild(component);
+      lineCursor += Math.max(1, component.render(Math.max(1, this.tui.terminal.columns)).length);
+    }
+
+    for (const block of this.projection?.timeline ?? []) {
+      const selected = this.focusMode === "timeline" && block.id === this.selectedBlockId;
+      const text = formatBlock(block, this.effectiveDisplayMode(block));
+      const renderedText = selected ? `› ${text}` : text;
+      const component = new Text(renderedText, 1, 0);
+      this.timelineContent.addChild(component);
+      const lineCount = Math.max(1, component.render(Math.max(1, this.tui.terminal.columns)).length);
+      this.blockLineRanges.set(block.id, {
+        start: lineCursor,
+        end: lineCursor + lineCount - 1,
+      });
+      lineCursor += lineCount;
+      this.timelineContent.addChild(new Text("", 0, 0));
+      lineCursor += 1;
+    }
+  }
+
+  private ensureSelectedBlockVisible(): void {
+    const range = this.selectedBlockId === null
+      ? undefined
+      : this.blockLineRanges.get(this.selectedBlockId);
+    if (range === undefined) return;
+    const viewportHeight = this.timelineScroll.viewportHeight;
+    const scrollTop = this.timelineScroll.scrollTop;
+    if (range.start < scrollTop) {
+      this.timelineScroll.scrollTo(range.start, { disableFollow: true });
+      return;
+    }
+    if (viewportHeight > 0 && range.end >= scrollTop + viewportHeight) {
+      this.timelineScroll.scrollTo(
+        range.end - viewportHeight + 1,
+        { disableFollow: true },
+      );
+    }
+  }
+
   private renderComposer(): void {
     this.composer.clear();
     this.composer.addChild(new Text("Composer", 1, 0));
@@ -488,7 +902,167 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.composer.addChild(this.editor);
   }
 
-  requestRender(): void {
-    if (this.started) this.tui.requestRender();
+  private renderStatus(): void {
+    if (this.projection === null) {
+      this.status.setText("Status · idle");
+      return;
+    }
+    this.status.setText(formatStatus(
+      this.projection,
+      contextualHintActions(this.actionAvailability(), this.interactionState()),
+    ));
+  }
+
+  private openCommandPalette(): void {
+    if (this.activeOverlay !== null) return;
+    this.activeOverlay = "command-palette";
+    this.paletteQuery = "";
+    this.palettePanel = new VStack();
+    this.rebuildPalettePanel();
+    this.overlayHandle = this.tui.showOverlay(this.palettePanel, {
+      width: "80%",
+      maxHeight: "80%",
+      anchor: "center",
+      margin: 1,
+    });
+    this.requestRender();
+  }
+
+  private rebuildPalettePanel(): void {
+    const panel = this.palettePanel;
+    if (panel === null) return;
+    const actions = this.projection === null
+      ? []
+      : paletteActions(
+        { ...this.actionAvailability(), activeOverlay: null },
+        { focusMode: this.focusMode, activeOverlay: null },
+      );
+    const items: SelectItem[] = actions.map((action) => ({
+      // SelectList's public filter is a case-insensitive prefix filter over
+      // value. Put the human-facing label first while retaining the exact
+      // Action ID between NUL separators for execution.
+      value: `${action.label}\u0000${action.id}\u0000${action.description}`,
+      label: action.label,
+      description: action.description,
+    }));
+    const input = new Input({ prompt: "Search: " });
+    input.setValue(this.paletteQuery);
+    const list = new SelectList(
+      items,
+      Math.max(1, Math.min(8, items.length || 1)),
+      editorTheme.selectList,
+    );
+    list.setFilter(this.paletteQuery);
+    input.onSubmit = () => this.executePaletteSelection();
+    list.onSelect = (item) => this.executePaletteSelection(item);
+    panel.clear();
+    panel.addChild(new Text("Command Palette", 1, 0));
+    panel.addChild(input);
+    panel.addChild(list, { basis: 0, grow: 1, shrink: 1, minSize: 1 });
+    this.paletteInput = input;
+    this.paletteList = list;
+  }
+
+  private handlePaletteInput(data: string): void {
+    const input = this.paletteInput;
+    const list = this.paletteList;
+    if (input === null || list === null) return;
+    if (matchesKey(data, Key.up) || matchesKey(data, Key.down) || matchesKey(data, Key.enter)) {
+      list.handleInput(data);
+    } else {
+      input.handleInput(data);
+      this.paletteQuery = input.getValue();
+      list.setFilter(this.paletteQuery);
+    }
+    this.requestRender();
+  }
+
+  private executePaletteSelection(item?: SelectItem): void {
+    const selected = item ?? this.paletteList?.getSelectedItem() ?? null;
+    if (selected === null) return;
+    const actionId = selected.value.split("\u0000")[1];
+    if (actionId === undefined) return;
+    const action = actionId as PindieActionId;
+    this.closeOverlay();
+    // Palette execution deliberately uses the same dispatcher as a keyboard
+    // resolution; there is no second command switch.
+    this.dispatchAction(action);
+  }
+
+  private openBlockViewer(): void {
+    const block = this.selectedBlock();
+    if (block === null || this.activeOverlay !== null) return;
+    const content = new Container();
+    content.addChild(new Text(formatBlock(block, "full"), 1, 0));
+    const scroll = new ScrollView(content, {
+      follow: "none",
+      primary: true,
+      overscroll: "contain",
+    });
+    const panel = new BlockViewerOverlay(
+      `Block · ${blockTitle(block)}`,
+      scroll,
+      Math.floor(this.tui.terminal.rows * 0.8),
+      () => this.requestRender(),
+    );
+    this.viewerBlockId = block.id;
+    this.viewerContent = content;
+    this.viewerScroll = scroll;
+    this.activeOverlay = "block-viewer";
+    this.overlayHandle = this.tui.showOverlay(panel, {
+      width: "80%",
+      maxHeight: "80%",
+      anchor: "center",
+      margin: 1,
+    });
+    this.requestRender();
+  }
+
+  private refreshOpenOverlay(): void {
+    if (this.activeOverlay === "command-palette") {
+      this.rebuildPalettePanel();
+      return;
+    }
+    if (this.activeOverlay !== "block-viewer") return;
+    const block = this.viewerBlockId === null
+      ? null
+      : this.projection?.timeline.find((candidate) => candidate.id === this.viewerBlockId) ?? null;
+    if (block === null) {
+      this.closeOverlay();
+      return;
+    }
+    this.viewerContent?.clear();
+    this.viewerContent?.addChild(new Text(formatBlock(block, "full"), 1, 0));
+  }
+
+  private closeOverlay(): void {
+    const handle = this.overlayHandle;
+    this.overlayHandle = null;
+    this.activeOverlay = null;
+    this.palettePanel = null;
+    this.paletteInput = null;
+    this.paletteList = null;
+    this.viewerBlockId = null;
+    this.viewerContent = null;
+    this.viewerScroll = null;
+    handle?.hide();
+    this.restoreLogicalFocus();
+    this.renderStatus();
+    this.requestRender();
+  }
+
+  private restoreLogicalFocus(): void {
+    this.tui.setFocus(this.focusMode === "composer" ? this.editor : null);
+  }
+
+  private async copySelectedBlock(): Promise<void> {
+    const block = this.selectedBlock();
+    if (block === null) return;
+    try {
+      await this.copyText(formatBlock(block, "full"));
+      this.showNotice("Copied Block.");
+    } catch (error) {
+      this.showNotice(`Copy failed: ${errorMessage(error)}`);
+    }
   }
 }

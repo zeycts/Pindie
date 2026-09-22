@@ -150,9 +150,9 @@ export class PindieInteractiveMode {
 
   private extensionBindings() {
     return {
-      // Slice D intentionally omits uiContext. Pi's documented no-op context
-      // remains in effect until Slice F provides the complete Extension UI
-      // bridge (select/confirm/input/editor/custom/dialogs).
+      // F1 intentionally omits uiContext. Pi's documented no-op context
+      // remains in effect until F2 provides the complete Extension UI bridge
+      // (select/confirm/input/editor/custom/dialogs).
       mode: "tui" as const,
       abortHandler: () => this.handleAbort(),
       shutdownHandler: () => this.requestExit(),
@@ -298,6 +298,11 @@ export class PindieInteractiveMode {
 
   private handleAbort(): void {
     if (this.abortInFlight) return;
+
+    if (this.currentSessionBinding() === null) {
+      this.view.showNotice("Session switching; abort ignored.");
+      return;
+    }
 
     let facts;
     try {
