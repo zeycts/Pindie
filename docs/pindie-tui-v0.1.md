@@ -1,6 +1,6 @@
 # Pindie TUI v0.1 — Architecture and Implementation Contract
 
-Status: implementation in progress; Slices A–C complete.
+Status: implementation in progress; Slices A–D complete.
 
 Baseline: Pindie main after Pi 0.86.1 compatibility upgrade.
 
@@ -819,7 +819,7 @@ Outputs:
 
 Tests should operate on plain data.
 
-### Slice D — TUI Shell (next implementation Slice)
+### Slice D — TUI Shell (implemented / feature-gated dogfood shell)
 
 Introduce feature-gated `PindieInteractiveMode` using `TuiAltScreen`.
 
@@ -832,9 +832,11 @@ Minimum dogfoodable shell:
 - real Prompt / Steer / Follow-up / Abort;
 - Session rebind correctness.
 
+Implemented behind `PINDIE_TUI=1`; the default Pi `InteractiveMode` remains the fallback.
+Full interactive Extension UI / Attention interaction lands in Slice F.
 Do not implement every advanced Block/Overlay before first dogfood.
 
-### Slice E — Semantic Timeline
+### Slice E — Semantic Timeline (next implementation Slice)
 
 Implement:
 
