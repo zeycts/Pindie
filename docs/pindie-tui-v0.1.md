@@ -1,6 +1,6 @@
 # Pindie TUI v0.1 — Architecture and Implementation Contract
 
-Status: Slices A–F are implemented; Slice G is next and remains intentionally deferred.
+Status: Slices A–F are implemented; Slice G design is locked below. G1 implementation is next; cutover remains gated on real dogfood.
 
 Baseline: Pindie main after Pi 0.86.1 compatibility upgrade.
 
@@ -939,11 +939,326 @@ All contribution state is owned by the active Extension UI bridge/View and is cl
 
 ### Slice G — Human Signal Unification and Cutover
 
-Unify local Attention and Discord notification decisions under one Human Signal Policy.
+Slice G does not add another TUI feature family. It closes the human-attention semantics and then decides whether the owned TUI is safe to become the default.
 
-In particular, replace immediate `blocked → external attention` behavior with settled-blocked semantics.
+Implementation is split deliberately:
 
-After dogfood and compatibility closure, make PindieInteractiveMode the default and retain Pi InteractiveMode as temporary fallback.
+```text
+G1 — Human Signal Policy
+     one transport-independent decision policy
+     → local hard/soft Attention
+     → external Discord attention
+     → settled-blocked semantics
+
+G2 — Dogfood + Cutover
+     real VS Code → SSH → tmux validation
+     → compatibility closure
+     → explicit human cutover decision
+```
+
+The cutover is not an automatic consequence of CI passing. G2 requires real interactive dogfood and an explicit reviewed decision.
+
+#### G1 — Human Signal Policy
+
+Today, local and remote behavior are not fully aligned. The owned TUI already treats a running blocked Task as recoverable work, while `projectRemoteSemantics()` still emits immediate Discord attention for any `taskStatus === "blocked"`.
+
+G1 introduces one pure, renderer/transport-independent policy boundary.
+
+Conceptually:
+
+```text
+Authoritative semantic facts
+  + Pi runtime/settlement facts
+  + autonomous-successor outcome
+        ↓
+Human Signal Policy
+        ↓
+  ┌───────────────┬──────────────────────┐
+  ↓               ↓                      ↓
+Local hard     Local soft           External
+Attention      human signal         attention edge
+```
+
+The policy owns classification only. It does not own semantic State, Session lifecycle, Discord transport, or TUI interaction state.
+
+A useful implementation shape is conceptually:
+
+```ts
+type HumanSignalKind =
+  | "human-gate"
+  | "authority-unavailable"
+  | "settled-blocked"
+  | "completed"
+  | "stopped";
+
+interface HumanSignalDecision {
+  key: string;
+  kind: HumanSignalKind;
+  summary: string;
+  detail?: readonly string[];
+  local: "none" | "soft" | "hard";
+  external: "none" | "attention";
+}
+```
+
+Exact names may differ. The required property is that both local and external projections consume the same classification result rather than re-implementing status tests independently.
+
+##### G1 fact ownership
+
+The policy may read:
+
+- semantic authority from the existing Run/Semantic Snapshot path;
+- Task status, Human Gate, blockers, and completion truth from existing Pindie semantic State/derivation;
+- native running/settled/pending-message facts from Pi runtime;
+- settlement outcome from the existing `core.settleAgentRun()` path;
+- whether an automatic successor was actually committed;
+- quota-successor scheduling result;
+- current Session/run generation for stale-settlement suppression.
+
+It must not infer facts from rendered text, Discord messages, or Timeline prose.
+
+It must not persist a second Task status or Human Gate.
+
+##### G1 policy table
+
+| Reality | Local | External |
+| --- | --- | --- |
+| normal working | none | none |
+| blocker while Agent is still running/recovering | none | none |
+| Human Gate | hard | attention |
+| semantic authority unavailable | hard | attention |
+| Run settled, Task still blocked, no Human Gate, no pending work, no committed automatic successor | soft | attention |
+| quota wait with successful auto-resume scheduled | none | none |
+| successful Long Task/session rollover | none | none |
+| Task completed and settlement is current | no modal | attention |
+| Run stopped with Task still active and no automatic successor | no modal | attention |
+
+`blocked` by itself is never enough to summon the human.
+
+The canonical blocked rule is:
+
+```text
+Task blocked
++
+Agent Run still active
+        ↓
+autonomous recovery
+        ↓
+NO human signal
+
+Task blocked
++
+Run settled
++
+same current Session/run
++
+no Human Gate
++
+no pending message
++
+no committed automatic successor
+        ↓
+SETTLED BLOCKED
+        ↓
+soft local signal + external attention
+```
+
+##### G1 local projection
+
+Hard local signals are:
+
+- Human Gate;
+- semantic authority unavailable.
+
+They continue to own the Attention input surface and ordinary Composer work remains fail-closed.
+
+Settled-blocked is intentionally soft. It must be prominent, but the human needs the Composer in order to provide the missing information or new direction.
+
+Do not model soft settled-blocked by pretending it is a Human Gate.
+
+A valid UI shape is:
+
+```text
+┌ Blocked ─────────────────────────────────────────────────────┐
+│ Could not continue without staging credentials.              │
+│ Missing access to STAGING_DATABASE_URL.                      │
+└──────────────────────────────────────────────────────────────┘
+
+> _
+```
+
+The exact projection shape may be a separate Human Signal field or an Attention variant with explicit soft semantics. What is forbidden is preserving the current invariant that every non-null `projection.attention` disables ordinary Composer input and then inserting settled-blocked into it without changing that invariant.
+
+The TUI must derive the visible blocker summary from structured blockers, not from a Discord message string.
+
+##### G1 external projection
+
+External notification remains edge-triggered.
+
+Discord transport receives a classified Human Signal and performs delivery/deduplication; Discord must not independently decide that `taskStatus === "blocked"` means attention.
+
+Remove the current immediate rule equivalent to:
+
+```ts
+if (taskStatus === "blocked")
+  remote.milestone(..., { attention: true })
+```
+
+Human Gate and authority-unavailable may emit as soon as the durable/current condition exists.
+
+Settled-blocked, completed, and stopped must be emitted only from a current settlement boundary after autonomous-successor decisions are known.
+
+Current settlement guards remain mandatory:
+
+- Session identity still matches;
+- run/lifecycle generation still matches;
+- no new Agent Run has started;
+- no pending Pi message appeared;
+- Remote Session lease is still current.
+
+##### G1 completion and stopped
+
+Completion and stopped remain external call-back signals, not local confirmation modals.
+
+Existing truths remain:
+
+```text
+Run stopped != Task failed
+Run stopped != Task blocked
+Run stopped != Task completed
+```
+
+A completed Task emits one current-settlement external attention edge.
+
+A stopped signal is emitted only when the Task remains active after settlement and neither an ordinary automatic successor nor quota successor was committed.
+
+Do not send `stopped` for settled-blocked; those are distinct Human Signal kinds.
+
+##### G1 runtime permission boundary
+
+Runtime permission / Extension dialogs remain separate from semantic Human Signal State.
+
+The existing generic Pi `ui_prompt_start/ui_prompt_end` signal is not sufficient to synthesize a transport-independent Discord permission alert because it also covers locally initiated Extension dialogs such as model/reasoning UI.
+
+G1 therefore does not manufacture an external permission notification from generic `ui_prompt_start`.
+
+Local runtime permission remains a strong Extension interaction above semantic Attention. A future transport-neutral permission event may be added separately if Pi exposes enough identity and intent.
+
+##### G1 deduplication and persistence
+
+Persistent local signals are re-derived from current Reality.
+
+External signals use runtime-only edge deduplication keyed by stable Human Signal identity and current Session/run generation.
+
+Do not add:
+
+- read/unread state to Pindie semantic State;
+- acknowledged flags to Task;
+- a notification database;
+- Discord delivery truth to semantic State.
+
+Session replacement invalidates old runtime delivery leases.
+
+##### G1 acceptance
+
+G1 is complete when tests prove at minimum:
+
+1. running blocked Task → no local soft signal and no external attention;
+2. same Task settles blocked with no successor → exactly one soft local signal and one external attention edge;
+3. Human Gate → hard local Attention + external attention;
+4. authority unavailable → hard local Attention + external attention;
+5. completed → Timeline completion remains, no local modal, one current-settlement external attention edge;
+6. stopped active Task with no successor → no local modal, one external attention edge;
+7. successful quota successor suppresses stopped/blocked attention;
+8. successful automatic rollover/successor suppresses stopped/blocked attention;
+9. stale/replaced settlement cannot notify the new Session;
+10. repeated status refreshes do not duplicate an already-delivered external Human Signal.
+
+Do not change the TUI default in G1.
+
+#### G2 — Dogfood + Cutover
+
+G2 begins only after G1 is merged.
+
+The first step is a real manual dogfood pass in the actual deployment path:
+
+```text
+Windows keyboard
+  ↓
+VS Code
+  ↓
+Remote SSH
+  ↓
+tmux
+  ↓
+PINDIE_TUI=1
+  ↓
+PindieInteractiveMode
+```
+
+Automated tests cannot prove upstream key delivery, IME behavior, terminal resize quality, tmux interaction, or day-long usability.
+
+The dogfood checklist must cover at least:
+
+- Prompt / Steer / Follow-up;
+- Abort and queue restoration;
+- Timeline navigation/folding/inspection/copy;
+- Command Palette;
+- `Alt+M` Model Picker;
+- `Alt+N` Session Picker;
+- `/reasoning` Extension dialog;
+- Human Gate option and free-form response;
+- authority-unavailable fail-closed behavior;
+- settled-blocked soft signal;
+- completion/stopped external notification;
+- quota wait/resume silence;
+- Session replacement/rebind;
+- Chinese IME and paste;
+- terminal resize;
+- reconnect/reattach to tmux;
+- narrow VS Code terminal width.
+
+G2 should add only fixes discovered by this dogfood/compatibility pass. It is not a new feature Slice.
+
+##### Cutover gate
+
+Make the owned TUI default only after all of the following are true:
+
+```text
+CI green
++
+G1 policy green
++
+real VS Code → SSH → tmux dogfood complete
++
+no unresolved correctness blocker
++
+no known shortcut conflict in the chosen profile
++
+legacy fallback remains runnable
++
+explicit human approval
+```
+
+Then change selection semantics from:
+
+```text
+default       → Pi InteractiveMode
+PINDIE_TUI=1  → PindieInteractiveMode
+```
+
+to a reversible form such as:
+
+```text
+default             → PindieInteractiveMode
+PINDIE_TUI=legacy   → Pi InteractiveMode
+```
+
+Exact environment naming may be chosen during G2, but the fallback must remain explicit and easy to invoke.
+
+Do not remove Pi InteractiveMode in v0.1.
+
+After cutover, keep the legacy fallback for a separate stability period before any removal proposal.
 
 ## 14. Testing contract
 
