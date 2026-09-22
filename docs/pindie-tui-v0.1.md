@@ -1,6 +1,6 @@
 # Pindie TUI v0.1 — Architecture and Implementation Contract
 
-Status: implementation in progress; Slice A complete.
+Status: implementation in progress; Slices A–C complete.
 
 Baseline: Pindie main after Pi 0.86.1 compatibility upgrade.
 
@@ -785,7 +785,7 @@ Acceptance:
 - exact quota wait projection;
 - focused tests and full check green.
 
-### Slice B — Runtime Client Seam (current implementation Slice)
+### Slice B — Runtime Client Seam (implemented)
 
 Goal: give a future Host-owned interactive client only the Pi runtime controls it needs.
 
@@ -800,7 +800,7 @@ Likely public Adapter surface includes:
 
 Do not move Pi Agent Loop ownership into the Adapter.
 
-### Slice C — Projection Core
+### Slice C — Projection Core (implemented)
 
 Implement pure/reconstructable projection logic without terminal rendering.
 
@@ -819,7 +819,7 @@ Outputs:
 
 Tests should operate on plain data.
 
-### Slice D — TUI Shell
+### Slice D — TUI Shell (next implementation Slice)
 
 Introduce feature-gated `PindieInteractiveMode` using `TuiAltScreen`.
 
