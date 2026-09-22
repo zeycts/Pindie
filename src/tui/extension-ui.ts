@@ -33,6 +33,7 @@ export interface PindieExtensionUIViewPort {
   setExtensionWorkingIndicator(options?: WorkingIndicatorOptions): void;
   setExtensionHiddenThinkingLabel(label?: string): void;
   setTerminalTitle(title: string): void;
+  restoreBaseTerminalTitle(): void;
   pasteToComposer(text: string): void;
   setEditorText(text: string): void;
   getEditorText(): string;

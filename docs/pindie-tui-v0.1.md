@@ -889,7 +889,7 @@ A Human Gate response is ordinary user input to the Agent. The TUI never calls `
 
 ##### F2b1 — Extension Interaction Bridge (implemented)
 
-The owned TUI now binds a Session-scoped `ExtensionUIContext` and all six `ExtensionCommandContextActions`. Extension dialogs are ephemeral UI overlays, serialize behind one bridge-local queue, and are cancelled with their queued successors before Session invalidation. They never become Human Gates or semantic Timeline events. The active input priority is `Extension overlay → semantic Attention → Timeline → Composer → Global`.
+The owned TUI now binds a Session-scoped `ExtensionUIContext` and all six `ExtensionCommandContextActions`. Extension dialogs are ephemeral UI overlays, serialize behind one bridge-local queue, and are cancelled with their queued successors before Session invalidation. They never become Human Gates or semantic Timeline events. The active input priority is `Extension overlay → semantic Attention → Timeline → Composer → Global`: an Extension dialog preempts the Command Palette or Block Viewer, while newly appearing semantic Attention remains authoritative underneath and does not cancel the dialog.
 
 Implemented `ExtensionUIContext` capabilities:
 
@@ -899,7 +899,7 @@ Implemented `ExtensionUIContext` capabilities:
 - keyed `setStatus` contributions rendered as a bounded secondary status;
 - `setWorkingMessage`, `setWorkingVisible`, `setWorkingIndicator`, and `setHiddenThinkingLabel` as UI-local ambient presentation;
 - `pasteToEditor`, `setEditorText`, and `getEditorText` against the ordinary Composer;
-- `setTitle` against the active terminal.
+- `setTitle` against the active terminal, restored to the Pindie-owned `Pindie` baseline when the Extension Session is cleared.
 
 The command-context mapping is exact: `waitForIdle → AgentSession.waitForIdle`, `newSession → AgentSessionRuntime.newSession`, `fork → AgentSessionRuntime.fork`, `navigateTree → AgentSession.navigateTree`, `switchSession → AgentSessionRuntime.switchSession`, and `reload → AgentSession.reload`. Session-replacing actions rely exclusively on the existing runtime `beforeSessionInvalidate` / `rebindSession` lifecycle.
 

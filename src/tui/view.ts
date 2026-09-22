@@ -475,6 +475,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const BASE_TERMINAL_TITLE = "Pindie";
+
 /**
  * Overlay content is rendered outside the main pi-tui layout tree. This small
  * public-API adapter gives a ScrollView the bounded viewport it would receive
@@ -745,7 +747,8 @@ export class PindieTuiView implements PindieTuiViewPort {
 
     const humanGateAppeared = previousAttention?.kind !== "human-gate" &&
       projection.attention?.kind === "human-gate";
-    if (sessionChanged || humanGateAppeared) this.closeOverlay();
+    if (sessionChanged) this.closeOverlay();
+    else if (humanGateAppeared) this.closeLowerPriorityOverlay();
     if (sessionChanged) {
       this.focusMode = projection.attention === null ? "composer" : "attention";
     } else if (projection.attention !== null && (attentionChanged || this.focusMode === "composer")) {
@@ -817,6 +820,10 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.tui.terminal.setTitle(title);
   }
 
+  restoreBaseTerminalTitle(): void {
+    this.tui.terminal.setTitle(BASE_TERMINAL_TITLE);
+  }
+
   addExtensionTerminalInputHandler(handler: TerminalInputHandler): () => void {
     this.extensionTerminalHandlers.add(handler);
     return () => this.extensionTerminalHandlers.delete(handler);
@@ -861,6 +868,7 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.workingVisible = true;
     this.workingIndicator = undefined;
     this.hiddenThinkingLabel = undefined;
+    this.restoreBaseTerminalTitle();
     this.renderStatus();
     this.requestRender();
   }
@@ -1356,6 +1364,7 @@ export class PindieTuiView implements PindieTuiViewPort {
     create: (complete: (value: T) => void) => Component & { dispose?(): void },
     cancelValue: T,
   ): Promise<T> {
+    this.closeLowerPriorityOverlay();
     if (this.activeOverlay !== null) return Promise.resolve(cancelValue);
     return new Promise<T>((resolve) => {
       let settled = false;
@@ -1384,6 +1393,12 @@ export class PindieTuiView implements PindieTuiViewPort {
     });
   }
 
+  private closeLowerPriorityOverlay(): void {
+    if (this.activeOverlay === "command-palette" || this.activeOverlay === "block-viewer") {
+      this.closeOverlay();
+    }
+  }
+
   private closeOverlay(): void {
     if (this.activeOverlay === "extension-dialog" && this.extensionDialogCancel !== null) {
       this.extensionDialogCancel();
@@ -1405,6 +1420,10 @@ export class PindieTuiView implements PindieTuiViewPort {
   }
 
   private restoreLogicalFocus(): void {
+    if (this.activeOverlay === "extension-dialog" && this.extensionDialogComponent !== null) {
+      this.tui.setFocus(this.extensionDialogComponent);
+      return;
+    }
     const attention = this.projection?.attention ?? null;
     const freeFormGate = this.focusMode === "attention" &&
       attention?.kind === "human-gate" && gateOptions(attention).length === 0;
