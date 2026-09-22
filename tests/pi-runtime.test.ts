@@ -559,6 +559,39 @@ test("quota primitives always read and delegate to the current active Session", 
   assert.deepEqual(calls, [[message, options]]);
 });
 
+test("model picker DTOs use available registry models and setModel without global persistence", async () => {
+  const current = { provider: "openai", id: "current", name: "Current" };
+  const next = { provider: "openai", id: "next", name: "Next" };
+  const unavailable = { provider: "other", id: "hidden", name: "Hidden" };
+  const mutations: unknown[][] = [];
+  const levels: string[] = [];
+  const registry = {
+    getAvailable: () => [current, next],
+    find: (provider: string, id: string) => [current, next, unavailable].find((model) => model.provider === provider && model.id === id),
+  };
+  const session = {
+    ...fakeSession("models"),
+    model: current,
+    scopedModels: [
+      { model: current },
+      { model: next, thinkingLevel: "high" },
+      { model: unavailable },
+    ],
+    extensionRunner: { getModelRegistry: () => registry },
+    setModel: async (...args: unknown[]) => { mutations.push(args); },
+    setThinkingLevel: (level: string) => levels.push(level),
+  } as unknown as AgentSession;
+  const adapter = new PiRuntimeAdapter(fakeRuntime(session).runtime);
+  assert.deepEqual(adapter.getActiveSessionModelChoices(), [
+    { provider: "openai", modelId: "current", displayName: "Current", current: true },
+    { provider: "openai", modelId: "next", displayName: "Next", current: false, scopedThinkingLevel: "high" },
+  ]);
+  await adapter.setActiveSessionModel("openai", "next");
+  assert.deepEqual(mutations, [[next]]);
+  assert.deepEqual(levels, ["high"]);
+  await assert.rejects(adapter.setActiveSessionModel("other", "hidden"), /no longer available/);
+});
+
 test("Extension command adapter actions delegate to current public Pi runtime APIs", async () => {
   const calls: string[] = [];
   const session = {

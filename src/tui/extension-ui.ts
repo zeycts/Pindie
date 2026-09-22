@@ -12,8 +12,8 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 export class UnsupportedExtensionUICapabilityError extends Error {
   readonly capability: string;
 
-  constructor(capability: string) {
-    super(`Extension UI capability ${capability} is not yet supported by Pindie TUI v0.1.`);
+  constructor(capability: string, reason = "the pinned public Pi API does not expose the primitive required for faithful support") {
+    super(`Extension UI capability ${capability} is unsupported: ${reason}.`);
     this.name = "UnsupportedExtensionUICapabilityError";
     this.capability = capability;
   }
@@ -32,6 +32,10 @@ export interface PindieExtensionUIViewPort {
   setExtensionWorkingVisible(visible: boolean): void;
   setExtensionWorkingIndicator(options?: WorkingIndicatorOptions): void;
   setExtensionHiddenThinkingLabel(label?: string): void;
+  setExtensionStringWidget(key: string, content: readonly string[] | undefined, options?: ExtensionWidgetOptions): void;
+  addExtensionAutocompleteProvider(factory: AutocompleteProviderFactory): void;
+  getExtensionToolsExpanded(): boolean;
+  setExtensionToolsExpanded(expanded: boolean): void;
   setTerminalTitle(title: string): void;
   restoreBaseTerminalTitle(): void;
   pasteToComposer(text: string): void;
@@ -55,6 +59,8 @@ interface PendingDialog {
 
 /** Session-scoped Pi ExtensionUIContext backed by the Pindie-owned TUI. */
 export class PindieExtensionUIBridge implements ExtensionUIContext {
+  /** Owned TUI status is rendered from Projection and does not require Pi's unavailable active Theme singleton. */
+  readonly pindieOwnedThemeFormatting = false;
   private readonly view: PindieExtensionUIViewPort;
   private epoch = 1;
   private valid = true;
@@ -134,6 +140,10 @@ export class PindieExtensionUIBridge implements ExtensionUIContext {
 
   getEditorText(): string {
     return this.valid ? this.view.getEditorText() : "";
+  }
+
+  get hasActiveInteraction(): boolean {
+    return this.active !== null || this.queue.length > 0;
   }
 
   invalidate(): void {
@@ -221,21 +231,25 @@ export class PindieExtensionUIBridge implements ExtensionUIContext {
     }
   }
 
-  private unsupported(capability: string): never {
-    throw new UnsupportedExtensionUICapabilityError(capability);
+  private unsupported(capability: string, reason?: string): never {
+    throw new UnsupportedExtensionUICapabilityError(capability, reason);
   }
 
-  setWidget(_key: string, _content: string[] | ((tui: TUI, theme: Theme) => Component & { dispose?(): void }) | undefined, _options?: ExtensionWidgetOptions): void { this.unsupported("setWidget"); }
-  setFooter(_factory: ((tui: TUI, theme: Theme, footerData: never) => Component & { dispose?(): void }) | undefined): void { this.unsupported("setFooter"); }
-  setHeader(_factory: ((tui: TUI, theme: Theme) => Component & { dispose?(): void }) | undefined): void { this.unsupported("setHeader"); }
-  custom: ExtensionUIContext["custom"] = async () => this.unsupported("custom");
-  addAutocompleteProvider(_factory: AutocompleteProviderFactory): void { this.unsupported("addAutocompleteProvider"); }
-  setEditorComponent: ExtensionUIContext["setEditorComponent"] = () => this.unsupported("setEditorComponent");
-  getEditorComponent(): undefined { return this.unsupported("getEditorComponent"); }
-  get theme(): Theme { return this.unsupported("theme"); }
-  getAllThemes(): { name: string; path: string | undefined }[] { return this.unsupported("getAllThemes"); }
-  getTheme(_name: string): Theme | undefined { return this.unsupported("getTheme"); }
-  setTheme(_theme: string | Theme): { success: boolean; error?: string } { return this.unsupported("setTheme"); }
-  getToolsExpanded(): boolean { return this.unsupported("getToolsExpanded"); }
-  setToolsExpanded(_expanded: boolean): void { this.unsupported("setToolsExpanded"); }
+  setWidget(key: string, content: string[] | ((tui: TUI, theme: Theme) => Component & { dispose?(): void }) | undefined, options?: ExtensionWidgetOptions): void {
+    if (!this.valid) return;
+    if (typeof content === "function") this.unsupported("setWidget(component factory)", "Pi 0.86.1 package-root exports no active Theme instance for the required factory argument");
+    this.view.setExtensionStringWidget(key, content, options);
+  }
+  setFooter(_factory: ((tui: TUI, theme: Theme, footerData: never) => Component & { dispose?(): void }) | undefined): void { this.unsupported("setFooter", "Pi 0.86.1 package-root exports neither an active Theme instance nor a public FooterDataProvider constructor"); }
+  setHeader(_factory: ((tui: TUI, theme: Theme) => Component & { dispose?(): void }) | undefined): void { this.unsupported("setHeader", "Pi 0.86.1 package-root exports no active Theme instance for the required factory argument"); }
+  custom: ExtensionUIContext["custom"] = async () => this.unsupported("custom", "Pi 0.86.1 package-root exports neither the active Theme nor app KeybindingsManager values required by the factory contract");
+  addAutocompleteProvider(factory: AutocompleteProviderFactory): void { if (this.valid) this.view.addExtensionAutocompleteProvider(factory); }
+  setEditorComponent: ExtensionUIContext["setEditorComponent"] = () => this.unsupported("setEditorComponent", "Pi 0.86.1 package-root does not export getEditorTheme() or a runtime app KeybindingsManager constructor/value");
+  getEditorComponent(): undefined { return this.unsupported("getEditorComponent", "custom editor installation is unavailable for the same public EditorTheme/KeybindingsManager gap"); }
+  get theme(): Theme { return this.unsupported("theme", "Pi 0.86.1 package-root exports the Theme class but not its active Theme singleton"); }
+  getAllThemes(): { name: string; path: string | undefined }[] { return this.unsupported("getAllThemes", "Pi 0.86.1 package-root does not export theme enumeration"); }
+  getTheme(_name: string): Theme | undefined { return this.unsupported("getTheme", "Pi 0.86.1 package-root does not export theme lookup"); }
+  setTheme(_theme: string | Theme): { success: boolean; error?: string } { return this.unsupported("setTheme", "Pi 0.86.1 package-root does not export theme switching"); }
+  getToolsExpanded(): boolean { return this.valid ? this.view.getExtensionToolsExpanded() : false; }
+  setToolsExpanded(expanded: boolean): void { if (this.valid) this.view.setExtensionToolsExpanded(expanded); }
 }

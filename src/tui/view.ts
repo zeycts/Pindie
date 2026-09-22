@@ -2,6 +2,8 @@ import { basename } from "node:path";
 
 import {
   copyToClipboard,
+  type AutocompleteProviderFactory,
+  type ExtensionWidgetOptions,
   type TerminalInputHandler,
   type WorkingIndicatorOptions,
 } from "@earendil-works/pi-coding-agent";
@@ -16,6 +18,7 @@ import {
   SelectList,
   Text,
   TuiAltScreen,
+  type AutocompleteProvider,
   type Component,
   type Focusable,
   type OverlayHandle,
@@ -42,6 +45,10 @@ import {
   toolPath,
 } from "../ui-timeline.ts";
 import type { PindieExtensionUIViewPort } from "./extension-ui.ts";
+import type {
+  ActiveProjectSessionChoice,
+  ActiveSessionModelChoice,
+} from "../pi-runtime.ts";
 import type {
   PindieUiProjection,
   UiAttentionProjection,
@@ -75,6 +82,10 @@ export interface PindieTuiViewOptions {
   readonly onAttentionResponse?: (text: string) => void;
   readonly onAbort?: () => void;
   readonly onExit?: () => void;
+  readonly onRequestModelPicker?: () => Promise<readonly ActiveSessionModelChoice[]>;
+  readonly onSelectModel?: (sessionId: string, choice: ActiveSessionModelChoice) => void;
+  readonly onRequestSessionPicker?: () => Promise<readonly ActiveProjectSessionChoice[]>;
+  readonly onSelectSession?: (sessionId: string, choice: ActiveProjectSessionChoice) => void;
   readonly copyText?: (text: string) => Promise<void>;
 }
 
@@ -476,6 +487,11 @@ function errorMessage(error: unknown): string {
 }
 
 const BASE_TERMINAL_TITLE = "Pindie";
+const EMPTY_AUTOCOMPLETE_PROVIDER: AutocompleteProvider = {
+  getSuggestions: async () => null,
+  applyCompletion: (lines, cursorLine, cursorCol) => ({ lines, cursorLine, cursorCol }),
+};
+const MAX_EXTENSION_WIDGET_LINES = 10;
 
 /**
  * Overlay content is rendered outside the main pi-tui layout tree. This small
@@ -586,6 +602,56 @@ class ExtensionInputOverlay extends VStack implements Focusable {
   }
 }
 
+class SearchablePickerOverlay<T> extends VStack implements Focusable {
+  private readonly input = new Input({ prompt: "Search: " });
+  private readonly title: string;
+  private readonly choices: readonly T[];
+  private readonly searchText: (choice: T) => string;
+  private readonly renderChoice: (choice: T) => string;
+  private readonly select: (choice: T) => void;
+  private readonly cancel: () => void;
+  private filtered: readonly T[] = [];
+  private selectedIndex = 0;
+  private _focused = false;
+
+  constructor(title: string, choices: readonly T[], searchText: (choice: T) => string, renderChoice: (choice: T) => string, select: (choice: T) => void, cancel: () => void) {
+    super();
+    this.title = title;
+    this.choices = choices;
+    this.searchText = searchText;
+    this.renderChoice = renderChoice;
+    this.select = select;
+    this.cancel = cancel;
+    this.rebuild();
+  }
+
+  get focused(): boolean { return this._focused; }
+  set focused(value: boolean) { this._focused = value; this.input.focused = value; }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.escape)) return this.cancel();
+    if (matchesKey(data, Key.up)) this.selectedIndex = Math.max(0, this.selectedIndex - 1);
+    else if (matchesKey(data, Key.down)) this.selectedIndex = Math.min(this.filtered.length - 1, this.selectedIndex + 1);
+    else if (matchesKey(data, Key.enter)) {
+      const choice = this.filtered[this.selectedIndex];
+      if (choice !== undefined) this.select(choice);
+      return;
+    } else this.input.handleInput(data);
+    this.rebuild();
+  }
+
+  private rebuild(): void {
+    const query = this.input.getValue().trim().toLocaleLowerCase();
+    this.filtered = this.choices.filter((choice) => this.searchText(choice).toLocaleLowerCase().includes(query));
+    this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, this.filtered.length - 1));
+    this.clear();
+    this.addChild(new Text(this.title, 1, 0));
+    this.addChild(this.input);
+    this.addChild(new Text(this.filtered.length === 0 ? "No matches" : this.filtered.map((choice, index) => `${index === this.selectedIndex ? "›" : " "} ${this.renderChoice(choice)}`).join("\n"), 1, 0));
+    this.addChild(new Text("↑↓ navigate · Enter select · Esc cancel", 1, 0));
+  }
+}
+
 class ExtensionEditorOverlay extends VStack implements Focusable {
   private readonly editor: Editor;
   private readonly cancel: () => void;
@@ -642,6 +708,10 @@ export class PindieTuiView implements PindieTuiViewPort {
   private readonly onAttentionResponse?: (text: string) => void;
   private readonly onAbort?: () => void;
   private readonly onExit?: () => void;
+  private readonly onRequestModelPicker?: () => Promise<readonly ActiveSessionModelChoice[]>;
+  private readonly onSelectModel?: (sessionId: string, choice: ActiveSessionModelChoice) => void;
+  private readonly onRequestSessionPicker?: () => Promise<readonly ActiveProjectSessionChoice[]>;
+  private readonly onSelectSession?: (sessionId: string, choice: ActiveProjectSessionChoice) => void;
   private readonly copyText: (text: string) => Promise<void>;
   private notice: string | null = null;
   private started = false;
@@ -664,6 +734,7 @@ export class PindieTuiView implements PindieTuiViewPort {
   private viewerBlockId: string | null = null;
   private viewerContent: Container | null = null;
   private viewerScroll: ScrollView | null = null;
+  private pickerComponent: (Component & Focusable) | null = null;
   private extensionDialogComponent: (Component & { dispose?(): void }) | null = null;
   private extensionDialogCancel: (() => void) | null = null;
   private readonly extensionTerminalHandlers = new Set<TerminalInputHandler>();
@@ -672,6 +743,9 @@ export class PindieTuiView implements PindieTuiViewPort {
   private workingVisible = true;
   private workingIndicator: WorkingIndicatorOptions | undefined;
   private hiddenThinkingLabel: string | undefined;
+  private readonly extensionWidgets = new Map<string, { lines: readonly string[]; placement: "aboveEditor" | "belowEditor" }>();
+  private readonly autocompleteFactories: AutocompleteProviderFactory[] = [];
+  private toolsExpanded = false;
 
   constructor(options: PindieTuiViewOptions = {}) {
     const terminal = options.terminal ?? new ProcessTerminal();
@@ -705,6 +779,10 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.onAttentionResponse = options.onAttentionResponse;
     this.onAbort = options.onAbort;
     this.onExit = options.onExit;
+    this.onRequestModelPicker = options.onRequestModelPicker;
+    this.onSelectModel = options.onSelectModel;
+    this.onRequestSessionPicker = options.onRequestSessionPicker;
+    this.onSelectSession = options.onSelectSession;
     this.copyText = options.copyText ?? copyToClipboard;
     this.editor.onSubmit = (text) => this.onSubmit?.(text);
     this.removeInputListener = tui.addInputListener((data) => this.handleInput(data));
@@ -861,6 +939,26 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.requestRender();
   }
 
+  setExtensionStringWidget(key: string, content: readonly string[] | undefined, options?: ExtensionWidgetOptions): void {
+    if (content === undefined) this.extensionWidgets.delete(key);
+    else this.extensionWidgets.set(key, { lines: [...content], placement: options?.placement ?? "aboveEditor" });
+    this.renderComposer();
+    this.requestRender();
+  }
+
+  addExtensionAutocompleteProvider(factory: AutocompleteProviderFactory): void {
+    this.autocompleteFactories.push(factory);
+    this.refreshAutocompleteProvider();
+  }
+
+  getExtensionToolsExpanded(): boolean { return this.toolsExpanded; }
+
+  setExtensionToolsExpanded(expanded: boolean): void {
+    this.toolsExpanded = expanded;
+    this.renderTimeline();
+    this.requestRender();
+  }
+
   clearExtensionSessionState(): void {
     this.cancelExtensionDialog();
     this.extensionTerminalHandlers.clear();
@@ -869,6 +967,10 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.workingVisible = true;
     this.workingIndicator = undefined;
     this.hiddenThinkingLabel = undefined;
+    this.extensionWidgets.clear();
+    this.autocompleteFactories.length = 0;
+    this.refreshAutocompleteProvider();
+    this.toolsExpanded = false;
     this.restoreBaseTerminalTitle();
     this.renderStatus();
     this.requestRender();
@@ -941,6 +1043,7 @@ export class PindieTuiView implements PindieTuiViewPort {
       // This is intentionally derived from the native Projection fact rather
       // than a local "running" flag.
       runActive: this.projection?.status.isIdle === false,
+      nativeIdle: this.projection?.status.isIdle === true,
       composerEmpty: this.editor.getExpandedText().length === 0,
       hasSelectedBlock: this.selectedBlock() !== null,
       activeOverlay: this.activeOverlay,
@@ -952,6 +1055,11 @@ export class PindieTuiView implements PindieTuiViewPort {
   private handleInput(data: string): { consume?: boolean; data?: string } | undefined {
     if (this.activeOverlay === "extension-dialog") {
       this.extensionDialogComponent?.handleInput?.(data);
+      this.requestRender();
+      return { consume: true };
+    }
+    if (this.activeOverlay === "model-picker" || this.activeOverlay === "session-picker") {
+      this.pickerComponent?.handleInput?.(data);
       this.requestRender();
       return { consume: true };
     }
@@ -1026,6 +1134,12 @@ export class PindieTuiView implements PindieTuiViewPort {
         return;
       case "composer.follow-up":
         this.onFollowUp?.(this.editor.getExpandedText());
+        return;
+      case "model.pick":
+        void this.openModelPicker();
+        return;
+      case "session.pick":
+        void this.openSessionPicker();
         return;
       case "run.abort":
         this.onAbort?.();
@@ -1138,7 +1252,8 @@ export class PindieTuiView implements PindieTuiViewPort {
   }
 
   private effectiveDisplayMode(block: UiTimelineBlock): UiDisplayMode {
-    return this.foldOverrides.get(block.id) ?? block.defaultDisplayMode;
+    return this.foldOverrides.get(block.id) ??
+      (this.toolsExpanded && block.type === "work" ? "full" : block.defaultDisplayMode);
   }
 
   private renderTimeline(): void {
@@ -1194,7 +1309,9 @@ export class PindieTuiView implements PindieTuiViewPort {
     if (attention === null) {
       this.inputRegion.addChild(new Text("Composer", 1, 0));
       if (this.notice !== null) this.inputRegion.addChild(new Text(`Notice · ${this.notice}`, 1, 0));
+      this.addBoundedWidgets("aboveEditor");
       this.inputRegion.addChild(this.editor);
+      this.addBoundedWidgets("belowEditor");
       return;
     }
 
@@ -1237,6 +1354,62 @@ export class PindieTuiView implements PindieTuiViewPort {
     if (statuses.length > 0) additions.push(`Extensions · ${statuses.join(" · ")}`);
     if (this.hiddenThinkingLabel !== undefined) additions.push(`Thinking · ${this.hiddenThinkingLabel}`);
     this.status.setText(additions.length === 0 ? native : `${native}\n${additions.join(" · ")}`);
+  }
+
+  private addBoundedWidgets(placement: "aboveEditor" | "belowEditor"): void {
+    const lines = [...this.extensionWidgets.values()]
+      .filter((widget) => widget.placement === placement)
+      .flatMap((widget) => widget.lines)
+      .slice(0, MAX_EXTENSION_WIDGET_LINES);
+    if (lines.length > 0) this.inputRegion.addChild(new Text(lines.join("\n"), 1, 0));
+  }
+
+  private refreshAutocompleteProvider(): void {
+    let provider = EMPTY_AUTOCOMPLETE_PROVIDER;
+    for (const factory of this.autocompleteFactories) provider = factory(provider);
+    this.editor.setAutocompleteProvider(provider);
+  }
+
+  private async openModelPicker(): Promise<void> {
+    const sessionId = this.currentSessionId;
+    if (sessionId === null || this.activeOverlay !== null || this.onRequestModelPicker === undefined) return;
+    try {
+      const choices = await this.onRequestModelPicker();
+      if (this.currentSessionId !== sessionId || this.activeOverlay !== null || this.projection?.attention !== null) return;
+      this.openPicker("model-picker", new SearchablePickerOverlay(
+        `Model · thinking ${this.projection?.header.thinkingLevel ?? "unknown"}`,
+        choices,
+        (choice) => `${choice.provider} ${choice.modelId} ${choice.displayName}`,
+        (choice) => `${choice.provider} · ${choice.displayName}${choice.current ? "  current" : ""}${choice.scopedThinkingLevel === undefined ? "" : `  ${choice.scopedThinkingLevel}`}`,
+        (choice) => { this.closeOverlay(); this.onSelectModel?.(sessionId, choice); },
+        () => this.closeOverlay(),
+      ));
+    } catch (error) { this.showNotice(`Model picker failed: ${errorMessage(error)}`); }
+  }
+
+  private async openSessionPicker(): Promise<void> {
+    const sessionId = this.currentSessionId;
+    if (sessionId === null || this.activeOverlay !== null || this.onRequestSessionPicker === undefined) return;
+    try {
+      const choices = [...await this.onRequestSessionPicker()].sort((a, b) => b.modified.getTime() - a.modified.getTime());
+      if (this.currentSessionId !== sessionId || this.activeOverlay !== null || this.projection?.attention !== null) return;
+      this.openPicker("session-picker", new SearchablePickerOverlay(
+        "Session",
+        choices,
+        (choice) => `${choice.name ?? ""} ${choice.firstMessage} ${choice.id}`,
+        (choice) => `${firstMeaningfulLine(choice.name ?? choice.firstMessage ?? choice.id)} · ${choice.messageCount} messages${choice.current ? "  current" : ""}`,
+        (choice) => { this.closeOverlay(); this.onSelectSession?.(sessionId, choice); },
+        () => this.closeOverlay(),
+      ));
+    } catch (error) { this.showNotice(`Session picker failed: ${errorMessage(error)}`); }
+  }
+
+  private openPicker(kind: "model-picker" | "session-picker", component: Component & Focusable): void {
+    this.activeOverlay = kind;
+    this.pickerComponent = component;
+    this.overlayHandle = this.tui.showOverlay(component, { width: "80%", maxHeight: "80%", anchor: "center", margin: 1 });
+    this.tui.setFocus(component);
+    this.requestRender();
   }
 
   private openCommandPalette(): void {
@@ -1395,7 +1568,8 @@ export class PindieTuiView implements PindieTuiViewPort {
   }
 
   private closeLowerPriorityOverlay(): void {
-    if (this.activeOverlay === "command-palette" || this.activeOverlay === "block-viewer") {
+    if (this.activeOverlay === "command-palette" || this.activeOverlay === "block-viewer" ||
+      this.activeOverlay === "model-picker" || this.activeOverlay === "session-picker") {
       this.closeOverlay();
     }
   }
@@ -1414,6 +1588,7 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.viewerBlockId = null;
     this.viewerContent = null;
     this.viewerScroll = null;
+    this.pickerComponent = null;
     handle?.hide();
     this.restoreLogicalFocus();
     this.renderStatus();
@@ -1421,6 +1596,10 @@ export class PindieTuiView implements PindieTuiViewPort {
   }
 
   private restoreLogicalFocus(): void {
+    if ((this.activeOverlay === "model-picker" || this.activeOverlay === "session-picker") && this.pickerComponent !== null) {
+      this.tui.setFocus(this.pickerComponent);
+      return;
+    }
     if (this.activeOverlay === "extension-dialog" && this.extensionDialogComponent !== null) {
       this.tui.setFocus(this.extensionDialogComponent);
       return;

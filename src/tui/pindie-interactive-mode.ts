@@ -105,6 +105,10 @@ export class PindieInteractiveMode {
       onAttentionResponse: (text) => this.handleAttentionResponse(text),
       onAbort: () => this.handleAbort(),
       onExit: () => this.requestExit(),
+      onRequestModelPicker: () => Promise.resolve(this.runtime.getActiveSessionModelChoices()),
+      onSelectModel: (sessionId, choice) => this.handleModelSelection(sessionId, choice),
+      onRequestSessionPicker: () => this.runtime.getActiveProjectSessionChoices(),
+      onSelectSession: (sessionId, choice) => this.handleSessionSelection(sessionId, choice),
     };
     this.view = options.createView?.(viewOptions) ?? new PindieTuiView(viewOptions);
   }
@@ -377,6 +381,36 @@ export class PindieInteractiveMode {
       this.attentionResponseInFlight = false;
       this.view.showNotice(`Attention delivery failed: ${errorMessage(error)}`);
     }
+  }
+
+  private pickerMutationIsSafe(sessionId: string): boolean {
+    const binding = this.currentSessionBinding();
+    if (binding === null || binding.sessionId !== sessionId) return false;
+    if (this.projection?.attention !== null || this.extensionUI?.hasActiveInteraction === true) return false;
+    try { return this.runtime.getActiveSessionFacts().isIdle; } catch { return false; }
+  }
+
+  private handleModelSelection(sessionId: string, choice: import("../pi-runtime.ts").ActiveSessionModelChoice): void {
+    if (choice.current) return;
+    if (!this.pickerMutationIsSafe(sessionId)) {
+      this.view.showNotice("Model change ignored: the current Session is no longer safely idle.");
+      return;
+    }
+    void this.runtime.setActiveSessionModel(choice.provider, choice.modelId).then(
+      () => this.refreshCurrentFacts(),
+      (error: unknown) => this.view.showNotice(`Model change failed: ${errorMessage(error)}`),
+    );
+  }
+
+  private handleSessionSelection(sessionId: string, choice: import("../pi-runtime.ts").ActiveProjectSessionChoice): void {
+    if (choice.current) return;
+    if (!this.pickerMutationIsSafe(sessionId)) {
+      this.view.showNotice("Session switch ignored: the current Session is no longer safely idle.");
+      return;
+    }
+    void this.runtime.switchActiveSession(choice.path).catch((error: unknown) => {
+      this.view.showNotice(`Session switch failed: ${errorMessage(error)}`);
+    });
   }
 
   private handleAbort(): void {
