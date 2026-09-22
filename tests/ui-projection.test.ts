@@ -103,6 +103,7 @@ function input(
       model: { provider: "test-provider", modelId: "test-model" },
       thinkingLevel: "high",
       runtime: runtime(),
+      automaticWorkSettled: true,
       branch: [],
     },
     ...overrides,
@@ -900,7 +901,7 @@ test("running blocked Task has no hard or soft Human Signal", () => {
   assert.equal(projection.softSignal, null);
 });
 
-test("idle blocked Task projects a detached soft signal unless Gate, authority, or quota wins", () => {
+test("idle blocked Task requires settled automatic work and yields a detached soft signal", () => {
   const blockers = ["missing credential"];
   const blockedPresentation = presentation({
     semantic: {
@@ -915,7 +916,14 @@ test("idle blocked Task projects a detached soft signal unless Gate, authority, 
       state: state({ openLoops: { blockers, questions: [], nextIntent: null } }),
     },
   });
-  const projection = createProjection(input({ presentation: blockedPresentation }));
+  const blockedInput = input({ presentation: blockedPresentation });
+  const unsettled = createProjection({
+    ...blockedInput,
+    session: { ...blockedInput.session, automaticWorkSettled: false },
+  });
+  assert.equal(unsettled.softSignal, null);
+
+  const projection = createProjection(blockedInput);
   assert.equal(projection.attention, null);
   assert.deepEqual(projection.softSignal, {
     kind: "settled-blocked", summary: "Could not continue autonomously.", blockers: ["missing credential"],

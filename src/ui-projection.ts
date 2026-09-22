@@ -225,6 +225,7 @@ export interface PindieUiProjectionInput {
     readonly model: UiModelProjection | null;
     readonly thinkingLevel: AgentSession["thinkingLevel"];
     readonly runtime: ActiveSessionFacts;
+    readonly automaticWorkSettled: boolean;
     readonly branch: readonly SessionEntry[];
   };
 }
@@ -1023,6 +1024,7 @@ function projectCurrentHumanSignal(
     taskStatus: semantic.taskStatus,
     task: input.presentation.status.state?.task ?? null,
     isIdle: input.session.runtime.isIdle,
+    automaticWorkSettled: input.session.automaticWorkSettled,
     pendingMessageCount: input.session.runtime.pendingMessageCount,
     quotaResumeWaiting: input.presentation.quotaResumeWaiting !== null,
   });

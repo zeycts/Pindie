@@ -25,6 +25,7 @@ interface CurrentHumanSignalInput {
   readonly taskStatus: TaskStatus | null;
   readonly task: PindieTask | null;
   readonly isIdle: boolean;
+  readonly automaticWorkSettled: boolean;
   readonly pendingMessageCount: number;
   readonly quotaResumeWaiting: boolean;
 }
@@ -91,6 +92,7 @@ export function classifyHumanSignal(input: HumanSignalInput): HumanSignalDecisio
       input.taskStatus === "blocked" &&
       input.task !== null &&
       input.isIdle &&
+      input.automaticWorkSettled &&
       input.pendingMessageCount === 0 &&
       !input.quotaResumeWaiting
     ) {
@@ -101,7 +103,7 @@ export function classifyHumanSignal(input: HumanSignalInput): HumanSignalDecisio
         summary: "Could not continue autonomously.",
         detail: blockers,
         local: "soft",
-        external: "attention",
+        external: "none",
       };
     }
     return null;

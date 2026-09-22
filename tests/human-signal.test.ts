@@ -43,7 +43,7 @@ function settlement(currentTask: PindieTask, generation = 7): CoreSettlementFact
   };
 }
 
-function current(currentTask: PindieTask, isIdle: boolean) {
+function current(currentTask: PindieTask, isIdle: boolean, automaticWorkSettled = isIdle) {
   return classifyHumanSignal({
     phase: "current",
     sessionId: "session",
@@ -52,6 +52,7 @@ function current(currentTask: PindieTask, isIdle: boolean) {
     taskStatus: currentTask.openLoops.blockers.length ? "blocked" : currentTask.humanGate ? "waiting_human" : "active",
     task: currentTask,
     isIdle,
+    automaticWorkSettled,
     pendingMessageCount: 0,
     quotaResumeWaiting: false,
   });
@@ -72,11 +73,21 @@ test("running blocked work remains autonomous", () => {
   assert.equal(current(task({ blockers: ["missing credential"] }), false), null);
 });
 
-test("idle blocked work is a soft settled-blocked signal", () => {
-  const signal = current(task({ blockers: ["missing credential"] }), true);
-  assert.equal(signal?.kind, "settled-blocked");
-  assert.equal(signal?.local, "soft");
-  assert.equal(signal?.external, "attention");
+test("current and settlement phases own distinct blocked external eligibility", () => {
+  const blockedTask = task({ blockers: ["missing credential"] });
+  const currentSignal = current(blockedTask, true);
+  assert.equal(currentSignal?.kind, "settled-blocked");
+  assert.equal(currentSignal?.local, "soft");
+  assert.equal(currentSignal?.external, "none");
+
+  const settlementSignal = settled(blockedTask);
+  assert.equal(settlementSignal?.kind, "settled-blocked");
+  assert.equal(settlementSignal?.local, "soft");
+  assert.equal(settlementSignal?.external, "attention");
+});
+
+test("idle blocked work requires automatic work to be settled", () => {
+  assert.equal(current(task({ blockers: ["missing credential"] }), true, false), null);
 });
 
 test("Human Gate and unavailable authority are hard current signals", () => {
@@ -89,7 +100,7 @@ test("Human Gate and unavailable authority are hard current signals", () => {
     phase: "current", sessionId: "session", authority: "unavailable",
     authorityUnavailableReason: "state lease unavailable", taskStatus: "blocked",
     task: task({ blockers: ["x"], gate: { kind: "input", question: "ignored by precedence" } }),
-    isIdle: true, pendingMessageCount: 0, quotaResumeWaiting: false,
+    isIdle: true, automaticWorkSettled: true, pendingMessageCount: 0, quotaResumeWaiting: false,
   });
   assert.equal(unavailable?.kind, "authority-unavailable");
   assert.equal(unavailable?.local, "hard");

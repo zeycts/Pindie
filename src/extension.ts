@@ -625,11 +625,11 @@ function registerComposedPindieExtension(
         taskStatus: getTaskStatus(runtime.state),
         task,
         isIdle,
+        automaticWorkSettled: false,
         pendingMessageCount,
         quotaResumeWaiting: quotaResumeStatusObserver?.getSnapshot()?.sessionId === live.sessionId,
       });
-      // Settled-blocked is finalized only at agent_settled after successor decisions.
-      if (signal?.kind === "human-gate" || signal?.kind === "authority-unavailable") {
+      if (signal?.external === "attention") {
         void remote.humanSignal(signal);
       }
     }

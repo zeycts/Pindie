@@ -81,6 +81,7 @@ export class PindieInteractiveMode {
   private bindingGeneration = 0;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private userSequence = 1;
+  private automaticWorkSettled = false;
   private abortInFlight = false;
   private attentionResponseInFlight = false;
   private extensionUI: PindieExtensionUIBridge | null = null;
@@ -153,6 +154,7 @@ export class PindieInteractiveMode {
         model: this.runtime.getActiveSessionModelIdentity(),
         thinkingLevel: this.runtime.getActiveSessionThinkingLevel(),
         runtime: runtimeFacts,
+        automaticWorkSettled: this.automaticWorkSettled,
         branch: this.runtime.getActiveSessionBranch(),
       },
     };
@@ -202,6 +204,7 @@ export class PindieInteractiveMode {
     }
 
     const sessionId = this.runtime.activeSessionId;
+    this.automaticWorkSettled = this.runtime.getActiveSessionFacts().isIdle;
     const unsubscribe = this.runtime.subscribeActiveSession((event) => {
       this.handleSessionEvent(sessionId, generation, event);
     });
@@ -227,6 +230,7 @@ export class PindieInteractiveMode {
     this.projection = null;
     this.bindingGeneration += 1;
     this.userSequence = 1;
+    this.automaticWorkSettled = false;
     this.attentionResponseInFlight = false;
   }
 
@@ -251,7 +255,13 @@ export class PindieInteractiveMode {
       this.projection === null
     ) return;
 
+    if (event.type === "agent_start") this.automaticWorkSettled = false;
+    if (event.type === "agent_settled") this.automaticWorkSettled = true;
+
     this.projection = reduceProjectionEvent(this.projection, event);
+    if (event.type === "agent_start" || event.type === "agent_settled") {
+      this.projection = refreshProjectionFacts(this.projection, this.buildProjectionInput());
+    }
     this.view.apply(this.projection);
   }
 
