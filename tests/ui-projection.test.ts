@@ -7,6 +7,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import type { PindiePresentationSnapshot } from "../src/presentation-integration.ts";
+import type { HumanGate, PindieState, VerificationCheck } from "../src/state.ts";
 import {
   appendUserDelivery,
   classifyToolPresentation,
@@ -16,9 +17,14 @@ import {
   reduceProjectionEvent,
   refreshProjectionFacts,
   type PindieUiProjectionInput,
+  type UiCompletionSemanticBlock,
+  type UiHumanGateSemanticBlock,
   type UiMessageBlock,
   type UiObservationWorkBlock,
+  type UiSemanticBlock,
+  type UiTaskSemanticBlock,
   type UiToolWorkBlock,
+  type UiVerificationSemanticBlock,
   type UiWorkBlock,
 } from "../src/ui-projection.ts";
 
@@ -225,6 +231,79 @@ function toolWorkBlocks(projection: ReturnType<typeof createProjection>): UiTool
   );
 }
 
+function semanticBlocks(projection: ReturnType<typeof createProjection>): UiSemanticBlock[] {
+  return projection.timeline.filter(
+    (block): block is UiSemanticBlock => block.type === "semantic",
+  );
+}
+
+function semanticState(options: {
+  readonly goal?: string;
+  readonly criteriaCount?: number;
+  readonly blockers?: readonly string[];
+  readonly questions?: readonly string[];
+  readonly nextIntent?: string | null;
+  readonly checks?: readonly VerificationCheck[];
+  readonly stale?: boolean;
+  readonly humanGate?: HumanGate | null;
+  readonly completed?: boolean;
+} = {}): PindieState {
+  const criteriaCount = options.criteriaCount ?? 1;
+  const checks = options.checks ?? [];
+  return {
+    task: {
+      goal: options.goal ?? "Keep the projection truthful.",
+      constraints: [],
+      successCriteria: Array.from({ length: criteriaCount }, (_, index) => ({
+        id: `c${index + 1}`,
+        description: `Criterion ${index + 1}`,
+      })),
+      openLoops: {
+        blockers: [...(options.blockers ?? [])],
+        questions: [...(options.questions ?? [])],
+        nextIntent: options.nextIntent ?? null,
+      },
+      verification: { stale: options.stale ?? false, checks: [...checks] },
+      humanGate: options.humanGate ?? null,
+      completed: options.completed ?? false,
+    },
+  };
+}
+
+function semanticToolResult(
+  state: PindieState | undefined,
+  options: { readonly isError?: boolean; readonly text?: string } = {},
+): Record<string, unknown> {
+  return {
+    content: options.text === undefined ? [] : [{ type: "text", text: options.text }],
+    details: state === undefined ? undefined : { state },
+    isError: options.isError ?? false,
+  };
+}
+
+function applySemanticLive(
+  projection: ReturnType<typeof createProjection>,
+  toolCallId: string,
+  toolName: string,
+  args: unknown,
+  result: Record<string, unknown>,
+): ReturnType<typeof createProjection> {
+  let next = reduceProjectionEvent(projection, event({
+    type: "tool_execution_start",
+    toolCallId,
+    toolName,
+    args,
+  }));
+  next = reduceProjectionEvent(next, event({
+    type: "tool_execution_end",
+    toolCallId,
+    toolName,
+    result,
+    isError: result.isError,
+  }));
+  return next;
+}
+
 test("presentation classifier reserves semantic tools without changing execution semantics", () => {
   assert.equal(classifyToolPresentation("read"), "observation");
   assert.equal(classifyToolPresentation("grep"), "observation");
@@ -235,6 +314,350 @@ test("presentation classifier reserves semantic tools without changing execution
   assert.equal(classifyToolPresentation("pindie_memory_capture"), "external");
   assert.equal(classifyToolPresentation("browser_navigate"), "external");
   assert.equal(classifyToolPresentation("future_tool"), "generic");
+});
+
+test("live semantic calls use one identity from running preview through result", () => {
+  const task = semanticState({ goal: "Keep semantic execution visible" });
+  let projection = createProjection(input({ presentation: null }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "tool_execution_start",
+    toolCallId: "running-task",
+    toolName: "pindie_task_start",
+    args: { goal: task.task!.goal, successCriteria: ["one"] },
+  }));
+  const running = semanticBlocks(projection)[0] as UiTaskSemanticBlock;
+  assert.equal(running.id, "semantic:task:running-task");
+  assert.equal(running.lifecycle, "running");
+  assert.equal(running.defaultDisplayMode, "preview");
+  projection = reduceProjectionEvent(projection, event({
+    type: "tool_execution_update",
+    toolCallId: "running-task",
+    toolName: "pindie_task_start",
+    args: { goal: task.task!.goal, successCriteria: ["one"] },
+    partialResult: { content: [{ type: "text", text: "Current task started." }] },
+  }));
+  assert.equal(semanticBlocks(projection).length, 1);
+  assert.equal(semanticBlocks(projection)[0]?.id, running.id);
+  projection = reduceProjectionEvent(projection, event({
+    type: "tool_execution_end",
+    toolCallId: "running-task",
+    toolName: "pindie_task_start",
+    result: semanticToolResult(task),
+    isError: false,
+  }));
+  const complete = semanticBlocks(projection)[0] as UiTaskSemanticBlock;
+  assert.equal(complete.id, running.id);
+  assert.equal(complete.lifecycle, "complete");
+});
+
+test("collapses live Task updates into one phase and starts a new replacement phase", () => {
+  const startState = semanticState({ goal: "Implement Pindie Semantic Timeline", criteriaCount: 3 });
+  let projection = createProjection(input({ presentation: null }));
+  projection = applySemanticLive(projection, "task-start", "pindie_task_start", {
+    goal: startState.task!.goal,
+    successCriteria: ["one", "two", "three"],
+  }, semanticToolResult(startState));
+
+  const refineState = semanticState({ goal: "Implement the semantic timeline", criteriaCount: 3 });
+  projection = applySemanticLive(projection, "task-refine", "pindie_task_refine", {
+    goal: refineState.task!.goal,
+  }, semanticToolResult(refineState));
+  projection = applySemanticLive(projection, "task-progress-a", "pindie_task_progress", {
+    blockers: [],
+    questions: [],
+    nextIntent: "Record verification",
+  }, semanticToolResult(semanticState({
+    goal: refineState.task!.goal,
+    criteriaCount: 3,
+    nextIntent: "Record verification",
+  })));
+  projection = applySemanticLive(projection, "task-progress-b", "pindie_task_progress", {
+    blockers: [],
+    questions: ["Should completion include metrics?"],
+  }, semanticToolResult(semanticState({
+    goal: refineState.task!.goal,
+    criteriaCount: 3,
+    questions: ["Should completion include metrics?"],
+  })));
+
+  const tasks = semanticBlocks(projection).filter(
+    (block): block is UiTaskSemanticBlock => block.category === "task",
+  );
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0]?.id, "semantic:task:task-start");
+  assert.equal(projection.semanticTimeline.currentTaskBlockId, "semantic:task:task-start");
+  assert.equal(tasks[0]?.goal, "Implement the semantic timeline");
+  assert.equal(tasks[0]?.questions[0], "Should completion include metrics?");
+  assert.equal(tasks[0]?.successCriterionCount, 3);
+
+  const replacement = semanticState({ goal: "Replace with the final semantic timeline", criteriaCount: 2 });
+  projection = applySemanticLive(projection, "task-replace", "pindie_task_replace", {
+    goal: replacement.task!.goal,
+    successCriteria: ["new one", "new two"],
+  }, semanticToolResult(replacement));
+  const replacementTasks = semanticBlocks(projection).filter(
+    (block): block is UiTaskSemanticBlock => block.category === "task",
+  );
+  assert.deepEqual(replacementTasks.map((block) => block.id), [
+    "semantic:task:task-start",
+    "semantic:task:task-replace",
+  ]);
+  assert.equal(projection.semanticTimeline.currentTaskBlockId, "semantic:task:task-replace");
+});
+
+test("projects a blocked Task from resulting State without creating Attention", () => {
+  const active = semanticState({ goal: "Recover a blocked Task" });
+  let projection = createProjection(input({
+    presentation: presentation({
+      status: { ...presentation().status, state: active },
+    }),
+  }));
+  projection = applySemanticLive(projection, "task-start-blocked", "pindie_task_start", {
+    goal: active.task!.goal,
+    successCriteria: ["recover"],
+  }, semanticToolResult(active));
+  const blocked = semanticState({
+    goal: active.task!.goal,
+    blockers: ["missing staging token"],
+  });
+  projection = applySemanticLive(projection, "task-progress-blocked", "pindie_task_progress", {
+    blockers: ["missing staging token"],
+    questions: [],
+  }, semanticToolResult(blocked));
+
+  const task = semanticBlocks(projection).find(
+    (block): block is UiTaskSemanticBlock => block.category === "task",
+  );
+  assert.equal(task?.taskStatus, "blocked");
+  assert.deepEqual(task?.blockers, ["missing staging token"]);
+  assert.equal(projection.attention, null);
+  const refreshed = refreshProjectionFacts(projection, input({
+    presentation: presentation({
+      semantic: {
+        ...presentation().semantic,
+        snapshot: { ...presentation().semantic.snapshot, taskStatus: "blocked", hasBlockers: true },
+      },
+      status: { ...presentation().status, state: blocked },
+    }),
+  }));
+  assert.equal(refreshed.attention, null);
+});
+
+test("projects one Verification episode from resulting State and keeps success visible", () => {
+  const task = semanticState({ goal: "Verify the timeline", criteriaCount: 3 });
+  let projection = createProjection(input({ presentation: null }));
+  projection = applySemanticLive(projection, "verify-task-start", "pindie_task_start", {
+    goal: task.task!.goal,
+    successCriteria: ["one", "two", "three"],
+  }, semanticToolResult(task));
+  const checks: VerificationCheck[] = [];
+  for (const [id, name] of [["c1", "projection tests"], ["c2", "TUI tests"], ["c3", "full check"]] as const) {
+    checks.push({ name, status: "passed", covers: [id], evidence: `${name} passed` });
+    projection = applySemanticLive(projection, `verify-${id}`, "pindie_verification_record", {
+      check: { name, status: "passed", covers: [id], evidenceRefs: [`evidence-${id}`] },
+    }, semanticToolResult(semanticState({
+      goal: task.task!.goal,
+      criteriaCount: 3,
+      checks,
+    })));
+    const verification = semanticBlocks(projection).filter(
+      (block): block is UiVerificationSemanticBlock => block.category === "verification",
+    );
+    assert.equal(verification.length, 1);
+    assert.equal(verification[0]?.id, "semantic:verification:verify-c1");
+    assert.equal(verification[0]?.coveredCriteria.length, checks.length);
+    assert.equal(verification[0]?.totalCriteria, 3);
+  }
+
+  const verification = semanticBlocks(projection).find(
+    (block): block is UiVerificationSemanticBlock => block.category === "verification",
+  );
+  assert.equal(verification?.verificationStatus, "passed");
+  assert.equal(verification?.defaultDisplayMode, "full");
+  assert.deepEqual(verification?.checks.map((check) => check.evidence), [
+    "projection tests passed",
+    "TUI tests passed",
+    "full check passed",
+  ]);
+});
+
+test("failed verification remains visible without treating its input as State", () => {
+  const task = semanticState({ goal: "Show verification failure", criteriaCount: 2 });
+  let projection = createProjection(input({ presentation: null }));
+  projection = applySemanticLive(projection, "failure-task", "pindie_task_start", {
+    goal: task.task!.goal,
+    successCriteria: ["one", "two"],
+  }, semanticToolResult(task));
+  const passed = semanticState({
+    goal: task.task!.goal,
+    criteriaCount: 2,
+    checks: [{ name: "one", status: "passed", covers: ["c1"], evidence: "one passed" }],
+  });
+  projection = applySemanticLive(projection, "verify-pass", "pindie_verification_record", {
+    check: { name: "one", status: "passed", covers: ["c1"], evidenceRefs: ["pass"] },
+  }, semanticToolResult(passed));
+  projection = applySemanticLive(projection, "verify-fail", "pindie_verification_record", {
+    check: { name: "two", status: "failed", covers: ["c2"], evidenceRefs: ["fail"] },
+  }, semanticToolResult(undefined, { isError: true, text: "check rejected" }));
+
+  const verification = semanticBlocks(projection).find(
+    (block): block is UiVerificationSemanticBlock => block.category === "verification",
+  );
+  assert.equal(verification?.lifecycle, "failed");
+  assert.equal(verification?.defaultDisplayMode, "full");
+  assert.equal(verification?.verificationStatus, "pending");
+  assert.equal(projection.semanticTimeline.currentVerificationBlockId, "semantic:verification:verify-pass");
+  assert.match(verification?.error ?? "", /check rejected/);
+});
+
+test("projects and resolves a Human Gate while keeping Attention separate", () => {
+  const active = semanticState({ goal: "Ask for deployment approval" });
+  let projection = createProjection(input({
+    presentation: presentation({ status: { ...presentation().status, state: active } }),
+  }));
+  projection = applySemanticLive(projection, "gate-task", "pindie_task_start", {
+    goal: active.task!.goal,
+    successCriteria: ["approval"],
+  }, semanticToolResult(active));
+  const opened = semanticState({
+    goal: active.task!.goal,
+    humanGate: { kind: "decision", question: "Deploy migration to production?", options: ["Deploy", "Hold"] },
+  });
+  projection = applySemanticLive(projection, "gate-open", "pindie_gate_open", {
+    kind: "decision",
+    question: "Deploy migration to production?",
+    options: ["Deploy", "Hold"],
+  }, semanticToolResult(opened));
+
+  const openGate = semanticBlocks(projection).find(
+    (block): block is UiHumanGateSemanticBlock => block.category === "human-gate",
+  );
+  assert.equal(openGate?.state, "open");
+  assert.equal(openGate?.question, "Deploy migration to production?");
+  assert.deepEqual(openGate?.options, ["Deploy", "Hold"]);
+  assert.equal(projection.attention, null);
+  const attentionProjection = refreshProjectionFacts(projection, input({
+    presentation: presentation({
+      semantic: { ...presentation().semantic, snapshot: { ...presentation().semantic.snapshot, taskStatus: "waiting_human" } },
+      status: { ...presentation().status, state: opened },
+    }),
+  }));
+  assert.deepEqual(attentionProjection.attention, {
+    kind: "human-gate",
+    gateKind: "decision",
+    question: "Deploy migration to production?",
+    options: ["Deploy", "Hold"],
+  });
+
+  const resolved = semanticState({ goal: active.task!.goal });
+  projection = applySemanticLive(projection, "gate-resolve", "pindie_gate_resolve", {}, semanticToolResult(resolved));
+  const resolvedGate = semanticBlocks(projection).find(
+    (block): block is UiHumanGateSemanticBlock => block.category === "human-gate",
+  );
+  assert.equal(resolvedGate?.state, "resolved");
+  assert.equal(resolvedGate?.question, "Deploy migration to production?");
+  assert.equal(projection.semanticTimeline.openHumanGateBlockId, null);
+  assert.equal(semanticBlocks(projection).some((block) => JSON.stringify(block).includes("pindie_gate_resolve")), false);
+});
+
+test("completion uses argument summary and completed resulting State", () => {
+  const task = semanticState({ goal: "Implement Semantic Timeline", criteriaCount: 2 });
+  const completed = semanticState({
+    goal: task.task!.goal,
+    criteriaCount: 2,
+    checks: [
+      { name: "projection tests", status: "passed", covers: ["c1", "c2"], evidence: "all tests passed" },
+    ],
+    completed: true,
+  });
+  let projection = createProjection(input({ presentation: null }));
+  projection = applySemanticLive(projection, "complete-task", "pindie_task_start", {
+    goal: task.task!.goal,
+    successCriteria: ["one", "two"],
+  }, semanticToolResult(task));
+  projection = applySemanticLive(projection, "complete-verify", "pindie_verification_record", {
+    check: { name: "projection tests", status: "passed", covers: ["c1", "c2"], evidenceRefs: ["evidence"] },
+  }, semanticToolResult(completed));
+  projection = applySemanticLive(projection, "complete-call", "pindie_task_complete", {
+    summary: "Semantic Timeline implemented",
+  }, semanticToolResult(completed, { text: "Summary:\nWRONG PROSE" }));
+
+  const completion = semanticBlocks(projection).find(
+    (block): block is UiCompletionSemanticBlock => block.category === "completion",
+  );
+  assert.equal(completion?.lifecycle, "complete");
+  assert.equal(completion?.summary, "Semantic Timeline implemented");
+  assert.equal(completion?.defaultDisplayMode, "full");
+  assert.equal(completion?.checks[0]?.evidence, "all tests passed");
+  assert.equal(projection.semanticTimeline.currentTaskBlockId, null);
+  assert.equal(projection.semanticTimeline.currentVerificationBlockId, null);
+  assert.equal(JSON.stringify(completion).includes("pindie_task_complete"), false);
+
+  let inconsistent = createProjection(input({ presentation: null }));
+  inconsistent = applySemanticLive(inconsistent, "inconsistent", "pindie_task_complete", {
+    summary: "Should not be completed",
+  }, semanticToolResult(task));
+  const degraded = semanticBlocks(inconsistent).find(
+    (block): block is UiCompletionSemanticBlock => block.category === "completion",
+  );
+  assert.equal(degraded?.lifecycle, "failed");
+  assert.equal(degraded?.defaultDisplayMode, "full");
+  assert.match(degraded?.error ?? "", /did not mark/);
+});
+
+test("semantic failures stay visible and do not advance phase metadata", () => {
+  const task = semanticState({ goal: "Preserve failed transitions" });
+  let projection = createProjection(input({ presentation: null }));
+  projection = applySemanticLive(projection, "failed-start", "pindie_task_start", {
+    goal: task.task!.goal,
+    successCriteria: ["one"],
+  }, semanticToolResult(undefined, { isError: true, text: "start rejected" }));
+  assert.equal(projection.semanticTimeline.currentTaskBlockId, null);
+  const failedStart = semanticBlocks(projection)[0] as UiTaskSemanticBlock;
+  assert.equal(failedStart.lifecycle, "failed");
+  assert.equal(failedStart.defaultDisplayMode, "full");
+
+  projection = applySemanticLive(projection, "successful-start", "pindie_task_start", {
+    goal: task.task!.goal,
+    successCriteria: ["one"],
+  }, semanticToolResult(task));
+  const currentTaskId = projection.semanticTimeline.currentTaskBlockId;
+  projection = applySemanticLive(projection, "failed-complete", "pindie_task_complete", {
+    summary: "Rejected completion",
+  }, semanticToolResult(undefined, { isError: true, text: "completion rejected" }));
+  assert.equal(projection.semanticTimeline.currentTaskBlockId, currentTaskId);
+  const failedCompletion = semanticBlocks(projection).find(
+    (block): block is UiCompletionSemanticBlock => block.category === "completion",
+  );
+  assert.equal(failedCompletion?.lifecycle, "failed");
+  assert.match(failedCompletion?.error ?? "", /completion rejected/);
+
+  projection = applySemanticLive(projection, "failed-gate", "pindie_gate_open", {
+    kind: "decision",
+    question: "Open?",
+  }, semanticToolResult(undefined, { isError: true, text: "gate rejected" }));
+  assert.equal(projection.attention, null);
+  assert.equal(projection.semanticTimeline.openHumanGateBlockId, null);
+});
+
+test("projects task handoff as a restrained Task milestone", () => {
+  const task = semanticState({ goal: "Stage a continuation", nextIntent: "Resume in a new Session" });
+  let projection = createProjection(input({ presentation: null }));
+  projection = applySemanticLive(projection, "handoff-task", "pindie_task_start", {
+    goal: task.task!.goal,
+    successCriteria: ["handoff"],
+  }, semanticToolResult(task));
+  projection = applySemanticLive(projection, "handoff-call", "pindie_task_handoff", {
+    progressSummary: "Implementation is ready for continuation.",
+    decisions: ["Keep the projection renderer-independent."],
+    nextIntent: "Resume in a new Session",
+  }, semanticToolResult(task));
+  const tasks = semanticBlocks(projection).filter(
+    (block): block is UiTaskSemanticBlock => block.category === "task",
+  );
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0]?.handoff?.progressSummary, "Implementation is ready for continuation.");
+  assert.equal(tasks[0]?.nextIntent, "Resume in a new Session");
 });
 
 test("projects header and ambient status from Presentation and active Session facts", () => {
@@ -518,6 +941,180 @@ test("reconstructs edit, command, unknown, and reserved semantic history without
   assert.equal((work[2] as UiToolWorkBlock).toolCallId, "unknown-1");
   assert.equal(timeline.some((block) => JSON.stringify(block).includes("pindie_task_progress")), false);
   assert.equal(timeline.some((block) => JSON.stringify(block).includes('"role":"toolResult"')), false);
+});
+
+test("reconstructs historical semantic blocks chronologically from toolCall args and details.state", () => {
+  const task = semanticState({ goal: "Historical semantic work", criteriaCount: 2 });
+  const progress = semanticState({ goal: task.task!.goal, criteriaCount: 2, nextIntent: "Verify" });
+  const verified = semanticState({
+    goal: task.task!.goal,
+    criteriaCount: 2,
+    checks: [{ name: "tests", status: "passed", covers: ["c1", "c2"], evidence: "tests passed" }],
+  });
+  const completed = semanticState({
+    goal: task.task!.goal,
+    criteriaCount: 2,
+    checks: verified.task!.verification.checks,
+    completed: true,
+  });
+  const timeline = projectSessionHistory([
+    userEntry("history-intent", "Implement the historical semantic work"),
+    assistantToolEntry("history-start-call", [{
+      id: "history-start",
+      name: "pindie_task_start",
+      arguments: { goal: task.task!.goal, successCriteria: ["one", "two"] },
+    }]),
+    toolResultEntry("history-start-result", "history-start", "pindie_task_start", {
+      details: { state: task },
+      text: "Current task started.",
+    }),
+    assistantToolEntry("history-read-call", [{
+      id: "history-read",
+      name: "read",
+      arguments: { path: "src/ui-projection.ts" },
+    }]),
+    toolResultEntry("history-read-result", "history-read", "read"),
+    assistantToolEntry("history-progress-call", [{
+      id: "history-progress",
+      name: "pindie_task_progress",
+      arguments: { blockers: [], questions: [], nextIntent: "Verify" },
+    }]),
+    toolResultEntry("history-progress-result", "history-progress", "pindie_task_progress", {
+      details: { state: progress },
+    }),
+    assistantToolEntry("history-verify-call", [{
+      id: "history-verify",
+      name: "pindie_verification_record",
+      arguments: { check: { name: "tests", status: "passed", covers: ["c1", "c2"], evidenceRefs: ["e1"] } },
+    }]),
+    toolResultEntry("history-verify-result", "history-verify", "pindie_verification_record", {
+      details: { state: verified },
+    }),
+    assistantToolEntry("history-complete-call", [{
+      id: "history-complete",
+      name: "pindie_task_complete",
+      arguments: { summary: "Historical completion summary" },
+    }]),
+    toolResultEntry("history-complete-result", "history-complete", "pindie_task_complete", {
+      details: { state: completed },
+      text: "Summary:\nWRONG RESULT PROSE",
+    }),
+  ]);
+
+  assert.deepEqual(timeline.map((block) => block.type), [
+    "message",
+    "semantic",
+    "work",
+    "semantic",
+    "semantic",
+  ]);
+  const semantic = timeline.filter((block): block is UiSemanticBlock => block.type === "semantic");
+  assert.deepEqual(semantic.map((block) => block.category), ["task", "verification", "completion"]);
+  const taskBlock = semantic[0] as UiTaskSemanticBlock;
+  const verification = semantic[1] as UiVerificationSemanticBlock;
+  const completion = semantic[2] as UiCompletionSemanticBlock;
+  assert.equal(taskBlock.id, "semantic:task:history-start");
+  assert.equal(taskBlock.nextIntent, "Verify");
+  assert.equal(verification.id, "semantic:verification:history-verify");
+  assert.equal(verification.verificationStatus, "passed");
+  assert.equal(completion.summary, "Historical completion summary");
+  assert.equal(completion.checks[0]?.evidence, "tests passed");
+  assert.equal(timeline.some((block) => JSON.stringify(block).includes("pindie_task_")), false);
+  assert.equal(timeline.some((block) => JSON.stringify(block).includes('"role":"toolResult"')), false);
+});
+
+test("live and historical semantic projections preserve meaningful fields", () => {
+  const task = semanticState({ goal: "Equivalent semantic history", criteriaCount: 2 });
+  const progress = semanticState({ goal: task.task!.goal, criteriaCount: 2, nextIntent: "Verify" });
+  const verified = semanticState({
+    goal: task.task!.goal,
+    criteriaCount: 2,
+    checks: [{ name: "tests", status: "passed", covers: ["c1", "c2"], evidence: "tests passed" }],
+  });
+  let live = createProjection(input({ presentation: null }));
+  live = applySemanticLive(live, "equiv-start", "pindie_task_start", {
+    goal: task.task!.goal,
+    successCriteria: ["one", "two"],
+  }, semanticToolResult(task));
+  live = applySemanticLive(live, "equiv-progress", "pindie_task_progress", {
+    blockers: [],
+    questions: [],
+    nextIntent: "Verify",
+  }, semanticToolResult(progress));
+  live = applySemanticLive(live, "equiv-verify", "pindie_verification_record", {
+    check: { name: "tests", status: "passed", covers: ["c1", "c2"], evidenceRefs: ["evidence"] },
+  }, semanticToolResult(verified));
+
+  const history = projectSessionHistory([
+    assistantToolEntry("equiv-start-call", [{
+      id: "equiv-start",
+      name: "pindie_task_start",
+      arguments: { goal: task.task!.goal, successCriteria: ["one", "two"] },
+    }]),
+    toolResultEntry("equiv-start-result", "equiv-start", "pindie_task_start", { details: { state: task } }),
+    assistantToolEntry("equiv-progress-call", [{
+      id: "equiv-progress",
+      name: "pindie_task_progress",
+      arguments: { blockers: [], questions: [], nextIntent: "Verify" },
+    }]),
+    toolResultEntry("equiv-progress-result", "equiv-progress", "pindie_task_progress", { details: { state: progress } }),
+    assistantToolEntry("equiv-verify-call", [{
+      id: "equiv-verify",
+      name: "pindie_verification_record",
+      arguments: { check: { name: "tests", status: "passed", covers: ["c1", "c2"], evidenceRefs: ["evidence"] } },
+    }]),
+    toolResultEntry("equiv-verify-result", "equiv-verify", "pindie_verification_record", { details: { state: verified } }),
+  ]);
+  const liveSemantic = semanticBlocks(live);
+  const historySemantic = history.filter((block): block is UiSemanticBlock => block.type === "semantic");
+  assert.deepEqual(liveSemantic.map((block) => block.category), historySemantic.map((block) => block.category));
+  assert.deepEqual(
+    liveSemantic.map((block) => block.category === "task"
+      ? { category: block.category, goal: block.goal, status: block.taskStatus, density: block.defaultDisplayMode }
+      : block.category === "verification"
+        ? { category: block.category, status: block.verificationStatus, covered: block.coveredCriteria, checks: block.checks, density: block.defaultDisplayMode }
+        : { category: block.category }),
+    historySemantic.map((block) => block.category === "task"
+      ? { category: block.category, goal: block.goal, status: block.taskStatus, density: block.defaultDisplayMode }
+      : block.category === "verification"
+        ? { category: block.category, status: block.verificationStatus, covered: block.coveredCriteria, checks: block.checks, density: block.defaultDisplayMode }
+        : { category: block.category }),
+  );
+});
+
+test("semantic boundaries close observation bursts without reconnecting them", () => {
+  let projection = createProjection(input({ presentation: null }));
+  const reduce = (value: Record<string, unknown>) => {
+    projection = reduceProjectionEvent(projection, event(value));
+  };
+  reduce({ type: "tool_execution_start", toolCallId: "before-semantic", toolName: "read", args: { path: "a.ts" } });
+  reduce({ type: "tool_execution_end", toolCallId: "before-semantic", toolName: "read", result: { content: [] }, isError: false });
+  const task = semanticState({ goal: "Close the observation boundary" });
+  projection = applySemanticLive(projection, "boundary-task", "pindie_task_start", {
+    goal: task.task!.goal,
+    successCriteria: ["boundary"],
+  }, semanticToolResult(task));
+  reduce({ type: "tool_execution_start", toolCallId: "after-semantic", toolName: "read", args: { path: "b.ts" } });
+  reduce({ type: "tool_execution_end", toolCallId: "after-semantic", toolName: "read", result: { content: [] }, isError: false });
+  assert.deepEqual(observationBlocks(projection).map((block) => block.id), [
+    "observe:before-semantic",
+    "observe:after-semantic",
+  ]);
+});
+
+test("historical semantic calls without results remain visible as failed semantic blocks", () => {
+  const timeline = projectSessionHistory([
+    assistantToolEntry("missing-semantic", [{
+      id: "missing-complete",
+      name: "pindie_task_complete",
+      arguments: { summary: "Interrupted completion" },
+    }]),
+  ]);
+  const completion = timeline[0] as UiCompletionSemanticBlock;
+  assert.equal(completion.category, "completion");
+  assert.equal(completion.lifecycle, "failed");
+  assert.equal(completion.defaultDisplayMode, "full");
+  assert.match(completion.error ?? "", /not persisted/);
 });
 
 test("historical tool calls without results remain visible as non-success work", () => {

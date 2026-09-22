@@ -1,6 +1,6 @@
 # Pindie TUI v0.1 — Architecture and Implementation Contract
 
-Status: implementation in progress; Slices A–D complete.
+Status: implementation in progress; Slices A–E complete.
 
 Baseline: Pindie main after Pi 0.86.1 compatibility upgrade.
 
@@ -836,14 +836,14 @@ Implemented behind `PINDIE_TUI=1`; the default Pi `InteractiveMode` remains the 
 Full interactive Extension UI / Attention interaction lands in Slice F.
 Do not implement every advanced Block/Overlay before first dogfood.
 
-### Slice E — Semantic Timeline (implementation in progress)
+### Slice E — Semantic Timeline (implemented)
 
 Implementation status:
 
 - E1 Work Timeline — implemented
-- E2 Pindie Semantic Timeline — next
+- E2 Pindie Semantic Timeline — implemented
 
-Implement:
+Implemented:
 
 - stable live block identity;
 - observation grouping;
@@ -851,9 +851,10 @@ Implement:
 - bounded streaming previews;
 - automatic success compaction;
 - failure persistence;
-- semantic Task/Verification/Completion projection.
+- semantic Task/Verification/Completion projection;
+- structured Human Gate anchors and completion truth checks.
 
-### Slice F — Interaction and Attention
+### Slice F — Interaction and Attention (next implementation Slice)
 
 Implement:
 
