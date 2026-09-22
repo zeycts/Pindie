@@ -558,3 +558,31 @@ test("quota primitives always read and delegate to the current active Session", 
   await adapter.sendCustomMessage(message, options);
   assert.deepEqual(calls, [[message, options]]);
 });
+
+test("Extension command adapter actions delegate to current public Pi runtime APIs", async () => {
+  const calls: string[] = [];
+  const session = {
+    ...fakeSession("session-command"),
+    waitForIdle: async () => { calls.push("waitForIdle"); },
+    navigateTree: async () => { calls.push("navigateTree"); return { cancelled: false }; },
+    reload: async () => { calls.push("reload"); },
+  } as unknown as AgentSession;
+  const runtime = {
+    session,
+    newSession: async () => { calls.push("newSession"); return { cancelled: false }; },
+    fork: async () => { calls.push("fork"); return { cancelled: false, selectedText: "ignored" }; },
+    switchSession: async () => { calls.push("switchSession"); return { cancelled: false }; },
+    dispose: async () => {},
+  } as unknown as AgentSessionRuntime;
+  const adapter = new PiRuntimeAdapter(runtime);
+
+  await adapter.waitForActiveSessionIdle();
+  await adapter.newSession();
+  await adapter.forkActiveSession("entry");
+  await adapter.navigateActiveSessionTree("entry");
+  await adapter.switchActiveSession("session.jsonl");
+  await adapter.reloadActiveSession();
+  assert.deepEqual(calls, [
+    "waitForIdle", "newSession", "fork", "navigateTree", "switchSession", "reload",
+  ]);
+});
