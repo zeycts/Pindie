@@ -299,6 +299,11 @@ export class PindieInteractiveMode {
   private handleAbort(): void {
     if (this.abortInFlight) return;
 
+    if (this.currentSessionBinding() === null) {
+      this.view.showNotice("Session switching; abort ignored.");
+      return;
+    }
+
     let facts;
     try {
       facts = this.runtime.getActiveSessionFacts();

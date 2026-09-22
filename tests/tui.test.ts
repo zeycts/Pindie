@@ -181,6 +181,8 @@ class FakeRuntime {
   lifecycleHistory: Array<ActiveSessionClientLifecycle | undefined> = [];
   clearQueueCalls = 0;
   abortCalls = 0;
+  readonly clearQueueSessionIds: string[] = [];
+  readonly abortSessionIds: string[] = [];
   abortWait: Promise<void> | null = null;
 
   get activeSessionId(): string {
@@ -242,6 +244,7 @@ class FakeRuntime {
 
   clearActiveSessionQueue(): { steering: string[]; followUp: string[] } {
     this.clearQueueCalls += 1;
+    this.clearQueueSessionIds.push(this.sessionId);
     const queue = {
       steering: [...this.queue.steering],
       followUp: [...this.queue.followUp],
@@ -252,6 +255,7 @@ class FakeRuntime {
 
   abortActiveSession(): Promise<void> {
     this.abortCalls += 1;
+    this.abortSessionIds.push(this.sessionId);
     return this.abortWait ?? Promise.resolve();
   }
 
@@ -427,6 +431,52 @@ test("input fails closed and remains editable during Session replacement", async
   assert.deepEqual(harness.runtime.deliveryCalls, [
     { type: "prompt", text: "keep this instruction", sessionId: "session-b" },
   ]);
+
+  harness.view.exit();
+  await running;
+});
+
+test("Abort fails closed during replacement and targets Session B after rebind", async () => {
+  const harness = createHarness();
+  harness.runtime.facts = {
+    sessionId: "session-a",
+    isStreaming: true,
+    isCompacting: false,
+    isIdle: false,
+    pendingMessageCount: 0,
+  };
+  const running = harness.mode.run();
+  await flush();
+
+  assert.equal(harness.view.applied.at(-1)?.header.sessionId, "session-a");
+  assert.equal(harness.view.applied.at(-1)?.status.isIdle, false);
+  harness.view.editorText = "draft survives replacement";
+
+  harness.runtime.lifecycle?.beforeSessionInvalidate?.();
+  harness.view.abort();
+
+  assert.equal(harness.runtime.clearQueueCalls, 0);
+  assert.equal(harness.runtime.abortCalls, 0);
+  assert.match(harness.view.notices.at(-1) ?? "", /Session switching/);
+  assert.equal(harness.view.editorText, "draft survives replacement");
+
+  harness.runtime.replaceSession("session-b");
+  harness.runtime.facts = {
+    sessionId: "session-b",
+    isStreaming: true,
+    isCompacting: false,
+    isIdle: false,
+    pendingMessageCount: 0,
+  };
+  await harness.runtime.lifecycle!.rebindSession!();
+  assert.equal(harness.view.applied.at(-1)?.header.sessionId, "session-b");
+  assert.equal(harness.view.applied.at(-1)?.status.isIdle, false);
+
+  harness.view.abort();
+  assert.equal(harness.runtime.clearQueueCalls, 1);
+  assert.equal(harness.runtime.abortCalls, 1);
+  assert.deepEqual(harness.runtime.clearQueueSessionIds, ["session-b"]);
+  assert.deepEqual(harness.runtime.abortSessionIds, ["session-b"]);
 
   harness.view.exit();
   await running;
