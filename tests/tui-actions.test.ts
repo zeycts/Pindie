@@ -29,6 +29,8 @@ function availability(
     composerEmpty: true,
     hasSelectedBlock: false,
     activeOverlay: null,
+    attentionHasOptions: false,
+    attentionCanSubmit: false,
     ...overrides,
   };
 }
@@ -61,6 +63,18 @@ test("right-hand global/composer actions resolve through the registry", () => {
   assert.equal(resolveActionForInput(data, composer, alt("p")), "palette.open");
   assert.equal(resolveActionForInput(data, composer, alt("h")), "timeline.toggle");
   assert.equal(resolveActionForInput(data, composer, alt("u")), "composer.follow-up");
+});
+
+test("Attention actions own option navigation, submission, and non-destructive Escape", () => {
+  const attention: PindieInteractionState = { focusMode: "attention", activeOverlay: null };
+  const data = availability({ attentionHasOptions: true, attentionCanSubmit: true });
+  assert.equal(resolveActionForInput(data, attention, "j"), "attention.next");
+  assert.equal(resolveActionForInput(data, attention, "\u001b[A"), "attention.previous");
+  assert.equal(resolveActionForInput(data, attention, "\r"), "attention.submit");
+  assert.equal(resolveActionForInput(data, attention, "\u001b"), "attention.escape");
+  assert.equal(resolveActionForInput(data, attention, alt("h")), "timeline.toggle");
+  assert.equal(resolveActionForInput(data, attention, alt("p")), "palette.open");
+  assert.equal(paletteActions(data, attention).some((action) => action.id === "composer.follow-up"), false);
 });
 
 test("Escape priority is overlay, Timeline, then Composer abort", () => {

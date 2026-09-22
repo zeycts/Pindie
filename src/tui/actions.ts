@@ -4,7 +4,7 @@ import {
   type KeyId,
 } from "@earendil-works/pi-tui";
 
-export type PindieActionContext = "global" | "composer" | "timeline" | "overlay";
+export type PindieActionContext = "global" | "composer" | "timeline" | "attention" | "overlay";
 
 export type PindieActionId =
   | "palette.open"
@@ -20,6 +20,10 @@ export type PindieActionId =
   | "timeline.inspect"
   | "timeline.copy"
   | "timeline.back"
+  | "attention.next"
+  | "attention.previous"
+  | "attention.submit"
+  | "attention.escape"
   | "overlay.close"
   | "overlay.next"
   | "overlay.previous";
@@ -50,7 +54,7 @@ export const PINDIE_ACTIONS: readonly PindieActionDefinition[] = [
     id: "palette.open",
     label: "Command Palette",
     description: "Search and run an available Pindie action.",
-    contexts: ["global", "composer", "timeline"],
+    contexts: ["global", "composer", "timeline", "attention"],
     keys: [{ key: Key.alt("p"), label: "Alt+P" }],
     palette: false,
     hintPriority: 120,
@@ -59,8 +63,8 @@ export const PINDIE_ACTIONS: readonly PindieActionDefinition[] = [
   {
     id: "timeline.toggle",
     label: "Toggle Timeline Focus",
-    description: "Move keyboard focus between the Composer and Timeline.",
-    contexts: ["global", "composer", "timeline"],
+    description: "Move keyboard focus between the primary input surface and Timeline.",
+    contexts: ["global", "composer", "timeline", "attention"],
     keys: [{ key: Key.alt("h"), label: "Alt+H" }],
     palette: true,
     hintPriority: 70,
@@ -178,6 +182,42 @@ export const PINDIE_ACTIONS: readonly PindieActionDefinition[] = [
     hintPriority: 115,
   },
   {
+    id: "attention.next",
+    label: "Next Option",
+    description: "Select the next Attention response option.",
+    contexts: ["attention"],
+    keys: [{ key: "j", label: "j" }, { key: Key.down, label: "↓" }],
+    palette: false,
+    hintPriority: 100,
+  },
+  {
+    id: "attention.previous",
+    label: "Previous Option",
+    description: "Select the previous Attention response option.",
+    contexts: ["attention"],
+    keys: [{ key: "k", label: "k" }, { key: Key.up, label: "↑" }],
+    palette: false,
+    hintPriority: 99,
+  },
+  {
+    id: "attention.submit",
+    label: "Confirm",
+    description: "Send the selected or entered response to the Agent.",
+    contexts: ["attention"],
+    keys: [{ key: Key.enter, label: "Enter" }],
+    palette: false,
+    hintPriority: 110,
+  },
+  {
+    id: "attention.escape",
+    label: "Keep Decision Open",
+    description: "Keep Attention open without changing semantic State.",
+    contexts: ["attention"],
+    keys: [{ key: Key.escape, label: "Esc" }],
+    palette: false,
+    hintPriority: 10,
+  },
+  {
     id: "overlay.close",
     label: "Close Overlay",
     description: "Close the active overlay and restore the underlying surface.",
@@ -216,7 +256,7 @@ export const PINDIE_ACTION_REGISTRY: ReadonlyMap<PindieActionId, PindieActionDef
 export type PindieOverlayKind = "command-palette" | "block-viewer";
 
 export interface PindieInteractionState {
-  readonly focusMode: "composer" | "timeline";
+  readonly focusMode: "composer" | "timeline" | "attention";
   readonly activeOverlay: PindieOverlayKind | null;
 }
 
@@ -226,6 +266,8 @@ export interface PindieActionAvailability {
   readonly composerEmpty: boolean;
   readonly hasSelectedBlock: boolean;
   readonly activeOverlay: PindieOverlayKind | null;
+  readonly attentionHasOptions: boolean;
+  readonly attentionCanSubmit: boolean;
 }
 
 export function getPindieAction(
@@ -244,8 +286,9 @@ function contextsForInteraction(
   state: PindieInteractionState,
 ): readonly PindieActionContext[] {
   if (state.activeOverlay !== null) return ["overlay"];
-  return state.focusMode === "timeline"
-    ? ["timeline", "global"]
+  if (state.focusMode === "timeline") return ["timeline", "global"];
+  return state.focusMode === "attention"
+    ? ["attention", "global"]
     : ["composer", "global"];
 }
 
@@ -280,6 +323,13 @@ export function isPindieActionAvailable(
     case "timeline.copy":
       return data.activeOverlay === null && data.hasSelectedBlock;
     case "timeline.back":
+      return data.activeOverlay === null;
+    case "attention.next":
+    case "attention.previous":
+      return data.activeOverlay === null && data.attentionHasOptions;
+    case "attention.submit":
+      return data.activeOverlay === null && data.attentionCanSubmit;
+    case "attention.escape":
       return data.activeOverlay === null;
     case "overlay.close":
       return data.activeOverlay !== null;
@@ -320,7 +370,7 @@ export function hasDeclaredPindieActionForInput(
 function paletteContext(
   state: PindieInteractionState,
 ): PindieActionContext {
-  return state.focusMode === "timeline" ? "timeline" : "composer";
+  return state.focusMode;
 }
 
 function usableInContext(
@@ -371,7 +421,7 @@ export function declaredActionCollisions(): readonly {
     readonly key: KeyId;
     readonly actionIds: readonly PindieActionId[];
   }> = [];
-  const contexts: readonly PindieActionContext[] = ["global", "composer", "timeline", "overlay"];
+  const contexts: readonly PindieActionContext[] = ["global", "composer", "timeline", "attention", "overlay"];
   for (const context of contexts) {
     const byKey = new Map<KeyId, PindieActionId[]>();
     for (const action of PINDIE_ACTIONS) {

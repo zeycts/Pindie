@@ -1,6 +1,6 @@
 # Pindie TUI v0.1 — Architecture and Implementation Contract
 
-Status: Slices A–E and F1 are implemented; F2 and G remain intentionally deferred.
+Status: Slices A–E, F1, and F2a are implemented; F2b and G remain intentionally deferred.
 
 Baseline: Pindie main after Pi 0.86.1 compatibility upgrade.
 
@@ -835,7 +835,7 @@ Minimum dogfoodable shell:
 - Session rebind correctness.
 
 Implemented behind `PINDIE_TUI=1`; the default Pi `InteractiveMode` remains the fallback.
-Full interactive Extension UI / Attention interaction lands in Slice F2.
+Semantic Attention interaction lands in Slice F2a. The full Extension UI compatibility surface remains in F2b.
 Do not implement every advanced Block/Overlay before first dogfood.
 
 ### Slice E — Semantic Timeline (implemented)
@@ -869,13 +869,30 @@ Implemented in the feature-gated Pindie TUI:
 
 F1 deliberately does not bind model/session pickers or `Alt+M`/`Alt+N`, and it does not implement interactive Attention or the Extension UI bridge. Pi's public Editor remains the owner of all text-editing mechanics.
 
-### Slice F2 — Attention and Extension UI (not implemented)
+### Slice F2 — Attention and Extension UI (implementation in progress)
+
+#### F2a — Semantic Attention Interaction (implemented)
+
+Implemented:
+
+- first-class Attention focus derived from current `projection.attention`;
+- interactive Human Gate options and Pi `Editor`-owned free-form responses;
+- persistent Gate ownership with Timeline inspection and non-destructive Escape;
+- authority-unavailable Attention that blocks ordinary Composer work;
+- Session-epoch and Projection-driven reset/preservation of UI-local Attention mechanics;
+- controller-side current-Session, current-Gate, native-idle, and duplicate-delivery guards;
+- ordinary prompt delivery and local user Timeline echo for Human Gate responses.
+
+A Human Gate response is ordinary user input to the Agent. The TUI never calls `pindie_gate_resolve` or mutates Gate State directly; the Agent interprets the response and resolves the semantic Gate through the existing Pindie tool/runtime path.
+
+F2a intentionally leaves Pi `ExtensionUIContext` unbound. Pindie's `/reasoning` interactive selector therefore remains feature-gated in the owned TUI until F2b closes Pi runtime-permission and Extension UI compatibility.
+
+#### F2b — Extension UI + Pickers (next)
 
 Implement:
 
-- interactive Human Gate;
 - runtime permission UI;
-- `ExtensionUIContext` bridge and `commandContextActions`;
+- complete `ExtensionUIContext` bridge and `commandContextActions` compatibility;
 - model/session picker and their `Alt+M`/`Alt+N` bindings.
 
 ### Slice G — Human Signal Unification and Cutover
