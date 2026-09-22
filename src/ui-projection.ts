@@ -5,6 +5,27 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+  classifyToolPresentation,
+  createObservationBlock,
+  createObservationItem,
+  createToolWorkBlock,
+  projectToolResult,
+  readToolCall,
+  readToolResultMessage,
+  refreshToolWorkBlock,
+  toPlainValue,
+  visibleText,
+  type UiDisplayMode,
+  type UiObservationItem,
+  type UiObservationWorkBlock,
+  type UiPlainValue,
+  type UiToolPresentationKind,
+  type UiToolResultProjection,
+  type UiToolWorkBlock,
+  type UiWorkBlock,
+  type UiWorkLifecycle,
+} from "./ui-timeline.ts";
+import {
   isPindieContinuationProbeMessage,
   PINDIE_CONTINUATION_PROBE_TYPE,
 } from "./continuation.ts";
@@ -26,7 +47,17 @@ import type {
 import type { QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
 
 /** Renderer-independent density guidance. User fold state belongs to the view. */
-export type UiDisplayMode = "compact" | "preview" | "full";
+export type { UiDisplayMode, UiPlainValue } from "./ui-timeline.ts";
+export type {
+  UiObservationItem,
+  UiObservationWorkBlock,
+  UiToolPresentationKind,
+  UiToolResultProjection,
+  UiToolWorkBlock,
+  UiWorkBlock,
+  UiWorkLifecycle,
+} from "./ui-timeline.ts";
+export { classifyToolPresentation, isSemanticPresentationTool } from "./ui-timeline.ts";
 
 export type UiSemanticAuthority =
   | "coherent"
@@ -88,23 +119,6 @@ export interface UiMessageBlock {
   readonly customType?: string;
 }
 
-export interface UiToolResultProjection {
-  readonly isError: boolean;
-  readonly summary: string;
-  readonly details: UiPlainValue | null;
-}
-
-export interface UiWorkBlock {
-  readonly type: "work";
-  /** Tool execution identity; this is never an array index. */
-  readonly id: string;
-  readonly toolCallId: string;
-  readonly toolName: string;
-  readonly lifecycle: "running" | "complete" | "failed";
-  readonly input: UiPlainValue | null;
-  readonly result: UiToolResultProjection | null;
-  readonly defaultDisplayMode: UiDisplayMode;
-}
 
 /** The Slice C vocabulary reserved for later semantic projection work. */
 export interface UiSemanticBlock {
@@ -159,6 +173,11 @@ interface LiveAssistantProjectionState {
   readonly nextSequence: number;
 }
 
+interface WorkTimelineReducerState {
+  /** Null means a boundary closed the current observation burst. */
+  readonly observationBurstId: string | null;
+}
+
 export interface PindieUiProjection {
   readonly header: UiHeaderProjection;
   readonly status: UiStatusProjection;
@@ -167,6 +186,8 @@ export interface PindieUiProjection {
   readonly attention: UiAttentionProjection | null;
   /** Reducer-only metadata; views and persistence must ignore this field. */
   readonly liveAssistant: LiveAssistantProjectionState;
+  /** Reducer-only grouping metadata; views and persistence must ignore this field. */
+  readonly workTimeline: WorkTimelineReducerState;
 }
 
 export interface PindieUiProjectionInput {
@@ -180,19 +201,6 @@ export interface PindieUiProjectionInput {
     readonly branch: readonly SessionEntry[];
   };
 }
-
-/** JSON-shaped values copied into the projection instead of retaining Pi objects. */
-export type UiPlainValue =
-  | null
-  | boolean
-  | number
-  | string
-  | readonly UiPlainValue[]
-  | { readonly [key: string]: UiPlainValue };
-
-const MAX_PLAIN_DEPTH = 5;
-const MAX_PLAIN_ITEMS = 64;
-const MAX_RESULT_SUMMARY_LENGTH = 4_000;
 
 interface MessageLike {
   readonly role?: unknown;
@@ -213,57 +221,6 @@ function messageLike(value: unknown): MessageLike | null {
   return source === null ? null : source as MessageLike;
 }
 
-function boundedText(value: string, limit = MAX_RESULT_SUMMARY_LENGTH): string {
-  if (value.length <= limit) return value;
-  return `${value.slice(0, Math.max(0, limit - 1))}…`;
-}
-
-function toPlainValue(
-  value: unknown,
-  seen = new Set<object>(),
-  depth = 0,
-): UiPlainValue {
-  if (value === null) return null;
-  if (typeof value === "string") return boundedText(value);
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (typeof value === "bigint") return String(value);
-  if (typeof value === "undefined") return null;
-  if (typeof value !== "object") return String(value);
-  if (seen.has(value)) return "[circular]";
-  if (depth >= MAX_PLAIN_DEPTH) return "[truncated]";
-
-  const nextSeen = new Set(seen);
-  nextSeen.add(value);
-  if (Array.isArray(value)) {
-    return value
-      .slice(0, MAX_PLAIN_ITEMS)
-      .map((item) => toPlainValue(item, nextSeen, depth + 1));
-  }
-
-  const output: Record<string, UiPlainValue> = {};
-  for (const [key, child] of Object.entries(value).slice(0, MAX_PLAIN_ITEMS)) {
-    output[key] = toPlainValue(child, nextSeen, depth + 1);
-  }
-  return output;
-}
-
-function visibleText(content: unknown): string {
-  if (typeof content === "string") return content;
-  const singlePart = record(content);
-  if (singlePart?.type === "text" && typeof singlePart.text === "string") {
-    return singlePart.text;
-  }
-  if (!Array.isArray(content)) return "";
-  return content
-    .flatMap((part) => {
-      const source = record(part);
-      return source?.type === "text" && typeof source.text === "string"
-        ? [source.text]
-        : [];
-    })
-    .join("\n");
-}
 
 function messageText(message: MessageLike): string {
   return visibleText(message.content).trim();
@@ -336,14 +293,385 @@ function projectSessionEntry(entry: SessionEntry): UiMessageBlock | null {
   return null;
 }
 
-/** Rebuild the useful Slice C baseline from the current Pi branch. */
+interface TimelineBuildState {
+  readonly timeline: readonly UiTimelineBlock[];
+  readonly observationBurstId: string | null;
+  readonly results: ReadonlyMap<string, UiToolResultProjection>;
+}
+
+function emptyTimelineBuildState(): TimelineBuildState {
+  return { timeline: [], observationBurstId: null, results: new Map() };
+}
+
+function closeObservationBurst(state: TimelineBuildState): TimelineBuildState {
+  return state.observationBurstId === null
+    ? state
+    : { ...state, observationBurstId: null };
+}
+
+function replaceTimelineBlock(
+  timeline: readonly UiTimelineBlock[],
+  index: number,
+  block: UiTimelineBlock,
+): readonly UiTimelineBlock[] {
+  return timeline.map((candidate, candidateIndex) =>
+    candidateIndex === index ? block : candidate);
+}
+
+function workBlockIndex(
+  timeline: readonly UiTimelineBlock[],
+  toolCallId: string,
+): number {
+  return timeline.findIndex((candidate) =>
+    candidate.type === "work" && (
+      candidate.kind === "observation"
+        ? candidate.items.some((item) => item.toolCallId === toolCallId)
+        : candidate.toolCallId === toolCallId
+    ));
+}
+
+function observationItemIndex(
+  block: UiObservationWorkBlock,
+  toolCallId: string,
+): number {
+  return block.items.findIndex((item) => item.toolCallId === toolCallId);
+}
+
+function incompleteResult(): UiToolResultProjection {
+  return {
+    isError: true,
+    summary: "Tool result was not persisted; work may have been interrupted.",
+    details: null,
+  };
+}
+
+function updateObservationBlock(
+  block: UiObservationWorkBlock,
+  toolCallId: string,
+  lifecycle: UiWorkLifecycle,
+  result: UiToolResultProjection | null,
+  input?: UiPlainValue | null,
+  toolName?: string,
+): UiObservationWorkBlock {
+  const itemIndex = observationItemIndex(block, toolCallId);
+  if (itemIndex < 0) return block;
+  const current = block.items[itemIndex];
+  const nextItem: UiObservationItem = {
+    ...current,
+    ...(input === undefined ? {} : { input }),
+    ...(toolName === undefined ? {} : { toolName }),
+    lifecycle,
+    result: result ?? current.result,
+  };
+  const items = block.items.map((item, index) => index === itemIndex ? nextItem : item);
+  return createObservationBlock(block.items[0]?.toolCallId ?? toolCallId, items);
+}
+
+function appendObservationItem(
+  state: TimelineBuildState,
+  call: ReturnType<typeof readToolCall>,
+  lifecycle: UiWorkLifecycle,
+  result: UiToolResultProjection | null,
+): TimelineBuildState {
+  if (call === null) return closeObservationBurst(state);
+  const existingIndex = workBlockIndex(state.timeline, call.id);
+  if (existingIndex >= 0) {
+    const existing = state.timeline[existingIndex];
+    if (existing?.type !== "work") return state;
+    if (existing.kind !== "observation") return state;
+    const next = updateObservationBlock(
+      existing,
+      call.id,
+      lifecycle,
+      result,
+      toPlainValue(call.arguments),
+      call.name,
+    );
+    const open = next.lifecycle === "failed" ? null : state.observationBurstId;
+    return {
+      ...state,
+      timeline: replaceTimelineBlock(state.timeline, existingIndex, next),
+      observationBurstId: open,
+    };
+  }
+
+  const item = createObservationItem(call, lifecycle, result);
+  const currentIndex = state.observationBurstId === null
+    ? -1
+    : state.timeline.findIndex((candidate) =>
+      candidate.type === "work" && candidate.kind === "observation" &&
+      candidate.id === state.observationBurstId);
+  const current = currentIndex < 0 ? undefined : state.timeline[currentIndex];
+  if (current?.type === "work" && current.kind === "observation" &&
+      current.lifecycle !== "failed") {
+    const next = createObservationBlock(current.items[0]?.toolCallId ?? call.id, [
+      ...current.items,
+      item,
+    ]);
+    return {
+      ...state,
+      timeline: replaceTimelineBlock(state.timeline, currentIndex, next),
+      observationBurstId: next.lifecycle === "failed" ? null : next.id,
+    };
+  }
+
+  const next = createObservationBlock(call.id, [item]);
+  return {
+    ...state,
+    timeline: [...state.timeline, next],
+    observationBurstId: next.lifecycle === "failed" ? null : next.id,
+  };
+}
+
+function appendToolCallToTimeline(
+  state: TimelineBuildState,
+  call: ReturnType<typeof readToolCall>,
+): TimelineBuildState {
+  if (call === null) return closeObservationBurst(state);
+  const kind = classifyToolPresentation(call.name);
+  const recordedResult = state.results.get(call.id);
+  const lifecycle: UiWorkLifecycle = recordedResult === undefined
+    ? "running"
+    : recordedResult.isError ? "failed" : "complete";
+  if (kind === "semantic") return closeObservationBurst(state);
+  if (kind === "observation") {
+    return appendObservationItem(state, call, lifecycle, recordedResult ?? null);
+  }
+
+  const existingIndex = workBlockIndex(state.timeline, call.id);
+  if (existingIndex >= 0) {
+    const existing = state.timeline[existingIndex];
+    if (existing?.type === "work" && existing.kind === "observation") {
+      const next = updateObservationBlock(
+        existing,
+        call.id,
+        existing.items[observationItemIndex(existing, call.id)]?.lifecycle ?? lifecycle,
+        existing.items[observationItemIndex(existing, call.id)]?.result ?? recordedResult ?? null,
+        toPlainValue(call.arguments),
+        call.name,
+      );
+      return {
+        ...state,
+        timeline: replaceTimelineBlock(state.timeline, existingIndex, next),
+        observationBurstId: next.lifecycle === "failed" ? null : state.observationBurstId,
+      };
+    }
+    if (existing?.type === "work") {
+      const next = refreshToolWorkBlock(
+        existing,
+        call.name,
+        existing.input ?? toPlainValue(call.arguments),
+        existing.lifecycle,
+        existing.result ?? recordedResult ?? null,
+      );
+      return {
+        ...closeObservationBurst(state),
+        timeline: replaceTimelineBlock(state.timeline, existingIndex, next),
+      };
+    }
+    return closeObservationBurst(state);
+  }
+  const block = createToolWorkBlock(call, lifecycle, recordedResult ?? null);
+  if (block === null) return closeObservationBurst(state);
+  return {
+    ...closeObservationBurst(state),
+    timeline: [...state.timeline, block],
+  };
+}
+
+function applyToolResultToTimeline(
+  state: TimelineBuildState,
+  resultMessage: ReturnType<typeof readToolResultMessage>,
+): TimelineBuildState {
+  if (resultMessage === null) return state;
+  const result = projectToolResult(
+    { content: resultMessage.content, details: resultMessage.details },
+    resultMessage.isError,
+    resultMessage.toolName,
+  );
+  const results = new Map(state.results);
+  if (result !== null) results.set(resultMessage.toolCallId, result);
+  const lifecycle: UiWorkLifecycle = resultMessage.isError ? "failed" : "complete";
+  const existingIndex = workBlockIndex(state.timeline, resultMessage.toolCallId);
+  if (existingIndex >= 0) {
+    const existing = state.timeline[existingIndex];
+    if (existing?.type === "work" && existing.kind === "observation") {
+      const next = updateObservationBlock(
+        existing,
+        resultMessage.toolCallId,
+        lifecycle,
+        result,
+      );
+      return {
+        ...state,
+        results,
+        timeline: replaceTimelineBlock(state.timeline, existingIndex, next),
+        observationBurstId: resultMessage.isError && state.observationBurstId === next.id
+          ? null
+          : state.observationBurstId,
+      };
+    }
+    if (existing?.type === "work") {
+      const next = refreshToolWorkBlock(
+        existing,
+        resultMessage.toolName,
+        existing.input,
+        lifecycle,
+        result,
+      );
+      return {
+        ...state,
+        results,
+        timeline: replaceTimelineBlock(state.timeline, existingIndex, next),
+        observationBurstId: null,
+      };
+    }
+  }
+
+  const call = {
+    id: resultMessage.toolCallId,
+    name: resultMessage.toolName,
+    arguments: null,
+  };
+  if (classifyToolPresentation(call.name) === "semantic") {
+    return { ...closeObservationBurst(state), results };
+  }
+  if (classifyToolPresentation(call.name) === "observation") {
+    const next = appendObservationItem(
+      { ...state, results },
+      call,
+      lifecycle,
+      result,
+    );
+    return {
+      ...next,
+      observationBurstId: resultMessage.isError ? null : next.observationBurstId,
+    };
+  }
+  const block = createToolWorkBlock(call, lifecycle, result);
+  return block === null
+    ? { ...closeObservationBurst(state), results }
+    : { ...closeObservationBurst(state), results, timeline: [...state.timeline, block] };
+}
+
+function assistantContentParts(
+  message: MessageLike,
+): readonly ({ readonly kind: "text"; readonly text: string } | {
+  readonly kind: "tool";
+  readonly call: NonNullable<ReturnType<typeof readToolCall>>;
+})[] {
+  if (!Array.isArray(message.content)) {
+    const text = visibleText(message.content);
+    return text.length === 0 ? [] : [{ kind: "text", text }];
+  }
+  const parts: Array<
+    { readonly kind: "text"; readonly text: string } | {
+      readonly kind: "tool";
+      readonly call: NonNullable<ReturnType<typeof readToolCall>>;
+    }
+  > = [];
+  for (const part of message.content) {
+    const call = readToolCall(part);
+    if (call !== null) {
+      parts.push({ kind: "tool", call });
+      continue;
+    }
+    const source = record(part);
+    if (source?.type === "text" && typeof source.text === "string" && source.text.length > 0) {
+      parts.push({ kind: "text", text: source.text });
+    }
+  }
+  return parts;
+}
+
+function appendPersistedMessage(
+  state: TimelineBuildState,
+  id: string,
+  message: MessageLike,
+  customType?: string,
+): TimelineBuildState {
+  const parts = message.role === "assistant"
+    ? assistantContentParts(message)
+    : messageText(message).length === 0
+      ? []
+      : [{ kind: "text" as const, text: messageText(message) }];
+  let next = state;
+  let textSequence = 0;
+  for (const part of parts) {
+    if (part.kind === "tool") {
+      next = appendToolCallToTimeline(next, part.call);
+      continue;
+    }
+    const textBlock = projectMessage(
+      textSequence === 0 ? id : `${id}:text:${textSequence}`,
+      { ...message, content: part.text },
+      "session",
+      { customType },
+    );
+    textSequence += 1;
+    if (textBlock === null) continue;
+    next = {
+      ...closeObservationBurst(next),
+      timeline: [...next.timeline, textBlock],
+    };
+  }
+  return next;
+}
+
+function finalizeHistoricalWork(state: TimelineBuildState): readonly UiTimelineBlock[] {
+  return state.timeline.map((block) => {
+    if (block.type !== "work") return block;
+    if (block.kind === "observation") {
+      const items = block.items.map((item) => item.lifecycle === "running"
+        ? { ...item, lifecycle: "failed" as const, result: item.result ?? incompleteResult() }
+        : item);
+      return items.some((item, index) => item !== block.items[index])
+        ? createObservationBlock(block.items[0]?.toolCallId ?? block.id, items)
+        : block;
+    }
+    return block.lifecycle === "running"
+      ? refreshToolWorkBlock(block, block.toolName, block.input, "failed", block.result ?? incompleteResult())
+      : block;
+  });
+}
+
+/** Rebuild human-meaningful work from the authoritative ordered Session branch. */
 export function projectSessionHistory(
   entries: readonly SessionEntry[],
 ): readonly UiTimelineBlock[] {
-  return entries.flatMap((entry) => {
-    const block = projectSessionEntry(entry);
-    return block === null ? [] : [block];
-  });
+  let state = emptyTimelineBuildState();
+  for (const entry of entries) {
+    if (!entry.id) continue;
+    if (entry.type === "message") {
+      const message = messageLike(entry.message);
+      if (message === null) continue;
+      const toolResult = readToolResultMessage(message);
+      if (toolResult !== null) {
+        state = applyToolResultToTimeline(state, toolResult);
+        continue;
+      }
+      if (message.role === "assistant") {
+        state = appendPersistedMessage(state, entry.id, message);
+        continue;
+      }
+      const block = projectSessionEntry(entry);
+      if (block === null) continue;
+      state = {
+        ...closeObservationBurst(state),
+        timeline: [...state.timeline, block],
+      };
+      continue;
+    }
+    if (entry.type === "custom_message") {
+      const block = projectSessionEntry(entry);
+      if (block === null) continue;
+      state = {
+        ...closeObservationBurst(state),
+        timeline: [...state.timeline, block],
+      };
+    }
+  }
+  return finalizeHistoricalWork(state);
 }
 
 function copyConsumption(
@@ -553,6 +881,11 @@ export function createProjection(
     liveAssistant: {
       activeId: null,
       nextSequence: 1,
+    },
+    workTimeline: {
+      // A rebuild is a strict observation boundary. Live calls after resume
+      // start a fresh burst even if the persisted tail ended with a read.
+      observationBurstId: null,
     },
   };
 }
@@ -774,64 +1107,22 @@ function projectLiveAssistant(
   };
 }
 
-function projectToolResult(
-  value: unknown,
-  isError: boolean,
-): UiToolResultProjection | null {
-  if (value === undefined || value === null) return null;
-  const source = record(value);
-  const contentText = visibleText(source?.content ?? value).trim();
-  const details = source && "details" in source
-    ? toPlainValue(source.details)
-    : null;
-  let summary = contentText;
-  if (!summary && details !== null) {
-    try {
-      summary = JSON.stringify(details) ?? "";
-    } catch {
-      summary = "";
-    }
-  }
-  return {
-    isError,
-    summary: boundedText(summary),
-    details,
-  };
-}
-
-function projectWorkBlock(
-  toolCallId: string,
-  toolName: string,
-  args: unknown,
-  lifecycle: UiWorkBlock["lifecycle"],
-  result: UiToolResultProjection | null,
-): UiWorkBlock {
-  return {
-    type: "work",
-    id: toolCallId,
-    toolCallId,
-    toolName,
-    lifecycle,
-    input: toPlainValue(args),
-    result,
-    defaultDisplayMode: lifecycle === "failed" ? "full" : lifecycle === "complete" ? "compact" : "preview",
-  };
-}
-
 function reduceMessageEvent(
   state: PindieUiProjection,
   event: Extract<AgentSessionEvent, { type: "message_start" | "message_update" | "message_end" }>,
 ): PindieUiProjection {
   const message = messageLike(event.message);
   if (message === null || message.role !== "assistant") return state;
+  const text = messageText(message);
 
   if (event.type === "message_start") {
     const started = beginLiveAssistant(state);
     // Thinking-only starts still establish the message-scoped identity. The
     // first visible update will append its block with this same identity.
-    if (!messageText(message)) return started.state;
+    if (!text) return started.state;
     return {
       ...started.state,
+      workTimeline: { observationBurstId: null },
       timeline: upsertLiveAssistant(
         started.state.timeline,
         projectLiveAssistant(started.id, message, "streaming"),
@@ -842,8 +1133,10 @@ function reduceMessageEvent(
   const active = state.liveAssistant.activeId === null
     ? beginLiveAssistant(state)
     : { state, id: state.liveAssistant.activeId };
-  const activeState = active.state;
   const activeId = active.id;
+  const activeState = text
+    ? { ...active.state, workTimeline: { observationBurstId: null } }
+    : active.state;
 
   if (event.type === "message_end" && message.stopReason === "aborted") {
     return clearActiveLiveAssistant({
@@ -852,7 +1145,6 @@ function reduceMessageEvent(
     });
   }
 
-  const text = messageText(message);
   const lifecycle: UiMessageBlock["lifecycle"] = event.type === "message_end"
     ? message.stopReason === "error" ? "error" : "complete"
     : "streaming";
@@ -892,7 +1184,16 @@ function reduceToolEvent(
   state: PindieUiProjection,
   event: Extract<AgentSessionEvent, { type: "tool_execution_start" | "tool_execution_update" | "tool_execution_end" }>,
 ): PindieUiProjection {
-  const lifecycle: UiWorkBlock["lifecycle"] = event.type === "tool_execution_end"
+  const eventArguments = event.type === "tool_execution_end" ? undefined : event.args;
+  const call = readToolCall({
+    type: "toolCall",
+    id: event.toolCallId,
+    name: event.toolName,
+    arguments: eventArguments,
+  });
+  if (call === null) return state;
+
+  const lifecycle: UiWorkLifecycle = event.type === "tool_execution_end"
     ? event.isError ? "failed" : "complete"
     : "running";
   const result = event.type === "tool_execution_start"
@@ -900,50 +1201,149 @@ function reduceToolEvent(
     : projectToolResult(
         event.type === "tool_execution_update" ? event.partialResult : event.result,
         event.type === "tool_execution_end" ? event.isError : false,
+        event.toolName,
       );
-  const existing = state.timeline.find((candidate): candidate is UiWorkBlock =>
-    candidate.type === "work" && candidate.toolCallId === event.toolCallId,
+  const kind = classifyToolPresentation(event.toolName);
+  const buildState: TimelineBuildState = {
+    timeline: state.timeline,
+    observationBurstId: state.workTimeline.observationBurstId,
+    results: new Map(),
+  };
+
+  // Semantic Pindie tools are deliberately reserved for E2. They still close
+  // an observation burst so a later read cannot visually cross the boundary.
+  if (kind === "semantic") {
+    return {
+      ...state,
+      workTimeline: { observationBurstId: null },
+    };
+  }
+
+  if (kind === "observation") {
+    const next = appendObservationItem(buildState, call, lifecycle, result);
+    return {
+      ...state,
+      timeline: next.timeline,
+      workTimeline: { observationBurstId: next.observationBurstId },
+    };
+  }
+
+  const existingIndex = workBlockIndex(state.timeline, event.toolCallId);
+  const existing = existingIndex < 0 ? undefined : state.timeline[existingIndex];
+  const input = event.type === "tool_execution_end" && existing?.type === "work" &&
+      existing.kind !== "observation"
+    ? existing.input
+    : toPlainValue(eventArguments);
+  const nextResult = result ?? (
+    existing?.type === "work" && existing.kind !== "observation" ? existing.result : null
   );
-  const input = event.type === "tool_execution_end"
-    ? existing?.input ?? null
-    : event.args;
-  const block = projectWorkBlock(
-    event.toolCallId,
-    event.toolName,
-    input,
-    lifecycle,
-    result,
-  );
-  return { ...state, timeline: replaceOrAppendBlock(state.timeline, block) };
+  const nextBlock = existing?.type === "work" && existing.kind !== "observation"
+    ? refreshToolWorkBlock(existing, event.toolName, input, lifecycle, nextResult)
+    : createToolWorkBlock(call, lifecycle, nextResult);
+  if (nextBlock === null) return { ...state, workTimeline: { observationBurstId: null } };
+  const closed = closeObservationBurst(buildState);
+  return {
+    ...state,
+    timeline: existingIndex < 0
+      ? [...closed.timeline, nextBlock]
+      : replaceTimelineBlock(closed.timeline, existingIndex, nextBlock),
+    workTimeline: { observationBurstId: null },
+  };
 }
 
 function reduceEntryAppended(
   state: PindieUiProjection,
   entry: Extract<AgentSessionEvent, { type: "entry_appended" }>["entry"],
 ): PindieUiProjection {
-  const block = projectSessionEntry(entry);
-  const isAssistantEntry = entry.type === "message" &&
-    messageLike(entry.message)?.role === "assistant";
-  if (block === null) {
-    return isAssistantEntry ? removeCurrentOrLatestLiveAssistant(state) : state;
-  }
+  if (entry.type === "message") {
+    const message = messageLike(entry.message);
+    if (message === null) return state;
 
-  if (!isAssistantEntry) {
-    const timeline = block.type === "message" && block.role === "user"
+    const toolResult = readToolResultMessage(message);
+    if (toolResult !== null) {
+      const next = applyToolResultToTimeline({
+        timeline: state.timeline,
+        observationBurstId: state.workTimeline.observationBurstId,
+        results: new Map(),
+      }, toolResult);
+      return {
+        ...state,
+        timeline: next.timeline,
+        workTimeline: { observationBurstId: next.observationBurstId },
+      };
+    }
+
+    if (message.role === "assistant") {
+      const parts = assistantContentParts(message);
+      let nextState = state;
+      let visibleMessageCount = 0;
+      let toolCallCount = 0;
+      let textSequence = 0;
+      for (const part of parts) {
+        if (part.kind === "tool") {
+          toolCallCount += 1;
+          const next = appendToolCallToTimeline({
+            timeline: nextState.timeline,
+            observationBurstId: nextState.workTimeline.observationBurstId,
+            results: new Map(),
+          }, part.call);
+          nextState = {
+            ...nextState,
+            timeline: next.timeline,
+            workTimeline: { observationBurstId: next.observationBurstId },
+          };
+          continue;
+        }
+
+        const block = projectMessage(
+          textSequence === 0 ? entry.id : `${entry.id}:text:${textSequence}`,
+          { ...message, content: part.text },
+          "session",
+        );
+        textSequence += 1;
+        if (block === null) continue;
+        visibleMessageCount += 1;
+        const reconciliation = reconcilePersistedAssistant(nextState.timeline, block);
+        const liveAssistant = reconciliation.replacedLiveId === nextState.liveAssistant.activeId
+          ? { ...nextState.liveAssistant, activeId: null }
+          : nextState.liveAssistant;
+        nextState = {
+          ...nextState,
+          timeline: reconciliation.timeline,
+          liveAssistant,
+          workTimeline: { observationBurstId: null },
+        };
+      }
+
+      if (visibleMessageCount === 0 && toolCallCount === 0) {
+        return removeCurrentOrLatestLiveAssistant(state);
+      }
+      return nextState;
+    }
+
+    const block = projectSessionEntry(entry);
+    if (block === null) return state;
+    const timeline = block.role === "user"
       ? reconcilePersistedUser(state.timeline, block)
       : replaceOrAppendBlock(state.timeline, block);
-    return { ...state, timeline };
+    return {
+      ...state,
+      timeline,
+      workTimeline: { observationBurstId: null },
+    };
   }
 
-  const reconciliation = reconcilePersistedAssistant(state.timeline, block);
-  const liveAssistant = reconciliation.replacedLiveId === state.liveAssistant.activeId
-    ? { ...state.liveAssistant, activeId: null }
-    : state.liveAssistant;
-  return {
-    ...state,
-    timeline: reconciliation.timeline,
-    liveAssistant,
-  };
+  if (entry.type === "custom_message") {
+    const block = projectSessionEntry(entry);
+    if (block === null) return state;
+    return {
+      ...state,
+      timeline: replaceOrAppendBlock(state.timeline, block),
+      workTimeline: { observationBurstId: null },
+    };
+  }
+
+  return state;
 }
 
 function updateRuntimeStatus(
@@ -1040,6 +1440,7 @@ export function appendUserDelivery(
 ): PindieUiProjection {
   return {
     ...projection,
+    workTimeline: { observationBurstId: null },
     timeline: [
       ...projection.timeline,
       {

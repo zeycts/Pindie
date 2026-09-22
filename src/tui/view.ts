@@ -14,12 +14,19 @@ import {
   VStack,
 } from "@earendil-works/pi-tui";
 
+import {
+  commandText,
+  toolPath,
+} from "../ui-timeline.ts";
 import type {
   PindieUiProjection,
   UiMessageBlock,
+  UiObservationItem,
+  UiObservationWorkBlock,
   UiRuntimeBlock,
   UiSemanticBlock,
   UiTimelineBlock,
+  UiToolWorkBlock,
   UiWorkBlock,
 } from "../ui-projection.ts";
 
@@ -84,14 +91,94 @@ function formatMessageBlock(block: UiMessageBlock): string {
   return `${block.source === "live" ? "●" : "○"} ${role}\n${block.text}`;
 }
 
-function formatWorkBlock(block: UiWorkBlock): string {
-  const marker = block.lifecycle === "running"
-    ? "●"
-    : block.lifecycle === "failed"
-      ? "✕"
-      : "✓";
+function workMarker(lifecycle: UiWorkBlock["lifecycle"]): string {
+  return lifecycle === "running" ? "●" : lifecycle === "failed" ? "✕" : "✓";
+}
+
+function indent(value: string): string {
+  return value
+    .split("\n")
+    .map((line) => `  ${line}`)
+    .join("\n");
+}
+
+function plural(count: number, singular: string, pluralName = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : pluralName}`;
+}
+
+function observationSummary(block: UiObservationWorkBlock): string {
+  const counts = new Map<string, number>();
+  for (const item of block.items) {
+    counts.set(item.toolName, (counts.get(item.toolName) ?? 0) + 1);
+  }
+  const parts: string[] = [];
+  const read = counts.get("read") ?? 0;
+  const grep = (counts.get("grep") ?? 0) + (counts.get("web_search") ?? 0) +
+    (counts.get("url_context") ?? 0);
+  const find = counts.get("find") ?? 0;
+  const ls = counts.get("ls") ?? 0;
+  const git = counts.get("pindie_git_observe") ?? 0;
+  if (read > 0) parts.push(`Read ${plural(read, "file")}`);
+  if (grep > 0) parts.push(`Searched ${plural(grep, "pattern")}`);
+  if (find > 0) parts.push(`Found ${plural(find, "pattern")}`);
+  if (ls > 0) parts.push(`Listed ${plural(ls, "directory", "directories")}`);
+  if (git > 0) parts.push(`Checked ${plural(git, "Git action")}`);
+  return parts.join(" · ") || plural(block.items.length, "observation");
+}
+
+function formatObservationItem(item: UiObservationItem): string {
+  const marker = item.lifecycle === "failed" ? "✕" : item.lifecycle === "complete" ? "✓" : "●";
+  const detail = item.result?.summary.trim();
+  return `${marker} ${item.label}${detail ? `\n${indent(detail)}` : ""}`;
+}
+
+function formatObservationBlock(block: UiObservationWorkBlock): string {
+  const marker = workMarker(block.lifecycle);
+  if (block.defaultDisplayMode === "compact") {
+    return `${marker} ${block.title}\n${indent(observationSummary(block))}`;
+  }
+  if (block.defaultDisplayMode === "preview") {
+    const items = block.items.map((item) => {
+      const summary = item.result?.summary.trim();
+      return summary === undefined || summary.length === 0
+        ? item.label
+        : `${item.label}\n${indent(summary)}`;
+    });
+    return `${marker} ${block.title}\n${items.map(indent).join("\n")}`;
+  }
+  return `${marker} ${block.title}\n${block.items.map(formatObservationItem).map(indent).join("\n")}`;
+}
+
+function formatInputPreview(block: UiToolWorkBlock): string | null {
+  if (block.kind === "command") return commandText(block.input);
+  if (block.kind === "edit") return toolPath(block.input);
+  if (block.input === null) return null;
+  try {
+    const value = JSON.stringify(block.input);
+    return value === undefined ? null : value.length > 400 ? `${value.slice(0, 399)}…` : value;
+  } catch {
+    return null;
+  }
+}
+
+function formatToolWorkBlock(block: UiToolWorkBlock): string {
+  const primary = `${workMarker(block.lifecycle)} ${block.title}`;
+  if (block.defaultDisplayMode === "compact") return primary;
+
+  const lines = [primary];
+  const input = formatInputPreview(block);
+  if (input !== null && !(block.kind === "command" && block.title.includes(input))) {
+    lines.push(indent(input));
+  }
   const summary = block.result?.summary.trim();
-  return `${marker} ${block.toolName}${summary ? ` — ${summary}` : ""}`;
+  if (summary !== undefined && summary.length > 0) lines.push(indent(summary));
+  return lines.join("\n");
+}
+
+function formatWorkBlock(block: UiWorkBlock): string {
+  return block.kind === "observation"
+    ? formatObservationBlock(block)
+    : formatToolWorkBlock(block);
 }
 
 function formatSemanticBlock(block: UiSemanticBlock): string {
