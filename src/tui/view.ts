@@ -227,6 +227,9 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.started = true;
     this.tui.setFocus(this.editor);
     this.tui.start();
+    // The first normal frame may be throttled behind the TUI render interval;
+    // force the initial projection onto the terminal before accepting input.
+    this.tui.requestRender(true);
   }
 
   stop(): void {
