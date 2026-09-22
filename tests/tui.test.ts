@@ -7,6 +7,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Terminal } from "@earendil-works/pi-tui";
 
+import type { HumanGate, PindieState, VerificationCheck } from "../src/state.ts";
+
 import {
   type ActiveSessionClientLifecycle,
   type ActiveSessionFacts,
@@ -39,6 +41,61 @@ function userEntry(id: string, text: string): SessionEntry {
     timestamp: "2026-09-22T00:00:00.000Z",
     message: { role: "user", content: text, timestamp: 1 },
   } as unknown as SessionEntry;
+}
+
+function tuiState(options: {
+  readonly goal?: string;
+  readonly criteriaCount?: number;
+  readonly blockers?: readonly string[];
+  readonly checks?: readonly VerificationCheck[];
+  readonly humanGate?: HumanGate | null;
+  readonly completed?: boolean;
+} = {}): PindieState {
+  const criteriaCount = options.criteriaCount ?? 1;
+  return {
+    task: {
+      goal: options.goal ?? "Render semantic timeline",
+      constraints: [],
+      successCriteria: Array.from({ length: criteriaCount }, (_, index) => ({
+        id: `c${index + 1}`,
+        description: `Criterion ${index + 1}`,
+      })),
+      openLoops: { blockers: [...(options.blockers ?? [])], questions: [], nextIntent: null },
+      verification: { stale: false, checks: [...(options.checks ?? [])] },
+      humanGate: options.humanGate ?? null,
+      completed: options.completed ?? false,
+    },
+  };
+}
+
+function tuiResult(state: PindieState, text = ""): Record<string, unknown> {
+  return {
+    content: text.length === 0 ? [] : [{ type: "text", text }],
+    details: { state },
+    isError: false,
+  };
+}
+
+function applyTuiSemantic(
+  projection: PindieUiProjection,
+  id: string,
+  name: string,
+  args: unknown,
+  result: Record<string, unknown>,
+): PindieUiProjection {
+  let next = reduceProjectionEvent(projection, event({
+    type: "tool_execution_start",
+    toolCallId: id,
+    toolName: name,
+    args,
+  }));
+  return reduceProjectionEvent(next, event({
+    type: "tool_execution_end",
+    toolCallId: id,
+    toolName: name,
+    result,
+    isError: false,
+  }));
 }
 
 class FakeView implements PindieTuiViewPort {
@@ -679,6 +736,104 @@ test("PindieTuiView follows Work density without dumping successful output", asy
   const editOutput = terminal.writes.join("");
   assert.match(editOutput, /Edited src\/ui-projection.ts/);
   assert.doesNotMatch(editOutput, /large edit details/);
+
+  view.stop();
+});
+
+test("PindieTuiView renders structured Task, Verification, Gate, and Completion blocks", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  const base = () => createProjection({
+    presentation: null,
+    session: {
+      sessionId: "semantic-render-session",
+      displayIdentity: "Semantic Render Session",
+      model: { provider: "test", modelId: "model" },
+      thinkingLevel: "high",
+      runtime: {
+        sessionId: "semantic-render-session",
+        isStreaming: false,
+        isCompacting: false,
+        isIdle: true,
+        pendingMessageCount: 0,
+      },
+      branch: [],
+    },
+  });
+
+  const active = tuiState({ goal: "Deploy migration safely", criteriaCount: 1 });
+  let openProjection = base();
+  openProjection = applyTuiSemantic(openProjection, "render-start", "pindie_task_start", {
+    goal: "Deploy migration safely",
+    successCriteria: ["migration is verified"],
+  }, tuiResult(active));
+  const blocked = tuiState({
+    goal: "Deploy migration safely",
+    criteriaCount: 1,
+    blockers: ["missing staging token"],
+  });
+  openProjection = applyTuiSemantic(openProjection, "render-progress", "pindie_task_progress", {
+    blockers: ["missing staging token"],
+    questions: [],
+  }, tuiResult(blocked));
+  const checked = tuiState({
+    goal: "Deploy migration safely",
+    criteriaCount: 1,
+    blockers: ["missing staging token"],
+    checks: [{ name: "migration tests", status: "passed", covers: ["c1"], evidence: "tests passed" }],
+  });
+  openProjection = applyTuiSemantic(openProjection, "render-verify", "pindie_verification_record", {
+    check: { name: "migration tests", status: "passed", covers: ["c1"], evidenceRefs: ["e1"] },
+  }, tuiResult(checked));
+  const gated = tuiState({
+    goal: "Deploy migration safely",
+    criteriaCount: 1,
+    blockers: ["missing staging token"],
+    checks: checked.task!.verification.checks,
+    humanGate: { kind: "decision", question: "Deploy migration to production?", options: ["Deploy", "Hold"] },
+  });
+  openProjection = applyTuiSemantic(openProjection, "render-gate-open", "pindie_gate_open", {
+    kind: "decision",
+    question: "Deploy migration to production?",
+    options: ["Deploy", "Hold"],
+  }, tuiResult(gated));
+
+  view.apply(openProjection);
+  view.start();
+  await flush();
+  const openRendered = terminal.writes.join("");
+  assert.match(openRendered, /Task · blocked/);
+  assert.match(openRendered, /missing staging token/);
+  assert.match(openRendered, /Verification · 1\/1/);
+  assert.match(openRendered, /Decision required/);
+  assert.match(openRendered, /Deploy migration to production\?/);
+
+  const resolved = tuiState({
+    goal: "Deploy migration safely",
+    criteriaCount: 1,
+    blockers: ["missing staging token"],
+    checks: checked.task!.verification.checks,
+  });
+  let finalProjection = applyTuiSemantic(openProjection, "render-gate-resolve", "pindie_gate_resolve", {}, tuiResult(resolved));
+  const complete = tuiState({
+    goal: "Deploy migration safely",
+    criteriaCount: 1,
+    checks: checked.task!.verification.checks,
+    completed: true,
+  });
+  finalProjection = applyTuiSemantic(finalProjection, "render-complete", "pindie_task_complete", {
+    summary: "Semantic Timeline implemented",
+  }, tuiResult(complete));
+  terminal.writes.length = 0;
+  view.apply(finalProjection);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const finalRendered = terminal.writes.join("");
+  assert.match(finalRendered, /Decision resolved/);
+  assert.match(finalRendered, /Completed/);
+  assert.match(finalRendered, /Semantic Timeline implemented/);
+  assert.match(finalRendered, /Verification/);
+  assert.match(finalRendered, /migration tests/);
+  assert.doesNotMatch(`${openRendered}${finalRendered}`, /pindie_(?:task|verification|gate)_/);
 
   view.stop();
 });

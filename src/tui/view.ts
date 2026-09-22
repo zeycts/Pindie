@@ -181,8 +181,122 @@ function formatWorkBlock(block: UiWorkBlock): string {
     : formatToolWorkBlock(block);
 }
 
+function semanticMarker(block: UiSemanticBlock): string {
+  if (block.lifecycle === "running") return "●";
+  if (block.lifecycle === "failed") return "✕";
+  switch (block.category) {
+    case "task": return "◇";
+    case "verification":
+      return block.verificationStatus === "passed" ? "✓" : "●";
+    case "human-gate":
+      return block.state === "open" ? "◆" : "✓";
+    case "completion": return "✓";
+  }
+}
+
+function taskHeading(block: Extract<UiSemanticBlock, { category: "task" }>): string {
+  if (block.lifecycle === "running") return "Updating Task";
+  if (block.lifecycle === "failed") return "Task update failed";
+  if (block.handoff !== null) return "Task handoff staged";
+  if (block.taskStatus === "blocked") return "Task · blocked";
+  if (block.taskStatus === "waiting_human") return "Task · waiting for human";
+  return "Task";
+}
+
+function formatTaskSemanticBlock(
+  block: Extract<UiSemanticBlock, { category: "task" }>,
+): string {
+  const lines = [`${semanticMarker(block)} ${taskHeading(block)}`];
+  if (block.goal !== null) lines.push(indent(block.goal));
+  if (block.blockers.length > 0) {
+    lines.push("", "Blocked", ...block.blockers.map(indent));
+  }
+  if (block.questions.length > 0) {
+    lines.push("", "Question", ...block.questions.map(indent));
+  }
+  if (block.handoff !== null) {
+    lines.push("", indent(block.handoff.progressSummary));
+    if (block.handoff.nextIntent !== null) {
+      lines.push(indent(`Next: ${block.handoff.nextIntent}`));
+    }
+  } else if (block.nextIntent !== null && block.lifecycle !== "failed") {
+    lines.push("", indent(`Next: ${block.nextIntent}`));
+  }
+  if (block.error !== null) lines.push("", indent(block.error));
+  return lines.join("\n");
+}
+
+function verificationHeading(
+  block: Extract<UiSemanticBlock, { category: "verification" }>,
+): string {
+  const progress = block.totalCriteria === null
+    ? ""
+    : ` · ${block.coveredCriteria.length}/${block.totalCriteria}`;
+  const failed = block.checks.filter((check) => check.status === "failed").length;
+  const failureSuffix = failed > 0 ? ` · ${failed} failed` : "";
+  return `Verification${failureSuffix}${progress}`;
+}
+
+function formatVerificationSemanticBlock(
+  block: Extract<UiSemanticBlock, { category: "verification" }>,
+): string {
+  const lines = [`${semanticMarker(block)} ${verificationHeading(block)}`];
+  const checks = block.defaultDisplayMode === "preview" && block.pendingCheck !== null
+    ? [block.pendingCheck]
+    : block.checks;
+  for (const check of checks) {
+    const marker = check.status === "failed" ? "✕" : "✓";
+    lines.push(indent(`${marker} ${check.name}`));
+    if (check.status === "failed" && check.evidence.length > 0) {
+      lines.push(indent(indent(check.evidence)));
+    }
+  }
+  if (block.error !== null) lines.push("", indent(block.error));
+  return lines.join("\n");
+}
+
+function formatHumanGateSemanticBlock(
+  block: Extract<UiSemanticBlock, { category: "human-gate" }>,
+): string {
+  const heading = block.lifecycle === "running"
+    ? "Opening decision"
+    : block.lifecycle === "failed"
+      ? "Decision failed"
+      : block.state === "resolved" ? "Decision resolved" : "Decision required";
+  const lines = [`${semanticMarker(block)} ${heading}`];
+  if (block.question !== null) lines.push(indent(block.question));
+  if (block.options.length > 0 && block.state === "open") {
+    lines.push("", ...block.options.map(indent));
+  }
+  if (block.error !== null) lines.push("", indent(block.error));
+  return lines.join("\n");
+}
+
+function formatCompletionSemanticBlock(
+  block: Extract<UiSemanticBlock, { category: "completion" }>,
+): string {
+  const heading = block.lifecycle === "running"
+    ? "Completing Task"
+    : block.lifecycle === "failed" ? "Completion failed" : "Completed";
+  const lines = [`${semanticMarker(block)} ${heading}`, indent(block.summary)];
+  if (block.checks.length > 0) {
+    lines.push("", "Verification");
+    for (const check of block.checks) {
+      const marker = check.status === "failed" ? "✕" : "✓";
+      lines.push(indent(`${marker} ${check.name}`));
+    }
+  }
+  if (block.error !== null) lines.push("", indent(block.error));
+  return lines.join("\n");
+}
+
 function formatSemanticBlock(block: UiSemanticBlock): string {
-  return `◇ ${block.title}${block.detail ? `\n${block.detail}` : ""}`;
+  switch (block.category) {
+    case "task": return formatTaskSemanticBlock(block);
+    case "verification": return formatVerificationSemanticBlock(block);
+    case "human-gate": return formatHumanGateSemanticBlock(block);
+    case "completion": return formatCompletionSemanticBlock(block);
+  }
 }
 
 function formatRuntimeBlock(block: UiRuntimeBlock): string {

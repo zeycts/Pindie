@@ -26,6 +26,19 @@ import {
   type UiWorkLifecycle,
 } from "./ui-timeline.ts";
 import {
+  EMPTY_SEMANTIC_TIMELINE,
+  finalizeSemanticBlock,
+  projectSemanticToolCall,
+  readSemanticToolResult,
+  semanticBlockId,
+  semanticToolAction,
+  semanticToolName,
+  semanticStateHasVerification,
+  type UiSemanticBlock,
+  type UiSemanticTimelineReducerState,
+  type UiSemanticToolResult,
+} from "./ui-semantic-timeline.ts";
+import {
   isPindieContinuationProbeMessage,
   PINDIE_CONTINUATION_PROBE_TYPE,
 } from "./continuation.ts";
@@ -120,15 +133,19 @@ export interface UiMessageBlock {
 }
 
 
-/** The Slice C vocabulary reserved for later semantic projection work. */
-export interface UiSemanticBlock {
-  readonly type: "semantic";
-  readonly id: string;
-  readonly category: "task" | "verification" | "human-gate" | "completion" | "generic";
-  readonly title: string;
-  readonly detail?: string;
-  readonly defaultDisplayMode: UiDisplayMode;
-}
+export type {
+  UiCompletionSemanticBlock,
+  UiHumanGateSemanticBlock,
+  UiSemanticBlock,
+  UiSemanticLifecycle,
+  UiSemanticTaskAction,
+  UiSemanticTaskHandoff,
+  UiSemanticTimelineReducerState,
+  UiSemanticToolName,
+  UiSemanticVerificationCheck,
+  UiTaskSemanticBlock,
+  UiVerificationSemanticBlock,
+} from "./ui-semantic-timeline.ts";
 
 /** The Slice C vocabulary reserved for later runtime projection work. */
 export interface UiRuntimeBlock {
@@ -188,6 +205,8 @@ export interface PindieUiProjection {
   readonly liveAssistant: LiveAssistantProjectionState;
   /** Reducer-only grouping metadata; views and persistence must ignore this field. */
   readonly workTimeline: WorkTimelineReducerState;
+  /** Reducer-only semantic phase metadata; views and persistence must ignore this field. */
+  readonly semanticTimeline: UiSemanticTimelineReducerState;
 }
 
 export interface PindieUiProjectionInput {
@@ -297,10 +316,18 @@ interface TimelineBuildState {
   readonly timeline: readonly UiTimelineBlock[];
   readonly observationBurstId: string | null;
   readonly results: ReadonlyMap<string, UiToolResultProjection>;
+  readonly semanticResults: ReadonlyMap<string, UiSemanticToolResult>;
+  readonly semanticTimeline: UiSemanticTimelineReducerState;
 }
 
 function emptyTimelineBuildState(): TimelineBuildState {
-  return { timeline: [], observationBurstId: null, results: new Map() };
+  return {
+    timeline: [],
+    observationBurstId: null,
+    results: new Map(),
+    semanticResults: new Map(),
+    semanticTimeline: EMPTY_SEMANTIC_TIMELINE,
+  };
 }
 
 function closeObservationBurst(state: TimelineBuildState): TimelineBuildState {
@@ -316,6 +343,143 @@ function replaceTimelineBlock(
 ): readonly UiTimelineBlock[] {
   return timeline.map((candidate, candidateIndex) =>
     candidateIndex === index ? block : candidate);
+}
+
+function semanticBlockIndex(
+  timeline: readonly UiTimelineBlock[],
+  blockId: string,
+): number {
+  return timeline.findIndex((candidate) =>
+    candidate.type === "semantic" && candidate.id === blockId);
+}
+
+function semanticCategory(
+  action: ReturnType<typeof semanticToolAction>,
+): UiSemanticBlock["category"] | null {
+  switch (action) {
+    case "start":
+    case "replace":
+    case "refine":
+    case "progress":
+    case "handoff":
+      return "task";
+    case "verification":
+      return "verification";
+    case "gate-open":
+    case "gate-resolve":
+      return "human-gate";
+    case "completion":
+      return "completion";
+    default:
+      return null;
+  }
+}
+
+function semanticCallBlockId(
+  state: TimelineBuildState,
+  call: ReturnType<typeof readToolCall>,
+): string | null {
+  if (call === null) return null;
+  const action = semanticToolAction(call.name);
+  const category = semanticCategory(action);
+  if (category === null) return null;
+  switch (action) {
+    case "refine":
+    case "progress":
+    case "handoff":
+      return state.semanticTimeline.currentTaskBlockId ??
+        semanticBlockId("task", call.id);
+    case "verification":
+      return state.semanticTimeline.currentVerificationBlockId ??
+        semanticBlockId("verification", call.id);
+    case "gate-resolve":
+      return state.semanticTimeline.openHumanGateBlockId ??
+        semanticBlockId("human-gate", call.id);
+    default:
+      return semanticBlockId(category, call.id);
+  }
+}
+
+function updateSemanticReducerAfterResult(
+  state: TimelineBuildState,
+  action: ReturnType<typeof semanticToolAction>,
+  block: UiSemanticBlock,
+  result: UiSemanticToolResult | null,
+): UiSemanticTimelineReducerState {
+  if (result === null || block.lifecycle !== "complete" || block.error !== null) {
+    return state.semanticTimeline;
+  }
+
+  const current = state.semanticTimeline;
+  switch (action) {
+    case "start":
+    case "replace":
+      return {
+        currentTaskBlockId: block.id,
+        currentVerificationBlockId: null,
+        openHumanGateBlockId: null,
+      };
+    case "refine":
+      return {
+        ...current,
+        currentTaskBlockId: block.id,
+        currentVerificationBlockId: semanticStateHasVerification(result.state)
+          ? current.currentVerificationBlockId
+          : null,
+      };
+    case "progress":
+    case "handoff":
+      return { ...current, currentTaskBlockId: block.id };
+    case "verification":
+      return { ...current, currentVerificationBlockId: block.id };
+    case "gate-open":
+      return { ...current, openHumanGateBlockId: block.id };
+    case "gate-resolve":
+      return { ...current, openHumanGateBlockId: null };
+    case "completion":
+      return {
+        currentTaskBlockId: null,
+        currentVerificationBlockId: null,
+        openHumanGateBlockId: null,
+      };
+    default:
+      return current;
+  }
+}
+
+function applySemanticCallToTimeline(
+  state: TimelineBuildState,
+  call: ReturnType<typeof readToolCall>,
+  lifecycle: UiWorkLifecycle,
+  result: UiSemanticToolResult | null,
+): TimelineBuildState {
+  if (call === null || semanticToolName(call.name) === null) {
+    return closeObservationBurst(state);
+  }
+  const blockId = semanticCallBlockId(state, call);
+  if (blockId === null) return closeObservationBurst(state);
+  const existingIndex = semanticBlockIndex(state.timeline, blockId);
+  const existing = existingIndex < 0 ? null : state.timeline[existingIndex];
+  const existingSemantic = existing?.type === "semantic" ? existing : null;
+  const next = projectSemanticToolCall({
+    id: blockId,
+    toolName: call.name,
+    arguments: call.arguments,
+    lifecycle: lifecycle === "complete" ? "complete" : lifecycle === "failed" ? "failed" : "running",
+    result,
+    existing: existingSemantic,
+  });
+  if (next === null) return closeObservationBurst(state);
+
+  const closed = closeObservationBurst(state);
+  const timeline = existingIndex < 0
+    ? [...closed.timeline, next]
+    : replaceTimelineBlock(closed.timeline, existingIndex, next);
+  return {
+    ...closed,
+    timeline,
+    semanticTimeline: updateSemanticReducerAfterResult(state, semanticToolAction(call.name), next, result),
+  };
 }
 
 function workBlockIndex(
@@ -430,10 +594,15 @@ function appendToolCallToTimeline(
   if (call === null) return closeObservationBurst(state);
   const kind = classifyToolPresentation(call.name);
   const recordedResult = state.results.get(call.id);
-  const lifecycle: UiWorkLifecycle = recordedResult === undefined
+  const recordedSemanticResult = state.semanticResults.get(call.id);
+  const lifecycle: UiWorkLifecycle = recordedResult === undefined && recordedSemanticResult === undefined
     ? "running"
-    : recordedResult.isError ? "failed" : "complete";
-  if (kind === "semantic") return closeObservationBurst(state);
+    : (recordedResult?.isError === true || recordedSemanticResult?.isError === true)
+      ? "failed"
+      : "complete";
+  if (kind === "semantic") {
+    return applySemanticCallToTimeline(state, call, lifecycle, recordedSemanticResult ?? null);
+  }
   if (kind === "observation") {
     return appendObservationItem(state, call, lifecycle, recordedResult ?? null);
   }
@@ -484,11 +653,26 @@ function applyToolResultToTimeline(
   resultMessage: ReturnType<typeof readToolResultMessage>,
 ): TimelineBuildState {
   if (resultMessage === null) return state;
-  const result = projectToolResult(
-    { content: resultMessage.content, details: resultMessage.details },
-    resultMessage.isError,
-    resultMessage.toolName,
-  );
+  const rawResult = { content: resultMessage.content, details: resultMessage.details };
+  const semantic = semanticToolName(resultMessage.toolName) === null
+    ? null
+    : readSemanticToolResult(rawResult, resultMessage.isError, resultMessage.toolName);
+  if (semantic !== null) {
+    const semanticResults = new Map(state.semanticResults);
+    semanticResults.set(resultMessage.toolCallId, semantic);
+    return applySemanticCallToTimeline(
+      { ...state, semanticResults },
+      {
+        id: resultMessage.toolCallId,
+        name: resultMessage.toolName,
+        arguments: null,
+      },
+      resultMessage.isError ? "failed" : "complete",
+      semantic,
+    );
+  }
+
+  const result = projectToolResult(rawResult, resultMessage.isError, resultMessage.toolName);
   const results = new Map(state.results);
   if (result !== null) results.set(resultMessage.toolCallId, result);
   const lifecycle: UiWorkLifecycle = resultMessage.isError ? "failed" : "complete";
@@ -620,6 +804,7 @@ function appendPersistedMessage(
 
 function finalizeHistoricalWork(state: TimelineBuildState): readonly UiTimelineBlock[] {
   return state.timeline.map((block) => {
+    if (block.type === "semantic") return finalizeSemanticBlock(block);
     if (block.type !== "work") return block;
     if (block.kind === "observation") {
       const items = block.items.map((item) => item.lifecycle === "running"
@@ -635,10 +820,15 @@ function finalizeHistoricalWork(state: TimelineBuildState): readonly UiTimelineB
   });
 }
 
-/** Rebuild human-meaningful work from the authoritative ordered Session branch. */
-export function projectSessionHistory(
+interface SessionTimelineBuild {
+  readonly timeline: readonly UiTimelineBlock[];
+  readonly semanticTimeline: UiSemanticTimelineReducerState;
+}
+
+/** Rebuild human-meaningful work and semantic reducer metadata from Session history. */
+function buildSessionTimeline(
   entries: readonly SessionEntry[],
-): readonly UiTimelineBlock[] {
+): SessionTimelineBuild {
   let state = emptyTimelineBuildState();
   for (const entry of entries) {
     if (!entry.id) continue;
@@ -671,7 +861,17 @@ export function projectSessionHistory(
       };
     }
   }
-  return finalizeHistoricalWork(state);
+  return {
+    timeline: finalizeHistoricalWork(state),
+    semanticTimeline: state.semanticTimeline,
+  };
+}
+
+/** Public compatibility wrapper returning only chronological Timeline blocks. */
+export function projectSessionHistory(
+  entries: readonly SessionEntry[],
+): readonly UiTimelineBlock[] {
+  return buildSessionTimeline(entries).timeline;
 }
 
 function copyConsumption(
@@ -834,6 +1034,7 @@ export function createProjection(
   const semantic = semanticProjection(input.presentation);
   const presentationStatus = input.presentation?.status;
   const runtime = input.session.runtime;
+  const history = buildSessionTimeline(input.session.branch);
   const status: UiStatusProjection = {
     presentationAvailability: input.presentation === null ? "unavailable" : "available",
     isStreaming: runtime.isStreaming,
@@ -870,7 +1071,7 @@ export function createProjection(
       semanticAuthority: semantic.authority,
     },
     status,
-    timeline: projectSessionHistory(input.session.branch),
+    timeline: history.timeline,
     queue: {
       state: "unknown",
       steering: null,
@@ -887,6 +1088,7 @@ export function createProjection(
       // start a fresh burst even if the persisted tail ended with a read.
       observationBurstId: null,
     },
+    semanticTimeline: history.semanticTimeline,
   };
 }
 
@@ -1196,6 +1398,7 @@ function reduceToolEvent(
   const lifecycle: UiWorkLifecycle = event.type === "tool_execution_end"
     ? event.isError ? "failed" : "complete"
     : "running";
+  const kind = classifyToolPresentation(event.toolName);
   const result = event.type === "tool_execution_start"
     ? null
     : projectToolResult(
@@ -1203,19 +1406,24 @@ function reduceToolEvent(
         event.type === "tool_execution_end" ? event.isError : false,
         event.toolName,
       );
-  const kind = classifyToolPresentation(event.toolName);
+  const semanticResult = kind === "semantic" && event.type === "tool_execution_end"
+    ? readSemanticToolResult(event.result, event.isError, event.toolName)
+    : null;
   const buildState: TimelineBuildState = {
     timeline: state.timeline,
     observationBurstId: state.workTimeline.observationBurstId,
     results: new Map(),
+    semanticResults: new Map(),
+    semanticTimeline: state.semanticTimeline,
   };
 
-  // Semantic Pindie tools are deliberately reserved for E2. They still close
-  // an observation burst so a later read cannot visually cross the boundary.
   if (kind === "semantic") {
+    const next = applySemanticCallToTimeline(buildState, call, lifecycle, semanticResult);
     return {
       ...state,
-      workTimeline: { observationBurstId: null },
+      timeline: next.timeline,
+      workTimeline: { observationBurstId: next.observationBurstId },
+      semanticTimeline: next.semanticTimeline,
     };
   }
 
@@ -1265,11 +1473,14 @@ function reduceEntryAppended(
         timeline: state.timeline,
         observationBurstId: state.workTimeline.observationBurstId,
         results: new Map(),
+        semanticResults: new Map(),
+        semanticTimeline: state.semanticTimeline,
       }, toolResult);
       return {
         ...state,
         timeline: next.timeline,
         workTimeline: { observationBurstId: next.observationBurstId },
+        semanticTimeline: next.semanticTimeline,
       };
     }
 
@@ -1286,11 +1497,14 @@ function reduceEntryAppended(
             timeline: nextState.timeline,
             observationBurstId: nextState.workTimeline.observationBurstId,
             results: new Map(),
+            semanticResults: new Map(),
+            semanticTimeline: nextState.semanticTimeline,
           }, part.call);
           nextState = {
             ...nextState,
             timeline: next.timeline,
             workTimeline: { observationBurstId: next.observationBurstId },
+            semanticTimeline: next.semanticTimeline,
           };
           continue;
         }
