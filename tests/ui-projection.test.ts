@@ -8,10 +8,12 @@ import type {
 
 import type { PindiePresentationSnapshot } from "../src/presentation-integration.ts";
 import {
+  appendUserDelivery,
   createProjection,
   projectSessionHistory,
   rebuildProjection,
   reduceProjectionEvent,
+  refreshProjectionFacts,
   type PindieUiProjectionInput,
   type UiMessageBlock,
   type UiWorkBlock,
@@ -795,4 +797,91 @@ test("runtime churn stays ambient rather than becoming permanent RuntimeBlocks",
   assert.equal(projection.status.isIdle, true);
   assert.equal(projection.status.isStreaming, false);
   assert.equal(projection.status.isCompacting, false);
+});
+
+test("local user deliveries are disposable, session-local, and provenance-aware", () => {
+  const projection = appendUserDelivery(createProjection(input()), {
+    id: "live:session-1:user:1",
+    text: "steer the current work",
+    delivery: "steer",
+  });
+  const block = projection.timeline[0] as UiMessageBlock;
+
+  assert.deepEqual(block, {
+    type: "message",
+    id: "live:session-1:user:1",
+    source: "live",
+    role: "user",
+    text: "steer the current work",
+    lifecycle: "complete",
+    defaultDisplayMode: "full",
+    delivery: "steer",
+  });
+
+  const rebuilt = rebuildProjection(input({
+    session: {
+      ...input().session,
+      branch: [userEntry("authoritative-user", "steer the current work")],
+    },
+  }));
+  assert.deepEqual(rebuilt.timeline.map((candidate) => candidate.id), ["authoritative-user"]);
+
+  const reconciled = reduceProjectionEvent(projection, event({
+    type: "entry_appended",
+    entry: userEntry("authoritative-user", "steer the current work"),
+  }));
+  assert.deepEqual(reconciled.timeline.map((candidate) => candidate.id), ["authoritative-user"]);
+  assert.equal((reconciled.timeline[0] as UiMessageBlock).source, "session");
+  assert.equal((reconciled.timeline[0] as UiMessageBlock).delivery, "steer");
+});
+
+test("same-session fact refresh preserves live timeline identity and authoritative queue", () => {
+  let projection = createProjection(input({
+    session: {
+      ...input().session,
+      runtime: runtime({ pendingMessageCount: 1 }),
+    },
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_start",
+    message: assistantMessage([{ type: "text", text: "streaming answer" }]),
+  }));
+  projection = reduceProjectionEvent(projection, event({
+    type: "queue_update",
+    steering: ["queued steer"],
+    followUp: [],
+  }));
+  const timelineBefore = projection.timeline;
+  const liveBefore = projection.liveAssistant;
+
+  const refreshed = refreshProjectionFacts(projection, input({
+    presentation: presentation({
+      status: {
+        ...presentation().status,
+        activity: "running",
+        consumption: { scope: "task", durationMs: 3_000, cost: 0.42 },
+      },
+    }),
+    session: {
+      ...input().session,
+      runtime: runtime({
+        isStreaming: true,
+        isIdle: false,
+        pendingMessageCount: 1,
+      }),
+    },
+  }));
+
+  assert.equal(refreshed.timeline, timelineBefore);
+  assert.deepEqual(refreshed.liveAssistant, liveBefore);
+  assert.deepEqual(refreshed.queue, {
+    state: "authoritative",
+    steering: ["queued steer"],
+    followUp: [],
+    pendingMessageCount: 1,
+  });
+  assert.equal(refreshed.status.isStreaming, true);
+  assert.equal(refreshed.status.isIdle, false);
+  assert.equal(refreshed.status.consumption?.cost, 0.42);
+  assert.equal(refreshed.status.activity, "running");
 });

@@ -20,6 +20,10 @@ import {
   type BrowserRealityRuntime,
 } from "./browser-reality.ts";
 import { PiRuntimeAdapter } from "./pi-runtime.ts";
+import {
+  PindieInteractiveMode as OwnedPindieInteractiveMode,
+  type PindieInteractiveModeOptions,
+} from "./tui/pindie-interactive-mode.ts";
 import { registerConfiguredPindieExtension } from "./extension.ts";
 import type { PindiePresentationReader } from "./presentation-integration.ts";
 import {
@@ -65,6 +69,10 @@ export interface PindieHostDependencies {
     runtime: AgentSessionRuntime,
     options: InteractiveModeOptions,
   ) => PindieInteractiveMode;
+  createPindieInteractiveMode?: (
+    runtime: PiRuntimeAdapter,
+    options: PindieInteractiveModeOptions,
+  ) => PindieInteractiveMode;
   createBrowserRealityRuntime?: (
     config: BrowserRealityConfig,
   ) => BrowserRealityRuntime;
@@ -93,6 +101,11 @@ export interface PindieHost {
   readonly presentation: PindiePresentationReaderLease;
   run(): Promise<void>;
   dispose(): Promise<void>;
+}
+
+/** Temporary migration gate: only the exact value `1` selects the owned TUI. */
+export function isPindieTuiEnabled(env: Record<string, string | undefined>): boolean {
+  return env.PINDIE_TUI === "1";
 }
 
 export function getPindieResourcePaths(): PindieResourcePaths {
@@ -176,6 +189,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   const agentDir = options.agentDir ?? getAgentDir();
   const sessionManager = options.sessionManager ?? SessionManager.create(cwd);
   const dependencies = options.dependencies ?? {};
+  const env = options.env ?? process.env;
   const createRuntime = dependencies.createAgentSessionRuntime ?? createAgentSessionRuntime;
   const createMode =
     dependencies.createInteractiveMode ??
@@ -183,7 +197,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       new InteractiveMode(runtime, modeOptions));
 
   const taskMetrics = new TaskMetricsTracker();
-  const browserConfig = resolveBrowserRealityConfig(options.env ?? process.env);
+  const browserConfig = resolveBrowserRealityConfig(env);
   const makeBrowserReality = dependencies.createBrowserRealityRuntime ??
     createBrowserRealityRuntime;
   let browserReality: BrowserRealityRuntime | undefined;
@@ -279,7 +293,19 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       modelFallbackMessage: nativeRuntime.modelFallbackMessage,
       ...options.interactiveModeOptions,
     };
-    const interactiveMode = createMode(nativeRuntime, modeOptions);
+    const activeRuntime = runtime;
+    const interactiveMode = isPindieTuiEnabled(env)
+      ? (dependencies.createPindieInteractiveMode ??
+        ((adapter, ownedModeOptions) => new OwnedPindieInteractiveMode(adapter, ownedModeOptions)))(
+          activeRuntime,
+          {
+            ...modeOptions,
+            cwd,
+            agentDir,
+            presentation,
+          },
+        )
+      : createMode(nativeRuntime, modeOptions);
     let disposePromise: Promise<void> | undefined;
     const dispose = (): Promise<void> => {
       disposePromise ??= (async () => {

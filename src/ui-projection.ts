@@ -72,6 +72,8 @@ export interface UiStatusProjection {
   readonly subscriptionUsage: SubscriptionUsageSnapshot | null;
 }
 
+export type UiUserDelivery = "prompt" | "steer" | "followUp";
+
 export interface UiMessageBlock {
   readonly type: "message";
   /** Persisted entry IDs or a session-local `live:...` ephemeral ID. */
@@ -81,6 +83,8 @@ export interface UiMessageBlock {
   readonly text: string;
   readonly lifecycle: "streaming" | "complete" | "error";
   readonly defaultDisplayMode: UiDisplayMode;
+  /** Local delivery provenance for ephemeral user input echoes. */
+  readonly delivery?: UiUserDelivery;
   readonly customType?: string;
 }
 
@@ -584,6 +588,21 @@ function findLatestLiveAssistantIndex(
   return -1;
 }
 
+function isLiveUser(block: UiTimelineBlock): block is UiMessageBlock {
+  return block.type === "message" && block.source === "live" && block.role === "user";
+}
+
+function findLatestLiveUserIndex(
+  timeline: readonly UiTimelineBlock[],
+  text: string,
+): number {
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const block = timeline[index];
+    if (isLiveUser(block) && block.text === text) return index;
+  }
+  return -1;
+}
+
 function beginLiveAssistant(
   state: PindieUiProjection,
 ): { readonly state: PindieUiProjection; readonly id: string } {
@@ -643,6 +662,38 @@ function upsertLiveAssistant(
 interface PersistedAssistantReconciliation {
   readonly timeline: readonly UiTimelineBlock[];
   readonly replacedLiveId: string | null;
+}
+
+function reconcilePersistedUser(
+  timeline: readonly UiTimelineBlock[],
+  next: UiMessageBlock,
+): readonly UiTimelineBlock[] {
+  const candidateIndex = findLatestLiveUserIndex(timeline, next.text);
+  const candidate = candidateIndex < 0 ? undefined : timeline[candidateIndex];
+  const replacement: UiMessageBlock = candidate !== undefined && isLiveUser(candidate) &&
+      candidate.delivery !== undefined
+    ? { ...next, delivery: candidate.delivery }
+    : next;
+  const reconciled: UiTimelineBlock[] = [];
+  let inserted = false;
+
+  for (let index = 0; index < timeline.length; index += 1) {
+    const block = timeline[index];
+    const isCandidate = index === candidateIndex;
+    const isSamePersistedBlock = block.type === "message" &&
+      block.source === "session" &&
+      block.id === next.id;
+    if (isCandidate || isSamePersistedBlock) {
+      if (!inserted) {
+        reconciled.push(replacement);
+        inserted = true;
+      }
+      continue;
+    }
+    reconciled.push(block);
+  }
+
+  return inserted ? reconciled : [...reconciled, replacement];
 }
 
 function reconcilePersistedAssistant(
@@ -878,7 +929,10 @@ function reduceEntryAppended(
   }
 
   if (!isAssistantEntry) {
-    return { ...state, timeline: replaceOrAppendBlock(state.timeline, block) };
+    const timeline = block.type === "message" && block.role === "user"
+      ? reconcilePersistedUser(state.timeline, block)
+      : replaceOrAppendBlock(state.timeline, block);
+    return { ...state, timeline };
   }
 
   const reconciliation = reconcilePersistedAssistant(state.timeline, block);
@@ -966,6 +1020,71 @@ export function reduceProjectionEvent(
     default:
       return reduceRuntimeEvent(state, event);
   }
+}
+
+/**
+ * Append an immediate local echo for a user delivery.
+ *
+ * Pi does not expose a convenient authoritative entry event for every normal
+ * submission, so the interactive client may project this disposable block
+ * until the next authoritative Session rebuild. The caller owns the
+ * session-local monotonic ID; this helper owns only the block shape.
+ */
+export function appendUserDelivery(
+  projection: PindieUiProjection,
+  input: {
+    readonly id: string;
+    readonly text: string;
+    readonly delivery: UiUserDelivery;
+  },
+): PindieUiProjection {
+  return {
+    ...projection,
+    timeline: [
+      ...projection.timeline,
+      {
+        type: "message",
+        id: input.id,
+        source: "live",
+        role: "user",
+        text: input.text,
+        lifecycle: "complete",
+        defaultDisplayMode: "full",
+        delivery: input.delivery,
+      },
+    ],
+  };
+}
+
+/**
+ * Refresh current Session-bound facts without rebuilding live Timeline state.
+ *
+ * A Session identity change is an epoch boundary and therefore performs a full
+ * rebuild. Within one Session, the current header/status/attention facts are
+ * disposable presentation data; live blocks and an authoritative queue
+ * observation remain owned by the existing projection.
+ */
+export function refreshProjectionFacts(
+  current: PindieUiProjection,
+  input: PindieUiProjectionInput,
+): PindieUiProjection {
+  if (current.header.sessionId !== input.session.sessionId) {
+    return createProjection(input);
+  }
+
+  const fresh = createProjection(input);
+  return {
+    ...current,
+    header: fresh.header,
+    status: fresh.status,
+    attention: fresh.attention,
+    queue: current.queue.state === "authoritative"
+      ? current.queue
+      : {
+          ...current.queue,
+          pendingMessageCount: fresh.queue.pendingMessageCount,
+        },
+  };
 }
 
 /** Rebuilding is the explicit Session epoch boundary; no prior live state is retained. */
