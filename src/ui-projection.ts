@@ -58,6 +58,7 @@ import type {
   VerificationStatus,
 } from "./state.ts";
 import type { QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
+import { classifyHumanSignal, type HumanSignalDecision } from "./human-signal.ts";
 
 /** Renderer-independent density guidance. User fold state belongs to the view. */
 export type { UiDisplayMode, UiPlainValue } from "./ui-timeline.ts";
@@ -171,6 +172,12 @@ export interface UiQueueProjection {
   readonly pendingMessageCount: number;
 }
 
+export interface UiSoftHumanSignalProjection {
+  readonly kind: "settled-blocked";
+  readonly summary: string;
+  readonly blockers: readonly string[];
+}
+
 export type UiAttentionProjection =
   | {
       readonly kind: "human-gate";
@@ -201,6 +208,7 @@ export interface PindieUiProjection {
   readonly timeline: readonly UiTimelineBlock[];
   readonly queue: UiQueueProjection;
   readonly attention: UiAttentionProjection | null;
+  readonly softSignal: UiSoftHumanSignalProjection | null;
   /** Reducer-only metadata; views and persistence must ignore this field. */
   readonly liveAssistant: LiveAssistantProjectionState;
   /** Reducer-only grouping metadata; views and persistence must ignore this field. */
@@ -1002,23 +1010,44 @@ function copyGate(
   };
 }
 
+function projectCurrentHumanSignal(
+  input: PindieUiProjectionInput,
+  semantic: SemanticProjection,
+): HumanSignalDecision | null {
+  if (input.presentation === null) return null;
+  return classifyHumanSignal({
+    phase: "current",
+    sessionId: input.session.sessionId,
+    authority: semantic.authority,
+    authorityUnavailableReason: semantic.unavailableReason,
+    taskStatus: semantic.taskStatus,
+    task: input.presentation.status.state?.task ?? null,
+    isIdle: input.session.runtime.isIdle,
+    pendingMessageCount: input.session.runtime.pendingMessageCount,
+    quotaResumeWaiting: input.presentation.quotaResumeWaiting !== null,
+  });
+}
+
 function projectAttention(
   presentation: PindiePresentationSnapshot | null,
-  semantic: SemanticProjection,
+  signal: HumanSignalDecision | null,
 ): UiAttentionProjection | null {
-  // A temporary Presentation Read Port gap is not evidence that semantic
-  // authority is unsafe, and therefore is never Human Attention by itself.
-  if (presentation === null) return null;
-
-  if (semantic.authority === "unavailable") {
-    return {
-      kind: "authority-unavailable",
-      reason: semantic.unavailableReason ?? "Pindie semantic authority is unavailable.",
-    };
+  if (signal?.local !== "hard" || presentation === null) return null;
+  if (signal.kind === "authority-unavailable") {
+    return { kind: "authority-unavailable", reason: signal.detail[0] ?? signal.summary };
   }
-
   const gate = presentation.status.state?.task?.humanGate;
-  return gate === null || gate === undefined ? null : copyGate(gate);
+  return signal.kind === "human-gate" && gate !== null && gate !== undefined
+    ? copyGate(gate)
+    : null;
+}
+
+function projectSoftSignal(
+  signal: HumanSignalDecision | null,
+): UiSoftHumanSignalProjection | null {
+  return signal?.kind === "settled-blocked" && signal.local === "soft"
+    ? { kind: "settled-blocked", summary: signal.summary, blockers: [...signal.detail] }
+    : null;
 }
 
 function copyModel(
@@ -1035,6 +1064,7 @@ export function createProjection(
   const presentationStatus = input.presentation?.status;
   const runtime = input.session.runtime;
   const history = buildSessionTimeline(input.session.branch);
+  const humanSignal = projectCurrentHumanSignal(input, semantic);
   const status: UiStatusProjection = {
     presentationAvailability: input.presentation === null ? "unavailable" : "available",
     isStreaming: runtime.isStreaming,
@@ -1078,7 +1108,8 @@ export function createProjection(
       followUp: null,
       pendingMessageCount: runtime.pendingMessageCount,
     },
-    attention: projectAttention(input.presentation, semantic),
+    attention: projectAttention(input.presentation, humanSignal),
+    softSignal: projectSoftSignal(humanSignal),
     liveAssistant: {
       activeId: null,
       nextSequence: 1,
@@ -1573,7 +1604,10 @@ function reduceRuntimeEvent(
 ): PindieUiProjection {
   switch (event.type) {
     case "agent_start":
-      return updateRuntimeStatus(state, { isStreaming: true, isIdle: false });
+      return {
+        ...updateRuntimeStatus(state, { isStreaming: true, isIdle: false }),
+        softSignal: null,
+      };
     case "agent_end":
       return updateRuntimeStatus(state, {
         isStreaming: event.willRetry,
@@ -1693,6 +1727,7 @@ export function refreshProjectionFacts(
     header: fresh.header,
     status: fresh.status,
     attention: fresh.attention,
+    softSignal: fresh.softSignal,
     queue: current.queue.state === "authoritative"
       ? current.queue
       : {

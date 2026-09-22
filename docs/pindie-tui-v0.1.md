@@ -1,6 +1,6 @@
 # Pindie TUI v0.1 — Architecture and Implementation Contract
 
-Status: Slices A–F are implemented; Slice G design is locked below. G1 implementation is next; cutover remains gated on real dogfood.
+Status: Slices A–F and Slice G1 are implemented. Slice G2 is next; cutover remains gated on real dogfood and explicit approval.
 
 Baseline: Pindie main after Pi 0.86.1 compatibility upgrade.
 
@@ -958,9 +958,9 @@ G2 — Dogfood + Cutover
 
 The cutover is not an automatic consequence of CI passing. G2 requires real interactive dogfood and an explicit reviewed decision.
 
-#### G1 — Human Signal Policy
+#### G1 — Human Signal Policy (implemented)
 
-Today, local and remote behavior are not fully aligned. The owned TUI already treats a running blocked Task as recoverable work, while `projectRemoteSemantics()` still emits immediate Discord attention for any `taskStatus === "blocked"`.
+Local and remote behavior now consume one transport-independent Human Signal Policy. A running blocked Task remains recoverable work; Discord attention for settled-blocked is classified only at the final settlement boundary after successor decisions.
 
 G1 introduces one pure, renderer/transport-independent policy boundary.
 

@@ -1,4 +1,5 @@
 import { RemoteRoutingStore, type DiscordProjectRoutingV1, type RemoteSessionRouting } from "./remote-routing.ts";
+import type { HumanSignalDecision } from "./human-signal.ts";
 import { ExecutionAggregator, mirrorEntry, splitTimelineEvent, type MirrorEntry, type PromptOrigin, type TimelineEvent } from "./session-mirror.ts";
 
 export interface RemoteStatusFacts {
@@ -46,8 +47,6 @@ type Binding = {
   sessionPrompt?: string;
   taskGoal?: string;
   status: RemoteStatusFacts;
-  taskCompleted: boolean;
-  completionPending: boolean;
   getStatus?: () => RemoteStatusFacts;
   abortController: AbortController;
 };
@@ -132,8 +131,6 @@ export class RemoteCompanion {
         routing,
         ...presentation,
         status,
-        taskCompleted: status.taskStatus === "done",
-        completionPending: false,
         abortController: new AbortController(),
       };
     } catch {
@@ -283,21 +280,11 @@ export class RemoteCompanion {
       this.milestones.add(key);
     });
   }
-  async settleCompletion(isCurrent?: () => boolean): Promise<void> {
-    const binding = this.binding;
-    if (!binding?.completionPending || !isLifecycleCurrent(isCurrent)) return;
-    await this.serial(async () => {
-      if (this.binding !== binding || !binding.completionPending || !isLifecycleCurrent(isCurrent)) return;
-      const session = await this.ensure(binding);
-      if (!isLifecycleCurrent(isCurrent)) return;
-      await this.surface.send(session.threadId, { entryId: "remote:completion:settled", kind: "milestone", text: "TASK COMPLETED", attention: true }, binding.abortController.signal);
-      this.requireCurrent(binding);
-      binding.completionPending = false;
-    });
-  }
-  humanGate(question: string, options: readonly string[] = []): TimelineEvent {
-    const key = `${question}\0${options.join("\0")}`;
-    return { entryId: `gate:${key}`, kind: "milestone", text: `HUMAN GATE\n${question}${options.length ? `\n${options.join(" · ")}` : ""}` };
+  /** Deliver a policy-classified attention edge through the existing serial milestone seam. */
+  humanSignal(signal: HumanSignalDecision, options: Pick<RemoteMilestoneOptions, "isCurrent"> = {}): Promise<void> {
+    if (signal.external !== "attention") return Promise.resolve();
+    const text = [signal.summary, ...signal.detail].join("\n");
+    return this.milestone(signal.key, text, { attention: true, ...options });
   }
 
   private async ensure(b: Binding): Promise<RemoteSessionRouting> {
@@ -321,11 +308,8 @@ export class RemoteCompanion {
     return session;
   }
   private applyStatus(binding: Binding, status: RemoteStatusFacts): void {
-    const wasCompleted = binding.taskCompleted;
     binding.status = { ...status, localUiPrompt: binding.status.localUiPrompt };
     binding.taskGoal = status.taskGoal ?? undefined;
-    binding.taskCompleted = status.taskStatus === "done";
-    if (!wasCompleted && binding.taskCompleted) binding.completionPending = true;
   }
   private refreshStatus(binding: Binding): void {
     try {

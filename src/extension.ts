@@ -89,6 +89,7 @@ import type { TrialRuntime } from "./strategy-trial.ts";
 import type { DerivationRuntime } from "./strategy-derivation.ts";
 import type { GlobalDerivationRuntime } from "./strategy-global-derivation.ts";
 import type { RemoteCompanion, RemotePi, RemoteStatusFacts } from "./remote-companion.ts";
+import { classifyHumanSignal } from "./human-signal.ts";
 import type { DiscordRemote } from "./discord-remote.ts";
 import type { RemoteRoutingStore } from "./remote-routing.ts";
 import type { ProjectMemorySink } from "./project-memory.ts";
@@ -542,6 +543,7 @@ function registerComposedPindieExtension(
       { sessionName: remoteSessionName, taskGoal: runtime.state.task?.goal, status: remoteStatusFacts(), getStatus: remoteStatusFacts },
     );
     if (liveRemoteSession !== live) return;
+    projectRemoteSemantics(false);
     if (remote.companion.activeSessionId !== remoteSessionId) {
       liveRemoteSession = null;
       remote.companion.shutdown(remoteSessionId);
@@ -580,7 +582,7 @@ function registerComposedPindieExtension(
   const markUnavailable = (reason: string): void => {
     core.markAuthorityUnavailable(reason);
     presentation.refreshStatus();
-    void options.remoteCompanion?.companion.milestone("authority:unavailable", "PINDIE AUTHORITY UNAVAILABLE");
+    projectRemoteSemantics();
   };
 
   const remoteStatusFacts = (): RemoteStatusFacts => {
@@ -598,19 +600,40 @@ function registerComposedPindieExtension(
     };
   };
 
-  const projectRemoteSemantics = (): void => {
+  const projectRemoteSemantics = (includeMilestones = true): void => {
     const remote = options.remoteCompanion?.companion;
+    const live = liveRemoteSession;
     const task = runtime.state.task;
     if (!remote) return;
     void remote.status(remoteStatusFacts());
-    if (run.stateUnavailableReason !== null) void remote.milestone("authority:unavailable", "PINDIE AUTHORITY UNAVAILABLE");
-    if (!task) return;
-    const taskStatus = getTaskStatus(runtime.state);
-    if (task.humanGate) {
-      const event = remote.humanGate(task.humanGate.question, task.humanGate.options);
-      void remote.milestone(`gate:${task.humanGate.question}\0${(task.humanGate.options ?? []).join("\0")}`, event.text, { attention: true });
+    if (live !== null) {
+      let isIdle = false;
+      let pendingMessageCount = 1;
+      try {
+        isIdle = live.ctx.isIdle();
+        pendingMessageCount = live.ctx.hasPendingMessages() ? 1 : 0;
+      } catch {
+        // A stale ExtensionContext cannot authorize an immediate signal.
+      }
+      const signal = classifyHumanSignal({
+        phase: "current",
+        sessionId: live.sessionId,
+        authority: run.stateUnavailableReason !== null
+          ? "unavailable"
+          : run.agentRunIsStale ? "stale" : "coherent",
+        authorityUnavailableReason: run.stateUnavailableReason,
+        taskStatus: getTaskStatus(runtime.state),
+        task,
+        isIdle,
+        pendingMessageCount,
+        quotaResumeWaiting: quotaResumeStatusObserver?.getSnapshot()?.sessionId === live.sessionId,
+      });
+      // Settled-blocked is finalized only at agent_settled after successor decisions.
+      if (signal?.kind === "human-gate" || signal?.kind === "authority-unavailable") {
+        void remote.humanSignal(signal);
+      }
     }
-    if (taskStatus === "blocked") void remote.milestone(`blocked:${task.openLoops.blockers.join("\\0")}`, `TASK BLOCKED\n${task.openLoops.blockers.join("\n")}`, { attention: true });
+    if (!includeMilestones || !task) return;
     void remote.milestone(`verification:${getVerificationStatus(task)}`, `VERIFICATION · ${getVerificationStatus(task).toUpperCase()}`);
   };
 
@@ -1506,27 +1529,18 @@ function registerComposedPindieExtension(
         if (!isCurrentSettlement()) return;
         if (lastEntry) await remote.flushExecution(lastEntry.id);
         if (!isCurrentSettlement()) return;
-        await remote.settleCompletion(isCurrentSettlement);
-        if (!isCurrentSettlement()) return;
-
         const facts = result.facts;
-        const finalTaskIsActive = facts !== null &&
-          facts.settlementGeneration !== null &&
-          facts.snapshot?.authority === "coherent" &&
-          facts.snapshot.taskStatus === "active" &&
-          facts.task !== null &&
-          getTaskStatus({ task: facts.task }) === "active";
-        if (
-          !finalTaskIsActive ||
-          result.automaticSuccessorCommitted ||
-          quotaSuccessorCommitted
-        ) return;
-
-        await remote.milestone(
-          `stopped:${settlementLifecycleGeneration}:${facts!.settlementGeneration}`,
-          "PINDIE STOPPED\nTask remains active. No automatic continuation is scheduled.",
-          { attention: true, isCurrent: isCurrentSettlement },
-        );
+        if (facts === null || settlementSessionId === null) return;
+        const signal = classifyHumanSignal({
+          phase: "settlement",
+          sessionId: settlementSessionId,
+          settlementGeneration: facts.settlementGeneration,
+          facts,
+          automaticSuccessorCommitted: result.automaticSuccessorCommitted,
+          quotaSuccessorCommitted,
+        });
+        if (signal === null || !isCurrentSettlement()) return;
+        await remote.humanSignal(signal, { isCurrent: isCurrentSettlement });
       };
       void finalizeRemoteSettlement().catch(() => undefined);
     }

@@ -2370,7 +2370,7 @@ test("Remote-enabled wiring observes public input without altering Pindie tools"
   assert.ok(Array.isArray(sent));
 });
 
-test("semantic Remote milestones mark blocked and Human Gate attention without duplicate blocked state", async () => {
+test("running blocked stays quiet while Human Gate signals immediately without duplication", async () => {
   const events: Array<{ text: string; attention?: true }> = [];
   const surface: RemoteSurface = {
     ensureProject: async () => ({ channelId: "channel" }),
@@ -2398,9 +2398,9 @@ test("semantic Remote milestones mark blocked and Human Gate attention without d
     questions: [],
     nextIntent: "Wait for the dependency",
   });
-  await waitFor(() => events.some((event) => event.text.startsWith("TASK BLOCKED")));
-  assert.equal(events.filter((event) => event.text.startsWith("TASK BLOCKED")).length, 1);
-  assert.equal(events.find((event) => event.text.startsWith("TASK BLOCKED"))?.attention, true);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(events.filter((event) => event.text.startsWith("TASK BLOCKED")).length, 0);
+  assert.equal(events.some((event) => event.attention === true), false);
 
   await harness.api.tool("pindie_task_progress").execute("repeat-block", {
     blockers: ["External dependency unavailable"],
@@ -2408,7 +2408,7 @@ test("semantic Remote milestones mark blocked and Human Gate attention without d
     nextIntent: "Wait for the dependency",
   });
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(events.filter((event) => event.text.startsWith("TASK BLOCKED")).length, 1);
+  assert.equal(events.filter((event) => event.text.startsWith("TASK BLOCKED")).length, 0);
 
   await harness.api.tool("pindie_gate_open").execute("gate", {
     kind: "decision",
@@ -2416,10 +2416,10 @@ test("semantic Remote milestones mark blocked and Human Gate attention without d
     options: ["Wait", "Fallback"],
   });
   await waitFor(() => events.some((event) => event.text.startsWith("HUMAN GATE")));
-  assert.equal(events.filter((event) => event.text.startsWith("TASK BLOCKED")).length, 1);
+  assert.equal(events.filter((event) => event.text.startsWith("TASK BLOCKED")).length, 0);
   const gate = events.find((event) => event.text.startsWith("HUMAN GATE"));
   assert.equal(gate?.attention, true);
-  assert.equal(events.filter((event) => event.attention === true).length, 2);
+  assert.equal(events.filter((event) => event.attention === true).length, 1);
   assert.equal(events.find((event) => event.text.startsWith("VERIFICATION"))?.attention, undefined);
 });
 
@@ -2577,6 +2577,10 @@ test("blocked, Human Gate, idle, and completed settlement states do not emit STO
     await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(events.some((text) => text.startsWith("PINDIE STOPPED")), false, label);
+    if (label === "blocked") {
+      assert.equal(events.filter((text) => text.startsWith("TASK BLOCKED")).length, 1);
+      assert.match(events.find((text) => text.startsWith("TASK BLOCKED")) ?? "", /External dependency unavailable/);
+    }
   }
 });
 

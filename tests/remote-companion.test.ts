@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { RemoteCompanion, type RemoteSessionPresentation, type RemoteStatusFacts, type RemoteSurface } from "../src/remote-companion.ts";
+import type { HumanSignalDecision, HumanSignalKind } from "../src/human-signal.ts";
 import { RemoteRoutingStore } from "../src/remote-routing.ts";
 import { ExecutionAggregator, mirrorEntry, splitTimelineEvent, type TimelineEvent } from "../src/session-mirror.ts";
 
@@ -20,6 +21,9 @@ async function fixture(t: test.TestContext) { const dir = await mkdtemp(join(tmp
 function deferred() { let resolve!: () => void; const promise = new Promise<void>((done) => { resolve = done; }); return { promise, resolve }; }
 let routingSequence = 0;
 const isolatedRouting = () => new RemoteRoutingStore({ baseDir: join(tmpdir(), `pindie-remote-test-${process.pid}-${++routingSequence}`) });
+const signal = (kind: HumanSignalKind, key: string, summary: string, detail: readonly string[] = []): HumanSignalDecision => ({
+  kind, key, summary, detail, local: kind === "human-gate" || kind === "authority-unavailable" ? "hard" : kind === "settled-blocked" ? "soft" : "none", external: "attention",
+});
 
 test("routing is lazy, cursor based, and retries a failed delivery", async (t) => {
   const dir = await fixture(t); const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: new RemoteRoutingStore({ baseDir: dir }) });
@@ -134,11 +138,11 @@ test("every transport and routing failure is contained and later work can retry"
   await assert.doesNotReject(remote.milestone("blocked", "TASK BLOCKED"));
   await assert.doesNotReject(remote.status(activeStatus({ taskStatus: "done" })));
   await assert.doesNotReject(remote.rename("Still coherent"));
-  await assert.doesNotReject(remote.settleCompletion());
+  await assert.doesNotReject(remote.humanSignal(signal("completed", "completed:1", "TASK COMPLETED")));
   await assert.doesNotReject(remote.input("thread", "hello", { isIdle: () => true, abort: () => undefined, sendUserMessage: async () => { throw new Error("Pi unavailable"); } }));
   surface.fail = false;
   await remote.catchUp([{ id: "u", message: { role: "user", content: "hello" } }]);
-  await remote.settleCompletion();
+  await remote.humanSignal(signal("completed", "completed:1", "TASK COMPLETED"));
   assert.ok(surface.sent.includes("YOU\nhello"));
   assert.ok(surface.sent.includes("TASK COMPLETED"));
 });
@@ -252,14 +256,12 @@ test("blocked and unavailable milestones deduplicate by their runtime fingerprin
 test("Human Gate deduplication commits only after successful delivery", async () => {
   const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() });
   await remote.bind("/gate", "guild", "session");
-  const key = "gate:Choose\0A\0B";
-  const event = remote.humanGate("Choose", ["A", "B"]);
+  const gate = signal("human-gate", "gate:Choose\0A\0B", "HUMAN GATE", ["Choose", "A · B"]);
   surface.fail = true;
-  await remote.milestone(key, event.text, { attention: true });
+  await remote.humanSignal(gate);
   surface.fail = false;
-  const retry = remote.humanGate("Choose", ["A", "B"]);
-  await remote.milestone(key, retry.text, { attention: true });
-  await remote.milestone(key, retry.text, { attention: true });
+  await remote.humanSignal(gate);
+  await remote.humanSignal(gate);
   assert.equal(surface.sent.filter((text) => text === "HUMAN GATE\nChoose\nA · B").length, 1);
   assert.equal(surface.events[0]?.attention, true);
 });
@@ -298,18 +300,14 @@ test("session replacement stops an in-flight old binding before stale Session pr
   assert.deepEqual(presentedSessions, ["B"]);
 });
 
-test("completion is transition-driven, settled once, and resumed completion is not replayed", async () => {
+test("classified completion is delivered once and status never decides attention", async () => {
   const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() }); await remote.bind("/complete", "guild", "session", { status: activeStatus() });
   await remote.status(activeStatus({ taskStatus: "done", verificationStatus: "passed" }));
   assert.deepEqual(surface.sent, []);
-  await remote.settleCompletion(); await remote.settleCompletion();
+  const completed = signal("completed", "completed:7", "TASK COMPLETED");
+  await remote.humanSignal(completed); await remote.humanSignal(completed);
   assert.deepEqual(surface.sent, ["TASK COMPLETED"]);
   assert.equal(surface.events[0]?.attention, true);
-
-  const resumedSurface = new Surface(); const resumed = new RemoteCompanion(resumedSurface, { routing: isolatedRouting() });
-  await resumed.bind("/resumed", "guild", "session", { status: activeStatus({ taskStatus: "done", verificationStatus: "passed" }) });
-  await resumed.settleCompletion();
-  assert.deepEqual(resumedSurface.sent, []);
 });
 
 test("settled completion follows the final visible output and execution summary", async () => {
@@ -322,7 +320,7 @@ test("settled completion follows the final visible output and execution summary"
   ]);
   remote.recordTool("bash");
   await remote.flushExecution("summary");
-  await remote.settleCompletion();
+  await remote.humanSignal(signal("completed", "completed:8", "TASK COMPLETED"));
   assert.deepEqual(surface.events.map((event) => event.text), [
     "YOU\nFinish the Task",
     "The finished result.",
@@ -331,6 +329,16 @@ test("settled completion follows the final visible output and execution summary"
   ]);
   assert.equal(surface.events.at(-1)?.attention, true);
   assert.equal(surface.events.slice(0, -1).some((event) => event.attention === true), false);
+});
+
+test("settlement Human Signal dedup allows the same blocker in a new generation", async () => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() });
+  await remote.bind("/generation-dedup", "guild", "session");
+  const first = signal("settled-blocked", "settled-blocked:7:[\"missing\"]", "TASK BLOCKED", ["missing"]);
+  const second = signal("settled-blocked", "settled-blocked:8:[\"missing\"]", "TASK BLOCKED", ["missing"]);
+  await remote.humanSignal(first); await remote.humanSignal(first); await remote.humanSignal(second);
+  assert.equal(surface.sent.filter((text) => text === "TASK BLOCKED\nmissing").length, 2);
+  assert.equal(surface.events.every((event) => event.attention === true), true);
 });
 
 test("ordinary milestones stay quiet while attention remains explicit", async () => {

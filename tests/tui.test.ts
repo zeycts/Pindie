@@ -1367,6 +1367,33 @@ test("Gate Escape is non-destructive and Timeline inspection returns to Attentio
   view.stop();
 });
 
+test("settled-blocked renders softly without stealing or clearing the Composer", async () => {
+  const terminal = new FakeTerminal();
+  const submissions: string[] = [];
+  const view = new PindieTuiView({ terminal, onSubmit: (text) => submissions.push(text) });
+  const projection = {
+    ...viewProjection({ sessionId: "soft-blocked" }),
+    softSignal: {
+      kind: "settled-blocked" as const,
+      summary: "Could not continue autonomously.",
+      blockers: ["missing credential"],
+    },
+  };
+  view.apply(projection);
+  view.start();
+  view.setEditorText("here is the missing credential");
+  view.apply({ ...projection, status: { ...projection.status } });
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /Blocked/);
+  assert.match(terminal.writes.join(""), /missing credential/);
+  assert.equal(view.getInteractionState().focusMode, "composer");
+  assert.equal(view.getEditorText(), "here is the missing credential");
+  terminal.emit("\r");
+  assert.deepEqual(submissions, ["here is the missing credential"]);
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  view.stop();
+});
+
 test("authority-unavailable Attention blocks Composer and permits Timeline inspection", async () => {
   const terminal = new FakeTerminal();
   const submissions: string[] = [];
