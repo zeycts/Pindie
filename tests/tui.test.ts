@@ -1816,18 +1816,51 @@ test("tools-expanded affects only WorkBlocks and explicit fold overrides win", a
   view.stop();
 });
 
-test("Extension public-API gaps remain explicit and autocomplete registration is Session-scoped", () => {
-  const view = new PindieTuiView({ terminal: new FakeTerminal() });
+test("Extension autocomplete wrappers accept through the public base and reset with the Session", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal, cwd: process.cwd() });
   view.apply(viewProjection());
+  view.start();
   const ui = new PindieExtensionUIBridge(view);
-  ui.addAutocompleteProvider((current) => current);
+  ui.addAutocompleteProvider((current) => ({
+    triggerCharacters: ["#"],
+    async getSuggestions(lines, cursorLine, cursorCol, options) {
+      const prefix = lines[cursorLine]?.slice(0, cursorCol).match(/#[0-9]*$/u)?.[0];
+      if (prefix !== undefined) {
+        return { items: [{ value: "#123", label: "#123" }], prefix };
+      }
+      return current.getSuggestions(lines, cursorLine, cursorCol, options);
+    },
+    applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+      return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+    },
+  }));
+
+  view.setEditorText("fix ");
+  terminal.emit("#");
+  await waitForTuiRender();
+  terminal.emit("1");
+  terminal.emit("2");
+  await waitForTuiRender();
+  terminal.emit("\r");
+  assert.equal(view.getEditorText(), "fix #123");
+
   for (const invoke of [
     () => ui.setHeader(() => ({ render: () => [], invalidate: () => {} })),
     () => ui.setFooter(() => ({ render: () => [], invalidate: () => {} })),
     () => ui.getAllThemes(),
     () => ui.getEditorComponent(),
   ]) assert.throws(invoke, UnsupportedExtensionUICapabilityError);
+
   ui.invalidate();
+  view.setEditorText("fix ");
+  terminal.writes.length = 0;
+  for (const character of "#12") terminal.emit(character);
+  await flush();
+  assert.equal(view.getEditorText(), "fix #12");
+  assert.doesNotMatch(terminal.writes.join(""), /#123/);
+
+  view.stop();
 });
 
 test("model and Session pickers search, preserve drafts, and delegate selections", async () => {
@@ -1872,6 +1905,43 @@ test("model and Session pickers search, preserve drafts, and delegate selections
   terminal.emit("\u001b");
   assert.equal(view.getInteractionState().activeOverlay, null);
   assert.equal(view.getEditorText(), "draft survives");
+  view.stop();
+});
+
+test("async Session picker does not open after the same Session becomes running", async () => {
+  const terminal = new FakeTerminal();
+  const selections: string[] = [];
+  let resolveChoices!: (choices: readonly import("../src/pi-runtime.ts").ActiveProjectSessionChoice[]) => void;
+  const pendingChoices = new Promise<readonly import("../src/pi-runtime.ts").ActiveProjectSessionChoice[]>((resolve) => {
+    resolveChoices = resolve;
+  });
+  const view = new PindieTuiView({
+    terminal,
+    onRequestSessionPicker: () => pendingChoices,
+    onSelectSession: (_sessionId, choice) => selections.push(choice.path),
+  });
+  view.apply(viewProjection({ sessionId: "picker-race" }));
+  view.start();
+  view.setEditorText("draft survives");
+
+  terminal.emit("\u001bn");
+  await flush();
+  view.apply(viewProjection({ sessionId: "picker-race", running: true }));
+  resolveChoices([{
+    path: "/other",
+    id: "other",
+    created: new Date("2026-09-22T00:00:00.000Z"),
+    modified: new Date("2026-09-22T00:00:00.000Z"),
+    messageCount: 1,
+    firstMessage: "Other",
+    current: false,
+  }]);
+  await flush();
+
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  assert.equal(view.getInteractionState().focusMode, "composer");
+  assert.equal(view.getEditorText(), "draft survives");
+  assert.deepEqual(selections, []);
   view.stop();
 });
 

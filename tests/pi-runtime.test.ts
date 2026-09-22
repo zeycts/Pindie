@@ -559,7 +559,7 @@ test("quota primitives always read and delegate to the current active Session", 
   assert.deepEqual(calls, [[message, options]]);
 });
 
-test("model picker DTOs use available registry models and setModel without global persistence", async () => {
+test("direct model picker selection delegates only to setModel despite scoped thinking metadata", async () => {
   const current = { provider: "openai", id: "current", name: "Current" };
   const next = { provider: "openai", id: "next", name: "Next" };
   const unavailable = { provider: "other", id: "hidden", name: "Hidden" };
@@ -588,7 +588,7 @@ test("model picker DTOs use available registry models and setModel without globa
   ]);
   await adapter.setActiveSessionModel("openai", "next");
   assert.deepEqual(mutations, [[next]]);
-  assert.deepEqual(levels, ["high"]);
+  assert.deepEqual(levels, []);
   await assert.rejects(adapter.setActiveSessionModel("other", "hidden"), /no longer available/);
 });
 

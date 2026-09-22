@@ -910,11 +910,11 @@ F2b1 deliberately left the remaining contribution and picker compatibility surfa
 Implemented:
 
 - keyed, ordered `string[]` widgets above/below the ordinary Composer, clipped to a bounded contribution region;
-- stacked ordinary-Composer autocomplete providers over a public no-op base provider;
+- stacked ordinary-Composer autocomplete providers over the public `CombinedAutocompleteProvider([], cwd)` baseline, preserving its completion-application and file/path behavior without recreating private `InteractiveMode` command setup;
 - Session-scoped global WorkBlock expansion, with precedence `per-Block fold override → tools-expanded → Projection default`;
-- searchable Model and current-project Session overlays, sourced and mutated only through public Pi Session/runtime APIs;
+- searchable Model and current-project Session overlays, sourced and mutated only through public Pi Session/runtime APIs; direct Model selection delegates only to `AgentSession.setModel()`, so Pi owns the resulting thinking-level policy;
 - shared Action Registry bindings `Alt+M → model.pick` and `Alt+N → session.pick`;
-- current-Session, native-idle, semantic-Attention, Extension-interaction, and Session-epoch mutation guards.
+- current-Session, native-idle, semantic-Attention, Extension-interaction, and Session-epoch guards both after asynchronous Picker loading and again before selection mutation.
 
 Pindie's Extension contribution interpretation keeps its mandatory semantic Header and Status authoritative. A future public-compatible header/footer contribution would be additive rather than replacing those regions.
 
@@ -929,7 +929,7 @@ Final Pi 0.86.1 `ExtensionUIContext` capability matrix:
 | `setHeader` | explicitly unsupported: package-root exports no active `Theme` instance; Pindie would treat it as an additive Header contribution |
 | `setFooter` | explicitly unsupported: package-root exports neither an active `Theme` instance nor a constructible public `FooterDataProvider`; Pindie would treat it as an additive Status contribution |
 | `custom` | explicitly unsupported: package-root exports neither active `Theme` nor app `KeybindingsManager` values required by the factory contract |
-| `addAutocompleteProvider` | implemented for the ordinary Composer; providers stack in registration order over a public no-op base |
+| `addAutocompleteProvider` | implemented for the ordinary Composer; providers stack in registration order over the public `CombinedAutocompleteProvider([], cwd)` file/path and completion-application baseline |
 | `setEditorComponent`, `getEditorComponent` | explicitly unsupported: package-root does not export `getEditorTheme()` or a runtime app `KeybindingsManager` value/constructor needed for faithful factory construction |
 | `theme` | explicitly unsupported: `Theme` class is public but the active singleton is not exported |
 | `getAllThemes`, `getTheme`, `setTheme` | explicitly unsupported: enumeration, lookup, and switching helpers are not package-root exports |

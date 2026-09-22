@@ -8,6 +8,7 @@ import {
   type WorkingIndicatorOptions,
 } from "@earendil-works/pi-coding-agent";
 import {
+  CombinedAutocompleteProvider,
   Container,
   Editor,
   Input,
@@ -76,6 +77,7 @@ export interface PindieTuiViewPort extends PindieExtensionUIViewPort {
 
 export interface PindieTuiViewOptions {
   readonly terminal?: Terminal;
+  readonly cwd?: string;
   readonly startupNotices?: readonly string[];
   readonly onSubmit?: (text: string) => void;
   readonly onFollowUp?: (text: string) => void;
@@ -487,10 +489,6 @@ function errorMessage(error: unknown): string {
 }
 
 const BASE_TERMINAL_TITLE = "Pindie";
-const EMPTY_AUTOCOMPLETE_PROVIDER: AutocompleteProvider = {
-  getSuggestions: async () => null,
-  applyCompletion: (lines, cursorLine, cursorCol) => ({ lines, cursorLine, cursorCol }),
-};
 const MAX_EXTENSION_WIDGET_LINES = 10;
 
 /**
@@ -702,6 +700,7 @@ export class PindieTuiView implements PindieTuiViewPort {
   private readonly editor: Editor;
   private readonly attentionEditor: Editor;
   private readonly status: Text;
+  private readonly cwd: string;
   private readonly startupNotices: readonly string[];
   private readonly onSubmit?: (text: string) => void;
   private readonly onFollowUp?: (text: string) => void;
@@ -765,6 +764,7 @@ export class PindieTuiView implements PindieTuiViewPort {
       this.editor,
     ]);
     this.status = new Text("Status · idle", 1, 0);
+    this.cwd = options.cwd ?? process.cwd();
     const layout = new VStack([
       { component: this.header, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
       { component: this.timelineScroll, basis: 0, grow: 1, shrink: 1, minSize: 1 },
@@ -785,6 +785,7 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.onSelectSession = options.onSelectSession;
     this.copyText = options.copyText ?? copyToClipboard;
     this.editor.onSubmit = (text) => this.onSubmit?.(text);
+    this.refreshAutocompleteProvider();
     this.removeInputListener = tui.addInputListener((data) => this.handleInput(data));
   }
 
@@ -1365,7 +1366,7 @@ export class PindieTuiView implements PindieTuiViewPort {
   }
 
   private refreshAutocompleteProvider(): void {
-    let provider = EMPTY_AUTOCOMPLETE_PROVIDER;
+    let provider: AutocompleteProvider = new CombinedAutocompleteProvider([], this.cwd);
     for (const factory of this.autocompleteFactories) provider = factory(provider);
     this.editor.setAutocompleteProvider(provider);
   }
@@ -1375,7 +1376,8 @@ export class PindieTuiView implements PindieTuiViewPort {
     if (sessionId === null || this.activeOverlay !== null || this.onRequestModelPicker === undefined) return;
     try {
       const choices = await this.onRequestModelPicker();
-      if (this.currentSessionId !== sessionId || this.activeOverlay !== null || this.projection?.attention !== null) return;
+      if (this.currentSessionId !== sessionId || this.activeOverlay !== null ||
+        this.projection?.attention !== null || !this.actionAvailability().nativeIdle) return;
       this.openPicker("model-picker", new SearchablePickerOverlay(
         `Model · thinking ${this.projection?.header.thinkingLevel ?? "unknown"}`,
         choices,
@@ -1392,7 +1394,8 @@ export class PindieTuiView implements PindieTuiViewPort {
     if (sessionId === null || this.activeOverlay !== null || this.onRequestSessionPicker === undefined) return;
     try {
       const choices = [...await this.onRequestSessionPicker()].sort((a, b) => b.modified.getTime() - a.modified.getTime());
-      if (this.currentSessionId !== sessionId || this.activeOverlay !== null || this.projection?.attention !== null) return;
+      if (this.currentSessionId !== sessionId || this.activeOverlay !== null ||
+        this.projection?.attention !== null || !this.actionAvailability().nativeIdle) return;
       this.openPicker("session-picker", new SearchablePickerOverlay(
         "Session",
         choices,

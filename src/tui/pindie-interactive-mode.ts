@@ -99,6 +99,7 @@ export class PindieInteractiveMode {
 
     const viewOptions: PindieTuiViewOptions = {
       terminal: options.terminal,
+      cwd: options.cwd,
       startupNotices: startupNotices(options),
       onSubmit: (text) => this.handleSubmit(text),
       onFollowUp: (text) => this.handleFollowUp(text),

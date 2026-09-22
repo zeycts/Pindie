@@ -321,10 +321,7 @@ export class PiRuntimeAdapter {
       candidate.provider === provider && candidate.id === modelId)) {
       throw new Error(`Model is no longer available: ${provider}/${modelId}`);
     }
-    const scoped = session.scopedModels.find(({ model: candidate }) =>
-      candidate.provider === provider && candidate.id === modelId);
     await session.setModel(model);
-    if (scoped?.thinkingLevel !== undefined) session.setThinkingLevel(scoped.thinkingLevel);
   }
 
   async getActiveProjectSessionChoices(): Promise<readonly ActiveProjectSessionChoice[]> {
