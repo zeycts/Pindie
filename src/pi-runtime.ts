@@ -207,6 +207,42 @@ export class PiRuntimeAdapter {
     return this.activeSession.bindExtensions(bindings);
   }
 
+  /** Wait for whichever native Session is active at call time to settle. */
+  waitForActiveSessionIdle(): Promise<void> {
+    return this.activeSession.waitForIdle();
+  }
+
+  newSession(
+    options?: Parameters<AgentSessionRuntime["newSession"]>[0],
+  ): ReturnType<AgentSessionRuntime["newSession"]> {
+    return this.nativeRuntime.newSession(options);
+  }
+
+  forkActiveSession(
+    entryId: Parameters<AgentSessionRuntime["fork"]>[0],
+    options?: Parameters<AgentSessionRuntime["fork"]>[1],
+  ): ReturnType<AgentSessionRuntime["fork"]> {
+    return this.nativeRuntime.fork(entryId, options);
+  }
+
+  navigateActiveSessionTree(
+    targetId: Parameters<AgentSession["navigateTree"]>[0],
+    options?: Parameters<AgentSession["navigateTree"]>[1],
+  ): Promise<{ cancelled: boolean }> {
+    return this.activeSession.navigateTree(targetId, options);
+  }
+
+  switchActiveSession(
+    sessionPath: Parameters<AgentSessionRuntime["switchSession"]>[0],
+    options?: Pick<NonNullable<Parameters<AgentSessionRuntime["switchSession"]>[1]>, "withSession">,
+  ): ReturnType<AgentSessionRuntime["switchSession"]> {
+    return this.nativeRuntime.switchSession(sessionPath, options);
+  }
+
+  reloadActiveSession(): Promise<void> {
+    return this.activeSession.reload();
+  }
+
   /** Read Pi's native thinking level for the Session active at call time. */
   getActiveSessionThinkingLevel(): AgentSession["thinkingLevel"] {
     return this.activeSession.thinkingLevel;

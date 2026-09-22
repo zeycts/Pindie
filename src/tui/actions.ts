@@ -261,7 +261,7 @@ export const PINDIE_ACTIONS: readonly PindieActionDefinition[] = [
 export const PINDIE_ACTION_REGISTRY: ReadonlyMap<PindieActionId, PindieActionDefinition> =
   new Map(PINDIE_ACTIONS.map((action) => [action.id, action]));
 
-export type PindieOverlayKind = "command-palette" | "block-viewer";
+export type PindieOverlayKind = "command-palette" | "block-viewer" | "extension-dialog";
 
 export interface PindieInteractionState {
   readonly focusMode: "composer" | "timeline" | "attention";

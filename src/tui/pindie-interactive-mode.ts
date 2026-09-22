@@ -1,5 +1,6 @@
 import type {
   AgentSessionEvent,
+  ExtensionCommandContextActions,
   InteractiveModeOptions,
 } from "@earendil-works/pi-coding-agent";
 import type { Terminal } from "@earendil-works/pi-tui";
@@ -20,6 +21,7 @@ import {
   type PindieTuiViewOptions,
   type PindieTuiViewPort,
 } from "./view.ts";
+import { PindieExtensionUIBridge } from "./extension-ui.ts";
 
 export interface PindieInteractiveModeOptions extends Pick<
   InteractiveModeOptions,
@@ -81,6 +83,7 @@ export class PindieInteractiveMode {
   private userSequence = 1;
   private abortInFlight = false;
   private attentionResponseInFlight = false;
+  private extensionUI: PindieExtensionUIBridge | null = null;
   private exitResolver: (() => void) | null = null;
   private exitRequested = false;
   private stopped = false;
@@ -150,11 +153,28 @@ export class PindieInteractiveMode {
     };
   }
 
-  private extensionBindings() {
+  private extensionCommandContextActions(): ExtensionCommandContextActions {
     return {
-      // F2a owns semantic Pindie Attention and intentionally omits uiContext.
-      // F2b owns Pi ExtensionUIContext and runtime-permission compatibility.
+      waitForIdle: () => this.runtime.waitForActiveSessionIdle(),
+      newSession: (options) => this.runtime.newSession(options),
+      fork: async (entryId, options) => {
+        const result = await this.runtime.forkActiveSession(entryId, options);
+        return { cancelled: result.cancelled };
+      },
+      navigateTree: async (targetId, options) => {
+        const result = await this.runtime.navigateActiveSessionTree(targetId, options);
+        return { cancelled: result.cancelled };
+      },
+      switchSession: (sessionPath, options) => this.runtime.switchActiveSession(sessionPath, options),
+      reload: () => this.runtime.reloadActiveSession(),
+    };
+  }
+
+  private extensionBindings(uiContext: PindieExtensionUIBridge) {
+    return {
       mode: "tui" as const,
+      uiContext,
+      commandContextActions: this.extensionCommandContextActions(),
       abortHandler: () => this.handleAbort(),
       shutdownHandler: () => this.requestExit(),
       onError: (error: { error: string }) => {
@@ -166,7 +186,15 @@ export class PindieInteractiveMode {
   private async rebindSession(): Promise<void> {
     const generation = ++this.bindingGeneration;
     this.userSequence = 1;
-    await this.runtime.bindActiveSessionExtensions(this.extensionBindings());
+    const extensionUI = new PindieExtensionUIBridge(this.view);
+    this.extensionUI = extensionUI;
+    try {
+      await this.runtime.bindActiveSessionExtensions(this.extensionBindings(extensionUI));
+    } catch (error) {
+      extensionUI.invalidate();
+      if (this.extensionUI === extensionUI) this.extensionUI = null;
+      throw error;
+    }
 
     const sessionId = this.runtime.activeSessionId;
     const unsubscribe = this.runtime.subscribeActiveSession((event) => {
@@ -181,11 +209,15 @@ export class PindieInteractiveMode {
     } catch (error) {
       this.sessionBinding = null;
       unsubscribe();
+      extensionUI.invalidate();
+      if (this.extensionUI === extensionUI) this.extensionUI = null;
       throw error;
     }
   }
 
   private beforeSessionInvalidate(): void {
+    this.extensionUI?.invalidate();
+    this.extensionUI = null;
     this.unsubscribeSession();
     this.projection = null;
     this.bindingGeneration += 1;
@@ -396,6 +428,8 @@ export class PindieInteractiveMode {
   private shutdown(): void {
     if (this.stopped) return;
     this.stopped = true;
+    this.extensionUI?.invalidate();
+    this.extensionUI = null;
     this.unsubscribeSession();
     this.projection = null;
     this.exitResolver = null;

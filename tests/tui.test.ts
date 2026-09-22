@@ -3,11 +3,21 @@ import test from "node:test";
 
 import type {
   AgentSessionEvent,
+  ExtensionCommandContext,
+  ExtensionUIContext,
+  ExtensionAPI,
   SessionEntry,
+  TerminalInputHandler,
+  WorkingIndicatorOptions,
 } from "@earendil-works/pi-coding-agent";
 import type { Terminal } from "@earendil-works/pi-tui";
 
 import type { HumanGate, PindieState, VerificationCheck } from "../src/state.ts";
+import { PresentationIntegration } from "../src/presentation-integration.ts";
+import { RunCostTracker } from "../src/run-cost.ts";
+import { RunTimer } from "../src/run-timer.ts";
+import { SubscriptionUsageMonitor } from "../src/subscription-usage.ts";
+import { TaskMetricsTracker } from "../src/task-metrics.ts";
 
 import {
   type ActiveSessionClientLifecycle,
@@ -29,6 +39,10 @@ import {
   type PindieTuiViewOptions,
   type PindieTuiViewPort,
 } from "../src/tui/view.ts";
+import {
+  PindieExtensionUIBridge,
+  UnsupportedExtensionUICapabilityError,
+} from "../src/tui/extension-ui.ts";
 
 function event(value: Record<string, unknown>): AgentSessionEvent {
   return value as unknown as AgentSessionEvent;
@@ -140,6 +154,22 @@ class FakeView implements PindieTuiViewPort {
   }
 
   requestRender(): void {}
+  selectExtension(): Promise<string | undefined> { return Promise.resolve(undefined); }
+  confirmExtension(): Promise<boolean> { return Promise.resolve(false); }
+  inputExtension(): Promise<string | undefined> { return Promise.resolve(undefined); }
+  editorExtension(): Promise<string | undefined> { return Promise.resolve(undefined); }
+  cancelExtensionDialog(): void {}
+  showExtensionNotice(message: string, type = "info"): void { this.showNotice(`${type}: ${message}`); }
+  addExtensionTerminalInputHandler(_handler: TerminalInputHandler): () => void { return () => undefined; }
+  setExtensionStatus(): void {}
+  setExtensionWorkingMessage(): void {}
+  setExtensionWorkingVisible(): void {}
+  setExtensionWorkingIndicator(_options?: WorkingIndicatorOptions): void {}
+  setExtensionHiddenThinkingLabel(): void {}
+  setTerminalTitle(): void {}
+  restoreBaseTerminalTitle(): void {}
+  pasteToComposer(text: string): void { this.editorText += text; }
+  clearExtensionSessionState(): void {}
 
   submit(text: string): void {
     this.options.onSubmit?.(text);
@@ -189,6 +219,7 @@ class FakeRuntime {
   readonly clearQueueSessionIds: string[] = [];
   readonly abortSessionIds: string[] = [];
   abortWait: Promise<void> | null = null;
+  readonly commandCalls: string[] = [];
 
   get activeSessionId(): string {
     return this.sessionId;
@@ -213,6 +244,13 @@ class FakeRuntime {
   getActiveSessionBranch(): readonly SessionEntry[] {
     return this.branch;
   }
+
+  waitForActiveSessionIdle(): Promise<void> { this.commandCalls.push("waitForIdle"); return Promise.resolve(); }
+  newSession(): Promise<{ cancelled: boolean }> { this.commandCalls.push("newSession"); return Promise.resolve({ cancelled: false }); }
+  forkActiveSession(): Promise<{ cancelled: boolean }> { this.commandCalls.push("fork"); return Promise.resolve({ cancelled: false }); }
+  navigateActiveSessionTree(): Promise<{ cancelled: boolean }> { this.commandCalls.push("navigateTree"); return Promise.resolve({ cancelled: false }); }
+  switchActiveSession(): Promise<{ cancelled: boolean }> { this.commandCalls.push("switchSession"); return Promise.resolve({ cancelled: false }); }
+  reloadActiveSession(): Promise<void> { this.commandCalls.push("reload"); return Promise.resolve(); }
 
   bindActiveSessionExtensions(bindings: unknown): Promise<void> {
     this.bindings.push(bindings);
@@ -340,12 +378,16 @@ test("PindieInteractiveMode binds, projects, reduces events, and shuts down clea
 
   assert.equal(harness.view.startCalls, 1);
   assert.equal(harness.runtime.bindings.length, 1);
-  assert.deepEqual(harness.runtime.bindings[0], {
-    mode: "tui",
-    abortHandler: harness.runtime.bindings[0] && (harness.runtime.bindings[0] as any).abortHandler,
-    shutdownHandler: harness.runtime.bindings[0] && (harness.runtime.bindings[0] as any).shutdownHandler,
-    onError: harness.runtime.bindings[0] && (harness.runtime.bindings[0] as any).onError,
-  });
+  const bindings = harness.runtime.bindings[0] as {
+    mode: string;
+    uiContext?: ExtensionUIContext;
+    commandContextActions?: Record<string, unknown>;
+  };
+  assert.equal(bindings.mode, "tui");
+  assert.ok(bindings.uiContext);
+  assert.deepEqual(Object.keys(bindings.commandContextActions ?? {}).sort(), [
+    "fork", "navigateTree", "newSession", "reload", "switchSession", "waitForIdle",
+  ]);
   assert.equal(harness.view.applied.length, 1);
 
   harness.runtime.emit(event({
@@ -572,6 +614,7 @@ test("Escape restores native queues, aborts once, and never exits an idle Sessio
 
 class FakeTerminal implements Terminal {
   readonly writes: string[] = [];
+  readonly titles: string[] = [];
   columns = 80;
   rows = 24;
   started = false;
@@ -604,7 +647,7 @@ class FakeTerminal implements Terminal {
   clearLine(): void {}
   clearFromCursor(): void {}
   clearScreen(): void {}
-  setTitle(_title: string): void {}
+  setTitle(title: string): void { this.titles.push(title); }
   setProgress(_active: boolean): void {}
 
   emit(data: string): void {
@@ -1329,6 +1372,33 @@ test("authority-unavailable Attention blocks Composer and permits Timeline inspe
   view.stop();
 });
 
+test("authority-unavailable Attention preempts the Command Palette", async () => {
+  const terminal = new FakeTerminal();
+  const effects = { aborts: 0, submissions: 0, attentionResponses: 0 };
+  const view = new PindieTuiView({
+    terminal,
+    onAbort: () => { effects.aborts += 1; },
+    onSubmit: () => { effects.submissions += 1; },
+    onAttentionResponse: () => { effects.attentionResponses += 1; },
+  });
+  const base = viewProjection({ sessionId: "authority-preempts-palette" });
+  view.apply(base);
+  view.start();
+  terminal.emit("\u001bp");
+  assert.equal(view.getInteractionState().activeOverlay, "command-palette");
+
+  view.apply(withAttention(base, {
+    kind: "authority-unavailable",
+    reason: "state lease unavailable",
+  }));
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  assert.equal(view.getInteractionState().focusMode, "attention");
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /state lease unavailable/);
+  assert.deepEqual(effects, { aborts: 0, submissions: 0, attentionResponses: 0 });
+  view.stop();
+});
+
 test("controller delivers one idle Gate response as a prompt and fails closed otherwise", async () => {
   const harness = createHarness();
   harness.setPresentation(gatePresentation({ kind: "decision", question: "Choose", options: ["A", "B"] }));
@@ -1470,4 +1540,322 @@ test("Session epoch resets all UI-local interaction state and restores Editor fo
   terminal.emit("x");
   assert.equal(view.getEditorText(), "x");
   view.stop();
+});
+
+test("Extension UI dialogs use overlays and preserve the Composer", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  view.apply(viewProjection({ sessionId: "extension-dialogs" }));
+  view.start();
+  view.setEditorText("composer draft");
+  const ui = new PindieExtensionUIBridge(view);
+
+  const selected = ui.select("Choose model", ["A", "B"]);
+  assert.equal(view.getInteractionState().activeOverlay, "extension-dialog");
+  terminal.emit("j");
+  terminal.emit("\r");
+  assert.equal(await selected, "B");
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  assert.equal(view.getEditorText(), "composer draft");
+
+  const cancelled = ui.select("Cancel", ["A"]);
+  terminal.emit("\u001b");
+  assert.equal(await cancelled, undefined);
+
+  const yes = ui.confirm("Permission", "Run command?");
+  terminal.emit("\r");
+  assert.equal(await yes, true);
+  const no = ui.confirm("Permission", "Run command?");
+  terminal.emit("j");
+  terminal.emit("\r");
+  assert.equal(await no, false);
+  const escaped = ui.confirm("Permission", "Run command?");
+  terminal.emit("\u001b");
+  assert.equal(await escaped, false);
+
+  const input = ui.input("Name", "placeholder");
+  terminal.emit("中文 value");
+  terminal.emit("\r");
+  assert.equal(await input, "中文 value");
+  const inputCancelled = ui.input("Name");
+  terminal.emit("ignored");
+  terminal.emit("\u001b");
+  assert.equal(await inputCancelled, undefined);
+
+  const editor = ui.editor("Details", "first");
+  terminal.emit("\u001b\r");
+  terminal.emit("second");
+  terminal.emit("\r");
+  assert.equal(await editor, "first\nsecond");
+  const editorCancelled = ui.editor("Details", "keep");
+  terminal.emit("\u001b");
+  assert.equal(await editorCancelled, undefined);
+  assert.equal(view.getEditorText(), "composer draft");
+
+  ui.invalidate();
+  view.stop();
+});
+
+test("Extension dialog remains above a Human Gate that appears underneath it", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  const base = viewProjection({ sessionId: "extension-before-gate" });
+  view.apply(base);
+  view.start();
+  const ui = new PindieExtensionUIBridge(view);
+
+  let resolved = false;
+  const selected = ui.select("Extension choice", ["A", "B"]);
+  void selected.then(() => { resolved = true; });
+  assert.equal(view.getInteractionState().activeOverlay, "extension-dialog");
+
+  const gated = withAttention(base, {
+    kind: "human-gate",
+    gateKind: "decision",
+    question: "Gate remains unresolved?",
+    options: ["Yes", "No"],
+  });
+  view.apply(gated);
+  await flush();
+  assert.equal(view.getInteractionState().activeOverlay, "extension-dialog");
+  assert.equal(resolved, false);
+  assert.equal(gated.attention?.kind, "human-gate");
+
+  terminal.emit("j");
+  terminal.emit("\r");
+  assert.equal(await selected, "B");
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  assert.equal(view.getInteractionState().focusMode, "attention");
+  assert.equal(gated.attention?.kind, "human-gate");
+
+  ui.invalidate();
+  view.stop();
+});
+
+test("Extension dialog preempts the Command Palette and returns the human answer", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  view.apply(viewProjection({ sessionId: "palette-before-extension" }));
+  view.start();
+  view.setEditorText("composer draft");
+  terminal.emit("\u001bp");
+  assert.equal(view.getInteractionState().activeOverlay, "command-palette");
+
+  const ui = new PindieExtensionUIBridge(view);
+  const selected = ui.select("Extension choice", ["A", "B"]);
+  assert.equal(view.getInteractionState().activeOverlay, "extension-dialog");
+  terminal.emit("j");
+  terminal.emit("\r");
+  assert.equal(await selected, "B");
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  assert.equal(view.getInteractionState().focusMode, "composer");
+  assert.equal(view.getEditorText(), "composer draft");
+
+  ui.invalidate();
+  view.stop();
+});
+
+test("Extension dialog abort, timeout, serialization, and epoch invalidation are bounded", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  view.apply(viewProjection({ sessionId: "extension-lifecycle" }));
+  view.start();
+  const ui = new PindieExtensionUIBridge(view);
+
+  const already = new AbortController();
+  already.abort();
+  assert.equal(await ui.select("Never", ["A"], { signal: already.signal }), undefined);
+  assert.equal(view.getInteractionState().activeOverlay, null);
+
+  const activeAbort = new AbortController();
+  const aborted = ui.input("Abort", undefined, { signal: activeAbort.signal });
+  assert.equal(view.getInteractionState().activeOverlay, "extension-dialog");
+  activeAbort.abort();
+  assert.equal(await aborted, undefined);
+  assert.equal(view.getInteractionState().activeOverlay, null);
+
+  const timedOut = ui.select("Timeout", ["A"], { timeout: 5 });
+  assert.equal(await timedOut, undefined);
+  assert.equal(view.getInteractionState().activeOverlay, null);
+
+  const first = ui.select("First", ["A"]);
+  const second = ui.confirm("Second", "Later");
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /First/);
+  terminal.writes.length = 0;
+  terminal.emit("\r");
+  assert.equal(await first, "A");
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /Second/);
+
+  ui.invalidate();
+  assert.equal(await second, false);
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  assert.equal(await ui.input("Stale"), undefined);
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  view.stop();
+});
+
+test("Extension terminal input, Composer access, status, notify, and deferred failures are truthful", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  const projection = viewProjection({ sessionId: "extension-surface", running: true });
+  view.apply(projection);
+  view.start();
+  const ui = new PindieExtensionUIBridge(view);
+  const observed: string[] = [];
+  const unsubscribe = ui.onTerminalInput((data) => {
+    observed.push(data);
+    return data === "x" ? { consume: true } : data === "q" ? { data: "Q" } : undefined;
+  });
+  terminal.emit("x");
+  assert.equal(view.getEditorText(), "");
+  terminal.emit("q");
+  assert.equal(view.getEditorText(), "Q");
+  assert.deepEqual(observed, ["x", "q"]);
+  unsubscribe();
+  terminal.emit("z");
+  assert.equal(view.getEditorText(), "Qz");
+
+  ui.setEditorText("draft");
+  ui.pasteToEditor(" + pasted");
+  assert.equal(ui.getEditorText(), "draft + pasted");
+  ui.setStatus("a", "foo");
+  ui.setStatus("b", "bar");
+  ui.setStatus("a", undefined);
+  ui.setWorkingMessage("Indexing project");
+  ui.setWorkingVisible(true);
+  ui.setWorkingIndicator({ frames: ["◆"] });
+  ui.setHiddenThinkingLabel("Reasoning hidden");
+  ui.notify("careful", "warning");
+  await waitForTuiRender();
+  const rendered = terminal.writes.join("");
+  assert.match(rendered, /Extensions · bar/);
+  assert.match(rendered, /◆ Indexing project/);
+  assert.match(rendered, /Warning · careful/);
+  assert.equal(projection.timeline.length, 0);
+  assert.throws(() => ui.setWidget("x", ["no"]), UnsupportedExtensionUICapabilityError);
+
+  ui.invalidate();
+  terminal.emit("x");
+  assert.equal(view.getEditorText(), "draft + pastedx");
+  view.stop();
+});
+
+test("Extension title returns to the Pindie baseline across Session bridges", () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  view.apply(viewProjection({ sessionId: "title-session-a" }));
+  view.start();
+
+  const sessionA = new PindieExtensionUIBridge(view);
+  sessionA.setTitle("A custom title");
+  assert.equal(terminal.titles.at(-1), "A custom title");
+  sessionA.invalidate();
+  assert.equal(terminal.titles.at(-1), "Pindie");
+
+  view.apply(viewProjection({ sessionId: "title-session-b" }));
+  const sessionB = new PindieExtensionUIBridge(view);
+  assert.notEqual(terminal.titles.at(-1), "A custom title");
+  sessionB.invalidate();
+  view.stop();
+});
+
+test("Extension overlay outranks semantic Attention without resolving the Human Gate", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  const gated = withAttention(viewProjection({ sessionId: "extension-over-gate" }), {
+    kind: "human-gate",
+    gateKind: "decision",
+    question: "Keep gate open?",
+    options: ["Yes", "No"],
+  });
+  view.apply(gated);
+  view.start();
+  view.setEditorText("hidden composer draft");
+  const ui = new PindieExtensionUIBridge(view);
+  const dialog = ui.select("Extension choice", ["A", "B"]);
+  terminal.emit("\u001b");
+  assert.equal(await dialog, undefined);
+  assert.equal(view.getInteractionState().focusMode, "attention");
+  assert.equal(view.getEditorText(), "hidden composer draft");
+  assert.equal(gated.attention?.kind, "human-gate");
+  ui.invalidate();
+  view.stop();
+});
+
+test("owned mode runs /reasoning through the generic ExtensionUIContext bridge", async () => {
+  const runtime = new FakeRuntime();
+  const terminal = new FakeTerminal();
+  const presentationLease = { current: () => null };
+  const mode = new PindieInteractiveMode(runtime.adapter(), {
+    presentation: presentationLease,
+    terminal,
+    createView: (options) => new PindieTuiView(options),
+    scheduleRefresh: () => ({} as ReturnType<typeof setInterval>),
+    clearRefresh: () => undefined,
+  });
+  const running = mode.run();
+  await flush();
+
+  const binding = runtime.bindings[0] as { mode: string; uiContext: ExtensionUIContext };
+  assert.equal(binding.mode, "tui");
+  assert.ok(binding.uiContext instanceof PindieExtensionUIBridge);
+
+  const appliedThinkingLevels: string[] = [];
+  const pi = {
+    getThinkingLevel: () => "medium",
+    setThinkingLevel: (level: string) => appliedThinkingLevels.push(level),
+  } as unknown as ExtensionAPI;
+  const presentation = new PresentationIntegration(pi, {
+    getSemanticSnapshot: () => ({ ok: false, error: "not needed" }),
+    getState: () => ({ task: null }),
+    getProjectRoot: () => "/repo",
+    getAuthoritativeState: () => ({ task: null }),
+    getStateUnavailableReason: () => null,
+    getRunStale: () => false,
+    subscriptionUsageMonitor: new SubscriptionUsageMonitor({ fetchUsage: async () => null }),
+    runTimer: new RunTimer(),
+    runCost: new RunCostTracker(),
+    taskMetrics: new TaskMetricsTracker(),
+  });
+  const command = presentation.handleReasoningCommand("", {
+    mode: "tui",
+    ui: binding.uiContext,
+    sessionManager: { getEntries: () => [] },
+  } as unknown as ExtensionCommandContext);
+
+  await waitForTuiRender();
+  const selector = terminal.writes.join("");
+  assert.match(selector, /Reasoning/);
+  assert.match(selector, /auto/);
+  assert.match(selector, /manual/);
+  terminal.emit("\r");
+  await command;
+  assert.equal(presentation.reasoning?.snapshot.mode, "auto");
+  assert.deepEqual(appliedThinkingLevels, ["medium"]);
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /Reasoning: auto/);
+
+  terminal.emit("\u0004");
+  await running;
+});
+
+test("owned mode binds all ExtensionCommandContextActions to the runtime adapter", async () => {
+  const harness = createHarness();
+  const running = harness.mode.run();
+  await flush();
+  const actions = (harness.runtime.bindings[0] as any).commandContextActions;
+  await actions.waitForIdle();
+  await actions.newSession();
+  await actions.fork("entry");
+  await actions.navigateTree("entry");
+  await actions.switchSession("session.jsonl");
+  await actions.reload();
+  assert.deepEqual(harness.runtime.commandCalls, [
+    "waitForIdle", "newSession", "fork", "navigateTree", "switchSession", "reload",
+  ]);
+  assert.equal(harness.runtime.bindings.length, 1, "actions do not manually rebind");
+  harness.view.exit();
+  await running;
 });

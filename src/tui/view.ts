@@ -1,6 +1,10 @@
 import { basename } from "node:path";
 
-import { copyToClipboard } from "@earendil-works/pi-coding-agent";
+import {
+  copyToClipboard,
+  type TerminalInputHandler,
+  type WorkingIndicatorOptions,
+} from "@earendil-works/pi-coding-agent";
 import {
   Container,
   Editor,
@@ -13,6 +17,7 @@ import {
   Text,
   TuiAltScreen,
   type Component,
+  type Focusable,
   type OverlayHandle,
   type SelectItem,
   type Terminal,
@@ -36,6 +41,7 @@ import {
   commandText,
   toolPath,
 } from "../ui-timeline.ts";
+import type { PindieExtensionUIViewPort } from "./extension-ui.ts";
 import type {
   PindieUiProjection,
   UiAttentionProjection,
@@ -50,7 +56,7 @@ import type {
   UiWorkBlock,
 } from "../ui-projection.ts";
 
-export interface PindieTuiViewPort {
+export interface PindieTuiViewPort extends PindieExtensionUIViewPort {
   start(): void;
   stop(): void;
   apply(projection: PindieUiProjection): void;
@@ -469,6 +475,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const BASE_TERMINAL_TITLE = "Pindie";
+
 /**
  * Overlay content is rendered outside the main pi-tui layout tree. This small
  * public-API adapter gives a ScrollView the bounded viewport it would receive
@@ -509,6 +517,102 @@ class BlockViewerOverlay implements Component {
   invalidate(): void {
     this.title.invalidate();
     this.scroll.invalidate();
+  }
+}
+
+class ExtensionSelectOverlay extends VStack {
+  private readonly title: string;
+  private readonly description: string | undefined;
+  private readonly options: readonly string[];
+  private readonly select: (value: string) => void;
+  private readonly cancel: () => void;
+  private selectedIndex = 0;
+
+  constructor(title: string, options: readonly string[], select: (value: string) => void, cancel: () => void, description?: string) {
+    super();
+    this.title = title;
+    this.description = description;
+    this.options = options;
+    this.select = select;
+    this.cancel = cancel;
+    this.rebuild();
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.up) || data === "k") this.selectedIndex = Math.max(0, this.selectedIndex - 1);
+    else if (matchesKey(data, Key.down) || data === "j") this.selectedIndex = Math.min(this.options.length - 1, this.selectedIndex + 1);
+    else if (matchesKey(data, Key.enter) || data === "\n") {
+      const value = this.options[this.selectedIndex];
+      if (value !== undefined) this.select(value);
+      return;
+    } else if (matchesKey(data, Key.escape)) {
+      this.cancel();
+      return;
+    }
+    this.rebuild();
+  }
+
+  private rebuild(): void {
+    this.clear();
+    this.addChild(new Text(this.title, 1, 0));
+    if (this.description !== undefined) this.addChild(new Text(this.description, 1, 0));
+    this.addChild(new Text(this.options.map((option, index) => `${index === this.selectedIndex ? "›" : " "} ${option}`).join("\n"), 1, 0));
+    this.addChild(new Text("↑↓/jk navigate · Enter select · Esc cancel", 1, 0));
+  }
+}
+
+class ExtensionInputOverlay extends VStack implements Focusable {
+  private readonly input: Input;
+  private readonly cancel: () => void;
+  private _focused = false;
+
+  constructor(title: string, placeholder: string | undefined, submit: (value: string) => void, cancel: () => void) {
+    const input = new Input({ placeholder });
+    input.onSubmit = submit;
+    super([new Text(title, 1, 0), input, new Text("Enter submit · Esc cancel", 1, 0)]);
+    this.input = input;
+    this.cancel = cancel;
+  }
+
+  get focused(): boolean { return this._focused; }
+  set focused(value: boolean) {
+    this._focused = value;
+    this.input.focused = value;
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.escape)) this.cancel();
+    else this.input.handleInput(data);
+  }
+}
+
+class ExtensionEditorOverlay extends VStack implements Focusable {
+  private readonly editor: Editor;
+  private readonly cancel: () => void;
+  private _focused = false;
+
+  constructor(tui: TUI, title: string, prefill: string | undefined, submit: (value: string) => void, cancel: () => void) {
+    const editor = new Editor(tui, editorTheme, { paddingX: 1 });
+    editor.setText(prefill ?? "");
+    editor.onSubmit = submit;
+    super([
+      new Text(title, 1, 0),
+      editor,
+      new Text("Enter submit · Shift+Enter newline · Esc cancel", 1, 0),
+    ]);
+    this.editor = editor;
+    this.cancel = cancel;
+  }
+
+  get focused(): boolean { return this._focused; }
+  set focused(value: boolean) {
+    this._focused = value;
+    this.editor.focused = value;
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.escape)) this.cancel();
+    else this.editor.handleInput(data);
   }
 }
 
@@ -560,6 +664,14 @@ export class PindieTuiView implements PindieTuiViewPort {
   private viewerBlockId: string | null = null;
   private viewerContent: Container | null = null;
   private viewerScroll: ScrollView | null = null;
+  private extensionDialogComponent: (Component & { dispose?(): void }) | null = null;
+  private extensionDialogCancel: (() => void) | null = null;
+  private readonly extensionTerminalHandlers = new Set<TerminalInputHandler>();
+  private readonly extensionStatuses = new Map<string, string>();
+  private workingMessage: string | undefined;
+  private workingVisible = true;
+  private workingIndicator: WorkingIndicatorOptions | undefined;
+  private hiddenThinkingLabel: string | undefined;
 
   constructor(options: PindieTuiViewOptions = {}) {
     const terminal = options.terminal ?? new ProcessTerminal();
@@ -633,9 +745,11 @@ export class PindieTuiView implements PindieTuiViewPort {
       this.resetAttentionMechanics();
     }
 
-    const humanGateAppeared = previousAttention?.kind !== "human-gate" &&
-      projection.attention?.kind === "human-gate";
-    if (sessionChanged || humanGateAppeared) this.closeOverlay();
+    const semanticAttentionActivatedOrChanged = projection.attention !== null &&
+      attentionChanged;
+    if (!sessionChanged && semanticAttentionActivatedOrChanged) {
+      this.closeLowerPriorityOverlay();
+    }
     if (sessionChanged) {
       this.focusMode = projection.attention === null ? "composer" : "attention";
     } else if (projection.attention !== null && (attentionChanged || this.focusMode === "composer")) {
@@ -686,10 +800,120 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.setEditorText("");
   }
 
+  pasteToComposer(text: string): void {
+    this.editor.handleInput(`\u001b[200~${text}\u001b[201~`);
+    this.renderStatus();
+    this.requestRender();
+  }
+
   showNotice(message: string): void {
     this.notice = message;
     this.renderComposer();
     this.requestRender();
+  }
+
+  showExtensionNotice(message: string, type: "info" | "warning" | "error" = "info"): void {
+    const label = type === "warning" ? "Warning" : type === "error" ? "Error" : "Info";
+    this.showNotice(`${label} · ${message}`);
+  }
+
+  setTerminalTitle(title: string): void {
+    this.tui.terminal.setTitle(title);
+  }
+
+  restoreBaseTerminalTitle(): void {
+    this.tui.terminal.setTitle(BASE_TERMINAL_TITLE);
+  }
+
+  addExtensionTerminalInputHandler(handler: TerminalInputHandler): () => void {
+    this.extensionTerminalHandlers.add(handler);
+    return () => this.extensionTerminalHandlers.delete(handler);
+  }
+
+  setExtensionStatus(key: string, text: string | undefined): void {
+    if (text === undefined) this.extensionStatuses.delete(key);
+    else this.extensionStatuses.set(key, text);
+    this.renderStatus();
+    this.requestRender();
+  }
+
+  setExtensionWorkingMessage(message?: string): void {
+    this.workingMessage = message;
+    this.renderStatus();
+    this.requestRender();
+  }
+
+  setExtensionWorkingVisible(visible: boolean): void {
+    this.workingVisible = visible;
+    this.renderStatus();
+    this.requestRender();
+  }
+
+  setExtensionWorkingIndicator(options?: WorkingIndicatorOptions): void {
+    this.workingIndicator = options;
+    this.renderStatus();
+    this.requestRender();
+  }
+
+  setExtensionHiddenThinkingLabel(label?: string): void {
+    this.hiddenThinkingLabel = label;
+    this.renderStatus();
+    this.requestRender();
+  }
+
+  clearExtensionSessionState(): void {
+    this.cancelExtensionDialog();
+    this.extensionTerminalHandlers.clear();
+    this.extensionStatuses.clear();
+    this.workingMessage = undefined;
+    this.workingVisible = true;
+    this.workingIndicator = undefined;
+    this.hiddenThinkingLabel = undefined;
+    this.restoreBaseTerminalTitle();
+    this.renderStatus();
+    this.requestRender();
+  }
+
+  selectExtension(title: string, options: readonly string[]): Promise<string | undefined> {
+    return this.openExtensionDialog<string | undefined>((complete) => new ExtensionSelectOverlay(
+      title,
+      options,
+      (value) => complete(value),
+      () => complete(undefined),
+    ), undefined);
+  }
+
+  confirmExtension(title: string, message: string): Promise<boolean> {
+    return this.openExtensionDialog((complete) => new ExtensionSelectOverlay(
+      title,
+      ["Confirm", "Cancel"],
+      (value) => complete(value === "Confirm"),
+      () => complete(false),
+      message,
+    ), false);
+  }
+
+  inputExtension(title: string, placeholder?: string): Promise<string | undefined> {
+    return this.openExtensionDialog<string | undefined>((complete) => new ExtensionInputOverlay(
+      title,
+      placeholder,
+      (value) => complete(value),
+      () => complete(undefined),
+    ), undefined);
+  }
+
+  editorExtension(title: string, prefill?: string): Promise<string | undefined> {
+    return this.openExtensionDialog<string | undefined>((complete) => new ExtensionEditorOverlay(
+      this.tui,
+      title,
+      prefill,
+      (value) => complete(value),
+      () => complete(undefined),
+    ), undefined);
+  }
+
+  cancelExtensionDialog(): void {
+    this.extensionDialogCancel?.();
   }
 
   getInteractionState(): PindieTuiInteractionSnapshot {
@@ -725,7 +949,13 @@ export class PindieTuiView implements PindieTuiViewPort {
     };
   }
 
-  private handleInput(data: string): { consume: boolean } | undefined {
+  private handleInput(data: string): { consume?: boolean; data?: string } | undefined {
+    if (this.activeOverlay === "extension-dialog") {
+      this.extensionDialogComponent?.handleInput?.(data);
+      this.requestRender();
+      return { consume: true };
+    }
+
     const action = resolveActionForInput(
       this.actionAvailability(),
       this.interactionState(),
@@ -753,6 +983,22 @@ export class PindieTuiView implements PindieTuiViewPort {
       this.interactionState(),
       data,
     )) return { consume: true };
+
+    let forwarded = data;
+    if (this.focusMode === "composer") {
+      for (const handler of [...this.extensionTerminalHandlers]) {
+        const result = handler(forwarded);
+        if (result?.data !== undefined) forwarded = result.data;
+        if (result?.consume === true) return { consume: true };
+      }
+    }
+
+    if (forwarded !== data) {
+      this.editor.handleInput(forwarded);
+      this.renderStatus();
+      this.requestRender();
+      return { consume: true };
+    }
 
     if (this.focusMode === "composer" || this.focusMode === "attention") {
       // Pi Editor owns text mutation, including multiline, paste, and IME.
@@ -976,10 +1222,21 @@ export class PindieTuiView implements PindieTuiViewPort {
       this.status.setText("Status · idle");
       return;
     }
-    this.status.setText(formatStatus(
+    const native = formatStatus(
       this.projection,
       contextualHintActions(this.actionAvailability(), this.interactionState()),
-    ));
+    );
+    const additions: string[] = [];
+    if (this.workingVisible && this.projection.status.isIdle === false) {
+      const frames = this.workingIndicator?.frames;
+      if (frames === undefined || frames.length > 0) {
+        additions.push(`${frames?.[0] ?? "●"} ${this.workingMessage ?? "Working"}`);
+      }
+    }
+    const statuses = [...this.extensionStatuses.values()].slice(0, 3);
+    if (statuses.length > 0) additions.push(`Extensions · ${statuses.join(" · ")}`);
+    if (this.hiddenThinkingLabel !== undefined) additions.push(`Thinking · ${this.hiddenThinkingLabel}`);
+    this.status.setText(additions.length === 0 ? native : `${native}\n${additions.join(" · ")}`);
   }
 
   private openCommandPalette(): void {
@@ -1104,7 +1361,50 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.viewerContent?.addChild(new Text(formatBlock(block, "full"), 1, 0));
   }
 
+  private openExtensionDialog<T>(
+    create: (complete: (value: T) => void) => Component & { dispose?(): void },
+    cancelValue: T,
+  ): Promise<T> {
+    this.closeLowerPriorityOverlay();
+    if (this.activeOverlay !== null) return Promise.resolve(cancelValue);
+    return new Promise<T>((resolve) => {
+      let settled = false;
+      const complete = (value: T) => {
+        if (settled) return;
+        settled = true;
+        const component = this.extensionDialogComponent;
+        this.extensionDialogCancel = null;
+        this.extensionDialogComponent = null;
+        component?.dispose?.();
+        this.closeOverlay();
+        resolve(value);
+      };
+      const component = create(complete);
+      this.extensionDialogComponent = component;
+      this.extensionDialogCancel = () => complete(cancelValue);
+      this.activeOverlay = "extension-dialog";
+      this.overlayHandle = this.tui.showOverlay(component, {
+        width: "80%",
+        maxHeight: "80%",
+        anchor: "center",
+        margin: 1,
+      });
+      this.tui.setFocus(component);
+      this.requestRender();
+    });
+  }
+
+  private closeLowerPriorityOverlay(): void {
+    if (this.activeOverlay === "command-palette" || this.activeOverlay === "block-viewer") {
+      this.closeOverlay();
+    }
+  }
+
   private closeOverlay(): void {
+    if (this.activeOverlay === "extension-dialog" && this.extensionDialogCancel !== null) {
+      this.extensionDialogCancel();
+      return;
+    }
     const handle = this.overlayHandle;
     this.overlayHandle = null;
     this.activeOverlay = null;
@@ -1121,6 +1421,10 @@ export class PindieTuiView implements PindieTuiViewPort {
   }
 
   private restoreLogicalFocus(): void {
+    if (this.activeOverlay === "extension-dialog" && this.extensionDialogComponent !== null) {
+      this.tui.setFocus(this.extensionDialogComponent);
+      return;
+    }
     const attention = this.projection?.attention ?? null;
     const freeFormGate = this.focusMode === "attention" &&
       attention?.kind === "human-gate" && gateOptions(attention).length === 0;

@@ -1,6 +1,6 @@
 # Pindie TUI v0.1 — Architecture and Implementation Contract
 
-Status: Slices A–E, F1, and F2a are implemented; F2b and G remain intentionally deferred.
+Status: Slices A–E, F1, F2a, and F2b1 are implemented; F2b2 is next and G remains intentionally deferred.
 
 Baseline: Pindie main after Pi 0.86.1 compatibility upgrade.
 
@@ -885,14 +885,38 @@ Implemented:
 
 A Human Gate response is ordinary user input to the Agent. The TUI never calls `pindie_gate_resolve` or mutates Gate State directly; the Agent interprets the response and resolves the semantic Gate through the existing Pindie tool/runtime path.
 
-F2a intentionally leaves Pi `ExtensionUIContext` unbound. Pindie's `/reasoning` interactive selector therefore remains feature-gated in the owned TUI until F2b closes Pi runtime-permission and Extension UI compatibility.
+#### F2b — Extension UI + Pickers (implementation in progress)
 
-#### F2b — Extension UI + Pickers (next)
+##### F2b1 — Extension Interaction Bridge (implemented)
+
+The owned TUI now binds a Session-scoped `ExtensionUIContext` and all six `ExtensionCommandContextActions`. Extension dialogs are ephemeral UI overlays, serialize behind one bridge-local queue, and are cancelled with their queued successors before Session invalidation. They never become Human Gates or semantic Timeline events. The active input priority is `Extension overlay → semantic Attention → Timeline → Composer → Global`: an Extension dialog preempts the Command Palette or Block Viewer, while newly appearing semantic Attention remains authoritative underneath and does not cancel the dialog.
+
+Implemented `ExtensionUIContext` capabilities:
+
+- `select`, `confirm`, `input`, and multiline `editor`, including cancel, `AbortSignal`, timeout, and overlay cleanup;
+- `notify` with info/warning/error severity;
+- `onTerminalInput` with consume/transform behavior below modal and semantic input ownership;
+- keyed `setStatus` contributions rendered as a bounded secondary status;
+- `setWorkingMessage`, `setWorkingVisible`, `setWorkingIndicator`, and `setHiddenThinkingLabel` as UI-local ambient presentation;
+- `pasteToEditor`, `setEditorText`, and `getEditorText` against the ordinary Composer;
+- `setTitle` against the active terminal, restored to the Pindie-owned `Pindie` baseline when the Extension Session is cleared.
+
+The command-context mapping is exact: `waitForIdle → AgentSession.waitForIdle`, `newSession → AgentSessionRuntime.newSession`, `fork → AgentSessionRuntime.fork`, `navigateTree → AgentSession.navigateTree`, `switchSession → AgentSessionRuntime.switchSession`, and `reload → AgentSession.reload`. Session-replacing actions rely exclusively on the existing runtime `beforeSessionInvalidate` / `rebindSession` lifecycle.
+
+Explicitly deferred to F2b2 (each currently throws `UnsupportedExtensionUICapabilityError`; none is silently accepted):
+
+- `setWidget`, `setFooter`, and `setHeader`;
+- `custom`;
+- `addAutocompleteProvider`, `setEditorComponent`, and `getEditorComponent`;
+- `theme`, `getAllThemes`, `getTheme`, and `setTheme`;
+- `getToolsExpanded` and `setToolsExpanded`.
+
+##### F2b2 — UI Contributions + Pickers (next)
 
 Implement:
 
-- runtime permission UI;
-- complete `ExtensionUIContext` bridge and `commandContextActions` compatibility;
+- widget/header/footer and custom UI compatibility;
+- theme, custom editor, autocomplete, and tools-expanded compatibility;
 - model/session picker and their `Alt+M`/`Alt+N` bindings.
 
 ### Slice G — Human Signal Unification and Cutover
