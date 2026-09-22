@@ -1372,6 +1372,33 @@ test("authority-unavailable Attention blocks Composer and permits Timeline inspe
   view.stop();
 });
 
+test("authority-unavailable Attention preempts the Command Palette", async () => {
+  const terminal = new FakeTerminal();
+  const effects = { aborts: 0, submissions: 0, attentionResponses: 0 };
+  const view = new PindieTuiView({
+    terminal,
+    onAbort: () => { effects.aborts += 1; },
+    onSubmit: () => { effects.submissions += 1; },
+    onAttentionResponse: () => { effects.attentionResponses += 1; },
+  });
+  const base = viewProjection({ sessionId: "authority-preempts-palette" });
+  view.apply(base);
+  view.start();
+  terminal.emit("\u001bp");
+  assert.equal(view.getInteractionState().activeOverlay, "command-palette");
+
+  view.apply(withAttention(base, {
+    kind: "authority-unavailable",
+    reason: "state lease unavailable",
+  }));
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  assert.equal(view.getInteractionState().focusMode, "attention");
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /state lease unavailable/);
+  assert.deepEqual(effects, { aborts: 0, submissions: 0, attentionResponses: 0 });
+  view.stop();
+});
+
 test("controller delivers one idle Gate response as a prompt and fails closed otherwise", async () => {
   const harness = createHarness();
   harness.setPresentation(gatePresentation({ kind: "decision", question: "Choose", options: ["A", "B"] }));

@@ -745,10 +745,11 @@ export class PindieTuiView implements PindieTuiViewPort {
       this.resetAttentionMechanics();
     }
 
-    const humanGateAppeared = previousAttention?.kind !== "human-gate" &&
-      projection.attention?.kind === "human-gate";
-    if (sessionChanged) this.closeOverlay();
-    else if (humanGateAppeared) this.closeLowerPriorityOverlay();
+    const semanticAttentionActivatedOrChanged = projection.attention !== null &&
+      attentionChanged;
+    if (!sessionChanged && semanticAttentionActivatedOrChanged) {
+      this.closeLowerPriorityOverlay();
+    }
     if (sessionChanged) {
       this.focusMode = projection.attention === null ? "composer" : "attention";
     } else if (projection.attention !== null && (attentionChanged || this.focusMode === "composer")) {
