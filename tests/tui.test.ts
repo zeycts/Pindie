@@ -14,6 +14,7 @@ import {
 } from "../src/pi-runtime.ts";
 import {
   createProjection,
+  reduceProjectionEvent,
   type PindieUiProjection,
 } from "../src/ui-projection.ts";
 import {
@@ -284,7 +285,9 @@ test("PindieInteractiveMode binds, projects, reduces events, and shuts down clea
   }));
   const latest = harness.view.applied.at(-1)!;
   assert.equal(latest.timeline[0]?.type, "work");
-  assert.equal(latest.timeline[0]?.id, "tool-a");
+  assert.equal(latest.timeline[0]?.id, "observe:tool-a");
+  assert.equal(latest.timeline[0]?.kind, "observation");
+  assert.equal((latest.timeline[0] as any).items[0]?.toolCallId, "tool-a");
 
   harness.refreshCallback();
   const refreshed = harness.view.applied.at(-1)!;
@@ -311,7 +314,7 @@ test("PindieInteractiveMode safely replaces Session subscriptions and projection
     args: {},
   }));
   const oldSubscription = harness.runtime.subscriptions[0]!;
-  assert.equal(harness.view.applied.at(-1)?.timeline[0]?.id, "old-tool");
+  assert.equal(harness.view.applied.at(-1)?.timeline[0]?.id, "observe:old-tool");
 
   harness.runtime.lifecycle?.beforeSessionInvalidate?.();
   assert.equal(oldSubscription.active, false);
@@ -548,4 +551,134 @@ test("PindieTuiView renders the four Slice D regions and restores terminal lifec
 
   view.stop();
   assert.equal(terminal.started, false);
+});
+
+test("PindieTuiView follows Work density without dumping successful output", async () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  const base = () => createProjection({
+    presentation: null,
+    session: {
+      sessionId: "density-session",
+      displayIdentity: "Density Session",
+      model: { provider: "test", modelId: "model" },
+      thinkingLevel: "high",
+      runtime: {
+        sessionId: "density-session",
+        isStreaming: false,
+        isCompacting: false,
+        isIdle: true,
+        pendingMessageCount: 0,
+      },
+      branch: [],
+    },
+  });
+
+  let projection = base();
+  projection = reduceProjectionEvent(projection, event({
+    type: "tool_execution_start",
+    toolCallId: "compact-command",
+    toolName: "bash",
+    args: { command: "pnpm test" },
+  }));
+  const successfulOutput = "successful output that should recede";
+  projection = reduceProjectionEvent(projection, event({
+    type: "tool_execution_end",
+    toolCallId: "compact-command",
+    toolName: "bash",
+    result: { content: [{ type: "text", text: successfulOutput }] },
+    isError: false,
+  }));
+  view.apply(projection);
+  view.start();
+  await flush();
+  const compact = terminal.writes.join("");
+  assert.match(compact, /Command · pnpm test/);
+  assert.doesNotMatch(compact, /successful output that should recede/);
+
+  let failed = base();
+  const failedOutput = Array.from({ length: 40 }, (_, index) => `failure line ${index}`).join("\n");
+  failed = reduceProjectionEvent(failed, event({
+    type: "tool_execution_start",
+    toolCallId: "failed-command",
+    toolName: "bash",
+    args: { command: "pnpm test" },
+  }));
+  failed = reduceProjectionEvent(failed, event({
+    type: "tool_execution_end",
+    toolCallId: "failed-command",
+    toolName: "bash",
+    result: { content: [{ type: "text", text: failedOutput }] },
+    isError: true,
+  }));
+  terminal.writes.length = 0;
+  view.apply(failed);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const failure = terminal.writes.join("");
+  assert.match(failure, /failure line 39/);
+  assert.doesNotMatch(failure, /failure line 0/);
+
+  let observation = base();
+  observation = reduceProjectionEvent(observation, event({
+    type: "tool_execution_start",
+    toolCallId: "density-read",
+    toolName: "read",
+    args: { path: "src/ui-projection.ts" },
+  }));
+  terminal.writes.length = 0;
+  view.apply(observation);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const running = terminal.writes.join("");
+  assert.match(running, /Inspecting project/);
+  assert.match(running, /Reading src\/ui-projection.ts/);
+
+  observation = reduceProjectionEvent(observation, event({
+    type: "tool_execution_end",
+    toolCallId: "density-read",
+    toolName: "read",
+    result: { content: [] },
+    isError: false,
+  }));
+  observation = reduceProjectionEvent(observation, event({
+    type: "tool_execution_start",
+    toolCallId: "density-grep",
+    toolName: "grep",
+    args: { pattern: "UiWorkBlock" },
+  }));
+  observation = reduceProjectionEvent(observation, event({
+    type: "tool_execution_end",
+    toolCallId: "density-grep",
+    toolName: "grep",
+    result: { content: [] },
+    isError: false,
+  }));
+  terminal.writes.length = 0;
+  view.apply(observation);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const grouped = terminal.writes.join("");
+  assert.match(grouped, /Inspected project/);
+  assert.match(grouped, /Read 1 file · Searched 1 pattern/);
+
+  let edit = base();
+  edit = reduceProjectionEvent(edit, event({
+    type: "tool_execution_start",
+    toolCallId: "density-edit",
+    toolName: "edit",
+    args: { path: "src/ui-projection.ts" },
+  }));
+  edit = reduceProjectionEvent(edit, event({
+    type: "tool_execution_end",
+    toolCallId: "density-edit",
+    toolName: "edit",
+    result: { content: [{ type: "text", text: "large edit details" }] },
+    isError: false,
+  }));
+  terminal.writes.length = 0;
+  view.apply(edit);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const editOutput = terminal.writes.join("");
+  assert.match(editOutput, /Edited src\/ui-projection.ts/);
+  assert.doesNotMatch(editOutput, /large edit details/);
+
+  view.stop();
 });

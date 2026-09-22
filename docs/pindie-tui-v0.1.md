@@ -836,7 +836,12 @@ Implemented behind `PINDIE_TUI=1`; the default Pi `InteractiveMode` remains the 
 Full interactive Extension UI / Attention interaction lands in Slice F.
 Do not implement every advanced Block/Overlay before first dogfood.
 
-### Slice E — Semantic Timeline (next implementation Slice)
+### Slice E — Semantic Timeline (implementation in progress)
+
+Implementation status:
+
+- E1 Work Timeline — implemented
+- E2 Pindie Semantic Timeline — next
 
 Implement:
 
