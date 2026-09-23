@@ -62,6 +62,7 @@ function settled(currentTask: PindieTask, options: { automatic?: boolean; quota?
   return classifyHumanSignal({
     phase: "settlement",
     sessionId: "session",
+    authorityUnavailableReason: null,
     settlementGeneration: options.generation ?? 7,
     facts: settlement(currentTask, options.generation ?? 7),
     automaticSuccessorCommitted: options.automatic ?? false,
@@ -104,6 +105,31 @@ test("Human Gate and unavailable authority are hard current signals", () => {
   });
   assert.equal(unavailable?.kind, "authority-unavailable");
   assert.equal(unavailable?.local, "hard");
+});
+
+test("current and settlement authority signals share one incident identity", () => {
+  const reason = "State mutation freshness unavailable";
+  const currentSignal = classifyHumanSignal({
+    phase: "current", sessionId: "S", authority: "unavailable",
+    authorityUnavailableReason: reason, taskStatus: "active", task: task(),
+    isIdle: false, automaticWorkSettled: false, pendingMessageCount: 0, quotaResumeWaiting: false,
+  });
+  const coherentFacts = settlement(task());
+  const settlementSignal = classifyHumanSignal({
+    phase: "settlement", sessionId: "S", authorityUnavailableReason: reason,
+    settlementGeneration: coherentFacts.settlementGeneration,
+    facts: {
+      ...coherentFacts,
+      snapshot: { ...coherentFacts.snapshot!, authority: "unavailable" },
+    },
+    automaticSuccessorCommitted: false,
+    quotaSuccessorCommitted: false,
+  });
+
+  assert.equal(currentSignal?.kind, "authority-unavailable");
+  assert.equal(settlementSignal?.kind, "authority-unavailable");
+  assert.equal(currentSignal?.key, settlementSignal?.key);
+  assert.deepEqual(currentSignal?.detail, settlementSignal?.detail);
 });
 
 test("settlement classifies completed, blocked, and stopped without overlap", () => {

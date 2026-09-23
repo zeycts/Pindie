@@ -1534,6 +1534,7 @@ function registerComposedPindieExtension(
         const signal = classifyHumanSignal({
           phase: "settlement",
           sessionId: settlementSessionId,
+          authorityUnavailableReason: run.stateUnavailableReason,
           settlementGeneration: facts.settlementGeneration,
           facts,
           automaticSuccessorCommitted: result.automaticSuccessorCommitted,

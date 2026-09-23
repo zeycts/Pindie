@@ -2423,6 +2423,57 @@ test("running blocked stays quiet while Human Gate signals immediately without d
   assert.equal(events.find((event) => event.text.startsWith("VERIFICATION"))?.attention, undefined);
 });
 
+test("one authority incident is delivered once across immediate and settlement projection", async () => {
+  const events: Array<{ text: string; attention?: true }> = [];
+  const surface: RemoteSurface = {
+    ensureProject: async () => ({ channelId: "channel" }),
+    ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+    send: async (_thread, event) => { events.push({ text: event.text, attention: event.attention }); },
+    updateSessionPresentation: async () => undefined,
+  };
+  const routing = {
+    load: async () => null,
+    save: async () => undefined,
+    projectName: () => "repo",
+  } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+  const companion = new RemoteCompanion(surface, { routing });
+  const classifiedKeys: string[] = [];
+  const deliverHumanSignal = companion.humanSignal.bind(companion);
+  companion.humanSignal = async (signal, options = {}) => {
+    classifiedKeys.push(signal.key);
+    await deliverHumanSignal(signal, options);
+  };
+  const harness = createHarness([["/repo", verifiedState()]], {}, {
+    remoteCompanion: { companion, guildId: "guild" },
+  });
+  const entries = [{ id: "prompt", message: { role: "user", content: "Mutate the project" } }];
+  await startSession(harness, "/repo", "startup", entries);
+  await waitFor(() => events.some((event) => event.text === "YOU\nMutate the project"));
+  await beginAgentRun(harness, "/repo", entries);
+  assert.equal(await callGuard(harness, toolCall("edit", {}, "authority-incident")), undefined);
+
+  const reason = "State mutation freshness unavailable";
+  harness.store.saveError = new Error(reason);
+  await assert.rejects(
+    harness.api.handler("tool_result")(
+      toolResult("edit", false, "authority-incident"),
+      context("/repo", entries),
+    ),
+    new RegExp(reason, "i"),
+  );
+  const authorityEvents = () => events.filter((event) => event.text.startsWith("PINDIE AUTHORITY UNAVAILABLE"));
+  await waitFor(() => authorityEvents().length === 1);
+  assert.equal(classifiedKeys.length, 1);
+  assert.equal(authorityEvents().length, 1);
+  assert.equal(authorityEvents()[0]?.attention, true);
+  assert.match(authorityEvents()[0]?.text ?? "", new RegExp(reason, "i"));
+
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
+  await waitFor(() => classifiedKeys.length === 2);
+  assert.equal(classifiedKeys[1], classifiedKeys[0]);
+  assert.equal(authorityEvents().length, 1);
+});
+
 test("Remote completion attention waits for settled catch-up and execution summary", async () => {
   const events: Array<{ text: string; attention?: true }> = [];
   const surface: RemoteSurface = {

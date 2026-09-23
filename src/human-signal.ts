@@ -33,6 +33,7 @@ interface CurrentHumanSignalInput {
 interface SettlementHumanSignalInput {
   readonly phase: "settlement";
   readonly sessionId: string;
+  readonly authorityUnavailableReason: string | null;
   readonly settlementGeneration: number | null;
   readonly facts: CoreSettlementFacts;
   readonly automaticSuccessorCommitted: boolean;
@@ -111,7 +112,7 @@ export function classifyHumanSignal(input: HumanSignalInput): HumanSignalDecisio
 
   const { facts } = input;
   if (facts.snapshot?.authority === "unavailable") {
-    return authoritySignal(input.sessionId, "Pindie semantic authority is unavailable.");
+    return authoritySignal(input.sessionId, input.authorityUnavailableReason);
   }
   const gate = facts.task?.humanGate ?? null;
   if (gate !== null) return humanGateSignal(input.sessionId, gate);
