@@ -433,6 +433,34 @@ test("PindieInteractiveMode binds, projects, reduces events, and shuts down clea
   assert.equal(harness.runtime.subscriptions[0]?.active, false);
 });
 
+test("controller distinguishes native idle after agent_end from agent_settled", async () => {
+  const harness = createHarness();
+  harness.setPresentation(gatePresentation(null, ["missing credential"]));
+  const running = harness.mode.run();
+  await flush();
+
+  assert.equal(harness.view.applied.at(-1)?.softSignal?.kind, "settled-blocked");
+
+  harness.runtime.facts = { ...harness.runtime.facts, isIdle: false, isStreaming: true };
+  harness.runtime.emit(event({ type: "agent_start" }));
+  assert.equal(harness.view.applied.at(-1)?.softSignal, null);
+
+  harness.runtime.facts = { ...harness.runtime.facts, isIdle: true, isStreaming: false };
+  harness.runtime.emit(event({ type: "agent_end", willRetry: false }));
+  harness.refreshCallback();
+  assert.equal(harness.view.applied.at(-1)?.softSignal, null);
+
+  harness.runtime.emit(event({ type: "agent_settled" }));
+  assert.equal(harness.view.applied.at(-1)?.softSignal?.kind, "settled-blocked");
+
+  harness.runtime.facts = { ...harness.runtime.facts, isIdle: false, isStreaming: true };
+  harness.runtime.emit(event({ type: "agent_start" }));
+  assert.equal(harness.view.applied.at(-1)?.softSignal, null);
+
+  harness.view.exit();
+  await running;
+});
+
 test("PindieInteractiveMode safely replaces Session subscriptions and projection epochs", async () => {
   const harness = createHarness();
   const running = harness.mode.run();
@@ -696,6 +724,7 @@ test("PindieTuiView renders the four Slice D regions and restores terminal lifec
         isIdle: false,
         pendingMessageCount: 0,
       },
+      automaticWorkSettled: false,
       branch: [],
     },
   });
@@ -753,6 +782,7 @@ test("PindieTuiView follows Work density without dumping successful output", asy
         isIdle: true,
         pendingMessageCount: 0,
       },
+      automaticWorkSettled: true,
       branch: [],
     },
   });
@@ -883,6 +913,7 @@ test("PindieTuiView renders structured Task, Verification, Gate, and Completion 
         isIdle: true,
         pendingMessageCount: 0,
       },
+      automaticWorkSettled: true,
       branch: [],
     },
   });
@@ -985,6 +1016,7 @@ function viewProjection(options: {
         isIdle: !running,
         pendingMessageCount: 0,
       },
+      automaticWorkSettled: !running,
       branch: options.branch ?? [],
     },
   });
@@ -997,15 +1029,15 @@ function withAttention(
   return { ...projection, attention };
 }
 
-function gatePresentation(gate: HumanGate | null): any {
+function gatePresentation(gate: HumanGate | null, blockers: readonly string[] = []): any {
   return {
     semantic: {
       ok: true,
       snapshot: {
         authority: "coherent",
-        taskStatus: gate === null ? "active" : "waiting_human",
+        taskStatus: gate === null ? blockers.length > 0 ? "blocked" : "active" : "waiting_human",
         verificationStatus: "pending",
-        hasBlockers: false,
+        hasBlockers: blockers.length > 0,
         hasQuestions: false,
         completionReady: false,
       },
@@ -1014,7 +1046,7 @@ function gatePresentation(gate: HumanGate | null): any {
       consumption: null,
       reasoningMode: "auto",
       activity: null,
-      state: tuiState({ humanGate: gate }),
+      state: tuiState({ humanGate: gate, blockers }),
       stateUnavailableReason: null,
       runStale: false,
       quotaResumeWaiting: false,
@@ -1364,6 +1396,33 @@ test("Gate Escape is non-destructive and Timeline inspection returns to Attentio
   assert.equal(aborts, 0);
   view.apply(withAttention(gated, null));
   assert.equal(view.getInteractionState().focusMode, "composer");
+  view.stop();
+});
+
+test("settled-blocked renders softly without stealing or clearing the Composer", async () => {
+  const terminal = new FakeTerminal();
+  const submissions: string[] = [];
+  const view = new PindieTuiView({ terminal, onSubmit: (text) => submissions.push(text) });
+  const projection = {
+    ...viewProjection({ sessionId: "soft-blocked" }),
+    softSignal: {
+      kind: "settled-blocked" as const,
+      summary: "Could not continue autonomously.",
+      blockers: ["missing credential"],
+    },
+  };
+  view.apply(projection);
+  view.start();
+  view.setEditorText("here is the missing credential");
+  view.apply({ ...projection, status: { ...projection.status } });
+  await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /Blocked/);
+  assert.match(terminal.writes.join(""), /missing credential/);
+  assert.equal(view.getInteractionState().focusMode, "composer");
+  assert.equal(view.getEditorText(), "here is the missing credential");
+  terminal.emit("\r");
+  assert.deepEqual(submissions, ["here is the missing credential"]);
+  assert.equal(view.getInteractionState().activeOverlay, null);
   view.stop();
 });
 

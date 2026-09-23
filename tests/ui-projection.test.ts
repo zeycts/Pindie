@@ -103,6 +103,7 @@ function input(
       model: { provider: "test-provider", modelId: "test-model" },
       thinkingLevel: "high",
       runtime: runtime(),
+      automaticWorkSettled: true,
       branch: [],
     },
     ...overrides,
@@ -877,35 +878,76 @@ test("current Human Gate becomes detached structured attention", () => {
   });
 });
 
-test("blocked Task does not automatically become Attention", () => {
+test("running blocked Task has no hard or soft Human Signal", () => {
+  const blockedPresentation = presentation({
+    semantic: {
+      ok: true,
+      snapshot: {
+        authority: "coherent", taskStatus: "blocked", verificationStatus: "pending",
+        hasBlockers: true, hasQuestions: false, completionReady: false,
+        taskRelation: "introduced_during_run", completionRelation: "not_completed", gateRelation: "none",
+      },
+    },
+    status: {
+      ...presentation().status,
+      state: state({ openLoops: { blockers: ["missing credential"], questions: [], nextIntent: null } }),
+    },
+  });
   const projection = createProjection(input({
-    presentation: presentation({
-      semantic: {
-        ok: true,
-        snapshot: {
-          authority: "coherent",
-          taskStatus: "blocked",
-          verificationStatus: "pending",
-          hasBlockers: true,
-          hasQuestions: false,
-          completionReady: false,
-          taskRelation: "introduced_during_run",
-          completionRelation: "not_completed",
-          gateRelation: "none",
-        },
-      },
-      status: {
-        ...presentation().status,
-        state: state({
-          openLoops: { blockers: ["waiting on a recoverable fact"], questions: [], nextIntent: null },
-        }),
-      },
-    }),
+    presentation: blockedPresentation,
+    session: { ...input().session, runtime: runtime({ isIdle: false, isStreaming: true }) },
   }));
-
-  assert.equal(projection.header.taskStatus, "blocked");
-  assert.equal(projection.status.hasBlockers, true);
   assert.equal(projection.attention, null);
+  assert.equal(projection.softSignal, null);
+});
+
+test("idle blocked Task requires settled automatic work and yields a detached soft signal", () => {
+  const blockers = ["missing credential"];
+  const blockedPresentation = presentation({
+    semantic: {
+      ok: true,
+      snapshot: {
+        authority: "coherent", taskStatus: "blocked", verificationStatus: "pending",
+        hasBlockers: true, hasQuestions: false, completionReady: false,
+      },
+    },
+    status: {
+      ...presentation().status,
+      state: state({ openLoops: { blockers, questions: [], nextIntent: null } }),
+    },
+  });
+  const blockedInput = input({ presentation: blockedPresentation });
+  const unsettled = createProjection({
+    ...blockedInput,
+    session: { ...blockedInput.session, automaticWorkSettled: false },
+  });
+  assert.equal(unsettled.softSignal, null);
+
+  const projection = createProjection(blockedInput);
+  assert.equal(projection.attention, null);
+  assert.deepEqual(projection.softSignal, {
+    kind: "settled-blocked", summary: "Could not continue autonomously.", blockers: ["missing credential"],
+  });
+  blockers.push("later mutation");
+  assert.deepEqual(projection.softSignal?.blockers, ["missing credential"]);
+
+  const quota = createProjection(input({ presentation: { ...blockedPresentation, quotaResumeWaiting: { sessionId: "session-1", resumeAt: 1 } } }));
+  assert.equal(quota.softSignal, null);
+
+  const gated = state({
+    openLoops: { blockers: ["missing credential"], questions: [], nextIntent: null },
+    humanGate: { kind: "input", question: "Provide it" },
+  });
+  const gateProjection = createProjection(input({ presentation: presentation({
+    semantic: { ok: true, snapshot: { ...blockedPresentation.semantic.snapshot, taskStatus: "waiting_human" } },
+    status: { ...presentation().status, state: gated },
+  }) }));
+  assert.equal(gateProjection.attention?.kind, "human-gate");
+  assert.equal(gateProjection.softSignal, null);
+
+  const unavailable = createProjection(input({ presentation: presentation({ semantic: { ok: false, error: "authority failed" } }) }));
+  assert.equal(unavailable.attention?.kind, "authority-unavailable");
+  assert.equal(unavailable.softSignal, null);
 });
 
 test("unavailable semantic authority becomes structured degraded Attention", () => {

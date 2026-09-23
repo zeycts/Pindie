@@ -1308,6 +1308,16 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.inputRegion.clear();
     const attention = this.projection?.attention ?? null;
     if (attention === null) {
+      const softSignal = this.projection?.softSignal ?? null;
+      if (softSignal !== null) {
+        this.inputRegion.addChild(new Text([
+          "Blocked",
+          softSignal.summary,
+          ...(softSignal.blockers.length === 0
+            ? []
+            : ["Missing:", ...softSignal.blockers.map((blocker) => `- ${blocker}`)]),
+        ].join("\n"), 1, 0));
+      }
       this.inputRegion.addChild(new Text("Composer", 1, 0));
       if (this.notice !== null) this.inputRegion.addChild(new Text(`Notice · ${this.notice}`, 1, 0));
       this.addBoundedWidgets("aboveEditor");
