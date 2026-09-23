@@ -310,7 +310,7 @@ function projectMessage(
     role,
     text,
     lifecycle,
-    defaultDisplayMode: lifecycle === "error" ? "preview" : "full",
+    defaultDisplayMode: role === "user" ? "compact" : "preview",
     ...(options.customType === undefined ? {} : { customType: options.customType }),
   };
 }
@@ -1355,7 +1355,7 @@ function projectLiveAssistant(
     role: "assistant",
     text,
     lifecycle,
-    defaultDisplayMode: lifecycle === "complete" ? "full" : "preview",
+    defaultDisplayMode: "preview",
   };
 }
 
@@ -1413,7 +1413,7 @@ function reduceMessageEvent(
     const finalized: UiMessageBlock = {
       ...existing,
       lifecycle,
-      defaultDisplayMode: lifecycle === "error" ? "preview" : "full",
+      defaultDisplayMode: "preview",
     };
     return clearActiveLiveAssistant({
       ...activeState,
@@ -1717,7 +1717,7 @@ export function appendUserDelivery(
         role: "user",
         text: input.text,
         lifecycle: "complete",
-        defaultDisplayMode: "full",
+        defaultDisplayMode: "compact",
         delivery: input.delivery,
       },
     ],

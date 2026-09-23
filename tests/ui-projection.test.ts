@@ -1293,7 +1293,7 @@ test("historical tool calls without results remain visible as non-success work",
   const work = timeline[0] as UiToolWorkBlock;
   assert.equal(work.kind, "command");
   assert.equal(work.lifecycle, "failed");
-  assert.equal(work.defaultDisplayMode, "full");
+  assert.equal(work.defaultDisplayMode, "preview");
   assert.match(work.result?.summary ?? "", /not persisted/);
 });
 
@@ -1691,7 +1691,7 @@ test("observation failure seals its group and leaves the next observation separa
   assert.equal(observations.length, 2);
   assert.deepEqual(observations[0]?.items.map((item) => item.toolCallId), ["read-ok", "grep-fail"]);
   assert.equal(observations[0]?.lifecycle, "failed");
-  assert.equal(observations[0]?.defaultDisplayMode, "full");
+  assert.equal(observations[0]?.defaultDisplayMode, "preview");
   assert.deepEqual(observations[1]?.items.map((item) => item.toolCallId), ["read-next"]);
 });
 
@@ -1934,6 +1934,20 @@ test("runtime churn stays ambient rather than becoming permanent RuntimeBlocks",
   assert.equal(projection.status.isCompacting, false);
 });
 
+test("persisted user and assistant messages retain complete text with compact/preview defaults", () => {
+  const long = "answer\n".repeat(250);
+  const persisted = createProjection(input({
+    session: { ...input().session, branch: [
+      userEntry("density-user", "prompt".repeat(250)), assistantEntry("density-agent", long),
+    ] },
+  }));
+  const user = persisted.timeline.find((block) => block.id === "density-user");
+  const assistant = persisted.timeline.find((block) => block.id === "density-agent");
+  assert.equal(user?.defaultDisplayMode, "compact");
+  assert.equal(assistant?.defaultDisplayMode, "preview");
+  assert.ok(assistant?.type === "message" && assistant.text.includes("answer"));
+});
+
 test("local user deliveries are disposable, session-local, and provenance-aware", () => {
   const projection = appendUserDelivery(createProjection(input()), {
     id: "live:session-1:user:1",
@@ -1949,7 +1963,7 @@ test("local user deliveries are disposable, session-local, and provenance-aware"
     role: "user",
     text: "steer the current work",
     lifecycle: "complete",
-    defaultDisplayMode: "full",
+    defaultDisplayMode: "compact",
     delivery: "steer",
   });
 

@@ -17,6 +17,7 @@ import {
   SelectList,
   Text,
   truncateToWidth,
+  visibleWidth,
   TuiAltScreen,
   type AutocompleteProvider,
   type Component,
@@ -41,6 +42,7 @@ import {
   type PindieInteractionState,
   type PindieOverlayKind,
 } from "./actions.ts";
+import { boundedGraphemeText } from "./bounded-text.ts";
 import {
   commandText,
   toolPath,
@@ -165,7 +167,10 @@ function formatMessageBlock(
     : block.role;
   const marker = block.source === "live" ? "●" : "○";
   if (displayMode === "compact") {
-    return `${marker} ${role} · ${compactPreview(block.text)}`;
+    const first = block.text.split(/\r?\n/u).find((line) => line.trim())?.trim() ?? "(empty)";
+    const compactRole = block.role === "user" && block.delivery !== undefined
+      ? `user·${block.delivery}` : role;
+    return `${marker} ${compactRole} · ${first}${block.text.trim() !== first ? "…" : ""}`;
   }
   return `${marker} ${role}\n${block.text}`;
 }
@@ -220,13 +225,12 @@ function formatObservationBlock(
     return `${marker} ${block.title}\n${indent(observationSummary(block))}`;
   }
   if (displayMode === "preview") {
-    const items = block.items.map((item) => {
-      const summary = item.result?.summary.trim();
-      return summary === undefined || summary.length === 0
-        ? item.label
-        : `${item.label}\n${indent(summary)}`;
-    });
-    return `${marker} ${block.title}\n${items.map(indent).join("\n")}`;
+    const latestFirst = [...block.items].reverse();
+    const current = latestFirst.find((item) => item.lifecycle === "running") ??
+      latestFirst.find((item) => item.lifecycle === "failed") ?? latestFirst[0];
+    const operation = current === undefined ? "" : current.label;
+    const failure = current?.lifecycle === "failed" ? current.result?.summary.trim() : null;
+    return `${marker} ${block.title}\n${indent(observationSummary(block))}${operation ? `\n${indent(operation)}` : ""}${failure ? `\n${indent(failure)}` : ""}`;
   }
   return `${marker} ${block.title}\n${block.items.map(formatObservationItem).map(indent).join("\n")}`;
 }
@@ -256,7 +260,12 @@ function formatToolWorkBlock(
     lines.push(indent(input));
   }
   const summary = block.result?.summary.trim();
-  if (summary !== undefined && summary.length > 0) lines.push(indent(summary));
+  if (summary !== undefined && summary.length > 0) {
+    const output = block.kind === "command" && displayMode === "preview"
+      ? summary.split("\n").slice(-2).join("\n")
+      : summary;
+    lines.push(indent(output));
+  }
   return lines.join("\n");
 }
 
@@ -413,6 +422,92 @@ function formatRuntimeBlock(
   return displayMode === "compact"
     ? `· ${block.title}`
     : `· ${block.title}${block.detail ? `\n${block.detail}` : ""}`;
+}
+
+class TimelineBlockText implements Component {
+  constructor(
+    block: UiTimelineBlock,
+    mode: UiDisplayMode,
+    selected: boolean,
+  ) {
+    this.block = block;
+    this.mode = mode;
+    this.selected = selected;
+  }
+  private readonly block: UiTimelineBlock;
+  private readonly mode: UiDisplayMode;
+  private readonly selected: boolean;
+
+  render(width: number): string[] {
+    const prefix = this.selected && width >= 3 ? "› " : "";
+    const text = formatBlock(this.block, this.mode);
+    if (this.mode === "full" || this.block.type === "semantic" || this.block.type === "runtime") {
+      return new Text(prefix + text, 1, 0).render(width);
+    }
+    const compact = this.mode === "compact" && this.block.type === "message";
+    const rows = this.mode === "compact" ? (compact ? 1 : 2) : 4;
+    let normalized = compact ? text.replace(/\r?\n/gu, " ") : text;
+    // Match Text's adaptive margins without handing bounded text to its word wrapper.
+    const margin = (compact && width < 24) || width < 5
+      ? 0 : Math.min(1, Math.max(0, Math.floor((width - 1) / 2)));
+    const available = Math.max(1, width - margin * 2 - visibleWidth(prefix));
+    if (this.mode === "preview" && this.block.type === "work" && this.block.kind === "observation") {
+      // Reserve distinct rows for the aggregate and current/failed operation even on narrow terminals.
+      const parts = normalized.split("\n");
+      normalized = parts.map((part, index) => index < 3
+        ? truncateToWidth(part, available) : part).join("\n");
+    }
+    const lines = boundedGraphemeText(normalized, available, (compact ? 120 : 320) - (prefix ? 2 : 0), rows);
+    return lines.map((line, index) => {
+      const content = (index === 0 ? prefix : "") + line;
+      const padded = " ".repeat(margin) + content + " ".repeat(margin);
+      return padded + " ".repeat(Math.max(0, width - visibleWidth(padded)));
+    });
+  }
+
+  invalidate(): void {}
+}
+
+class TimelineContent extends Container {
+  readonly ranges = new Map<string, BlockLineRange>();
+  private readonly ids = new Map<Component, string>();
+
+  addBlock(id: string, component: Component): void {
+    this.ids.set(component, id);
+    this.addChild(component);
+  }
+
+  override clear(): void {
+    super.clear();
+    this.ids.clear();
+    this.ranges.clear();
+  }
+
+  override render(width: number): string[] {
+    const lines: string[] = [];
+    this.ranges.clear();
+    for (const child of this.children) {
+      const start = lines.length;
+      const rendered = child.render(width);
+      lines.push(...rendered);
+      const id = this.ids.get(child);
+      if (id !== undefined) this.ranges.set(id, { start, end: lines.length - 1 });
+    }
+    return lines;
+  }
+}
+
+class SelectionScrollView extends ScrollView {
+  private readonly onLayout: () => void;
+  constructor(child: Component, onLayout: () => void) {
+    super(child, { follow: "end", primary: true, overscroll: "chain" });
+    this.onLayout = onLayout;
+  }
+
+  override updateLayout(contentHeight: number, viewportHeight: number, requestRender: () => void): void {
+    super.updateLayout(contentHeight, viewportHeight, requestRender);
+    this.onLayout();
+  }
 }
 
 class BoundedSingleLineText implements Component {
@@ -721,7 +816,7 @@ interface BlockLineRange {
 export class PindieTuiView implements PindieTuiViewPort {
   private readonly tui: TUI;
   private readonly header: BoundedSingleLineText;
-  private readonly timelineContent: Container;
+  private readonly timelineContent: TimelineContent;
   private readonly timelineScroll: ScrollView;
   private readonly inputRegion: VStack;
   private readonly editor: Editor;
@@ -752,7 +847,7 @@ export class PindieTuiView implements PindieTuiViewPort {
   private readonly foldOverrides = new Map<string, UiDisplayMode>();
   private activeOverlay: PindieOverlayKind | null = null;
   private overlayHandle: OverlayHandle | null = null;
-  private readonly blockLineRanges = new Map<string, BlockLineRange>();
+  private readonly blockLineRanges: Map<string, BlockLineRange>;
   private palettePanel: VStack | null = null;
   private paletteInput: Input | null = null;
   private paletteList: SelectList | null = null;
@@ -778,11 +873,10 @@ export class PindieTuiView implements PindieTuiViewPort {
     const tui = new TuiAltScreen(terminal);
     this.tui = tui;
     this.header = new BoundedSingleLineText("Pindie", true);
-    this.timelineContent = new Container();
-    this.timelineScroll = new ScrollView(this.timelineContent, {
-      follow: "end",
-      primary: true,
-      overscroll: "chain",
+    this.timelineContent = new TimelineContent();
+    this.blockLineRanges = this.timelineContent.ranges;
+    this.timelineScroll = new SelectionScrollView(this.timelineContent, () => {
+      if (this.focusMode === "timeline") this.ensureSelectedBlockVisible();
     });
     this.editor = new Editor(tui, editorTheme, { paddingX: 1 });
     this.attentionEditor = new Editor(tui, editorTheme, { paddingX: 1 });
@@ -1283,29 +1377,15 @@ export class PindieTuiView implements PindieTuiViewPort {
 
   private renderTimeline(): void {
     this.timelineContent.clear();
-    this.blockLineRanges.clear();
-    let lineCursor = 0;
     for (const notice of this.startupNotices) {
-      const component = new Text(`Notice · ${notice}`, 1, 0);
-      this.timelineContent.addChild(component);
-      lineCursor += Math.max(1, component.render(Math.max(1, this.tui.terminal.columns)).length);
+      this.timelineContent.addChild(new Text(`Notice · ${notice}`, 1, 0));
     }
-
     for (const block of this.projection?.timeline ?? []) {
       const selected = this.focusMode === "timeline" && block.id === this.selectedBlockId;
-      const text = formatBlock(block, this.effectiveDisplayMode(block));
-      const renderedText = selected ? `› ${text}` : text;
-      const component = new Text(renderedText, 1, 0);
-      this.timelineContent.addChild(component);
-      const lineCount = Math.max(1, component.render(Math.max(1, this.tui.terminal.columns)).length);
-      this.blockLineRanges.set(block.id, {
-        start: lineCursor,
-        end: lineCursor + lineCount - 1,
-      });
-      lineCursor += lineCount;
-      this.timelineContent.addChild(new Text("", 0, 0));
-      lineCursor += 1;
+      this.timelineContent.addBlock(block.id, new TimelineBlockText(block, this.effectiveDisplayMode(block), selected));
+      this.timelineContent.addChild(new BoundedSingleLineText());
     }
+    this.timelineContent.render(Math.max(1, this.tui.terminal.columns));
   }
 
   private ensureSelectedBlockVisible(): void {

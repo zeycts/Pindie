@@ -25,9 +25,11 @@ import {
   PiRuntimeAdapter,
 } from "../src/pi-runtime.ts";
 import {
+  appendUserDelivery,
   createProjection,
   reduceProjectionEvent,
   type PindieUiProjection,
+  type UiObservationWorkBlock,
 } from "../src/ui-projection.ts";
 import {
   PindieInteractiveMode,
@@ -39,6 +41,7 @@ import {
   type PindieTuiViewOptions,
   type PindieTuiViewPort,
 } from "../src/tui/view.ts";
+import { boundedGraphemeText } from "../src/tui/bounded-text.ts";
 import {
   PindieExtensionUIBridge,
   UnsupportedExtensionUICapabilityError,
@@ -1169,20 +1172,20 @@ test("Timeline line ranges start at zero and stay aligned through navigation and
     setSelectedFold(mode: "compact" | "preview" | "full"): void;
     ensureSelectedBlockVisible(): void;
   };
-  assert.deepEqual(internals.blockLineRanges.get("range-a"), { start: 1, end: 2 });
-  assert.deepEqual(internals.blockLineRanges.get("range-b"), { start: 4, end: 5 });
+  assert.deepEqual(internals.blockLineRanges.get("range-a"), { start: 1, end: 1 });
+  assert.deepEqual(internals.blockLineRanges.get("range-b"), { start: 3, end: 3 });
 
   view.start();
   terminal.emit("\u001bh");
   terminal.emit("k");
   assert.equal(view.getInteractionState().selectedBlockId, "range-a");
-  internals.setSelectedFold("compact");
-  assert.deepEqual(internals.blockLineRanges.get("range-a"), { start: 1, end: 1 });
-  assert.deepEqual(internals.blockLineRanges.get("range-b"), { start: 3, end: 4 });
+  internals.setSelectedFold("full");
+  assert.deepEqual(internals.blockLineRanges.get("range-a"), { start: 1, end: 2 });
+  assert.deepEqual(internals.blockLineRanges.get("range-b"), { start: 4, end: 4 });
   internals.ensureSelectedBlockVisible();
   terminal.emit("j");
   assert.equal(view.getInteractionState().selectedBlockId, "range-b");
-  assert.deepEqual(internals.blockLineRanges.get("range-b"), { start: 3, end: 4 });
+  assert.deepEqual(internals.blockLineRanges.get("range-b"), { start: 4, end: 4 });
   view.stop();
 });
 
@@ -1296,6 +1299,188 @@ test("Message compact formatting is a bounded rendering mode", () => {
   assert.match(formatBlock(block!, "compact"), /user · first meaningful line…/);
   assert.doesNotMatch(formatBlock(block!, "compact"), /second line/);
   assert.match(formatBlock(block!, "full"), /second line/);
+});
+
+test("bounded Timeline messages retain Full inspection and width-aware line ranges", () => {
+  const terminal = new FakeTerminal();
+  const prompt = "实现🧑‍💻中文内容".repeat(180);
+  const answer = "回答👩🏽‍🚀中文 text\n".repeat(180);
+  let projection = viewProjection({ branch: [userEntry("long-prompt", prompt)] });
+  assert.equal(projection.timeline[0]?.defaultDisplayMode, "compact");
+  projection = appendUserDelivery(projection, { id: "steer-long", text: prompt, delivery: "steer" });
+  for (const delivery of ["prompt", "followUp"] as const) {
+    projection = appendUserDelivery(projection, { id: delivery, text: prompt, delivery });
+  }
+  for (const block of projection.timeline) {
+    assert.equal(block.defaultDisplayMode, "compact");
+    assert.equal(formatBlock(block, "full").includes(prompt), true);
+  }
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_start", message: { role: "assistant", content: [{ type: "text", text: "short" }] },
+  }));
+  const view = new PindieTuiView({ terminal });
+  const internals = view as unknown as {
+    timelineContent: { children: { render(width: number): string[] }[]; render(width: number): string[] };
+    blockLineRanges: Map<string, { start: number; end: number }>;
+    timelineScroll: { scrollToStart(): void; scrollTop: number;
+      updateLayout(contentHeight: number, viewportHeight: number, requestRender: () => void): void };
+  };
+  const check = (width: number) => {
+    terminal.columns = width;
+    view.apply(projection);
+    for (const [index, block] of projection.timeline.entries()) {
+      const lines = internals.timelineContent.children[index * 2]!.render(width);
+      assert.ok(lines.length <= (block.type === "message" && block.role === "user" ? 1 : 4));
+      assert.ok(lines.every((line) => visibleWidth(line) <= width));
+      assert.ok(Array.from(new Intl.Segmenter().segment(lines.join(""))).length <= 320);
+      if (block.type === "message" && block.role === "user") {
+        assert.match(lines[0]!, /user/);
+        assert.ok(lines[0]!.includes("…"));
+        if (block.delivery) assert.ok(lines[0]!.includes(block.delivery));
+      }
+    }
+    internals.timelineContent.render(width);
+    for (const [index, block] of projection.timeline.entries()) {
+      const range = internals.blockLineRanges.get(block.id)!;
+      assert.equal(range.end - range.start + 1, internals.timelineContent.children[index * 2]!.render(width).length);
+    }
+  };
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_update", message: { role: "assistant", content: [{ type: "text", text: answer }] },
+  }));
+  check(80);
+  check(18);
+  const assistant = projection.timeline.at(-1)!;
+  assert.equal(assistant.defaultDisplayMode, "preview");
+  assert.ok(formatBlock(assistant, "full").includes(answer.trim()));
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_end", message: { role: "assistant", content: [{ type: "text", text: answer }] },
+  }));
+  assert.equal(projection.timeline.at(-1)?.defaultDisplayMode, "preview");
+  view.apply(projection);
+  view.start();
+  terminal.emit("\u001bh");
+  for (const width of [80, 18]) {
+    terminal.columns = width;
+    const height = internals.timelineContent.render(width).length;
+    internals.timelineScroll.scrollToStart();
+    internals.timelineScroll.updateLayout(height, 3, () => undefined);
+    const selectedRange = internals.blockLineRanges.get(projection.timeline.at(-1)!.id)!;
+    assert.ok(internals.timelineScroll.scrollTop <= selectedRange.end);
+    assert.ok(internals.timelineScroll.scrollTop + 3 > selectedRange.start);
+    if (selectedRange.end - selectedRange.start + 1 <= 3) {
+      assert.ok(internals.timelineScroll.scrollTop + 3 > selectedRange.end);
+    }
+  }
+  view.stop();
+});
+
+test("assistant errors and long command labels stay bounded without losing Full text", () => {
+  const terminal = new FakeTerminal();
+  let projection = viewProjection();
+  const diagnostic = "诊断🧑‍💻\n".repeat(500);
+  projection = reduceProjectionEvent(projection, event({
+    type: "message_end", message: { role: "assistant", stopReason: "error",
+      content: [{ type: "text", text: diagnostic }] },
+  }));
+  assert.equal(projection.timeline[0]?.defaultDisplayMode, "preview");
+  const view = new PindieTuiView({ terminal });
+  view.apply(projection);
+  let content = (view as unknown as { timelineContent: { children: { render(width: number): string[] }[] } }).timelineContent;
+  assert.ok(content.children[0]!.render(12).length <= 4);
+  assert.ok(formatBlock(projection.timeline[0]!, "full").includes(diagnostic.trim()));
+  projection = reduceProjectionEvent(projection, event({
+    type: "tool_execution_start", toolCallId: "long-command", toolName: "bash",
+    args: { command: "echo " + "long ".repeat(300) },
+  }));
+  view.apply(projection);
+  content = (view as unknown as { timelineContent: { children: { render(width: number): string[] }[] } }).timelineContent;
+  const lines = content.children[2]!.render(12);
+  assert.ok(lines.length <= 4);
+  assert.ok(lines.every((line) => visibleWidth(line) <= 12));
+  assert.match(lines.join(""), /…/);
+  view.stop();
+});
+
+test("live assistant explicit Full and Compact survive streaming updates", () => {
+  const terminal = new FakeTerminal();
+  let projection = viewProjection();
+  const assistantMessage = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+  projection = reduceProjectionEvent(projection, event({ type: "message_start", message: assistantMessage("first") }));
+  const view = new PindieTuiView({ terminal });
+  view.apply(projection);
+  view.start();
+  terminal.emit("\u001bh");
+  terminal.emit("l");
+  const id = projection.timeline[0]!.id;
+  projection = reduceProjectionEvent(projection, event({ type: "message_update", message: assistantMessage("long ".repeat(1000)) }));
+  view.apply(projection);
+  assert.equal(view.getInteractionState().foldOverrides.get(id), "full");
+  let content = (view as unknown as { timelineContent: { children: { render(width: number): string[] }[] } }).timelineContent;
+  assert.ok(content.children[0]!.render(30).length > 4);
+  terminal.emit("h");
+  projection = reduceProjectionEvent(projection, event({ type: "message_end", message: assistantMessage("end ".repeat(1000)) }));
+  view.apply(projection);
+  assert.equal(view.getInteractionState().foldOverrides.get(id), "compact");
+  content = (view as unknown as { timelineContent: { children: { render(width: number): string[] }[] } }).timelineContent;
+  assert.ok(content.children[0]!.render(30).length <= 2);
+  view.stop();
+});
+
+test("observation burst normal preview aggregates all items and Full retains every detail", () => {
+  const items: UiObservationWorkBlock["items"] = Array.from({ length: 120 }, (_, index) => ({
+    toolCallId: `read-${index}`, toolName: "read", input: null,
+    label: `Reading file-${index}`, lifecycle: index === 119 ? "running" : "complete",
+    result: index === 119 ? null : { isError: false, summary: `detail-${index}`, details: null },
+  }));
+  const block: UiObservationWorkBlock = {
+    type: "work", kind: "observation", id: "observe:read-0", lifecycle: "running",
+    title: "Inspecting project", items, defaultDisplayMode: "preview",
+  };
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  view.apply({ ...viewProjection(), timeline: [block] });
+  const content = (view as unknown as { timelineContent: { children: { render(width: number): string[] }[] } }).timelineContent;
+  const lines = content.children[0]!.render(80);
+  assert.ok(lines.length <= 4);
+  assert.match(lines.join("\n"), /Read 120 files/);
+  assert.match(lines.join("\n"), /Reading file-119/);
+  assert.doesNotMatch(lines.join("\n"), /Reading file-0/);
+  assert.match(formatBlock(block, "full"), /detail-0/);
+  assert.match(formatBlock(block, "full"), /Reading file-119/);
+  view.start();
+  terminal.emit("\u001bh");
+  terminal.emit("l");
+  view.apply({ ...viewProjection(), timeline: [{ ...block, items: [...items, {
+    toolCallId: "read-120", toolName: "read", input: null, label: "Reading file-120",
+    lifecycle: "running", result: null,
+  }] }] });
+  assert.equal(view.getInteractionState().foldOverrides.get(block.id), "full");
+  const complete = { ...block, lifecycle: "complete" as const, defaultDisplayMode: "compact" as const };
+  assert.doesNotMatch(formatBlock(complete), /Reading file-119/);
+  const failed = { ...block, lifecycle: "failed" as const, defaultDisplayMode: "preview" as const,
+    items: [...items.slice(0, -1), { ...items[119]!, lifecycle: "failed" as const,
+      result: { isError: true, summary: "failure detail ".repeat(100), details: null } }],
+  };
+  view.stop();
+  const failureView = new PindieTuiView({ terminal: new FakeTerminal() });
+  failureView.apply({ ...viewProjection(), timeline: [failed] });
+  const failureContent = (failureView as unknown as { timelineContent: { children: { render(width: number): string[] }[] } }).timelineContent;
+  assert.ok(failureContent.children[0]!.render(18).length <= 4);
+  assert.match(formatBlock(failed, "full"), /failure detail/);
+  failureView.stop();
+});
+
+test("bounded preview respects grapheme boundaries, display width and row limit", () => {
+  for (const width of [8, 18, 80]) {
+    const text = "中文👩🏽‍🚀🧑‍💻\n".repeat(500);
+    const lines = boundedGraphemeText(text, width, 320, 4);
+    assert.ok(lines.length <= 4);
+    assert.ok(lines.every((line) => visibleWidth(line) <= width));
+    assert.ok(Array.from(new Intl.Segmenter().segment(lines.join("\n"))).length <= 320);
+    assert.match(lines.at(-1)!, /…$/);
+    assert.ok(!lines.join("").includes("�"));
+  }
 });
 
 test("Block Viewer refreshes from Projection and copy always uses Full density", async () => {

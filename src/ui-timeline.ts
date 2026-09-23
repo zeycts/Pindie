@@ -329,7 +329,7 @@ function displayToolName(toolName: string): string {
 function lifecycleMode(lifecycle: UiWorkLifecycle): UiDisplayMode {
   return lifecycle === "running"
     ? "preview"
-    : lifecycle === "failed" ? "full" : "compact";
+    : lifecycle === "failed" ? "preview" : "compact";
 }
 
 export function toolTitle(
@@ -429,9 +429,7 @@ export function observationLifecycle(
 export function observationDisplayMode(
   lifecycle: UiWorkLifecycle,
 ): UiDisplayMode {
-  return lifecycle === "failed"
-    ? "full"
-    : lifecycle === "complete" ? "compact" : "preview";
+  return lifecycle === "complete" ? "compact" : "preview";
 }
 
 export function observationTitle(lifecycle: UiWorkLifecycle): string {
