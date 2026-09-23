@@ -28,6 +28,7 @@ import {
   getQuotaResumeStatusObserver,
 } from "../src/quota-resume-control.ts";
 import type { QuotaResumePlan } from "../src/quota-resume-incident.ts";
+import { getQuotaFallbackController } from "../src/quota-fallback-control.ts";
 import { createTaskContinuity } from "../src/task-continuity.ts";
 import { TaskMetricsTracker } from "../src/task-metrics.ts";
 import type {
@@ -428,6 +429,7 @@ test("Host bootstrap failure disposes a runtime created before InteractiveMode",
 
   assert.equal(disposeCalls(), 1);
   assert.equal(getQuotaResumeStatusObserver(), null);
+  assert.equal(getQuotaFallbackController(), null);
 });
 
 test("Host bootstrap failure releases process-local control ownership", async () => {
@@ -442,6 +444,7 @@ test("Host bootstrap failure releases process-local control ownership", async ()
     }),
     /runtime bootstrap failed/,
   );
+  assert.equal(getQuotaFallbackController(), null);
 
   const host = await createPindieHost({
     sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
@@ -451,6 +454,29 @@ test("Host bootstrap failure releases process-local control ownership", async ()
     },
   });
   await host.dispose();
+});
+
+test("Host installs fallback bridge before runtime registration, bootstraps fail closed and releases it", async () => {
+  let captured: ReturnType<typeof getQuotaFallbackController> = null;
+  const host = await createPindieHost({
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+    dependencies: {
+      createAgentSessionRuntime: async () => {
+        captured = getQuotaFallbackController();
+        assert.ok(captured);
+        assert.equal(await captured.request({ sessionId: "session-1", anchorEntryId: "a", provider: "openai-codex", modelId: "m", detectedAt: 1, restoreAt: 2 }), false);
+        assert.equal(captured.observeModelSelect({ sessionId: "session-1", provider: "deepseek", modelId: "deepseek-flash", source: "set" }), false);
+        assert.equal(await captured.backupFailed("session-1"), null);
+        captured.cancel("session-1");
+        return fakeRuntime().runtime;
+      },
+      createInteractiveMode: () => ({ run: async () => {} }),
+    },
+  });
+  assert.ok(getQuotaFallbackController());
+  await host.dispose();
+  assert.equal(getQuotaFallbackController(), null);
+  assert.throws(() => captured!.cancel("session-1"), /no longer active/);
 });
 
 test("Host control bridge rejects a second live Host and releases on disposal", async () => {

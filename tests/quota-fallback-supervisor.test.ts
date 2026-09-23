@@ -4,7 +4,7 @@ import type { AgentSession, AgentSessionRuntime, SessionEntry } from "@earendil-
 import { PiRuntimeAdapter } from "../src/pi-runtime.ts";
 import {
   PINDIE_QUOTA_FALLBACK_MESSAGE, PINDIE_QUOTA_FALLBACK_TYPE,
-  QuotaFallbackSupervisor, type QuotaFallbackPlan,
+  QuotaFallbackSupervisor, detectQuotaFallbackBackupFailure, type QuotaFallbackPlan,
 } from "../src/quota-fallback-supervisor.ts";
 import { MAX_QUOTA_RESUME_WAIT_MS } from "../src/quota-resume-supervisor.ts";
 
@@ -187,6 +187,33 @@ test("lifecycle invalidation during an in-flight switch cannot install a lease",
   assert.equal(h.timers.length, 0);
   assert.equal(h.listeners.size, 0);
   assert.equal(h.sends.length, 0);
+});
+
+test("owned model mutation events survive, external selection and cancel invalidate ownership", async () => {
+  const h = harness();
+  let release!: () => void;
+  h.waitSwitch(new Promise<void>((resolve) => { release = resolve; }));
+  const pending = h.supervisor.request(plan());
+  assert.equal(h.supervisor.observeModelSelection({ sessionId: "session", provider: "deepseek", modelId: "deepseek-flash", source: "set" }), true);
+  h.supervisor.cancel("session"); release();
+  assert.equal(await pending, false);
+  assert.equal(h.sends.length, 0);
+  const next = harness(); await next.supervisor.request(plan());
+  assert.equal(next.supervisor.observeModelSelection({ sessionId: "session", provider: "deepseek", modelId: "deepseek-flash", source: "cycle" }), false);
+  assert.equal(next.listeners.size, 0);
+  next.timers[0]!.callback(); await flush(); assert.equal(next.switches.length, 1);
+});
+
+test("terminal backup provider error restores source and returns plan for Resume without sending", async () => {
+  const h = harness(); await h.supervisor.request(plan());
+  h.setBranch([quota(), { ...quota("backup"), message: { ...quota().message, provider: "deepseek", model: "deepseek-flash", errorMessage: "provider failure" } } as SessionEntry]);
+  assert.equal(detectQuotaFallbackBackupFailure([quota()]), false);
+  assert.equal(detectQuotaFallbackBackupFailure([quota(), { type: "message", id: "tool", message: { role: "toolResult", isError: true } } as SessionEntry]), false);
+  assert.equal(detectQuotaFallbackBackupFailure([{ type: "message", id: "backup", message: { role: "assistant", provider: "deepseek", model: "deepseek-flash", stopReason: "error", errorMessage: "provider failure" } } as SessionEntry]), true);
+  assert.deepEqual(await h.supervisor.handleBackupFailure("session"), plan());
+  assert.deepEqual(h.switches, ["deepseek/deepseek-flash", "openai-codex/model-A"]);
+  assert.equal(h.sends.length, 1);
+  assert.equal(h.listeners.size, 0);
 });
 
 test("model change, lifecycle and disposal drop lease without stale callbacks restoring", async () => {

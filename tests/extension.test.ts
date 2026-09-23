@@ -30,6 +30,7 @@ import {
   installQuotaResumeReceiver,
   type QuotaResumeControlEvent,
 } from "../src/quota-resume-control.ts";
+import { installQuotaFallbackReceiver } from "../src/quota-fallback-control.ts";
 import {
   PINDIE_QUOTA_RESUME_MESSAGE,
   PINDIE_QUOTA_RESUME_TYPE,
@@ -2762,6 +2763,189 @@ test("a replaced Session cannot receive an obsolete STOPPED milestone", async ()
   await settlement;
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(events.some((text) => text.startsWith("PINDIE STOPPED")), false);
+});
+
+test("Slice C arbitration shares one forced quota refresh, orders fallback before Resume, and keeps default OFF", async () => {
+  const now = 1_700_000_000_000;
+  for (const [authorized, resumeEnabled, accepted, expectedRequests, expectedSchedules] of [
+    [false, true, true, 0, 1], [true, true, true, 1, 0],
+    [true, true, false, 1, 1], [true, false, false, 1, 0],
+    [false, false, false, 0, 0],
+  ] as const) {
+    const calls: string[] = [];
+    let fetches = 0;
+    const releaseFallback = installQuotaFallbackReceiver({
+      request: async () => { calls.push("fallback"); return accepted; },
+      cancel: () => { calls.push("cancel-fallback"); },
+      observeModelSelect: () => false,
+      backupFailed: async () => null,
+    });
+    const releaseResume = installQuotaResumeReceiver((event) => {
+      if (event.type === "schedule") { calls.push("resume"); return true; }
+    });
+    try {
+      const branch = [{ type: "message", id: "quota", message: {
+        role: "assistant", content: [], provider: "openai-codex", model: "gpt-5-codex",
+        stopReason: "error", errorMessage: "The usage limit has been reached", timestamp: now,
+      } }] as SessionEntry[];
+      const ctx = withBranch(context("/repo", branch), branch);
+      const harness = createHarness([["/repo", activeState()]], {}, {
+        now: () => now, quotaFallbackAuthorized: authorized,
+        quotaResumePreferenceStore: { loadDefault: async () => resumeEnabled, saveDefault: async () => undefined },
+        subscriptionUsageProvider: { fetchUsage: async () => {
+          fetches++;
+          return { fetchedAt: now, windows: [
+            { usedPercent: 100, windowMinutes: 300, resetsAt: now + 60_000 },
+            { usedPercent: 50, windowMinutes: 10_080, resetsAt: now + 600_000 },
+          ] };
+        } },
+      });
+      await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+      await nextTurn();
+      const before = fetches;
+      await harness.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} }, ctx);
+      await harness.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+      await nextTurn();
+      assert.equal(fetches - before, expectedRequests || expectedSchedules ? 1 : 0);
+      assert.deepEqual(calls.filter((call) => call === "fallback" || call === "resume"),
+        [...(expectedRequests ? ["fallback"] : []), ...(expectedSchedules ? ["resume"] : [])]);
+    } finally { releaseFallback(); releaseResume.release(); }
+  }
+});
+
+test("fallback ownership distinguishes model_select; input preserves lease but tree cancels", async () => {
+  const calls: string[] = [];
+  let owned = true;
+  const releaseFallback = installQuotaFallbackReceiver({
+    request: () => false, cancel: () => { calls.push("fallback-cancel"); },
+    observeModelSelect: () => { calls.push("model-select"); return owned; }, backupFailed: async () => null,
+  });
+  const releaseResume = installQuotaResumeReceiver((event) => { if (event.type === "cancel") calls.push("resume-cancel"); });
+  try {
+    const branch: SessionEntry[] = [];
+    const ctx = withBranch(context("/repo", branch), branch);
+    const h = createHarness([["/repo", activeState()]]);
+    await h.api.handler("model_select")({ type: "model_select", model: { provider: "deepseek", id: "deepseek-flash" }, source: "set" }, ctx);
+    assert.deepEqual(calls, ["model-select"]);
+    owned = false;
+    await h.api.handler("model_select")({ type: "model_select", model: { provider: "openai-codex", id: "gpt-5-codex" }, source: "set" }, ctx);
+    assert.deepEqual(calls, ["model-select", "model-select", "resume-cancel"]);
+    await h.api.handler("input")({ type: "input", source: "interactive", streamingBehavior: "steer" }, ctx);
+    assert.equal(calls.filter((call) => call === "fallback-cancel").length, 0);
+    await h.api.handler("session_tree")({ type: "session_tree" }, ctx);
+    assert.equal(calls.filter((call) => call === "fallback-cancel").length, 1);
+  } finally { releaseFallback(); releaseResume.release(); }
+});
+
+test("model_select during fallback request preserves planning only for supervisor-owned mutations", async () => {
+  const now = 1_700_000_000_000;
+  for (const owned of [true, false]) {
+    const calls: string[] = [];
+    let onModelSelect!: (event: unknown, ctx: unknown) => unknown;
+    const releaseFallback = installQuotaFallbackReceiver({
+      request: async () => {
+        calls.push("fallback");
+        await onModelSelect({ type: "model_select", model: { provider: "deepseek", id: "deepseek-flash" }, source: "set" }, ctx);
+        return false;
+      },
+      cancel: () => undefined, observeModelSelect: () => owned, backupFailed: async () => null,
+    });
+    const releaseResume = installQuotaResumeReceiver((event) => { if (event.type === "schedule") { calls.push("resume"); return true; } });
+    const branch = [{ type: "message", id: "quota", message: {
+      role: "assistant", provider: "openai-codex", model: "gpt-5-codex", stopReason: "error", errorMessage: "The usage limit has been reached",
+    } }] as SessionEntry[];
+    const ctx = withBranch(context("/repo", branch), branch);
+    try {
+      const h = createHarness([["/repo", activeState()]], {}, {
+        now: () => now, quotaFallbackAuthorized: true,
+        quotaResumePreferenceStore: { loadDefault: async () => true, saveDefault: async () => undefined },
+        subscriptionUsageProvider: { fetchUsage: async () => ({ fetchedAt: now, windows: [
+          { usedPercent: 100, windowMinutes: 300, resetsAt: now + 60_000 },
+          { usedPercent: 50, windowMinutes: 10_080, resetsAt: now + 600_000 },
+        ] }) },
+      });
+      onModelSelect = h.api.handler("model_select");
+      await h.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+      await h.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} }, ctx);
+      await h.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+      await nextTurn();
+      assert.deepEqual(calls, owned ? ["fallback", "resume"] : ["fallback"]);
+    } finally { releaseFallback(); releaseResume.release(); }
+  }
+});
+
+test("backup provider settlement restores source through Host and schedules anchored Resume only before recovery", async () => {
+  const now = 1_700_000_000_000;
+  for (const enabled of [true, false]) {
+    const calls: string[] = [];
+    const releaseFallback = installQuotaFallbackReceiver({
+      request: () => false, cancel: () => undefined, observeModelSelect: () => true,
+      backupFailed: async () => { calls.push("restore"); return {
+        sessionId: "remote-session", anchorEntryId: "quota", provider: "openai-codex",
+        modelId: "gpt-5-codex", detectedAt: now, restoreAt: now + 60_000,
+      }; },
+    });
+    const releaseResume = installQuotaResumeReceiver((event) => {
+      if (event.type === "schedule") { calls.push(`resume:${event.plan.anchorEntryId}`); return true; }
+    });
+    try {
+      const branch = [{ type: "message", id: "quota", message: {
+        role: "assistant", provider: "openai-codex", model: "gpt-5-codex", stopReason: "error", errorMessage: "The usage limit has been reached",
+      } }, { type: "message", id: "backup", message: {
+        role: "assistant", provider: "deepseek", model: "deepseek-flash", stopReason: "error", errorMessage: "provider unavailable",
+      } }] as SessionEntry[];
+      const ctx = withBranch(context("/repo", branch), branch);
+      const h = createHarness([["/repo", activeState()]], {}, {
+        now: () => now, quotaResumePreferenceStore: { loadDefault: async () => enabled, saveDefault: async () => undefined },
+      });
+      await h.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+      await h.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} }, ctx);
+      await h.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+      await nextTurn();
+      assert.deepEqual(calls, enabled ? ["restore", "resume:quota"] : ["restore"]);
+    } finally { releaseFallback(); releaseResume.release(); }
+  }
+});
+
+test("Remote suppresses STOPPED when fallback commits without starting another Run", async () => {
+  const now = 1_700_000_000_000;
+  const messages: string[] = []; const calls: string[] = [];
+  const releaseFallback = installQuotaFallbackReceiver({
+    request: async () => { calls.push("fallback"); return true; }, cancel: () => undefined,
+    observeModelSelect: () => false, backupFailed: async () => null,
+  });
+  const releaseResume = installQuotaResumeReceiver((event) => { if (event.type === "schedule") calls.push("resume"); return true; });
+  try {
+    const surface: RemoteSurface = {
+      ensureProject: async () => ({ channelId: "channel" }),
+      ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
+      send: async (_thread, event) => { messages.push(event.text); },
+      updateSessionPresentation: async () => undefined,
+    };
+    const routing = { load: async () => null, save: async () => undefined, projectName: () => "repo" } as unknown as import("../src/remote-routing.ts").RemoteRoutingStore;
+    const companion = new RemoteCompanion(surface, { routing });
+    const branch = [{ type: "message", id: "quota", message: {
+      role: "assistant", content: [], provider: "openai-codex", model: "gpt-5-codex", stopReason: "error",
+      errorMessage: "The usage limit has been reached", timestamp: now,
+    } }] as SessionEntry[];
+    const ctx = withBranch(context("/repo", branch), branch);
+    const h = createHarness([["/repo", activeState()]], {}, {
+      now: () => now, quotaFallbackAuthorized: true,
+      remoteCompanion: { companion, guildId: "guild" },
+      quotaResumePreferenceStore: { loadDefault: async () => true, saveDefault: async () => undefined },
+      subscriptionUsageProvider: { fetchUsage: async () => ({ fetchedAt: now, windows: [
+        { usedPercent: 100, windowMinutes: 300, resetsAt: now + 60_000 },
+        { usedPercent: 50, windowMinutes: 10_080, resetsAt: now + 600_000 },
+      ] }) },
+    });
+    await h.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+    await h.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} }, ctx);
+    await h.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+    await waitFor(() => calls.includes("fallback"));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.deepEqual(calls, ["fallback"]);
+    assert.equal(messages.some((text) => /PINDIE STOPPED|TASK BLOCKED|Could not continue autonomously/.test(text)), false);
+  } finally { releaseFallback(); releaseResume.release(); }
 });
 
 test("accepted Quota Auto Resume suppresses STOPPED while failed scheduling does not", async () => {

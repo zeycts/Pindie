@@ -142,9 +142,12 @@ import {
   getQuotaResumeStatusObserver,
 } from "./quota-resume-control.ts";
 import {
-  buildQuotaResumePlan,
+  buildCodexQuotaRecoveryFacts,
   detectCodexQuotaIncident,
+  quotaResumePlanFromRecoveryFacts,
 } from "./quota-resume-incident.ts";
+import { getQuotaFallbackController } from "./quota-fallback-control.ts";
+import { detectQuotaFallbackBackupFailure } from "./quota-fallback-supervisor.ts";
 import {
   PINDIE_QUOTA_RESUME_MESSAGE,
   PINDIE_QUOTA_RESUME_TYPE,
@@ -169,6 +172,8 @@ export interface PindieExtensionOptions {
   store?: PindieStateStore;
   continuityStore?: TaskContinuityStore;
   quotaResumePreferenceStore?: QuotaResumePreferenceStore;
+  /** Runtime-only paid authorization seam; Slice D supplies actual preference. Default OFF. */
+  quotaFallbackAuthorized?: boolean;
   experienceStore?: RunExperienceStore;
   experienceReader?: RunExperienceReader;
   strategyCandidateStore?: StrategyCandidateStore;
@@ -348,6 +353,7 @@ function registerComposedPindieExtension(
   const committedRolloverPublisher = getCommittedRolloverPublisher();
   const sessionLifecyclePublisher = getSessionLifecyclePublisher();
   const quotaResumePublisher = getQuotaResumePublisher();
+  const fallbackController = getQuotaFallbackController();
   const quotaResumeStatusObserver = getQuotaResumeStatusObserver();
   let quotaPlanningGeneration = 0;
   let agentRunLifecycleGeneration = 0;
@@ -823,6 +829,7 @@ function registerComposedPindieExtension(
   pi.on("session_tree", async (_event, ctx) => {
     ++agentRunLifecycleGeneration;
     cancelQuotaResume(ctx);
+    try { fallbackController?.cancel(ctx.sessionManager.getSessionId()); } catch { /* Released Host. */ }
     await quotaResume.restoreBranch(ctx);
   });
 
@@ -831,7 +838,17 @@ function registerComposedPindieExtension(
     cancelQuotaResume(ctx);
     options.remoteCompanion?.companion.observeInput(event.source, event.streamingBehavior);
   });
-  pi.on("model_select", (_event, ctx) => {
+  pi.on("model_select", (event, ctx) => {
+    let ownedByFallback = false;
+    try {
+      ownedByFallback = fallbackController?.observeModelSelect({
+        sessionId: ctx.sessionManager.getSessionId(),
+        provider: event.model.provider,
+        modelId: event.model.id,
+        source: event.source,
+      }) === true;
+    } catch { /* Released Host or stale context: treat as external. */ }
+    if (ownedByFallback) return;
     ++agentRunLifecycleGeneration;
     cancelQuotaResume(ctx);
   });
@@ -1480,8 +1497,8 @@ function registerComposedPindieExtension(
     if (
       result.facts !== null &&
       result.facts.settlementGeneration !== null &&
-      quotaResumePublisher !== null &&
-      quotaResume.quotaAutoResumeEnabled
+      (fallbackController !== null ||
+        (quotaResumePublisher !== null && quotaResume.quotaAutoResumeEnabled))
     ) {
       let branch: ReturnType<ExtensionContext["sessionManager"]["getBranch"]> | null = null;
       try {
@@ -1489,28 +1506,42 @@ function registerComposedPindieExtension(
       } catch {
         // A stale Extension context cannot authorize autonomous planning.
       }
-      if (branch !== null && detectCodexQuotaIncident(branch) !== null) {
+      if (branch !== null) {
         const planningGeneration = quotaPlanningGeneration;
-        quotaSuccessorPromise = buildQuotaResumePlan({
-          ctx,
-          branch,
-          monitor: subscriptionUsageMonitor,
-          enabled: true,
-          now: continuityNow,
-        }).then((plan) => {
-          if (
-            plan === null ||
-            !quotaResume.quotaAutoResumeEnabled ||
-            planningGeneration !== quotaPlanningGeneration ||
-            !isCurrentSettlement()
-          ) return false;
-          try {
-            return quotaResumePublisher({ type: "schedule", plan }) === true;
-          } catch {
-            return false;
-          }
-        }).catch(() => false);
-        void quotaSuccessorPromise;
+        if (detectCodexQuotaIncident(branch) !== null &&
+          ((options.quotaFallbackAuthorized === true && fallbackController !== null) ||
+            (quotaResumePublisher !== null && quotaResume.quotaAutoResumeEnabled))) {
+          quotaSuccessorPromise = (async () => {
+            const facts = await buildCodexQuotaRecoveryFacts({ ctx, branch, monitor: subscriptionUsageMonitor, now: continuityNow });
+            if (facts === null || planningGeneration !== quotaPlanningGeneration || !isCurrentSettlement()) return false;
+            if (options.quotaFallbackAuthorized === true && fallbackController !== null) {
+              try {
+                if (await fallbackController.request({
+                  sessionId: facts.sessionId, anchorEntryId: facts.anchorEntryId,
+                  provider: facts.provider, modelId: facts.modelId,
+                  detectedAt: facts.detectedAt, restoreAt: facts.recoveryAt,
+                })) return true; // Commit is final even if the new Run makes this settlement stale.
+              } catch { /* Resume may still take over if planning remains current. */ }
+            }
+            if (planningGeneration !== quotaPlanningGeneration || !isCurrentSettlement() ||
+              !quotaResume.quotaAutoResumeEnabled || quotaResumePublisher === null) return false;
+            try { return quotaResumePublisher({ type: "schedule", plan: quotaResumePlanFromRecoveryFacts(facts) }) === true; }
+            catch { return false; }
+          })().catch(() => false);
+        } else if (detectQuotaFallbackBackupFailure(branch) && fallbackController !== null && settlementSessionId !== null) {
+          quotaSuccessorPromise = (async () => {
+            if (!isCurrentSettlement()) return false;
+            const plan = await fallbackController.backupFailed(settlementSessionId);
+            if (plan === null || !quotaResume.quotaAutoResumeEnabled || quotaResumePublisher === null ||
+              continuityNow() >= plan.restoreAt || planningGeneration !== quotaPlanningGeneration || !isCurrentSettlement()) return false;
+            try { return quotaResumePublisher({ type: "schedule", plan: {
+              sessionId: plan.sessionId, anchorEntryId: plan.anchorEntryId, provider: plan.provider,
+              modelId: plan.modelId, detectedAt: plan.detectedAt, resumeAt: plan.restoreAt,
+            } }) === true; }
+            catch { return false; }
+          })().catch(() => false);
+        }
+        if (quotaSuccessorPromise) void quotaSuccessorPromise;
       }
     }
     void presentation.refreshSubscriptionUsage(ctx);

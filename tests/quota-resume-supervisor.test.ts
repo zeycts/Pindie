@@ -160,7 +160,7 @@ test("a valid newer anchor replaces, cancel and stale callbacks cannot resume", 
 
 test("wake revalidates conversation, model, busy and pending state", () => {
   const mutations = [
-    (h: ReturnType<typeof harness>) => h.setBranch([quota(), user()]),
+    (h: ReturnType<typeof harness>) => h.setBranch([quota("other"), user()]),
     (h: ReturnType<typeof harness>) => h.setModel("openai-codex", "changed"),
     (h: ReturnType<typeof harness>) => h.setBusy(true),
     (h: ReturnType<typeof harness>) => h.setBusy(false, true),
@@ -170,6 +170,18 @@ test("wake revalidates conversation, model, busy and pending state", () => {
     const h = harness(); h.supervisor.request(plan()); mutate(h); h.callbacks[0]!.callback();
     assert.equal(h.sends.length, 0);
     assert.deepEqual(h.waitingChanges.at(-1), null);
+  }
+});
+
+test("exact historical source anchor permits backup failure after source restore, but rejects altered evidence", () => {
+  const h = harness();
+  const backup = { ...quota("backup"), message: { ...quota("backup").message, provider: "deepseek", model: "deepseek-flash", errorMessage: "provider unavailable" } } as SessionEntry;
+  h.setBranch([quota(), user(), backup]);
+  assert.equal(h.supervisor.request(plan()), true);
+  h.callbacks[0]!.callback(); assert.equal(h.sends.length, 1);
+  for (const branch of [[quota("wrong"), backup], [user("quota"), backup], [quota("quota", "other"), backup]]) {
+    const next = harness(); next.setBranch(branch);
+    assert.equal(next.supervisor.request(plan()), false);
   }
 });
 
