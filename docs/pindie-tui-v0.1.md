@@ -1,6 +1,6 @@
 # Pindie TUI v0.1 — Architecture and Implementation Contract
 
-Status: Slices A–F and Slice G1 are implemented. Slice G2 is next; cutover remains gated on real dogfood and explicit approval.
+Status: Slices A–F and Slice G1 are implemented; G1 is merged. Slice G2a is pre-dogfood readiness, G2b is real dogfood, and G2c is the separately gated cutover. The owned TUI remains opt-in until explicit approval.
 
 Baseline: Pindie main after Pi 0.86.1 compatibility upgrade.
 
@@ -93,46 +93,37 @@ Pi remains responsible for the active AgentSession, low-level execution, concret
 
 ## 3. Screen anatomy
 
-v0.1 has only four permanent screen regions:
+The owned TUI keeps four structural regions, but ordinary content must not turn the fixed chrome into a second transcript:
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│ Header                                                       │
+│ one-line Header                                              │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
-│ Timeline                                                     │
+│ scrollable Timeline; no permanent heading or empty text      │
 │                                                              │
 ├──────────────────────────────────────────────────────────────┤
-│ Composer / Attention                                         │
+│ Composer/editor, or contextual hard Attention               │
 ├──────────────────────────────────────────────────────────────┤
-│ Status                                                       │
+│ one-line normal Footer                                       │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Overlay is transient and sits above the Timeline.
+These labels describe layout ownership; Timeline and Composer are not permanent rendered headings. Overlay is transient and sits above the Timeline. Necessary active Extension/runtime actions may contribute bounded contextual rows, but ordinary idle chrome remains bounded.
 
 Do not add permanent sidebars, task panels, files panels, agent panels, queue panels, or tabs in v0.1.
 
 ### Header
 
-Header answers: **where am I?**
+Header answers: **where am I?** Its normal target is one physical terminal row and it contains only:
 
-Example:
+- a bounded human-facing Session display identity;
+- model id (not provider);
+- thinking level.
 
-```text
- Pindie · pindie                              Sol · High
- feat/notifications                         Task · active
-```
+Do not put duplicate Pindie/project identity, provider, Task status, or coherent/stale authority in persistent Header chrome. In particular, `getActiveSessionDisplayIdentity()` may use the first real user message when the Session has no explicit name; that fallback is content, not a safe fixed-width label. Bound the projected display identity at the presentation boundary to at most 48 Unicode grapheme clusters, including its truncation marker, without changing the underlying Session name, transcript, or picker data. Then clamp/ellipsis the final assembled Header against the current terminal's display width so it remains one physical row; a pre-truncated identity alone is not sufficient because model id and terminal width also vary. When the available width is too small for every field, prioritize a legible single-row truncation rather than wrapping.
 
-It may contain:
-
-- project/workspace identity;
-- Git branch;
-- model;
-- reasoning level/mode;
-- Task lifecycle.
-
-It must not become a second status line for cost, elapsed time, quota, verification detail, or live activity.
+Authority-unavailable remains a hard Attention condition rendered in the Attention surface. Chrome cleanup must not weaken or replace that fail-closed signal with a quiet footer badge. Soft settled-blocked remains distinct and must not become hard Attention.
 
 ### Timeline
 
@@ -140,23 +131,17 @@ Timeline answers:
 
 > what happened, what is happening, and what matters?
 
-It is a structured projection, not a raw ANSI transcript.
+It is a structured projection, not a raw ANSI transcript. The normal Timeline has no permanent heading; an empty Timeline stays blank rather than rendering a placeholder.
 
 ### Composer / Attention
 
-Normal state shows the Composer.
+Normal state shows the Pi Editor without a permanent `Composer` title. When a hard human interaction is active, the same region becomes a contextual Attention surface. Human Gate and runtime permission are allowed to own input; ordinary blocked/completed/stopped states are not. Removing the ordinary title must not alter Editor ownership or input semantics.
 
-When a hard human interaction is active, the same region becomes an Attention surface. Human Gate and runtime permission are allowed to own input; ordinary blocked/completed/stopped states are not.
+### Footer
 
-### Status
+The normal Footer is one physical row containing compact ambient runtime facts (for example idle/running, verification progress, queue/quota state when relevant) and, while idle, the primary discoverability cue `Alt+P Commands`. Do not render permanent `Status` / `Hints` labels or a standing list of `Alt+M`, `Alt+N`, or `Alt+H` shortcuts. The Command Palette is the normal shortcut-discovery surface; context-specific focus/Attention may show relevant hints. Preserve the registered actions and their dispatch semantics.
 
-Status contains ambient runtime information only, for example:
-
-```text
-running · 2m 31s · $0.08                  verify 2/3 · 5h 62%
-```
-
-Human Gate, verification failure, and blocker explanation must not be hidden only in the footer.
+Clamp the final Footer to the current terminal width and keep ordinary idle Footer height to one row. Do not add Task lifecycle or coherent/stale authority as ambient Footer content. Clamp each active actionable Extension/runtime addition too; show only a bounded set of relevant additions and aggregate/omit overflow rather than letting long passive text or a burst of contributions create unbounded persistent chrome. These additions may use extra contextual rows when necessary without changing the normal-idle baseline. Human Gate, verification failure, and blocker explanation must not be hidden only in the Footer.
 
 ## 4. Projection contract
 
@@ -185,7 +170,7 @@ Pi Session history/events
         ↓
 UI Projection
         ↓
-Header / Timeline / Status / Attention
+Header / Timeline / Footer / Composer-or-Attention
 ```
 
 A future `UiProjection` may be incrementally maintained for performance, but it is non-authoritative and must be reconstructable from authoritative facts/history.
@@ -263,26 +248,24 @@ The visible vocabulary should remain small even when the underlying Pi event voc
 
 ### 5.1 Display modes
 
-Blocks support:
+Blocks support three distinct density layers:
 
 ```text
-Compact  → enough to know what happened, usually 1–2 lines
-Preview  → enough to judge whether work is normal
-Full     → explicit inspection detail
+Compact  → routine/history awareness
+Preview  → a bounded current-work or important-content working set
+Full     → detail available only through explicit expansion/inspection
 ```
 
-Default lifecycle policy:
+Density is role- and lifecycle-specific: user Messages default to Compact; streaming or completed assistant Messages and running Work use bounded Preview; successful routine Work recedes to Compact; failures retain bounded diagnostic Preview. For these routine blocks, Full is an explicit human choice (expand, inspect, or copy), not a default merely because content is complete. Semantic blocks are exempt from generic noise compaction: preserve domain-important Human Gate, Completion, and other meaningful outcomes in their semantic presentation. Manual expansion pins the user's choice; automatic lifecycle updates must not immediately undo an explicit human expand/collapse decision.
 
-```text
-start
-  ↓
-Preview
-  │
-  ├─ routine success → Compact
-  └─ failure         → Preview / Full
-```
+Every Preview intended for the normal Timeline must be bounded in both content length and rendered physical rows at the current terminal width. The v0.1 working budget is at most 320 Unicode grapheme clusters of projected content and at most four physical rows for the complete block including its marker/role/provenance; whichever limit is reached first wins. Emit a visible `…` truncation marker. Clamp metadata as well as body text when a narrow terminal cannot fit it; do not rely only on character-count truncation and then allow wrapping to defeat the row bound. Compact message previews use at most 120 grapheme clusters of first meaningful content and at most one physical row including metadata. A later reviewed tuning may reduce these budgets, but must preserve the bounds and tests.
 
-Manual expansion pins the user's choice. Automatic policy must not immediately undo an explicit human expand/collapse decision.
+#### MessageBlock policy
+
+- User messages, including Prompt / Steer / Follow-up echoes, default to Compact in normal/history projection. Show role and available delivery provenance plus the first meaningful content; a long Prompt is never expanded in full by default.
+- Streaming assistant messages use the bounded Preview budget as text grows.
+- Completed assistant messages also default to bounded Preview, not Full; error messages use bounded diagnostic Preview. Completion does not silently expand dozens of lines.
+- Explicit Full retains the complete projected text. In the normal Timeline it is available only after explicit expand; Block Viewer and copy also explicitly request Full.
 
 The governing principle is:
 
@@ -320,6 +303,8 @@ Group boundaries are strict. User input, Edit, Command, semantic transition, err
 
 Grouping is a presentation construct only.
 
+A running ObservationBlock renders a bounded current-work preview: one aggregate summary for the whole burst plus the current operation, or the latest useful operation when none is current. Do not map every item into a new visible line; observation bursts can be large, and Preview physical height must not grow linearly with item count. Keep the aggregate counts representative of all grouped items. A completed burst is a compact aggregate. A failed burst keeps bounded diagnostic detail for the relevant failure; Full inspection remains available explicitly.
+
 ### 5.4 Edit
 
 Mutations preserve identity.
@@ -334,9 +319,7 @@ Do not collapse the working history into a generic `Edited 8 files` group. Compl
 
 ### 5.5 Command
 
-Streaming stdout/stderr must not continuously grow the physical Timeline.
-
-While running, use a bounded preview/tail. On successful completion, compact. On failure, preserve enough error context for diagnosis and allow explicit deep inspection.
+Streaming stdout/stderr must not continuously grow the physical Timeline. While running, keep the existing bounded tail. On successful completion, compact. On failure, preserve bounded diagnostic context; the Full viewer can show the available projected detail. Do not let long command labels or result summaries bypass the normal Preview row/character bounds.
 
 ### 5.6 Semantic tools project domain meaning
 
@@ -609,11 +592,13 @@ Use public Pi/pi-tui APIs only. Do not deep-import private InteractiveMode imple
 Use `TuiAltScreen` because v0.1 needs application-owned layout:
 
 ```text
-Header                      fixed
-Timeline / ScrollView       grow
-Composer / Attention        fixed
-Status                      fixed
+Header                      fixed, one physical row
+Timeline / ScrollView       grow; no permanent heading
+Composer / Attention        fixed, no ordinary Composer title
+Footer                      fixed, one normal physical row
 ```
+
+Header and normal Footer are width-clamped before rendering so they cannot wrap and consume the Timeline/Composer viewport. Timeline growth/shrinkage must not change Pi Editor ownership.
 
 ### 8.2 Editor
 
@@ -816,27 +801,25 @@ Outputs:
 
 - Header facts;
 - Timeline block model;
-- Status facts;
+- Footer facts;
 - Attention projection.
 
 Tests should operate on plain data.
 
-### Slice D — TUI Shell (implemented / feature-gated dogfood shell)
+### Slice D — TUI Shell (implemented / feature-gated shell)
 
 Introduce feature-gated `PindieInteractiveMode` using `TuiAltScreen`.
 
-Minimum dogfoodable shell:
+The initial shell provides:
 
-- Header;
-- Timeline;
-- Composer;
-- Status;
+- Header region (awaiting G2a bounds);
+- scrollable Timeline;
+- Composer / Attention region;
+- normal Footer;
 - real Prompt / Steer / Follow-up / Abort;
 - Session rebind correctness.
 
-Implemented behind `PINDIE_TUI=1`; the default Pi `InteractiveMode` remains the fallback.
-Semantic Attention interaction lands in Slice F2a. The full Extension UI compatibility surface remains in F2b.
-Do not implement every advanced Block/Overlay before first dogfood.
+Implemented behind `PINDIE_TUI=1`; the default Pi `InteractiveMode` remains the fallback. This initial shell is not yet a claim of baseline usability or approval for another full dogfood pass: G2a readiness must pass before G2b resumes. Semantic Attention interaction landed in Slice F2a; the full Extension UI compatibility surface landed in F2b. Do not expand features speculatively to prepare dogfood; G2b is for issues exposed by real use.
 
 ### Slice E — Semantic Timeline (implemented)
 
@@ -850,7 +833,7 @@ Implemented:
 - stable live block identity;
 - observation grouping;
 - Edit/Command blocks;
-- bounded streaming previews;
+- bounded running command-output tails;
 - automatic success compaction;
 - failure persistence;
 - semantic Task/Verification/Completion projection;
@@ -916,7 +899,7 @@ Implemented:
 - shared Action Registry bindings `Alt+M → model.pick` and `Alt+N → session.pick`;
 - current-Session, native-idle, semantic-Attention, Extension-interaction, and Session-epoch guards both after asynchronous Picker loading and again before selection mutation.
 
-Pindie's Extension contribution interpretation keeps its mandatory semantic Header and Status authoritative. A future public-compatible header/footer contribution would be additive rather than replacing those regions.
+Pindie's Extension contribution interpretation keeps its mandatory semantic Header and normal Footer authoritative. A future public-compatible header/footer contribution would be additive rather than replacing those regions.
 
 Final Pi 0.86.1 `ExtensionUIContext` capability matrix:
 
@@ -927,7 +910,7 @@ Final Pi 0.86.1 `ExtensionUIContext` capability matrix:
 | `setWidget(key, string[], options)` | implemented; keyed replacement/removal, insertion order, above/below placement, bounded rendering |
 | `setWidget(key, componentFactory, options)` | explicitly unsupported: package-root exports no active `Theme` instance required by the factory |
 | `setHeader` | explicitly unsupported: package-root exports no active `Theme` instance; Pindie would treat it as an additive Header contribution |
-| `setFooter` | explicitly unsupported: package-root exports neither an active `Theme` instance nor a constructible public `FooterDataProvider`; Pindie would treat it as an additive Status contribution |
+| `setFooter` | explicitly unsupported: package-root exports neither an active `Theme` instance nor a constructible public `FooterDataProvider`; Pindie would treat it as an additive Footer contribution |
 | `custom` | explicitly unsupported: package-root exports neither active `Theme` nor app `KeybindingsManager` values required by the factory contract |
 | `addAutocompleteProvider` | implemented for the ordinary Composer; providers stack in registration order over the public `CombinedAutocompleteProvider([], cwd)` file/path and completion-application baseline |
 | `setEditorComponent`, `getEditorComponent` | explicitly unsupported: package-root does not export `getEditorTheme()` or a runtime app `KeybindingsManager` value/constructor needed for faithful factory construction |
@@ -950,15 +933,22 @@ G1 — Human Signal Policy
      → external Discord attention
      → settled-blocked semantics
 
-G2 — Dogfood + Cutover
-     real VS Code → SSH → tmux validation
-     → compatibility closure
-     → explicit human cutover decision
+G2a — Pre-dogfood Readiness
+      bounded chrome + bounded Timeline density
+      → baseline-usability acceptance
+
+G2b — Real Dogfood
+      VS Code → SSH → tmux → PINDIE_TUI=1
+      → compatibility issues found in actual use
+
+G2c — Cutover
+      all gates green
+      → explicit human approval
 ```
 
-The cutover is not an automatic consequence of CI passing. G2 requires real interactive dogfood and an explicit reviewed decision.
+Cutover is not an automatic consequence of CI passing or G2b dogfood alone. G2c requires all listed gates and an explicit reviewed human decision.
 
-#### G1 — Human Signal Policy (implemented)
+#### G1 — Human Signal Policy (implemented and merged)
 
 Local and remote behavior now consume one transport-independent Human Signal Policy. A running blocked Task remains recoverable work; Discord attention for settled-blocked is classified only at the final settlement boundary after successor decisions.
 
@@ -1176,89 +1166,102 @@ G1 is complete when tests prove at minimum:
 
 Do not change the TUI default in G1.
 
-#### G2 — Dogfood + Cutover
+#### G2a — Pre-dogfood Readiness
 
-G2 begins only after G1 is merged.
+G2a closes two baseline-usability gaps before any new real dogfood attempt. Both G2a-A and G2a-B must be implemented, tested, and merged, and their acceptance checks in §14 must pass before G2b begins. A CI pass alone is not a usability verdict.
 
-The first step is a real manual dogfood pass in the actual deployment path:
+##### G2a-A — Bounded Chrome
+
+The first VS Code → SSH → tmux → `PINDIE_TUI=1` launch exposed that an unnamed Session can use the first real user message as its display identity. `PiRuntimeAdapter.getActiveSessionDisplayIdentity()` currently returns that fallback without a display-length bound; `formatHeader()` places the full value in persistent chrome. A long Prompt can therefore wrap the Header to dozens of rows and displace the Timeline and Composer. G2a-A must close this real failure, not treat it as cosmetic.
+
+Acceptance contract:
+
+- Header is persistent chrome, targets one physical row, and contains only bounded human-facing Session identity, model id, and thinking level.
+- Apply an explicit Session-display-identity cap at the presentation boundary (at most 48 Unicode grapheme clusters including the truncation marker); do not mutate the Session name, transcript, or picker identity to achieve it.
+- Clamp/ellipsis the final assembled Header at the actual terminal display width. A fixed character cap alone is insufficient; long model ids and narrow terminal widths must not wrap the Header.
+- Remove duplicate project/Pindie identity, provider, Task status, and coherent/stale authority from persistent Header content. Authority-unavailable remains prominent hard Attention in its existing input-owning surface.
+- Remove permanent Timeline and Composer headings. Empty Timeline remains blank; do not add a placeholder.
+- Normal Footer is one width-clamped row, with Command Palette as the ordinary shortcut-discovery surface and contextual hints only for special focus/Attention. No permanent `Status` / `Hints` labels or standing `Alt+M` / `Alt+N` / `Alt+H` list.
+- Preserve the existing Action Registry, Attention/soft-signal distinctions, Extension UI ownership and additions, and Pi Editor behavior. Necessary active Extension/runtime actions may add contextual rows without changing the bounded normal-idle baseline.
+
+##### G2a-B — Bounded Timeline Density
+
+The Projection may retain complete projected history, but ordinary Timeline rendering must never turn one large routine block into an unbounded viewport occupant. Compact, Preview, and Full have distinct purposes and Preview has both character and physical-row bounds as specified in §5.1.
+
+Acceptance contract:
+
+- User Prompt / Steer / Follow-up blocks default to Compact with role, available delivery provenance, and bounded first meaningful content; long prompts do not default to full text.
+- Streaming assistant content uses bounded Preview. Completed assistant content also defaults to bounded Preview (not Full); errors retain bounded diagnostic Preview. Full is available only by explicit expand/inspect/copy.
+- Running Observation groups render one aggregate summary plus the current/latest useful operation, not one row per item. Complete groups compact to the aggregate; failed groups retain bounded diagnosis, with more projected detail available through explicit Full inspection.
+- Running Tool / Command output keeps its existing bounded stdout/stderr tail; successful commands remain compact; failures preserve bounded diagnosis; Full viewer can inspect the available projected detail.
+- Do not apply routine-noise compression to Human Gate, Completion, or another meaningful semantic outcome merely for visual uniformity. Semantic importance outranks tool-noise density.
+
+#### G2b — Real Dogfood
+
+Only after G2a-A and G2a-B are merged and the owned TUI meets the baseline-usability acceptance in §14 may real `PINDIE_TUI=1` dogfood resume. Test the actual deployment path:
 
 ```text
-Windows keyboard
-  ↓
-VS Code
-  ↓
-Remote SSH
-  ↓
-tmux
-  ↓
-PINDIE_TUI=1
-  ↓
-PindieInteractiveMode
+VS Code → SSH → tmux → PINDIE_TUI=1 → PindieInteractiveMode
 ```
 
-Automated tests cannot prove upstream key delivery, IME behavior, terminal resize quality, tmux interaction, or day-long usability.
-
-The dogfood checklist must cover at least:
+Automated tests cannot prove upstream key delivery, Chinese IME, terminal resize quality, tmux detach/reattach, or sustained usability. The real dogfood checklist must cover at least:
 
 - Prompt / Steer / Follow-up;
 - Abort and queue restoration;
-- Timeline navigation/folding/inspection/copy;
+- Timeline navigation, fold, inspect, and copy;
 - Command Palette;
-- `Alt+M` Model Picker;
-- `Alt+N` Session Picker;
+- Model and Session picker;
 - `/reasoning` Extension dialog;
-- Human Gate option and free-form response;
-- authority-unavailable fail-closed behavior;
+- Human Gate options and free-form response;
+- authority-unavailable fail-closed Attention;
 - settled-blocked soft signal;
-- completion/stopped external notification;
-- quota wait/resume silence;
-- Session replacement/rebind;
-- Chinese IME and paste;
-- terminal resize;
-- reconnect/reattach to tmux;
-- narrow VS Code terminal width.
+- completed/stopped Remote attention;
+- quota wait/resume;
+- Chinese IME;
+- multiline input and paste;
+- terminal resize and narrow terminal width;
+- tmux detach/reattach;
+- Session replacement/rebind.
 
-G2 should add only fixes discovered by this dogfood/compatibility pass. It is not a new feature Slice.
+G2b fixes only issues exposed by this real dogfood. Do not use it to add speculative features or widen the feature set without new evidence and approval.
 
-##### Cutover gate
+#### G2c — Cutover
 
-Make the owned TUI default only after all of the following are true:
+The existing default-switch gate remains explicit and cumulative. Cutover is allowed only when all of these are true:
 
 ```text
 CI green
 +
-G1 policy green
+G1 green
 +
-real VS Code → SSH → tmux dogfood complete
+G2a readiness green
 +
-no unresolved correctness blocker
+G2b real dogfood complete
 +
-no known shortcut conflict in the chosen profile
+no correctness blocker
 +
-legacy fallback remains runnable
+no unresolved shortcut conflict
++
+legacy Pi fallback runnable
 +
 explicit human approval
 ```
 
-Then change selection semantics from:
+Until approval, preserve the current selection:
 
 ```text
 default       → Pi InteractiveMode
 PINDIE_TUI=1  → PindieInteractiveMode
 ```
 
-to a reversible form such as:
+Only after every gate is satisfied may selection become:
 
 ```text
 default             → PindieInteractiveMode
 PINDIE_TUI=legacy   → Pi InteractiveMode
 ```
 
-Exact environment naming may be chosen during G2, but the fallback must remain explicit and easy to invoke.
-
-Do not remove Pi InteractiveMode in v0.1.
-
-After cutover, keep the legacy fallback for a separate stability period before any removal proposal.
+The exact legacy opt-in spelling may be chosen during G2c, but fallback must remain explicit, easy to invoke, and runnable. Do not remove Pi InteractiveMode in v0.1. After cutover, retain the legacy fallback for a separate stability period before proposing removal.
 
 ## 14. Testing contract
 
@@ -1280,7 +1283,24 @@ small terminal integration tests
 manual dogfood in VS Code → SSH → tmux
 ```
 
-Do not rely primarily on terminal screenshots.
+Do not rely primarily on terminal screenshots. Replace old existence-only assertions for permanent `Timeline`, `Composer`, `Status`, or `Hints` chrome with assertions for bounded normal rendering and preserved interaction behavior.
+
+### G2a usability acceptance
+
+Before G2b can start, focused projection/view tests must prove all of the following:
+
+1. A 1,000+ character Session fallback identity cannot make the Header taller than one physical row; it is presentation-bounded and visibly truncated.
+2. At narrow terminal widths, Header and normal Footer remain bounded single rows, are clamped to available display width, and do not consume the Composer's reserved space. Normal idle chrome has no permanent Timeline/Composer heading, no `Status` / `Hints` labels, and an empty Timeline has no placeholder.
+3. A 1,000+ character user Prompt defaults to Compact and does not fill the Timeline viewport; role and available delivery provenance remain identifiable.
+4. Streaming assistant output remains within both Preview character and rendered-row bounds as successive updates grow.
+5. A completed assistant message with dozens of lines is not automatically rendered in Full or left permanently expanded.
+6. A large running Observation burst (for example, 100+ items) has bounded physical height independent of item count, retains an aggregate summary for the burst, and shows the current/latest useful operation.
+7. Explicit Full expansion / inspect still exposes the complete projected message or available projected work detail; copy continues to use Full.
+8. Density cleanup does not change Human Signal or Extension UI semantics: authority-unavailable remains hard/fail-closed, settled-blocked remains soft with an editable Composer, Human Gate persistence/input ownership remains intact, and Extension dialogs/contributions retain their existing ownership and priority.
+9. Pi Editor ownership is unchanged: Chinese IME, multiline input, paste, and draft behavior continue to work without a Pindie text-editor replacement.
+10. Timeline next/previous navigation, fold, selection visibility, and per-Block line-range bookkeeping remain correct after removing the Timeline heading, including after wrapped Preview changes and fold toggles.
+
+These are acceptance invariants, not permission to redesign adjacent interaction behavior. G2a may change presentation density only; it does not change the Action Registry, Human Signal policy, Extension semantics, Session/Model picker behavior, or Editor ownership.
 
 At minimum preserve coverage for:
 
@@ -1319,3 +1339,6 @@ At minimum preserve coverage for:
 18. `@earendil-works/pi-tui` is infrastructure, not product ownership.
 19. Pindie must not deep-import Pi InteractiveMode private implementation.
 20. Migration stays reversible until the new TUI has been dogfooded and compatibility-closed.
+21. Normal persistent chrome is bounded: Header is one width-clamped row with only Session identity/model id/thinking level, and normal Footer is one width-clamped row.
+22. Full projected history remains inspectable, while routine Message and running Observation previews have explicit character and physical-row bounds.
+23. Density cleanup preserves semantic Human Signal, Extension UI, Pi Editor, and Timeline navigation/fold ownership.
