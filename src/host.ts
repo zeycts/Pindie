@@ -56,6 +56,8 @@ import {
   type QuotaFallbackSupervisorOptions,
 } from "./quota-fallback-supervisor.ts";
 
+import { installQuotaFallbackReceiver } from "./quota-fallback-control.ts";
+
 export interface PindieResourcePaths {
   extensionPath: string;
   skillsPath: string;
@@ -213,6 +215,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   let quotaFallbackSupervisor: QuotaFallbackSupervisor | undefined;
   let quotaBridgeLease: QuotaResumeHostLease | undefined;
   let releaseControlBridge: (() => void) | undefined;
+  let releaseFallbackBridge: (() => void) | undefined;
   let currentPresentationReader: PindiePresentationReader | null = null;
   const presentation: PindiePresentationReaderLease = {
     current: () => currentPresentationReader,
@@ -226,6 +229,12 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     quotaResumeSupervisor.cancel(event.sessionId);
   });
   try {
+    releaseFallbackBridge = installQuotaFallbackReceiver({
+      request: (plan) => quotaFallbackSupervisor?.request(plan) ?? false,
+      cancel: (sessionId) => quotaFallbackSupervisor?.cancel(sessionId),
+      observeModelSelect: (event) => quotaFallbackSupervisor?.observeModelSelection(event) ?? false,
+      backupFailed: (sessionId) => quotaFallbackSupervisor?.handleBackupFailure(sessionId) ?? Promise.resolve(null),
+    });
     releaseControlBridge = installCommittedRolloverReceiver(
       (request: CommittedRolloverRequest) => {
         if (!rolloverSupervisor) {
@@ -240,6 +249,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       },
     );
   } catch (error) {
+    releaseFallbackBridge?.();
     quotaBridgeLease.release();
     throw error;
   }
@@ -251,6 +261,8 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     quotaResumeSupervisor = undefined;
     quotaBridgeLease?.release();
     quotaBridgeLease = undefined;
+    releaseFallbackBridge?.();
+    releaseFallbackBridge = undefined;
     releaseControlBridge?.();
     releaseControlBridge = undefined;
     await rolloverSupervisor?.dispose();

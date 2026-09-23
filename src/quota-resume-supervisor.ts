@@ -1,4 +1,4 @@
-import { detectCodexQuotaIncident, type QuotaResumePlan } from "./quota-resume-incident.ts";
+import { findCodexQuotaIncidentAtAnchor, type QuotaResumePlan } from "./quota-resume-incident.ts";
 import { PiRuntimeAdapter } from "./pi-runtime.ts";
 import type { QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
 
@@ -98,7 +98,7 @@ export class QuotaResumeSupervisor {
       const model = this.runtime.getActiveSessionModelIdentity();
       if (facts.sessionId !== plan.sessionId || facts.isStreaming || facts.isCompacting || facts.pendingMessageCount !== 0 ||
         model?.provider !== plan.provider || model.modelId !== plan.modelId) return false;
-      const incident = detectCodexQuotaIncident(this.runtime.getActiveSessionBranch());
+      const incident = findCodexQuotaIncidentAtAnchor(this.runtime.getActiveSessionBranch(), plan.anchorEntryId);
       return incident?.anchorEntryId === plan.anchorEntryId && incident.provider === plan.provider && incident.modelId === plan.modelId;
     } catch (error) {
       this.report(`Quota resume runtime validation failed: ${errorMessage(error)}`);
@@ -109,10 +109,6 @@ export class QuotaResumeSupervisor {
   private wake(generation: number): void {
     const lease = this.lease;
     if (this.disposed || lease === null || lease.generation !== generation) return;
-    if (!this.matchesCurrentRuntime(lease.plan)) {
-      this.clearLease();
-      return;
-    }
     if (!this.matchesCurrentRuntime(lease.plan)) {
       this.clearLease();
       return;

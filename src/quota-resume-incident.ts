@@ -32,6 +32,16 @@ export interface CodexQuotaIncident {
   errorMessage: string;
 }
 
+export interface CodexQuotaRecoveryFacts {
+  readonly sessionId: string;
+  readonly anchorEntryId: string;
+  readonly provider: "openai-codex";
+  readonly modelId: string;
+  readonly detectedAt: number;
+  /** Reset of all exhausted supported windows, including the existing grace period. */
+  readonly recoveryAt: number;
+}
+
 export interface QuotaResumePlan {
   sessionId: string;
   anchorEntryId: string;
@@ -41,12 +51,15 @@ export interface QuotaResumePlan {
   resumeAt: number;
 }
 
-export interface BuildQuotaResumePlanOptions {
+export interface BuildCodexQuotaRecoveryFactsOptions {
   ctx: ExtensionContext;
   branch: readonly SessionEntry[];
   monitor: SubscriptionUsageMonitor;
-  enabled: boolean;
   now: () => number;
+}
+
+export interface BuildQuotaResumePlanOptions extends BuildCodexQuotaRecoveryFactsOptions {
+  enabled: boolean;
 }
 
 /**
@@ -59,20 +72,29 @@ export function detectCodexQuotaIncident(
   const latestMessageEntry = [...branch].reverse().find((entry) => entry.type === "message");
   if (!latestMessageEntry || latestMessageEntry.type !== "message") return null;
 
-  const message = latestMessageEntry.message;
+  return findCodexQuotaIncidentAtAnchor(branch, latestMessageEntry.id);
+}
+
+/** Validates the exact source evidence on the current branch, even after backup messages. */
+export function findCodexQuotaIncidentAtAnchor(
+  branch: readonly SessionEntry[], anchorEntryId: string,
+): CodexQuotaIncident | null {
+  const entry = branch.find((candidate) => candidate.id === anchorEntryId);
+  if (entry?.type !== "message") return null;
+  const message = entry.message;
   if (
     message.role !== "assistant" ||
     message.provider !== "openai-codex" ||
     message.stopReason !== "error" ||
     typeof message.errorMessage !== "string" ||
     !isCodexSubscriptionQuotaError(message.errorMessage) ||
-    typeof message.model !== "string"
+    typeof message.model !== "string" || message.model.trim() === ""
   ) {
     return null;
   }
 
   return {
-    anchorEntryId: latestMessageEntry.id,
+    anchorEntryId: entry.id,
     provider: "openai-codex",
     modelId: message.model,
     errorMessage: message.errorMessage,
@@ -119,15 +141,9 @@ function deriveResumeAt(
   return Number.isFinite(resumeAt) ? resumeAt : null;
 }
 
-export async function buildQuotaResumePlan({
-  ctx,
-  branch,
-  monitor,
-  enabled,
-  now,
-}: BuildQuotaResumePlanOptions): Promise<QuotaResumePlan | null> {
-  if (!enabled) return null;
-
+export async function buildCodexQuotaRecoveryFacts({
+  ctx, branch, monitor, now,
+}: BuildCodexQuotaRecoveryFactsOptions): Promise<CodexQuotaRecoveryFacts | null> {
   const incident = detectCodexQuotaIncident(branch);
   if (incident === null) return null;
 
@@ -139,8 +155,8 @@ export async function buildQuotaResumePlan({
   }
 
   const detectedAt = now();
-  const resumeAt = deriveResumeAt(snapshot, detectedAt);
-  if (resumeAt === null) return null;
+  const recoveryAt = deriveResumeAt(snapshot, detectedAt);
+  if (recoveryAt === null) return null;
 
   return {
     sessionId: ctx.sessionManager.getSessionId(),
@@ -148,6 +164,23 @@ export async function buildQuotaResumePlan({
     provider: incident.provider,
     modelId: incident.modelId,
     detectedAt,
-    resumeAt,
+    recoveryAt,
   };
+}
+
+export function quotaResumePlanFromRecoveryFacts(facts: CodexQuotaRecoveryFacts): QuotaResumePlan {
+  return {
+    sessionId: facts.sessionId,
+    anchorEntryId: facts.anchorEntryId,
+    provider: facts.provider,
+    modelId: facts.modelId,
+    detectedAt: facts.detectedAt,
+    resumeAt: facts.recoveryAt,
+  };
+}
+
+export async function buildQuotaResumePlan(options: BuildQuotaResumePlanOptions): Promise<QuotaResumePlan | null> {
+  if (!options.enabled) return null;
+  const facts = await buildCodexQuotaRecoveryFacts(options);
+  return facts === null ? null : quotaResumePlanFromRecoveryFacts(facts);
 }

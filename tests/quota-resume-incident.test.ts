@@ -5,6 +5,9 @@ import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-a
 
 import {
   buildQuotaResumePlan,
+  buildCodexQuotaRecoveryFacts,
+  quotaResumePlanFromRecoveryFacts,
+  findCodexQuotaIncidentAtAnchor,
   detectCodexQuotaIncident,
   MAX_QUOTA_USAGE_SNAPSHOT_AGE_MS,
   QUOTA_RESET_GRACE_MS,
@@ -15,6 +18,15 @@ import {
 } from "../src/subscription-usage.ts";
 
 const NOW = 1_700_000_000_000;
+
+test("exact historical anchor is valid without authorizing historical planning", () => {
+  const source = assistantEntry("quota");
+  const branch = [source, userEntry("later")];
+  assert.equal(detectCodexQuotaIncident(branch), null);
+  assert.equal(findCodexQuotaIncidentAtAnchor(branch, "quota")?.modelId, "gpt-5-codex");
+  assert.equal(findCodexQuotaIncidentAtAnchor(branch, "missing"), null);
+  assert.equal(findCodexQuotaIncidentAtAnchor([assistantEntry("quota", { errorMessage: "network failed" })], "quota"), null);
+});
 const CURRENT_CODEX_QUOTA_ERROR =
   "You have hit your ChatGPT usage limit (plus plan). Try again in ~148 min.";
 
@@ -365,6 +377,18 @@ test("disabled or non-candidate planning does not fetch usage", async () => {
     now: () => NOW,
   }), null);
   assert.equal(calls.count, 0);
+});
+
+test("neutral recovery facts map to Resume without a second refresh", async () => {
+  const calls = { count: 0 };
+  const facts = await buildCodexQuotaRecoveryFacts({
+    ctx: planningContext(), branch: quotaBranch(),
+    monitor: monitorFor(usageSnapshot({ fiveResetsAt: NOW + 5_000 }), calls), now: () => NOW,
+  });
+  assert.ok(facts);
+  assert.equal(facts.recoveryAt, NOW + 5_000 + QUOTA_RESET_GRACE_MS);
+  assert.equal(quotaResumePlanFromRecoveryFacts(facts).resumeAt, facts.recoveryAt);
+  assert.equal(calls.count, 1);
 });
 
 test("candidate planning forces a fresh fetch despite a recent monitor snapshot", async () => {
