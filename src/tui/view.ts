@@ -1,5 +1,3 @@
-import { basename } from "node:path";
-
 import {
   copyToClipboard,
   type AutocompleteProviderFactory,
@@ -18,6 +16,7 @@ import {
   ScrollView,
   SelectList,
   Text,
+  truncateToWidth,
   TuiAltScreen,
   type AutocompleteProvider,
   type Component,
@@ -31,6 +30,7 @@ import {
 
 import {
   contextualHintActions,
+  getPindieAction,
   isPindieActionAvailable,
   paletteActions,
   resolveActionForInput,
@@ -415,51 +415,78 @@ function formatRuntimeBlock(
     : `· ${block.title}${block.detail ? `\n${block.detail}` : ""}`;
 }
 
-function projectLabel(projectRoot: string | null): string {
-  if (projectRoot === null || projectRoot.length === 0) return "project unavailable";
-  return basename(projectRoot) || projectRoot;
+class BoundedSingleLineText implements Component {
+  private text: string;
+  private readonly singleLine: boolean;
+
+  constructor(text = "", singleLine = false) {
+    this.text = text;
+    this.singleLine = singleLine;
+  }
+
+  setText(text: string): void {
+    this.text = text;
+  }
+
+  render(width: number): string[] {
+    const lines = this.singleLine
+      ? [this.text.replace(/[\r\n]+/gu, " ")]
+      : this.text.split(/\r?\n/u);
+    if (width <= 0) return lines.map(() => "");
+    return lines.map((line) => truncateToWidth(line, width));
+  }
+
+  invalidate(): void {}
 }
 
 function formatHeader(projection: PindieUiProjection): string {
   const { header } = projection;
-  const model = header.model === null
-    ? "model unavailable"
-    : `${header.model.provider}/${header.model.modelId}`;
-  const task = header.taskStatus ?? "no task";
-  return [
-    `Pindie · ${projectLabel(header.projectRoot)} · ${header.displayIdentity}`,
-    `${model} · ${header.thinkingLevel} · task ${task} · authority ${header.semanticAuthority}`,
-  ].join("\n");
+  const modelId = header.model?.modelId ?? "model unavailable";
+  return `${header.displayIdentity} · ${modelId} · ${header.thinkingLevel}`;
 }
 
-function formatStatus(
+function formatActionHint(action: PindieActionDefinition, label = action.label): string {
+  const key = action.keys[0]?.label ?? "";
+  return key.length === 0 ? label : `${key} ${label}`;
+}
+
+const MAX_FOOTER_ROWS = 4;
+
+function formatFooter(
   projection: PindieUiProjection,
   hints: readonly PindieActionDefinition[],
-): string {
+  additions: readonly string[] = [],
+): string[] {
   const { status } = projection;
   const parts = [status.isIdle ? "idle" : status.isCompacting ? "compacting" : "running"];
-  if (status.activity !== null) parts.push(status.activity);
+  if (status.isIdle === false) {
+    parts.push(...hints.map((hint) => formatActionHint(
+      hint,
+      hint.id === "palette.open" ? "Commands" : hint.id === "run.abort" ? "Stop" : undefined,
+    )));
+  }
+  if (status.activity !== null && status.activity !== "thinking") {
+    parts.push(truncateToWidth(status.activity, 28));
+  }
   if (status.consumption !== null) {
     parts.push(formatDuration(status.consumption.durationMs));
     parts.push(`$${status.consumption.cost.toFixed(2)}`);
   }
   if (status.verificationProgress !== null) {
-    parts.push(`verify ${status.verificationProgress.covered}/${status.verificationProgress.total}`);
+    const { covered, total } = status.verificationProgress;
+    parts.push(`${covered === total ? "✓" : "○"} ${covered}/${total}`);
   }
   if (status.quotaResumeWaiting !== null) parts.push("waiting · quota");
   if (status.pendingMessageCount > 0) parts.push(`queued ${status.pendingMessageCount}`);
-  if (status.presentationAvailability === "unavailable" ||
-      status.semanticAuthority === "unavailable" ||
-      status.semanticAuthority === "presentation-unavailable") {
-    parts.push("semantic unavailable");
+  if (status.presentationAvailability === "unavailable" && projection.attention === null) {
+    parts.push("Pindie unavailable");
   }
-  const hintText = hints.map((action) => {
-    const key = action.keys[0]?.label ?? "";
-    return key.length === 0 ? action.label : `${key} ${action.label}`;
-  });
-  return hintText.length === 0
-    ? `Status · ${parts.join(" · ")}`
-    : `Status · ${parts.join(" · ")}\nHints · ${hintText.join(" · ")}`;
+
+  const idleHints = status.isIdle
+    ? hints.map((hint) => formatActionHint(hint, hint.id === "palette.open" ? "Commands" : undefined))
+    : [];
+  const primary = `${parts.join(" · ")}${idleHints.length === 0 ? "" : ` · ${idleHints.join(" · ")}`}`;
+  return [primary, ...additions].slice(0, MAX_FOOTER_ROWS);
 }
 
 function attentionIdentity(attention: UiAttentionProjection | null): string | null {
@@ -693,13 +720,13 @@ interface BlockLineRange {
  */
 export class PindieTuiView implements PindieTuiViewPort {
   private readonly tui: TUI;
-  private readonly header: Text;
+  private readonly header: BoundedSingleLineText;
   private readonly timelineContent: Container;
   private readonly timelineScroll: ScrollView;
   private readonly inputRegion: VStack;
   private readonly editor: Editor;
   private readonly attentionEditor: Editor;
-  private readonly status: Text;
+  private readonly status: BoundedSingleLineText;
   private readonly cwd: string;
   private readonly startupNotices: readonly string[];
   private readonly onSubmit?: (text: string) => void;
@@ -750,7 +777,7 @@ export class PindieTuiView implements PindieTuiViewPort {
     const terminal = options.terminal ?? new ProcessTerminal();
     const tui = new TuiAltScreen(terminal);
     this.tui = tui;
-    this.header = new Text("Pindie", 1, 0);
+    this.header = new BoundedSingleLineText("Pindie", true);
     this.timelineContent = new Container();
     this.timelineScroll = new ScrollView(this.timelineContent, {
       follow: "end",
@@ -759,11 +786,8 @@ export class PindieTuiView implements PindieTuiViewPort {
     });
     this.editor = new Editor(tui, editorTheme, { paddingX: 1 });
     this.attentionEditor = new Editor(tui, editorTheme, { paddingX: 1 });
-    this.inputRegion = new VStack([
-      new Text("Composer", 1, 0),
-      this.editor,
-    ]);
-    this.status = new Text("Status · idle", 1, 0);
+    this.inputRegion = new VStack([this.editor]);
+    this.status = new BoundedSingleLineText("idle");
     this.cwd = options.cwd ?? process.cwd();
     const layout = new VStack([
       { component: this.header, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
@@ -1260,8 +1284,7 @@ export class PindieTuiView implements PindieTuiViewPort {
   private renderTimeline(): void {
     this.timelineContent.clear();
     this.blockLineRanges.clear();
-    this.timelineContent.addChild(new Text("Timeline", 1, 0));
-    let lineCursor = 1;
+    let lineCursor = 0;
     for (const notice of this.startupNotices) {
       const component = new Text(`Notice · ${notice}`, 1, 0);
       this.timelineContent.addChild(component);
@@ -1318,7 +1341,6 @@ export class PindieTuiView implements PindieTuiViewPort {
             : ["Missing:", ...softSignal.blockers.map((blocker) => `- ${blocker}`)]),
         ].join("\n"), 1, 0));
       }
-      this.inputRegion.addChild(new Text("Composer", 1, 0));
       if (this.notice !== null) this.inputRegion.addChild(new Text(`Notice · ${this.notice}`, 1, 0));
       this.addBoundedWidgets("aboveEditor");
       this.inputRegion.addChild(this.editor);
@@ -1347,24 +1369,36 @@ export class PindieTuiView implements PindieTuiViewPort {
 
   private renderStatus(): void {
     if (this.projection === null) {
-      this.status.setText("Status · idle");
+      this.status.setText("idle");
       return;
     }
-    const native = formatStatus(
-      this.projection,
-      contextualHintActions(this.actionAvailability(), this.interactionState()),
-    );
+
+    const availability = this.actionAvailability();
+    const interaction = this.interactionState();
+    let hints: readonly PindieActionDefinition[];
+    if (this.focusMode === "composer") {
+      const ids: readonly PindieActionId[] = this.projection.status.isIdle
+        ? ["palette.open"]
+        : ["run.abort", "palette.open"];
+      hints = ids
+        .map((id) => getPindieAction(id))
+        .filter((action) => isPindieActionAvailable(action.id, availability));
+    } else {
+      hints = contextualHintActions(availability, interaction);
+    }
+
     const additions: string[] = [];
+    const statuses = [...this.extensionStatuses.values()].slice(0, 3);
+    if (statuses.length > 0) additions.push(`Extensions · ${statuses.join(" · ")}`);
     if (this.workingVisible && this.projection.status.isIdle === false) {
       const frames = this.workingIndicator?.frames;
       if (frames === undefined || frames.length > 0) {
         additions.push(`${frames?.[0] ?? "●"} ${this.workingMessage ?? "Working"}`);
       }
     }
-    const statuses = [...this.extensionStatuses.values()].slice(0, 3);
-    if (statuses.length > 0) additions.push(`Extensions · ${statuses.join(" · ")}`);
     if (this.hiddenThinkingLabel !== undefined) additions.push(`Thinking · ${this.hiddenThinkingLabel}`);
-    this.status.setText(additions.length === 0 ? native : `${native}\n${additions.join(" · ")}`);
+    const contribution = additions.length === 0 ? [] : [additions.join(" · ")];
+    this.status.setText(formatFooter(this.projection, hints, contribution).join("\n"));
   }
 
   private addBoundedWidgets(placement: "aboveEditor" | "belowEditor"): void {

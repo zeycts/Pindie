@@ -10,7 +10,7 @@ import type {
   TerminalInputHandler,
   WorkingIndicatorOptions,
 } from "@earendil-works/pi-coding-agent";
-import type { Terminal } from "@earendil-works/pi-tui";
+import { visibleWidth, type Terminal } from "@earendil-works/pi-tui";
 
 import type { HumanGate, PindieState, VerificationCheck } from "../src/state.ts";
 import { PresentationIntegration } from "../src/presentation-integration.ts";
@@ -701,7 +701,7 @@ class FakeTerminal implements Terminal {
   }
 }
 
-test("PindieTuiView renders the four Slice D regions and restores terminal lifecycle", async () => {
+test("PindieTuiView keeps ordinary chrome bounded and restores terminal lifecycle", async () => {
   const terminal = new FakeTerminal();
   const gestures = { followUp: [] as string[], aborts: 0, exits: 0 };
   const view = new PindieTuiView({
@@ -736,10 +736,9 @@ test("PindieTuiView renders the four Slice D regions and restores terminal lifec
   await flush();
 
   const rendered = terminal.writes.join("");
-  assert.match(rendered, /Pindie/);
-  assert.match(rendered, /Timeline/);
-  assert.match(rendered, /Composer/);
-  assert.match(rendered, /Status/);
+  assert.match(rendered, /Render Session · model · high/);
+  assert.match(rendered, /Alt[+]P Commands/);
+  assert.doesNotMatch(rendered, /Timeline|Composer|Status ·|Hints ·|test[/]model|task no task|authority coherent/);
   assert.equal(terminal.started, true);
 
   terminal.writes.length = 0;
@@ -1081,6 +1080,111 @@ function commandViewProjection(
 function waitForTuiRender(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 30));
 }
+
+test("Header and Footer are single-row, width-aware chrome across resizes", () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  const base = viewProjection();
+  const projection = {
+    ...base,
+    status: { ...base.status, verificationProgress: { covered: 4, total: 4 } },
+    header: {
+      ...base.header,
+      displayIdentity: "Long human-facing Session identity that exceeds normal terminal width\ncontinued",
+      model: { provider: "secret-provider", modelId: "gpt-6-" + "x".repeat(1_200) },
+      taskStatus: "blocked" as const,
+      semanticAuthority: "stale" as const,
+    },
+  };
+  view.apply(projection);
+  const internals = view as unknown as {
+    header: { render(width: number): string[] };
+    status: { render(width: number): string[] };
+    inputRegion: { render(width: number): string[] };
+    timelineContent: { render(width: number): string[] };
+    blockLineRanges: Map<string, { start: number; end: number }>;
+  };
+
+  const headerWide = internals.header.render(2_000);
+  assert.equal(headerWide.length, 1);
+  assert.match(headerWide[0]!, /gpt-6-/);
+  assert.match(headerWide[0]!, /high/);
+  assert.doesNotMatch(headerWide[0]!, /secret-provider|blocked|stale|Pindie|project/);
+
+  const header80 = internals.header.render(80);
+  assert.equal(header80.length, 1);
+  assert.ok(visibleWidth(header80[0]!) <= 80);
+
+  for (const width of [40, 8, 1, 0]) {
+    const header = internals.header.render(width);
+    assert.equal(header.length, 1);
+    assert.ok(visibleWidth(header[0]!) <= width);
+  }
+  assert.ok(internals.inputRegion.render(8).length > 0, "narrow Header must not remove the Editor region");
+  assert.deepEqual(internals.timelineContent.render(80), []);
+  assert.equal(internals.blockLineRanges.size, 0);
+
+  terminal.columns = 80;
+  const wideFooter = internals.status.render(terminal.columns);
+  terminal.columns = 18;
+  const narrowFooter = internals.status.render(terminal.columns);
+  assert.equal(wideFooter.length, 1);
+  assert.equal(narrowFooter.length, 1);
+  assert.ok(visibleWidth(narrowFooter[0]!) <= 18);
+  assert.notEqual(wideFooter[0], narrowFooter[0]);
+  assert.ok(wideFooter[0]!.includes("✓ 4/4"));
+  assert.match(wideFooter[0]!, /Alt[+]P Commands/);
+  assert.doesNotMatch(wideFooter[0]!, /Status ·|Hints ·|Alt[+]M|Alt[+]N|Alt[+]H/);
+  view.stop();
+});
+
+test("running Footer keeps registry-derived Stop action and bounds Extension contributions", () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal });
+  const projection = viewProjection({ running: true });
+  view.apply(projection);
+  view.setExtensionStatus("long", "status ".repeat(500));
+  view.setExtensionWorkingMessage("working ".repeat(500));
+  const internals = view as unknown as { status: { render(width: number): string[] } };
+  const footer = internals.status.render(80);
+  assert.ok(footer.length <= 4);
+  assert.ok(footer.every((line) => visibleWidth(line) <= 80));
+  assert.match(footer[0]!, /Esc Stop/);
+  assert.match(footer[0]!, /Alt[+]P Commands/);
+  assert.ok(footer.some((line) => line.includes("Extensions")));
+
+  const narrow = internals.status.render(12);
+  assert.ok(narrow.length <= 4);
+  assert.ok(narrow.every((line) => visibleWidth(line) <= 12));
+  view.stop();
+});
+
+test("Timeline line ranges start at zero and stay aligned through navigation and folds", () => {
+  const terminal = new FakeTerminal();
+  const view = new PindieTuiView({ terminal, startupNotices: ["boot notice"] });
+  const branch = [userEntry("range-a", "A"), userEntry("range-b", "B")];
+  view.apply(viewProjection({ branch }));
+  const internals = view as unknown as {
+    blockLineRanges: Map<string, { start: number; end: number }>;
+    setSelectedFold(mode: "compact" | "preview" | "full"): void;
+    ensureSelectedBlockVisible(): void;
+  };
+  assert.deepEqual(internals.blockLineRanges.get("range-a"), { start: 1, end: 2 });
+  assert.deepEqual(internals.blockLineRanges.get("range-b"), { start: 4, end: 5 });
+
+  view.start();
+  terminal.emit("\u001bh");
+  terminal.emit("k");
+  assert.equal(view.getInteractionState().selectedBlockId, "range-a");
+  internals.setSelectedFold("compact");
+  assert.deepEqual(internals.blockLineRanges.get("range-a"), { start: 1, end: 1 });
+  assert.deepEqual(internals.blockLineRanges.get("range-b"), { start: 3, end: 4 });
+  internals.ensureSelectedBlockVisible();
+  terminal.emit("j");
+  assert.equal(view.getInteractionState().selectedBlockId, "range-b");
+  assert.deepEqual(internals.blockLineRanges.get("range-b"), { start: 3, end: 4 });
+  view.stop();
+});
 
 test("Timeline focus selects the latest stable Block and clamps navigation", () => {
   const terminal = new FakeTerminal();
@@ -1445,6 +1549,7 @@ test("authority-unavailable Attention blocks Composer and permits Timeline inspe
   terminal.emit("\u001b");
   assert.equal(view.getInteractionState().focusMode, "attention");
   await waitForTuiRender();
+  assert.match(terminal.writes.join(""), /Attention/);
   assert.match(terminal.writes.join(""), /state lease unavailable/);
   view.stop();
 });
