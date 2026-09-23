@@ -1,8 +1,8 @@
 # Pindie Quota Fallback v0.1 — Architecture Contract
 
-Status: post-TUI implementation-readiness review complete. Implementation may begin with Slice A. Production continues to use Pi InteractiveMode; the owned Pindie TUI remains a frozen opt-in experiment.
+Status: **Implemented through final Slice E.** Production uses Pi InteractiveMode with Pi 0.86.1; the owned Pindie TUI remains a frozen opt-in experiment.
 
-Baseline: Pindie main with Pi 0.86.1 and the existing Quota Auto Resume behavior in `docs/behavior.md`.
+Baseline: the implemented Quota Fallback and Quota Auto Resume behavior in `docs/behavior.md`.
 
 This document is the implementation contract for Quota Fallback v0.1.
 
@@ -130,7 +130,7 @@ Automatic fallback is eligible only when:
 
 A raw error string or stale usage snapshot is not enough.
 
-Fallback and Resume should consume one factual derivation:
+Fallback and Resume consume one factual derivation:
 
 ```text
 terminal Codex quota candidate
@@ -142,7 +142,7 @@ CodexQuotaRecoveryFacts
         ├─ anchorEntryId
         ├─ source provider/model
         ├─ detectedAt
-        └─ resetAt
+        └─ recoveryAt (latest exhausted reset + 30s grace)
              │
              ├─ fallback decision
              └─ resume decision
@@ -150,7 +150,7 @@ CodexQuotaRecoveryFacts
 
 Do not refresh the same subscription facts twice merely because two policies consume them.
 
-The implementation may refactor the existing Quota Resume planning code to expose this neutral factual substrate, but existing Resume behavior must remain unchanged when Fallback is disabled or unavailable.
+`buildCodexQuotaRecoveryFacts` force-refreshes usage once for both policies; `quotaResumePlanFromRecoveryFacts` converts the same facts without a second refresh. New planning accepts only the latest Codex quota error. After backup failure, Resume revalidates the exact original anchor on the current branch, even when it is no longer the latest message.
 
 ---
 
@@ -181,7 +181,7 @@ A committed fallback is represented only by Host/runtime state. Conceptually:
   sourceThinkingLevel,
 
   detectedAt,
-  resetAt,
+  recoveryAt,
   restoreDue
 }
 ```
@@ -273,7 +273,7 @@ If Pi's model metadata changes later, Pi remains authoritative.
 Quota reset does not interrupt DeepSeek work.
 
 ```text
-resetAt reached
+recoveryAt reached (reset + grace)
    │
    ├─ Session safe idle
    │      → restore source Codex model
@@ -379,18 +379,18 @@ There must never be two automatic continuations for one quota incident.
 
 Do not create a third-provider cascade.
 
-If the backup later terminates because of a provider/auth/rate-limit transport failure while the original Codex reset is still in the future:
+If the latest backup Run terminates with a `deepseek/deepseek-flash` assistant provider error while the original Codex recovery time is still in the future:
 
 ```text
 stop using failed backup
 → restore source Codex model at safe idle, without triggering a turn
-→ revalidate Codex quota facts if necessary
-→ schedule existing Quota Auto Resume if still valid
+→ validate the exact original Codex quota anchor still belongs to the branch
+→ schedule existing Quota Auto Resume if still valid (no second usage refresh)
 ```
 
 If that cannot be established safely, ordinary stopped semantics apply.
 
-Do not treat ordinary Task failure, verification failure, tool failure, or model-chosen stop as a backup-provider failure.
+Do not treat ordinary Task failure, verification failure, tool failure, or model-chosen stop as a backup-provider failure. In pinned Pi 0.86.1, `Agent.runWithLifecycle()` turns provider/Run exceptions into terminal assistant error messages with the current model provider/id and emits message/turn/agent end events. `AgentSession._runAgentPrompt()` then emits `agent_settled` in its finally path after flushing pending messages. This feeds the existing detection path; no separate failure bus is needed.
 
 ---
 
@@ -404,17 +404,15 @@ command: /quota-fallback
 backup:  deepseek/deepseek-flash
 ```
 
-The intended interaction matches `/quota-resume`:
+The Pi InteractiveMode extension selector matches `/quota-resume`:
 
 ```text
 Enter   → current Session
-Ctrl+S  → Global default + current Session
+configured app.models.save (Ctrl+S by default) → Global default + current Session
 Esc     → cancel
 ```
 
-Preference storage belongs in the existing Pindie global preference surface, not `PindieState`.
-
-Enabling fallback should verify that Pi can resolve the fixed DeepSeek model and that provider auth is configured. If not, report the problem instead of silently promising coverage.
+Session preference entries (`pindie-quota-fallback-preference`, `{ enabled: boolean }`) follow current branch transcript truth. The Global default is `quotaFallback` in the shared `~/.pindie/global/preferences.json`, alongside `quotaAutoResume`; missing or invalid values fail closed to OFF. Saving preserves unrelated fields with atomic rename. ON performs an exact Pi model availability/auth preflight before either write; OFF needs no auth and does not cancel an active fallback lease. If auth disappears after enabling, the saved choice stays ON but a future fallback request fails closed to Resume.
 
 API keys remain Pi/provider-owned secrets and must never be copied into:
 
@@ -427,32 +425,9 @@ API keys remain Pi/provider-owned secrets and must never be copied into:
 
 ### Production Pi TUI boundary
 
-Production continues to use Pi InteractiveMode. Quota Fallback must integrate through Pi's public extension UI/model/runtime APIs and Pindie's existing PresentationIntegration; it must not depend on the frozen owned Pindie TUI experiment or create a parallel model picker, status system, or command framework.
+Production uses Pi InteractiveMode and its public extension UI/model APIs. `/quota-fallback` is a two-row on/off selector; there is no parallel model picker or owned Pindie TUI dependency.
 
-Required runtime facts are small:
-
-```text
-fallback enabled
-fallback active
-source model
-resetAt / restoreDue
-```
-
-Possible presentation:
-
-```text
-Header:
-DeepSeek V4.1 Flash · High
-
-Runtime transition:
-↪ Quota fallback · Codex → DeepSeek
-  Codex reset 18:25
-
-Status:
-fallback · until 18:25
-```
-
-Exact UI treatment belongs to Slice D and should stay minimal: reuse the same Pi extension-UI pattern already used by `/quota-resume`, plus existing Pindie status/notification seams where useful.
+Pi's existing active-model indicator provides ambient visibility when the Session switches to DeepSeek. v0.1 adds no dedicated fallback footer, status line, toast, or Discord success message. Successful switch and source restore remain quiet.
 
 Successful fallback and successful restore are quiet continuity events:
 
@@ -485,44 +460,42 @@ Off-peak price differences may remain approximate in Pindie's static cost displa
 
 ---
 
-## 13. Implementation readiness
+## 13. Implemented runtime boundary
 
-The owned Pindie TUI experiment has concluded and production remains on Pi InteractiveMode. The required post-TUI review is complete, so Quota Fallback may begin with Slice A.
-
-Readiness conclusions:
-
-- no Quota Fallback core invariant changes;
-- no implementation should depend on `PINDIE_TUI=1`;
-- preference UI should reuse Pi's extension UI path, like `/quota-resume`;
-- current `PiRuntimeAdapter` already contains model-picker-era model read/switch primitives that should be reused rather than duplicated;
-- fallback needs an exact-model availability/auth preflight that is independent of scoped model-picker choices;
-- fallback still needs an explicit thinking-level setter wrapper for Host-owned restore/preservation;
-- existing Quota Resume and Long Task runtime ownership remain compatible with the contract.
+PiRuntimeAdapter uses Pi's exact model availability/auth check, active-Session
+`setModel` and thinking-level setter (Pi clamps supported levels). The Host owns
+a process-local fallback lease/timer; an owned model-mutation guard distinguishes
+its switches/restores from human selection. Extension captures one fresh quota
+fact derivation and arbitrates Fallback → Resume → stopped. The runtime lease
+never enters `PindieState`, preferences or Session custom entries. Restart loses
+it, even if Pi's transcript still records DeepSeek as the active model; Pindie
+does not infer a Codex source or auto-restore it. Human model selection remains
+available.
 
 ---
 
 ## 14. Implementation Slices
 
-Each Slice uses a fresh branch from then-current `main`, focused tests, `pnpm run check`, commit, PR, review, and merge before the next Slice.
+Slices A–E are implemented. The following headings record their historical scope; they are not future work:
 
 ### Slice A — Runtime Model Control
 
-Goal: finish the smallest Pi runtime boundary Host-owned fallback needs, reusing the model controls already left by the TUI experiment.
+Result: the smallest Pi runtime boundary for Host-owned fallback reuses the model controls left by the TUI experiment.
 
-Current main already has:
+The runtime provides:
 
 - `getActiveSessionModelIdentity()`;
 - `getActiveSessionModelChoices()` for the interactive picker;
 - `setActiveSessionModel(provider, modelId)`, which delegates to Pi and does not persist a global default;
 - `getActiveSessionThinkingLevel()`.
 
-Implement only the missing fallback-facing primitives:
+The completed slice adds:
 
 - an exact model availability/auth preflight for `provider/modelId` using Pi's registry availability, independent of scoped picker choices;
 - a thin active-Session thinking-level setter that delegates to Pi and lets Pi clamp to model capabilities;
 - focused adapter tests proving active-Session-at-call-time behavior, authenticated availability semantics, no scoped-picker coupling, and no duplicate thinking policy.
 
-Do not change the existing picker semantics merely to serve fallback.
+The existing picker semantics remain unchanged.
 
 No fallback policy, quota behavior, preference, Pi TUI changes, or owned Pindie TUI changes.
 
@@ -530,11 +503,11 @@ Do not create a Pindie model registry, raw provider client, or DeepSeek-specific
 
 ### Slice B — Fallback Core
 
-Goal: implement same-Session temporary fallback and safe restoration as a Host runtime mechanism.
+Result: same-Session temporary fallback and safe restoration are Host runtime mechanisms.
 
-Implement:
+The completed slice includes:
 
-- shared neutral quota-recovery facts if needed;
+- neutral quota-recovery facts (finalized in Slice C);
 - Host-owned `QuotaFallbackSupervisor` or equivalent;
 - source Session/model/anchor validation;
 - source model + thinking capture;
@@ -546,15 +519,13 @@ Implement:
 - stale-generation/session/disposal protection;
 - rollback when fallback cannot fully commit.
 
-Production behavior may remain default-disabled through an injected seam until preference wiring exists.
+Production is now opt-in through the Slice D preference; the temporary authorization seam was removed.
 
 No TUI work.
 
 ### Slice C — Recovery Arbitration
 
-Goal: combine Fallback with existing Resume without duplicate successors.
-
-Implement:
+Result: Fallback and Resume are ordered without duplicate successors. The slice includes:
 
 - one factual quota refresh;
 - strict `fallback → resume → stopped` ordering;
@@ -570,7 +541,7 @@ Do not introduce a generic successor scheduler or persisted workflow.
 
 ### Slice D — Preference + Pi TUI Integration
 
-Implement:
+The completed slice includes:
 
 - `/quota-fallback`;
 - default OFF;
@@ -579,14 +550,14 @@ Implement:
 - fixed DeepSeek target;
 - auth/model availability diagnosis;
 - atomic preference persistence preserving unrelated fields;
-- minimal fallback runtime status through existing Pindie PresentationIntegration / Pi extension UI seams where useful;
+- ambient active-model visibility via Pi InteractiveMode without a dedicated fallback status;
 - focused preference and Pi-TUI extension-UI tests.
 
-Reuse the same public Pi extension UI pattern already proven by `/quota-resume`. Do not revive, extend, or depend on the frozen owned Pindie TUI experiment solely for Quota Fallback.
+The selector reuses Pi extension UI; the frozen owned Pindie TUI is not a dependency.
 
 ### Slice E — Hardening + Documentation Sync
 
-Close operational edges with end-to-end tests for:
+The final hardening covers:
 
 - Codex quota → fallback → DeepSeek continuation;
 - reset during active DeepSeek Run → deferred safe restore;
@@ -597,16 +568,13 @@ Close operational edges with end-to-end tests for:
 - Session replacement/disposal → stale timer cannot act;
 - no duplicate successor.
 
-Then:
-
-- run full `pnpm run check`;
-- synchronize `docs/architecture.md`, `docs/behavior.md`, and `AGENTS.md` to the implemented state only.
+The architecture, behavior and agent guidance describe the implemented state.
 
 ---
 
 ## 15. Post-TUI readiness result
 
-The 2026-09-23 review of current `main` established:
+The 2026-09-23 pre-implementation review established:
 
 1. production model selection is Pi InteractiveMode / Pi model plumbing; the owned Pindie TUI is frozen and opt-in only;
 2. `PiRuntimeAdapter` already exposes active model identity, picker choices, and direct active-Session model switching;
@@ -616,9 +584,9 @@ The 2026-09-23 review of current `main` established:
 6. Long Task rollover remains Session replacement and therefore still terminates a Session-bound fallback lease;
 7. Pi remains pinned to 0.86.1, which exposes `deepseek/deepseek-flash`;
 8. one fresh subscription-usage derivation can still feed both Fallback and Resume;
-9. Remote stopped classification still needs Slice C integration for a committed fallback successor.
+9. Remote stopped classification now recognizes either committed fallback or Resume as a quota successor.
 
-The only material contract revision is UI ownership: Slice D targets Pi TUI extension APIs, not the frozen owned Pindie TUI.
+UI ownership is Pi InteractiveMode's extension API, not the frozen owned Pindie TUI.
 
 ---
 
