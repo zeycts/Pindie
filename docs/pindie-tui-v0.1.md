@@ -1174,7 +1174,7 @@ Real dogfood was performed on the actual deployment path:
 VS Code → SSH → tmux → PINDIE_TUI=1 → PindieInteractiveMode
 ```
 
-Automated tests cannot prove upstream key delivery, Chinese IME, terminal resize quality, tmux detach/reattach, or sustained usability. The historical real dogfood checklist covered at least:
+Automated tests cannot prove upstream key delivery, Chinese IME, terminal resize quality, tmux detach/reattach, or sustained usability. The intended G2b dogfood checklist was:
 
 - Prompt / Steer / Follow-up;
 - Abort and queue restoration;
@@ -1192,6 +1192,8 @@ Automated tests cannot prove upstream key delivery, Chinese IME, terminal resize
 - terminal resize and narrow terminal width;
 - tmux detach/reattach;
 - Session replacement/rebind.
+
+The experiment was concluded before every checklist item was exercised. The observed usability evidence was already sufficient to reject cutover, so the remaining items are historical unexecuted coverage rather than active work.
 
 **Outcome:** The first real dogfood exposed unbounded Header identity, unbounded Timeline density, and persistent chrome hierarchy issues. Those were subsequently addressed through G2a work and the Header/Footer zoning fix. A second real dogfood round still showed substantial day-to-day friction, interaction/rendering rough edges, and an overall experience materially worse than Pi InteractiveMode; the user did not want to continue using the owned TUI. The full static audit also made clear that this shell owns a broad terminal lifecycle surface—IME, paste, focus, resize, tmux, overlays, and Session replacement—that require real lifecycle validation.
 
