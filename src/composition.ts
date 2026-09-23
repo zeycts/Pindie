@@ -72,6 +72,7 @@ import {
   FileQuotaResumePreferenceStore,
   type QuotaResumePreferenceStore,
 } from "./quota-resume.ts";
+import { FileQuotaFallbackPreferenceStore, type QuotaFallbackPreferenceStore } from "./quota-fallback.ts";
 import type { NotionProjectMemoryClient } from "./notion-project-memory.ts";
 import type { ProjectMemorySink } from "./project-memory.ts";
 import {
@@ -293,6 +294,10 @@ export function composePindieExtension(
     input.quotaResumePreferenceStore ?? new FileQuotaResumePreferenceStore({
       baseDir: roots.globalBaseDir,
     });
+  const quotaFallbackPreferenceStore: QuotaFallbackPreferenceStore =
+    input.quotaFallbackPreferenceStore ?? new FileQuotaFallbackPreferenceStore({
+      baseDir: roots.globalBaseDir,
+    });
 
   let experienceStore: RunExperienceStore | undefined;
   let experienceReader: RunExperienceReader | undefined;
@@ -441,6 +446,7 @@ export function composePindieExtension(
     remoteCompanion: _inputRemoteCompanion,
     remoteRoutingStore: _inputRemoteRoutingStore,
     quotaResumePreferenceStore: _inputQuotaResumePreferenceStore,
+    quotaFallbackPreferenceStore: _inputQuotaFallbackPreferenceStore,
     experienceStore: _inputExperienceStore,
     experienceReader: _inputExperienceReader,
     crossProjectExperienceReader: _inputCrossProjectExperienceReader,
@@ -469,6 +475,7 @@ export function composePindieExtension(
     store: stateStore,
     continuityStore,
     quotaResumePreferenceStore,
+    quotaFallbackPreferenceStore,
     ...(selection.selfImprovement
       ? {
           experienceStore: experienceStore!,

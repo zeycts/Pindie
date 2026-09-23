@@ -467,6 +467,7 @@ test("Host installs fallback bridge before runtime registration, bootstraps fail
         assert.equal(await captured.request({ sessionId: "session-1", anchorEntryId: "a", provider: "openai-codex", modelId: "m", detectedAt: 1, restoreAt: 2 }), false);
         assert.equal(captured.observeModelSelect({ sessionId: "session-1", provider: "deepseek", modelId: "deepseek-flash", source: "set" }), false);
         assert.equal(await captured.backupFailed("session-1"), null);
+        assert.equal(captured.canUseBackup("session-1"), false);
         captured.cancel("session-1");
         return fakeRuntime().runtime;
       },
@@ -474,9 +475,36 @@ test("Host installs fallback bridge before runtime registration, bootstraps fail
     },
   });
   assert.ok(getQuotaFallbackController());
+  assert.equal(getQuotaFallbackController()!.canUseBackup("other-session"), false);
   await host.dispose();
   assert.equal(getQuotaFallbackController(), null);
   assert.throws(() => captured!.cancel("session-1"), /no longer active/);
+  assert.throws(() => captured!.canUseBackup("session-1"), /no longer active/);
+});
+
+test("Host fallback configuration preflight delegates to active Pi exact model availability", async () => {
+  let available = true;
+  const session = {
+    sessionId: "session-1",
+    extensionRunner: { getModelRegistry: () => ({
+      find: (provider: string, id: string) => provider === "deepseek" && id === "deepseek-flash" ? { provider, id } : undefined,
+      getAvailable: () => available ? [{ provider: "deepseek", id: "deepseek-flash" }] : [],
+    }) },
+  } as unknown as AgentSession;
+  const host = await createPindieHost({
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+    dependencies: {
+      createAgentSessionRuntime: async () => ({ ...fakeRuntime().runtime, session }),
+      createInteractiveMode: () => ({ run: async () => {} }),
+    },
+  });
+  try {
+    const control = getQuotaFallbackController()!;
+    assert.equal(control.canUseBackup("session-1"), true);
+    available = false;
+    assert.equal(control.canUseBackup("session-1"), false);
+    assert.equal(control.canUseBackup("other"), false);
+  } finally { await host.dispose(); }
 });
 
 test("Host control bridge rejects a second live Host and releases on disposal", async () => {

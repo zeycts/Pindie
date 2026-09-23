@@ -89,6 +89,15 @@ test("valid same-Session commit delegates thinking clamp to Pi and does not awai
   assert.equal(h.sends.length, 1);
 });
 
+test("configuration preflight uses exact Pi availability for the current Session without quota or idle requirements", () => {
+  const h = harness();
+  h.setBranch([]); h.setModel("other", "model"); h.setBusy(true, true, 3);
+  assert.equal(h.supervisor.canUseBackup("session"), true);
+  h.setAvailable(false); assert.equal(h.supervisor.canUseBackup("session"), false);
+  h.setAvailable(true); assert.equal(h.supervisor.canUseBackup("other"), false);
+  h.supervisor.dispose(); assert.equal(h.supervisor.canUseBackup("session"), false);
+});
+
 test("unavailable backup fails without model mutation, message, timer or subscription", async () => {
   const h = harness(); h.setAvailable(false);
   assert.equal(await h.supervisor.request(plan()), false);
