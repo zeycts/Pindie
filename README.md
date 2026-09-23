@@ -54,7 +54,7 @@ The semantic layer is deliberately small. Pindie does not add a second Agent Loo
 - Harness-owned verification evidence provenance/freshness while the model owns semantic pass/fail and criterion coverage;
 - a one-shot continuation probe that asks only whether latest actual user intent still calls for consequential execution;
 - runtime-only activity, timer, cost, status presentation, adaptive reasoning, and `/efficiency`;
-- process-local Codex subscription quota auto-resume, default-on and configurable with `/quota-resume`;
+- process-local Codex subscription quota auto-resume, default-on via `/quota-resume`, and opt-in same-Session DeepSeek backup via `/quota-fallback` (default OFF);
 - a bundled `git-workflow` Skill implemented through Pi's native Skill runtime.
 
 Model-facing Pindie semantic tools are narrow affordances:

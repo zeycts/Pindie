@@ -7,13 +7,14 @@ Pindie is a personal AI agent for indie development built on the Pi agent harnes
 For architecture or implementation work, use this order:
 
 1. The explicit approved task specification in the current request.
-2. `docs/cross-project-learning-v0.2.md` — authoritative architecture contract when the task touches Cross-Project Learning v0.2 Strategy Synthesis, Synthesis Trial/Decision, shared cross-project validation, or synthesis-origin user-global trust.
-3. `docs/cross-project-learning-v0.1.md` — authoritative implemented contract for Cross-Project Strategy Trust Transfer. Preserve its Scope Candidate/source-project semantics unless v0.2 explicitly extends shared validation around them.
-4. `docs/composable-pindie-architecture-v0.1.md` — authoritative implemented architecture contract for the final composition boundary and its Slices A–F.
-5. `docs/architecture.md` — current architecture and ownership boundaries.
-6. `docs/remote-companion.md` — authoritative Remote Companion architecture/behavior when the task touches Remote Companion or Discord integration.
-7. `docs/behavior.md` — current semantic and behavioral contract.
-8. Existing source and tests — implemented runtime baseline.
+2. `docs/quota-fallback-v0.1.md` — authoritative implemented contract when the task touches Quota Fallback, quota recovery, or temporary backup model switching; not authority over unrelated architecture.
+3. `docs/cross-project-learning-v0.2.md` — authoritative architecture contract when the task touches Cross-Project Learning v0.2 Strategy Synthesis, Synthesis Trial/Decision, shared cross-project validation, or synthesis-origin user-global trust.
+4. `docs/cross-project-learning-v0.1.md` — authoritative implemented contract for Cross-Project Strategy Trust Transfer. Preserve its Scope Candidate/source-project semantics unless v0.2 explicitly extends shared validation around them.
+5. `docs/composable-pindie-architecture-v0.1.md` — authoritative implemented architecture contract for the final composition boundary and its Slices A–F.
+6. `docs/architecture.md` — current architecture and ownership boundaries.
+7. `docs/remote-companion.md` — authoritative Remote Companion architecture/behavior when the task touches Remote Companion or Discord integration.
+8. `docs/behavior.md` — current semantic and behavioral contract.
+9. Existing source and tests — implemented runtime baseline.
 
 If those sources conflict, report the contradiction before widening scope. Do not preserve obsolete behavior merely because an older implementation or test encoded it.
 
@@ -53,6 +54,7 @@ Pindie must not implement a second Agent Loop, workflow engine, persisted phase 
 - Active Task Continuation is a one-shot Pi-native follow-up whose deterministic eligibility comes from `SemanticSnapshot`; the probe asks only whether latest actual user intent still calls for consequential execution.
 - Historical runtime probes are filtered from future model context.
 - Remote Companion, when enabled, is an external projection/control surface over the current native Pi Session. Discord routing metadata may persist external IDs/delivery cursor only; it must not become semantic State, conversation truth, a second Session, or a second message queue.
+- Quota recovery tries user-authorized same-Session DeepSeek fallback before existing Codex Quota Auto Resume; Host owns runtime recovery leases while Pi owns model/provider execution.
 
 ## Cross-Project Learning boundary
 
@@ -106,6 +108,8 @@ The existing implemented Pindie architecture baseline and the Composable Pindie 
 `docs/composable-pindie-architecture-v0.1.md` records the implemented final composition boundary and remains the single architecture source of truth for that boundary. Source/tests and the synchronized architecture guidance remain the implemented-state baseline.
 
 `docs/cross-project-learning-v0.2.md` records the implemented v0.2 architecture through Slice E and remains the authoritative contract for that boundary. Source/tests and the synchronized guidance are the implemented-state baseline; existing v0.1 source/tests remain compatibility truth where v0.2 explicitly preserves them.
+
+Quota Fallback v0.1 is complete through final Slice E; `docs/quota-fallback-v0.1.md` records its implemented quota recovery boundary.
 
 Future architecture changes should be driven by concrete dogfood failures, explicit user goals, or verified incompatibilities with Pi/runtime reality, not by speculative cleanup.
 

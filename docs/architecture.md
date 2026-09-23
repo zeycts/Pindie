@@ -479,7 +479,29 @@ dogfooded, compatibility-closed, and frozen contract is documented in
 likewise create purpose-specific Agent executions later without pretending
 every execution must be initiated by an externally owned Session.
 
-### Quota Auto Resume v0.1
+### Quota Recovery v0.1
+
+On a confirmed terminal Codex subscription quota incident, the Extension derives
+one fresh `CodexQuotaRecoveryFacts` snapshot (the recovery time includes reset
+grace) and arbitrates **Fallback → Quota Auto Resume → stopped**. The Human
+opts into paid fallback with `/quota-fallback` (OFF by default). Fallback changes
+the same Session's backend to Pi's fixed `deepseek/deepseek-flash` and starts one
+hidden continuation immediately; Resume keeps Codex and starts a fresh Run only
+after reset. A committed fallback never also schedules Resume. Neither changes
+the Task, transcript ownership, or Pindie semantic State.
+
+The Host owns a process-local `QuotaFallbackSupervisor` lease, switch/restore
+timer and model-mutation guard; Pi owns the model catalog, authentication,
+`setModel`, thinking-level clamping and Agent Loop. Source thinking is reapplied
+through Pi. Restore waits for safe idle and sends no new turn. External model
+selection or Session/branch replacement drops ownership; ordinary input does
+not. A terminal DeepSeek provider error can restore Codex and enter Resume using
+the exact historical Codex quota anchor, without another usage refresh or a
+third provider. Pi 0.86.1 materializes provider/Run exceptions as terminal
+assistant errors and emits `agent_settled` after draining pending messages, so
+no second failure bus is needed. Process exit loses the fallback lease; no
+source model is inferred on restart. Pi InteractiveMode already shows the actual
+active model; successful switch and restore remain quiet.
 
 Quota Auto Resume crosses a subscription-availability boundary without changing
 semantic State or Session identity:
@@ -505,6 +527,8 @@ The three continuation mechanisms have distinct boundaries:
 - **Continuation Probe:** normal stop → semantic follow-up inside Pi's current
   lifecycle.
 - **Long Task Runtime:** Session/context lifetime boundary → fresh Session.
+- **Quota Fallback:** authorized temporary backend change → same Session,
+  immediate fresh Agent Run.
 - **Quota Auto Resume:** subscription availability boundary → same Session,
   later fresh Agent Run.
 

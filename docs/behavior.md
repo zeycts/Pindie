@@ -355,23 +355,47 @@ Activity, Run Timer, Run Cost, status presentation, subscription usage observati
 
 Run Activity reflects actual Pi tool lifecycle. Presentation reads authoritative/derived runtime state; it does not define it.
 
-## 14. Quota Auto Resume
+## 14. Quota Recovery
 
-`/quota-resume` configures process-local automatic resume after a Codex
-subscription quota reset. It defaults ON. Enter changes the current Session;
-the save binding (Ctrl+S by default) changes both the Global default and the
-current Session.
+A terminal Codex quota error requires one fresh subscription usage confirmation
+of an exhausted supported window. Recovery tries **Fallback → Quota Auto Resume
+→ ordinary stopped semantics** in order; one incident commits at most one
+automatic successor. Both paths preserve the same Session and Task. Reset
+credits are never automatically consumed.
 
-A terminal `openai-codex` quota candidate schedules only after fresh subscription
-usage confirms an exhausted window with a natural reset time. The Host waits on
-a runtime-only lease; Presentation shows `waiting · quota` only for that real
-lease and reuses the existing subscription reset countdown. Human input, model
-selection, branch changes, and Session lifecycle changes cancel waiting.
-Process exit loses the pending lease.
+### Quota Fallback
 
-At wake, Pi receives a hidden custom resume with `triggerTurn: true`. The hidden
-resume is runtime metadata, not user intent: it starts a fresh Agent Run in the
-same Session. Reset credits are never automatically consumed.
+`/quota-fallback` opts into the fixed pay-as-you-go DeepSeek V4.1 Flash backup
+(`deepseek/deepseek-flash`); the default is **OFF**. Enter saves only the current
+Session's branch-local preference; the configured save binding (Ctrl+S by
+default) saves the Global default and appends the choice to the current Session.
+Turning ON requires Pi to find the exact model with provider authentication
+before either preference changes. Turning OFF requires no auth and does not
+interrupt an already committed fallback. API keys remain Pi-owned.
+
+When authorized and available, fallback changes the current Session model and
+starts one hidden continuation immediately. Pi clamps the preserved thinking
+level for the backup. Ordinary input continues on DeepSeek without cancelling
+the lease; explicit model selection takes ownership and prevents automatic
+restore. Branch changes and Session replacement cancel the lease. Reaching the
+quota recovery time (reset plus grace) never interrupts active work: the Host
+restores Codex at safe idle, reapplies the source thinking level, and sends no
+new Agent turn. If the backup Run ends with a provider error before recovery,
+the Host can restore Codex and hand the original quota anchor to Resume. A
+process restart loses the runtime-only lease; Pindie does not infer a source
+model or auto-restore from transcript history. Pi InteractiveMode shows the
+actual active model; successful switch/restore are quiet.
+
+### Quota Auto Resume
+
+`/quota-resume` defaults **ON**. Enter changes the current Session; the save
+binding changes both Global default and current Session. If fallback is OFF or
+cannot commit, Resume waits on a Host-owned runtime-only lease after fresh
+quota confirmation. Presentation shows `waiting · quota` only for that real
+lease. Human input, model selection, branch changes, and Session lifecycle
+changes cancel waiting; process exit loses it. At wake, Pi receives a hidden
+custom resume with `triggerTurn: true`, starting a fresh Agent Run in the same
+Session. The hidden message is runtime metadata, not user intent.
 
 ## 15. Global behavioral invariants
 

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ContextUsage, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionRuntime, ContextUsage, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { PiRuntimeAdapter } from "../src/pi-runtime.ts";
+import { QuotaFallbackSupervisor, PINDIE_QUOTA_FALLBACK_TYPE } from "../src/quota-fallback-supervisor.ts";
 
 import {
   PINDIE_STATE_CHECKPOINT_TYPE,
@@ -2816,6 +2818,100 @@ test("quota preference arbitration shares one forced refresh, orders fallback be
       assert.deepEqual(calls.filter((call) => call === "fallback" || call === "resume"),
         [...(expectedRequests ? ["fallback"] : []), ...(expectedSchedules ? ["resume"] : [])]);
     } finally { releaseFallback(); releaseResume.release(); }
+  }
+});
+
+test("Extension settlement drives installed real fallback supervisor: commit, unavailable, rollback, and backup failure", async () => {
+  const now = 1_700_000_000_000;
+  for (const mode of ["commit", "unavailable", "rollback", "backup-failure"] as const) {
+    const branch = [{ type: "message", id: "quota", message: {
+      role: "assistant", content: [], provider: "openai-codex", model: "gpt-5-codex",
+      stopReason: "error", errorMessage: "The usage limit has been reached", timestamp: now,
+    } }] as SessionEntry[];
+    let model = { provider: "openai-codex", id: "gpt-5-codex" };
+    let thinking: AgentSession["thinkingLevel"] = "medium";
+    const switches: string[] = [], sends: unknown[] = [];
+    const timers: Array<{ callback: () => void; cancelled: boolean }> = [];
+    const listeners = new Set<() => void>();
+    const session = {
+      sessionId: "remote-session",
+      get model() { return model; },
+      get thinkingLevel() { return thinking; },
+      setThinkingLevel: (level: AgentSession["thinkingLevel"]) => { thinking = level; },
+      isStreaming: false, isCompacting: false, pendingMessageCount: 0,
+      sessionManager: { getBranch: () => branch },
+      extensionRunner: { getModelRegistry: () => ({
+        find: (provider: string, id: string) => ({ provider, id }),
+        getAvailable: () => mode === "unavailable"
+          ? [{ provider: "openai-codex", id: "gpt-5-codex" }]
+          : [{ provider: "openai-codex", id: "gpt-5-codex" }, { provider: "deepseek", id: "deepseek-flash" }],
+      }) },
+      async setModel(target: { provider: string; id: string }) { switches.push(`${target.provider}/${target.id}`); model = target; },
+      subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+      sendCustomMessage(message: unknown, options: unknown) {
+        sends.push({ message, options });
+        if (mode === "rollback") throw new Error("Pi could not enqueue");
+        return new Promise<void>(() => undefined); // Do not await the whole backup Run.
+      },
+    };
+    const supervisor = new QuotaFallbackSupervisor(new PiRuntimeAdapter({ session } as unknown as AgentSessionRuntime), {
+      now: () => now,
+      schedule: (_delay, callback) => {
+        const timer = { callback, cancelled: false }; timers.push(timer);
+        return () => { timer.cancelled = true; };
+      },
+      logger: () => undefined,
+    });
+    const releaseFallback = installQuotaFallbackReceiver({
+      request: (plan) => supervisor.request(plan),
+      canUseBackup: (id) => supervisor.canUseBackup(id),
+      cancel: (id) => supervisor.cancel(id),
+      observeModelSelect: (event) => supervisor.observeModelSelection(event),
+      backupFailed: (id) => supervisor.handleBackupFailure(id),
+    });
+    const resumePlans: unknown[] = [];
+    const releaseResume = installQuotaResumeReceiver((event) => {
+      if (event.type === "schedule") { resumePlans.push(event.plan); return true; }
+    });
+    try {
+      const ctx = withBranch(context("/repo", branch), branch);
+      const h = createHarness([["/repo", activeState()]], {}, {
+        now: () => now,
+        quotaFallbackPreferenceStore: { loadDefault: async () => true, saveDefault: async () => undefined },
+        quotaResumePreferenceStore: { loadDefault: async () => true, saveDefault: async () => undefined },
+        subscriptionUsageProvider: { fetchUsage: async () => ({ fetchedAt: now, windows: [
+          { usedPercent: 100, windowMinutes: 300, resetsAt: now + 60_000 },
+          { usedPercent: 50, windowMinutes: 10_080, resetsAt: now + 600_000 },
+        ] }) },
+      });
+      await h.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+      await h.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} }, ctx);
+      await h.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+      await waitFor(() => sends.length > 0 || resumePlans.length > 0);
+      if (mode === "commit" || mode === "backup-failure") {
+        assert.deepEqual(switches, ["deepseek/deepseek-flash"], mode);
+        assert.equal((sends[0] as { message: { customType: string } }).message.customType, PINDIE_QUOTA_FALLBACK_TYPE);
+        assert.equal(resumePlans.length, 0, mode);
+        assert.equal(listeners.size, 1, mode);
+      } else {
+        assert.equal(resumePlans.length, 1, mode);
+        assert.deepEqual(switches, mode === "rollback" ? ["deepseek/deepseek-flash", "openai-codex/gpt-5-codex"] : [], mode);
+        assert.equal(listeners.size, 0, mode);
+        assert.equal(timers.every((timer) => timer.cancelled), true, mode);
+      }
+      if (mode === "backup-failure") {
+        branch.push({ type: "message", id: "backup", message: {
+          role: "assistant", content: [], provider: "deepseek", model: "deepseek-flash",
+          stopReason: "error", errorMessage: "provider failed", timestamp: now,
+        } } as SessionEntry);
+        await h.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} }, ctx);
+        await h.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+        await waitFor(() => resumePlans.length === 1);
+        assert.deepEqual(switches, ["deepseek/deepseek-flash", "openai-codex/gpt-5-codex"]);
+        assert.equal((resumePlans[0] as { anchorEntryId: string }).anchorEntryId, "quota");
+        assert.equal(listeners.size, 0);
+      }
+    } finally { supervisor.dispose(); releaseFallback(); releaseResume.release(); }
   }
 });
 
