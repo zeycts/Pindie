@@ -534,10 +534,64 @@ class BoundedSingleLineText implements Component {
   invalidate(): void {}
 }
 
-function formatHeader(projection: PindieUiProjection): string {
+/** A view-local, always-single-row layout for independently clamped chrome zones. */
+class ZonedSingleLine implements Component {
+  private left: string;
+  private right: string;
+
+  constructor(left = "", right = "") {
+    this.left = left;
+    this.right = right;
+  }
+
+  setZones(left: string, right: string): void {
+    this.left = left;
+    this.right = right;
+  }
+
+  render(width: number): string[] {
+    if (width <= 0) return [""];
+    const left = this.left.replace(/[\r\n]+/gu, " ");
+    const right = this.right.replace(/[\r\n]+/gu, " ");
+    if (right.length === 0) return [truncateToWidth(left, width)];
+    const gap = Math.min(2, width);
+    const rightWidth = Math.min(visibleWidth(right), Math.max(0, width - gap));
+    const renderedRight = truncateToWidth(right, rightWidth);
+    const leftWidth = Math.max(0, width - visibleWidth(renderedRight) - gap);
+    const renderedLeft = truncateToWidth(left, leftWidth);
+    const spacing = Math.max(gap, width - visibleWidth(renderedLeft) - visibleWidth(renderedRight));
+    return [`${renderedLeft}${" ".repeat(spacing)}${renderedRight}`];
+  }
+
+  invalidate(): void {}
+}
+
+class ZonedFooter implements Component {
+  private readonly primary = new ZonedSingleLine();
+  private additions: readonly string[] = [];
+
+  setContent(left: string, right: string, additions: readonly string[] = []): void {
+    this.primary.setZones(left, right);
+    this.additions = additions.slice(0, 3);
+  }
+
+  render(width: number): string[] {
+    return [
+      ...this.primary.render(width),
+      ...this.additions.map((addition) => truncateToWidth(addition.replace(/[\r\n]+/gu, " "), width)),
+    ];
+  }
+
+  invalidate(): void { this.primary.invalidate(); }
+}
+
+function formatHeader(projection: PindieUiProjection): { left: string; right: string } {
   const { header } = projection;
   const modelId = header.model?.modelId ?? "model unavailable";
-  return `${header.displayIdentity} · ${modelId} · ${header.thinkingLevel}`;
+  return {
+    left: header.displayIdentity,
+    right: `${truncateToWidth(modelId, 36)} · ${header.thinkingLevel}`,
+  };
 }
 
 function formatActionHint(action: PindieActionDefinition, label = action.label): string {
@@ -545,22 +599,15 @@ function formatActionHint(action: PindieActionDefinition, label = action.label):
   return key.length === 0 ? label : `${key} ${label}`;
 }
 
-const MAX_FOOTER_ROWS = 4;
-
 function formatFooter(
   projection: PindieUiProjection,
   hints: readonly PindieActionDefinition[],
   additions: readonly string[] = [],
-): string[] {
+): { left: string; right: string; additions: readonly string[] } {
   const { status } = projection;
-  const parts = [status.isIdle ? "idle" : status.isCompacting ? "compacting" : "running"];
-  if (status.isIdle === false) {
-    parts.push(...hints.map((hint) => formatActionHint(
-      hint,
-      hint.id === "palette.open" ? "Commands" : hint.id === "run.abort" ? "Stop" : undefined,
-    )));
-  }
-  if (status.activity !== null && status.activity !== "thinking") {
+  const phase = status.isIdle ? "idle" : status.isCompacting ? "compacting" : "running";
+  const parts = [phase];
+  if (status.activity !== null && status.activity !== "thinking" && status.activity !== phase) {
     parts.push(truncateToWidth(status.activity, 28));
   }
   if (status.consumption !== null) {
@@ -577,11 +624,11 @@ function formatFooter(
     parts.push("Pindie unavailable");
   }
 
-  const idleHints = status.isIdle
-    ? hints.map((hint) => formatActionHint(hint, hint.id === "palette.open" ? "Commands" : undefined))
-    : [];
-  const primary = `${parts.join(" · ")}${idleHints.length === 0 ? "" : ` · ${idleHints.join(" · ")}`}`;
-  return [primary, ...additions].slice(0, MAX_FOOTER_ROWS);
+  const right = hints.map((hint) => formatActionHint(
+    hint,
+    hint.id === "palette.open" ? "Commands" : hint.id === "run.abort" ? "Stop" : undefined,
+  )).join(" · ");
+  return { left: parts.join(" · "), right, additions };
 }
 
 function attentionIdentity(attention: UiAttentionProjection | null): string | null {
@@ -815,13 +862,13 @@ interface BlockLineRange {
  */
 export class PindieTuiView implements PindieTuiViewPort {
   private readonly tui: TUI;
-  private readonly header: BoundedSingleLineText;
+  private readonly header: ZonedSingleLine;
   private readonly timelineContent: TimelineContent;
   private readonly timelineScroll: ScrollView;
   private readonly inputRegion: VStack;
   private readonly editor: Editor;
   private readonly attentionEditor: Editor;
-  private readonly status: BoundedSingleLineText;
+  private readonly status: ZonedFooter;
   private readonly cwd: string;
   private readonly startupNotices: readonly string[];
   private readonly onSubmit?: (text: string) => void;
@@ -872,7 +919,7 @@ export class PindieTuiView implements PindieTuiViewPort {
     const terminal = options.terminal ?? new ProcessTerminal();
     const tui = new TuiAltScreen(terminal);
     this.tui = tui;
-    this.header = new BoundedSingleLineText("Pindie", true);
+    this.header = new ZonedSingleLine("Pindie", "");
     this.timelineContent = new TimelineContent();
     this.blockLineRanges = this.timelineContent.ranges;
     this.timelineScroll = new SelectionScrollView(this.timelineContent, () => {
@@ -881,7 +928,8 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.editor = new Editor(tui, editorTheme, { paddingX: 1 });
     this.attentionEditor = new Editor(tui, editorTheme, { paddingX: 1 });
     this.inputRegion = new VStack([this.editor]);
-    this.status = new BoundedSingleLineText("idle");
+    this.status = new ZonedFooter();
+    this.status.setContent("idle", "");
     this.cwd = options.cwd ?? process.cwd();
     const layout = new VStack([
       { component: this.header, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
@@ -974,7 +1022,8 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.currentSessionId = projection.header.sessionId;
     this.projection = projection;
     this.attentionIdentity = nextAttentionIdentity;
-    this.header.setText(formatHeader(projection));
+    const header = formatHeader(projection);
+    this.header.setZones(header.left, header.right);
     this.renderTimeline();
     this.renderComposer();
     this.refreshOpenOverlay();
@@ -1449,7 +1498,7 @@ export class PindieTuiView implements PindieTuiViewPort {
 
   private renderStatus(): void {
     if (this.projection === null) {
-      this.status.setText("idle");
+      this.status.setContent("idle", "");
       return;
     }
 
@@ -1468,17 +1517,17 @@ export class PindieTuiView implements PindieTuiViewPort {
     }
 
     const additions: string[] = [];
-    const statuses = [...this.extensionStatuses.values()].slice(0, 3);
-    if (statuses.length > 0) additions.push(`Extensions · ${statuses.join(" · ")}`);
     if (this.workingVisible && this.projection.status.isIdle === false) {
       const frames = this.workingIndicator?.frames;
       if (frames === undefined || frames.length > 0) {
         additions.push(`${frames?.[0] ?? "●"} ${this.workingMessage ?? "Working"}`);
       }
     }
+    const statuses = [...this.extensionStatuses.values()].slice(0, 3);
+    if (statuses.length > 0) additions.push(`Extensions · ${statuses.join(" · ")}`);
     if (this.hiddenThinkingLabel !== undefined) additions.push(`Thinking · ${this.hiddenThinkingLabel}`);
-    const contribution = additions.length === 0 ? [] : [additions.join(" · ")];
-    this.status.setText(formatFooter(this.projection, hints, contribution).join("\n"));
+    const formatted = formatFooter(this.projection, hints, additions);
+    this.status.setContent(formatted.left, formatted.right, formatted.additions);
   }
 
   private addBoundedWidgets(placement: "aboveEditor" | "belowEditor"): void {
