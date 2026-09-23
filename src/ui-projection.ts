@@ -82,6 +82,23 @@ export type UiSemanticAuthority =
 export type UiTaskStatus = TaskStatus | null;
 export type UiVerificationStatus = VerificationStatus | "none" | null;
 
+export const MAX_SESSION_DISPLAY_IDENTITY_GRAPHEMES = 48;
+
+const sessionDisplaySegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** Bound only the human-facing projection; the native Session identity remains unchanged. */
+export function boundSessionDisplayIdentity(value: string): string {
+  const segments = sessionDisplaySegmenter.segment(value)[Symbol.iterator]();
+  const graphemes: string[] = [];
+  for (let index = 0; index < MAX_SESSION_DISPLAY_IDENTITY_GRAPHEMES; index += 1) {
+    const next = segments.next();
+    if (next.done) return value;
+    graphemes.push(next.value.segment);
+  }
+  if (segments.next().done) return value;
+  return `${graphemes.slice(0, MAX_SESSION_DISPLAY_IDENTITY_GRAPHEMES - 1).join("")}…`;
+}
+
 export interface UiModelProjection {
   readonly provider: string;
   readonly modelId: string;
@@ -1095,7 +1112,7 @@ export function createProjection(
   return {
     header: {
       projectRoot: input.presentation?.projectRoot ?? null,
-      displayIdentity: input.session.displayIdentity,
+      displayIdentity: boundSessionDisplayIdentity(input.session.displayIdentity),
       sessionId: input.session.sessionId,
       model: copyModel(input.session.model),
       thinkingLevel: input.session.thinkingLevel,

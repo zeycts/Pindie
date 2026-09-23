@@ -10,6 +10,7 @@ import type { PindiePresentationSnapshot } from "../src/presentation-integration
 import type { HumanGate, PindieState, VerificationCheck } from "../src/state.ts";
 import {
   appendUserDelivery,
+  boundSessionDisplayIdentity,
   classifyToolPresentation,
   createProjection,
   projectSessionHistory,
@@ -762,6 +763,27 @@ test("projects task handoff as a restrained Task milestone", () => {
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0]?.handoff?.progressSummary, "Implementation is ready for continuation.");
   assert.equal(tasks[0]?.nextIntent, "Resume in a new Session");
+});
+
+test("bounds Session display identity by Unicode grapheme clusters at the projection boundary", () => {
+  const ascii = "A".repeat(1_001);
+  const boundedAscii = boundSessionDisplayIdentity(ascii);
+  assert.equal(Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(boundedAscii)).length, 48);
+  assert.ok(boundedAscii.endsWith("…"));
+
+  const graphemes = ["é", "👨‍👩‍👧‍👦", "👍🏽"];
+  const unicode = graphemes.join("").repeat(20);
+  const boundedUnicode = boundSessionDisplayIdentity(unicode);
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  assert.equal(Array.from(segmenter.segment(boundedUnicode)).length, 48);
+  assert.equal(boundedUnicode, `${Array.from(segmenter.segment(unicode), ({ segment }) => segment).slice(0, 47).join("")}…`);
+  assert.equal(boundSessionDisplayIdentity("Short identity"), "Short identity");
+  assert.equal(boundSessionDisplayIdentity("x".repeat(48)), "x".repeat(48));
+
+  const projection = createProjection(input({
+    session: { ...input().session, displayIdentity: ascii },
+  }));
+  assert.equal(projection.header.displayIdentity, boundedAscii);
 });
 
 test("projects header and ambient status from Presentation and active Session facts", () => {
