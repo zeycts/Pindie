@@ -739,7 +739,7 @@ test("PindieTuiView keeps ordinary chrome bounded and restores terminal lifecycl
   await flush();
 
   const rendered = terminal.writes.join("");
-  assert.match(rendered, /Render Session · model · high/);
+  assert.match(rendered, /Render Session\s+model · high/);
   assert.match(rendered, /Alt[+]P Commands/);
   assert.doesNotMatch(rendered, /Timeline|Composer|Status ·|Hints ·|test[/]model|task no task|authority coherent/);
   assert.equal(terminal.started, true);
@@ -1110,12 +1110,16 @@ test("Header and Footer are single-row, width-aware chrome across resizes", () =
 
   const headerWide = internals.header.render(2_000);
   assert.equal(headerWide.length, 1);
+  assert.match(headerWide[0]!, /Long human-facing Session identity/);
   assert.match(headerWide[0]!, /gpt-6-/);
   assert.match(headerWide[0]!, /high/);
+  assert.ok(headerWide[0]!.indexOf("gpt-6-") - headerWide[0]!.indexOf("Long human-facing") > 40,
+    "wide Header should visibly separate identity and model zones");
   assert.doesNotMatch(headerWide[0]!, /secret-provider|blocked|stale|Pindie|project/);
 
   const header80 = internals.header.render(80);
   assert.equal(header80.length, 1);
+  assert.ok(header80[0]!.indexOf("gpt-6-") > 30, "model zone should be right-aligned");
   assert.ok(visibleWidth(header80[0]!) <= 80);
 
   for (const width of [40, 8, 1, 0]) {
@@ -1137,6 +1141,8 @@ test("Header and Footer are single-row, width-aware chrome across resizes", () =
   assert.notEqual(wideFooter[0], narrowFooter[0]);
   assert.ok(wideFooter[0]!.includes("✓ 4/4"));
   assert.match(wideFooter[0]!, /Alt[+]P Commands/);
+  assert.ok(wideFooter[0]!.indexOf("Alt+P Commands") > wideFooter[0]!.indexOf("✓ 4/4") + 10,
+    "idle Commands action should occupy the separated right Footer zone");
   assert.doesNotMatch(wideFooter[0]!, /Status ·|Hints ·|Alt[+]M|Alt[+]N|Alt[+]H/);
   view.stop();
 });
@@ -1144,7 +1150,16 @@ test("Header and Footer are single-row, width-aware chrome across resizes", () =
 test("running Footer keeps registry-derived Stop action and bounds Extension contributions", () => {
   const terminal = new FakeTerminal();
   const view = new PindieTuiView({ terminal });
-  const projection = viewProjection({ running: true });
+  const base = viewProjection({ running: true });
+  const projection = {
+    ...base,
+    status: {
+      ...base.status,
+      activity: "running" as const,
+      consumption: { scope: "run" as const, durationMs: 135_000, cost: 0.12 },
+      verificationProgress: { covered: 3, total: 4 },
+    },
+  };
   view.apply(projection);
   view.setExtensionStatus("long", "status ".repeat(500));
   view.setExtensionWorkingMessage("working ".repeat(500));
@@ -1152,8 +1167,11 @@ test("running Footer keeps registry-derived Stop action and bounds Extension con
   const footer = internals.status.render(80);
   assert.ok(footer.length <= 4);
   assert.ok(footer.every((line) => visibleWidth(line) <= 80));
+  assert.match(footer[0]!, /running · 2m 15s · \$0\.12 · ○ 3\/4/);
   assert.match(footer[0]!, /Esc Stop/);
   assert.match(footer[0]!, /Alt[+]P Commands/);
+  assert.ok(footer[0]!.indexOf("Esc Stop") > footer[0]!.indexOf("running"),
+    "running actions belong to the right Footer zone");
   assert.ok(footer.some((line) => line.includes("Extensions")));
 
   const narrow = internals.status.render(12);
