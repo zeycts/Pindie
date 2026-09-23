@@ -1,6 +1,6 @@
 # Pindie Quota Fallback v0.1 — Architecture Contract
 
-Status: design approved; implementation is intentionally deferred until the current Pindie TUI v0.1 work is reviewed and merged.
+Status: post-TUI implementation-readiness review complete. Implementation may begin with Slice A. Production continues to use Pi InteractiveMode; the owned Pindie TUI remains a frozen opt-in experiment.
 
 Baseline: Pindie main with Pi 0.86.1 and the existing Quota Auto Resume behavior in `docs/behavior.md`.
 
@@ -425,9 +425,9 @@ API keys remain Pi/provider-owned secrets and must never be copied into:
 - Remote/Discord payloads;
 - UI projection.
 
-### Final TUI boundary
+### Production Pi TUI boundary
 
-Quota Fallback must consume the completed Pindie TUI architecture. It must not create a parallel model picker, status system, or command framework.
+Production continues to use Pi InteractiveMode. Quota Fallback must integrate through Pi's public extension UI/model/runtime APIs and Pindie's existing PresentationIntegration; it must not depend on the frozen owned Pindie TUI experiment or create a parallel model picker, status system, or command framework.
 
 Required runtime facts are small:
 
@@ -452,7 +452,7 @@ Status:
 fallback · until 18:25
 ```
 
-Exact UI treatment belongs to Slice D after TUI is merged.
+Exact UI treatment belongs to Slice D and should stay minimal: reuse the same Pi extension-UI pattern already used by `/quota-resume`, plus existing Pindie status/notification seams where useful.
 
 Successful fallback and successful restore are quiet continuity events:
 
@@ -485,22 +485,19 @@ Off-peak price differences may remain approximate in Pindie's static cost displa
 
 ---
 
-## 13. Implementation gate
+## 13. Implementation readiness
 
-No Quota Fallback implementation Slice starts until the current Pindie TUI work is finished and merged.
+The owned Pindie TUI experiment has concluded and production remains on Pi InteractiveMode. The required post-TUI review is complete, so Quota Fallback may begin with Slice A.
 
-Required sequence:
+Readiness conclusions:
 
-```text
-1. finish current Pindie TUI work
-2. review + merge TUI PR
-3. re-read merged main
-4. perform implementation-readiness review against this contract
-5. revise only material incompatibilities
-6. begin Slice A
-```
-
-This architecture document may merge before TUI implementation finishes because it changes no runtime behavior.
+- no Quota Fallback core invariant changes;
+- no implementation should depend on `PINDIE_TUI=1`;
+- preference UI should reuse Pi's extension UI path, like `/quota-resume`;
+- current `PiRuntimeAdapter` already contains model-picker-era model read/switch primitives that should be reused rather than duplicated;
+- fallback needs an exact-model availability/auth preflight that is independent of scoped model-picker choices;
+- fallback still needs an explicit thinking-level setter wrapper for Host-owned restore/preservation;
+- existing Quota Resume and Long Task runtime ownership remain compatible with the contract.
 
 ---
 
@@ -510,18 +507,26 @@ Each Slice uses a fresh branch from then-current `main`, focused tests, `pnpm ru
 
 ### Slice A — Runtime Model Control
 
-Goal: expose only the Pi operations Host-owned fallback needs.
+Goal: finish the smallest Pi runtime boundary Host-owned fallback needs, reusing the model controls already left by the TUI experiment.
 
-Implement the smallest `PiRuntimeAdapter` boundary required to:
+Current main already has:
 
-- resolve `deepseek/deepseek-flash` through Pi's model runtime;
-- verify usable provider auth;
-- switch the active Session model without persisting a global default;
-- read/set active Session thinking level.
+- `getActiveSessionModelIdentity()`;
+- `getActiveSessionModelChoices()` for the interactive picker;
+- `setActiveSessionModel(provider, modelId)`, which delegates to Pi and does not persist a global default;
+- `getActiveSessionThinkingLevel()`.
 
-No fallback policy, quota behavior, preference, or TUI changes.
+Implement only the missing fallback-facing primitives:
 
-Do not create a Pindie model registry or raw provider client.
+- an exact model availability/auth preflight for `provider/modelId` using Pi's registry availability, independent of scoped picker choices;
+- a thin active-Session thinking-level setter that delegates to Pi and lets Pi clamp to model capabilities;
+- focused adapter tests proving active-Session-at-call-time behavior, authenticated availability semantics, no scoped-picker coupling, and no duplicate thinking policy.
+
+Do not change the existing picker semantics merely to serve fallback.
+
+No fallback policy, quota behavior, preference, Pi TUI changes, or owned Pindie TUI changes.
+
+Do not create a Pindie model registry, raw provider client, or DeepSeek-specific reasoning map.
 
 ### Slice B — Fallback Core
 
@@ -563,9 +568,7 @@ Implement:
 
 Do not introduce a generic successor scheduler or persisted workflow.
 
-### Slice D — Preference + Final TUI Integration
-
-Prerequisite: final current Pindie TUI work is merged and this contract has passed post-merge readiness review.
+### Slice D — Preference + Pi TUI Integration
 
 Implement:
 
@@ -576,11 +579,10 @@ Implement:
 - fixed DeepSeek target;
 - auth/model availability diagnosis;
 - atomic preference persistence preserving unrelated fields;
-- fallback runtime facts in the final TUI projection;
-- compact RuntimeBlock/status presentation;
-- focused preference/TUI tests.
+- minimal fallback runtime status through existing Pindie PresentationIntegration / Pi extension UI seams where useful;
+- focused preference and Pi-TUI extension-UI tests.
 
-Use the final Action Registry / extension UI boundary. Do not create parallel TUI infrastructure.
+Reuse the same public Pi extension UI pattern already proven by `/quota-resume`. Do not revive, extend, or depend on the frozen owned Pindie TUI experiment solely for Quota Fallback.
 
 ### Slice E — Hardening + Documentation Sync
 
@@ -602,21 +604,21 @@ Then:
 
 ---
 
-## 15. Post-TUI readiness check
+## 15. Post-TUI readiness result
 
-Before Slice A, re-read current main and verify:
+The 2026-09-23 review of current `main` established:
 
-1. final model-selection action path in Pindie TUI;
-2. final `PiRuntimeAdapter` model APIs;
-3. how human model selection is surfaced;
-4. Host runtime facts available to UI projection;
-5. whether Quota Resume settlement timing changed;
-6. whether Long Task rollover changed Session lifecycle signals;
-7. whether pinned Pi still exposes `deepseek/deepseek-flash` with expected reasoning/auth metadata;
-8. whether one subscription refresh can still feed Fallback and Resume;
-9. whether Remote successor classification still needs explicit fallback integration.
+1. production model selection is Pi InteractiveMode / Pi model plumbing; the owned Pindie TUI is frozen and opt-in only;
+2. `PiRuntimeAdapter` already exposes active model identity, picker choices, and direct active-Session model switching;
+3. Pi emits `model_select`, which remains the event seam for later distinguishing explicit human selection from supervisor-owned fallback mutations;
+4. Pindie's PresentationIntegration remains the existing status/extension presentation layer under Pi TUI;
+5. existing Quota Auto Resume settlement and Host ownership remain compatible with ordered recovery arbitration;
+6. Long Task rollover remains Session replacement and therefore still terminates a Session-bound fallback lease;
+7. Pi remains pinned to 0.86.1, which exposes `deepseek/deepseek-flash`;
+8. one fresh subscription-usage derivation can still feed both Fallback and Resume;
+9. Remote stopped classification still needs Slice C integration for a committed fallback successor.
 
-Only material incompatibilities justify changing this architecture.
+The only material contract revision is UI ownership: Slice D targets Pi TUI extension APIs, not the frozen owned Pindie TUI.
 
 ---
 
