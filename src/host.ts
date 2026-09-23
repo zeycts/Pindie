@@ -51,6 +51,10 @@ import {
   QuotaResumeSupervisor,
   type QuotaResumeSupervisorOptions,
 } from "./quota-resume-supervisor.ts";
+import {
+  QuotaFallbackSupervisor,
+  type QuotaFallbackSupervisorOptions,
+} from "./quota-fallback-supervisor.ts";
 
 export interface PindieResourcePaths {
   extensionPath: string;
@@ -87,6 +91,7 @@ export interface PindieHostOptions {
   interactiveModeOptions?: InteractiveModeOptions;
   longTaskRollover?: LongTaskRolloverSupervisorOptions;
   quotaResume?: QuotaResumeSupervisorOptions;
+  quotaFallback?: QuotaFallbackSupervisorOptions;
   env?: Record<string, string | undefined>;
   dependencies?: PindieHostDependencies;
 }
@@ -205,6 +210,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   let runtime: PiRuntimeAdapter | undefined;
   let rolloverSupervisor: LongTaskRolloverSupervisor | undefined;
   let quotaResumeSupervisor: QuotaResumeSupervisor | undefined;
+  let quotaFallbackSupervisor: QuotaFallbackSupervisor | undefined;
   let quotaBridgeLease: QuotaResumeHostLease | undefined;
   let releaseControlBridge: (() => void) | undefined;
   let currentPresentationReader: PindiePresentationReader | null = null;
@@ -230,6 +236,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       },
       (boundary: SessionLifecycleBoundary) => {
         rolloverSupervisor?.observeSessionLifecycle(boundary);
+        quotaFallbackSupervisor?.observeSessionLifecycle(boundary);
       },
     );
   } catch (error) {
@@ -238,6 +245,8 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   }
 
   const releaseHostControl = async (): Promise<void> => {
+    quotaFallbackSupervisor?.dispose();
+    quotaFallbackSupervisor = undefined;
     quotaResumeSupervisor?.dispose();
     quotaResumeSupervisor = undefined;
     quotaBridgeLease?.release();
@@ -275,6 +284,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       sessionManager,
     });
     runtime = new PiRuntimeAdapter(nativeRuntime);
+    quotaFallbackSupervisor = new QuotaFallbackSupervisor(runtime, options.quotaFallback);
     const testWaitingChange = options.quotaResume?.onWaitingChange;
     quotaResumeSupervisor = new QuotaResumeSupervisor(runtime, {
       ...options.quotaResume,
