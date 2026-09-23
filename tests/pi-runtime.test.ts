@@ -408,6 +408,28 @@ test("bindActiveSessionExtensions and thinking-level reads target the active Ses
   assert.equal(adapter.getActiveSessionThinkingLevel(), "low");
 });
 
+test("thinking mutation delegates to Pi and returns the active Session's effective level", () => {
+  const requests: string[] = [];
+  function thinkingSession(id: string, effective: AgentSession["thinkingLevel"]): AgentSession {
+    let thinkingLevel: AgentSession["thinkingLevel"] = "off";
+    return {
+      ...fakeSession(id),
+      get thinkingLevel() { return thinkingLevel; },
+      setThinkingLevel: (requested: AgentSession["thinkingLevel"]) => {
+        requests.push(`${id}:${requested}`);
+        thinkingLevel = effective; // The fake Pi, not the adapter, decides the effective level.
+      },
+    } as unknown as AgentSession;
+  }
+  const control = fakeRuntime(thinkingSession("first", "high"));
+  const adapter = new PiRuntimeAdapter(control.runtime);
+
+  assert.equal(adapter.setActiveSessionThinkingLevel("medium"), "high");
+  control.setSession(thinkingSession("second", "low"));
+  assert.equal(adapter.setActiveSessionThinkingLevel("max"), "low");
+  assert.deepEqual(requests, ["first:medium", "second:max"]);
+});
+
 test("setActiveSessionClientLifecycle delegates single native callback slots", () => {
   const calls: string[] = [];
   const beforeHandlers: Array<(() => void) | undefined> = [];
@@ -557,6 +579,39 @@ test("quota primitives always read and delegate to the current active Session", 
   const options = { triggerTurn: true };
   await adapter.sendCustomMessage(message, options);
   assert.deepEqual(calls, [[message, options]]);
+});
+
+test("exact model availability uses Pi registry, not scoped picker choices or auth configuration alone", () => {
+  const codex = { provider: "openai-codex", id: "gpt", name: "Codex" };
+  const deepseek = { provider: "deepseek", id: "deepseek-flash", name: "DeepSeek" };
+  const unavailable = { provider: "deepseek", id: "other", name: "Unavailable" };
+  const models = [codex, deepseek, unavailable];
+  function modelSession(id: string, getAvailable: () => typeof models): AgentSession {
+    return {
+      ...fakeSession(id),
+      model: codex,
+      scopedModels: [{ model: codex }],
+      extensionRunner: { getModelRegistry: () => ({
+        find: (provider: string, modelId: string) => models.find((model) => model.provider === provider && model.id === modelId),
+        getAvailable,
+      }) },
+    } as unknown as AgentSession;
+  }
+  const control = fakeRuntime(modelSession("first", () => [codex, deepseek]));
+  const adapter = new PiRuntimeAdapter(control.runtime);
+
+  assert.deepEqual(adapter.getActiveSessionModelChoices(), [
+    { provider: "openai-codex", modelId: "gpt", displayName: "Codex", current: true },
+  ]);
+  assert.equal(adapter.isActiveSessionModelAvailable("deepseek", "deepseek-flash"), true);
+  assert.equal(adapter.isActiveSessionModelAvailable("deepseek", "other"), false);
+  assert.equal(adapter.isActiveSessionModelAvailable("deepseek", "unknown"), false);
+  assert.equal(adapter.isActiveSessionModelAvailable("other", "deepseek-flash"), false);
+
+  control.setSession(modelSession("second", () => [codex]));
+  assert.equal(adapter.isActiveSessionModelAvailable("deepseek", "deepseek-flash"), false);
+  control.setSession(modelSession("third", () => [codex, deepseek]));
+  assert.equal(adapter.isActiveSessionModelAvailable("deepseek", "deepseek-flash"), true);
 });
 
 test("direct model picker selection delegates only to setModel despite scoped thinking metadata", async () => {
