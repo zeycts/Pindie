@@ -1,10 +1,10 @@
 # Pindie TUI v0.1 — Architecture and Implementation Contract
 
-Status: Slices A–F and Slice G1 are implemented; G1 is merged. Slice G2a is pre-dogfood readiness, G2b is real dogfood, and G2c is the separately gated cutover. The owned TUI remains opt-in until explicit approval.
+Status: **Pindie owned TUI v0.1 experiment concluded.** Slices A–G1 / G2a and the G2b audit/dogfood work are retained as experiment history. Real G2b dogfood changed the architecture decision: G2c cutover is cancelled / not proceeding. Production continues to use Pi InteractiveMode by default; `PINDIE_TUI=1` remains an opt-in, frozen experimental implementation. This is not a temporary pause caused by implementation failure: real-world usability evidence showed that taking ownership of the interaction layer does not justify its engineering complexity and usability cost.
 
 Baseline: Pindie main after Pi 0.86.1 compatibility upgrade.
 
-This document is the source of truth for Pindie's first owned Agent-native terminal UI. Implementation Slices must follow this contract unless a reviewed architecture change updates this document first.
+This document records the architecture, implementation, and conclusion of Pindie's first owned Agent-native terminal UI experiment. Historical implementation contracts below describe the evaluated experiment; they are not an active roadmap to a default cutover.
 
 The goal is not to build a prettier chat terminal. The goal is to make long-running Agent work legible with minimal monitoring:
 
@@ -25,7 +25,7 @@ Pi          → active AgentSession implementation, LLM execution, tools, Skills
               retries, compaction, message queues, low-level Agent Loop
 ```
 
-TUI ownership becomes:
+The interaction-layer ownership model evaluated in the experiment was:
 
 ```text
 PindieInteractiveMode
@@ -57,27 +57,35 @@ Facts have one owner.
 The TUI projects facts; it does not become their authority.
 ```
 
-## 2. Target topology
-
-The current production topology is:
+## 2. Chosen production topology
 
 ```text
 Pindie Host
-   └─ Pi InteractiveMode
-          ↓
-      Pi AgentSessionRuntime
+    ↓
+Pi InteractiveMode
+    ↓
+Pi AgentSessionRuntime
+    ↑
+Pindie extension/runtime integration
 ```
 
-The target topology is:
+Pi continues to own the mature interactive terminal shell and low-level runtime. Pindie continues to own and provide through its extension/runtime integration:
+
+- semantic State and policy / authority;
+- Agent Harness and autonomous behavior;
+- Human Signal;
+- Remote / Discord;
+- quota resume and long-task rollover;
+- memory, reasoning, learning / strategy, and other Agent-native capabilities.
+
+The following was the **experimental topology evaluated during the owned-TUI experiment**, not a target topology:
 
 ```text
 Pindie Host
    └─ PindieInteractiveMode
           │
           ├─ Projection / Views ─────────→ @earendil-works/pi-tui
-          │
           ├─ Attention / Extension UI ──→ @earendil-works/pi-tui
-          │
           └─ Action Dispatcher
                     ↓
              PiRuntimeAdapter
@@ -86,10 +94,6 @@ Pindie Host
                     ↓
              Agent Loop / Models / Tools / Skills
 ```
-
-This is an ownership inversion at the interaction layer only.
-
-Pi remains responsible for the active AgentSession, low-level execution, concrete tools, compaction, retries, steer/follow-up queues, and model/provider plumbing.
 
 ## 3. Screen anatomy
 
@@ -712,40 +716,13 @@ Exact implementation types may evolve, but these rules are fixed:
 - it is not persisted;
 - it exposes no mutable Core internals.
 
-## 12. Migration strategy
+## 12. Experiment topology and disposition
 
-Migration must stay runnable and reversible after every PR.
-
-Temporary topology:
-
-```text
-Pindie Host
-   ├─ Pi InteractiveMode       ← stable fallback
-   └─ PindieInteractiveMode    ← feature-gated while dogfooding
-```
-
-Use a temporary runtime gate such as:
-
-```text
-PINDIE_TUI=1
-```
-
-until the owned TUI has survived real dogfooding.
-
-Do not combine initial TUI implementation with removal of Pi InteractiveMode.
-
-After the new TUI is behaviorally complete:
-
-```text
-default  → PindieInteractiveMode
-fallback → Pi InteractiveMode
-```
-
-Only remove the fallback after a separate stability period.
+During the experiment, both shells remained runnable and `PINDIE_TUI=1` opted into the owned implementation. That reversible arrangement is retained as historical context. The experiment concluded without cutover: production remains on Pi InteractiveMode, and the owned TUI is frozen rather than an active product path. No default switch or Pi fallback removal is planned.
 
 ## 13. Implementation Slices
 
-Implementation should proceed in this order.
+The following records the experiment's implementation sequence and outcomes; it is not an active implementation roadmap.
 
 ### Slice A — Presentation Read Port (implemented)
 
@@ -806,7 +783,7 @@ Outputs:
 
 Tests should operate on plain data.
 
-### Slice D — TUI Shell (implemented / feature-gated shell)
+### Slice D — TUI Shell (experimental implementation retained; frozen)
 
 Introduce feature-gated `PindieInteractiveMode` using `TuiAltScreen`.
 
@@ -819,7 +796,7 @@ The initial shell provides:
 - real Prompt / Steer / Follow-up / Abort;
 - Session rebind correctness.
 
-Implemented behind `PINDIE_TUI=1`; the default Pi `InteractiveMode` remains the fallback. This initial shell is not yet a claim of baseline usability or approval for another full dogfood pass: G2a readiness must pass before G2b resumes. Semantic Attention interaction landed in Slice F2a; the full Extension UI compatibility surface landed in F2b. Do not expand features speculatively to prepare dogfood; G2b is for issues exposed by real use.
+Implemented behind `PINDIE_TUI=1`; the default remains Pi `InteractiveMode`. Subsequent G2a/G2b work and real dogfood concluded the experiment without cutover. Semantic Attention interaction landed in Slice F2a; the implemented Extension UI surface and its explicit limitations are recorded in F2b. The shell is frozen experimental code, not an active product path.
 
 ### Slice E — Semantic Timeline (implemented)
 
@@ -868,7 +845,7 @@ Implemented:
 
 A Human Gate response is ordinary user input to the Agent. The TUI never calls `pindie_gate_resolve` or mutates Gate State directly; the Agent interprets the response and resolves the semantic Gate through the existing Pindie tool/runtime path.
 
-#### F2b — Extension UI + Pickers (implementation in progress)
+#### F2b — Extension UI + Pickers (experiment implementation status recorded below)
 
 ##### F2b1 — Extension Interaction Bridge (implemented)
 
@@ -920,33 +897,26 @@ Final Pi 0.86.1 `ExtensionUIContext` capability matrix:
 
 All contribution state is owned by the active Extension UI bridge/View and is cleared on Session invalidation. No contribution mutates `PindieState`, `PindieUiProjection`, or semantic Timeline. Unsupported paths throw `UnsupportedExtensionUICapabilityError`; none silently no-op.
 
-### Slice G — Human Signal Unification and Cutover
+### Slice G — Human Signal and Owned-TUI Experiment Conclusion
 
-Slice G does not add another TUI feature family. It closes the human-attention semantics and then decides whether the owned TUI is safe to become the default.
-
-Implementation is split deliberately:
+Slice G established Human Signal behavior and evaluated whether Pindie should own the interactive terminal layer. G1 and G2a are completed experiment history; G2b concluded with an architecture decision, and G2c is cancelled / not proceeding:
 
 ```text
 G1 — Human Signal Policy
-     one transport-independent decision policy
-     → local hard/soft Attention
-     → external Discord attention
-     → settled-blocked semantics
+     completed
 
 G2a — Pre-dogfood Readiness
-      bounded chrome + bounded Timeline density
-      → baseline-usability acceptance
+      completed
 
 G2b — Real Dogfood
-      VS Code → SSH → tmux → PINDIE_TUI=1
-      → compatibility issues found in actual use
+      concluded with architecture decision:
+      do not proceed to owned-TUI cutover
 
 G2c — Cutover
-      all gates green
-      → explicit human approval
+      cancelled / not proceeding
 ```
 
-Cutover is not an automatic consequence of CI passing or G2b dogfood alone. G2c requires all listed gates and an explicit reviewed human decision.
+Real dogfood changed the architecture decision. This is not an implementation-failure pause; the expected benefit of owning the full interaction layer did not justify its complexity and usability cost.
 
 #### G1 — Human Signal Policy (implemented and merged)
 
@@ -1166,13 +1136,13 @@ G1 is complete when tests prove at minimum:
 
 Do not change the TUI default in G1.
 
-#### G2a — Pre-dogfood Readiness
+#### G2a — Pre-dogfood Readiness (completed experiment history)
 
-G2a closes two baseline-usability gaps before any new real dogfood attempt. Both G2a-A and G2a-B must be implemented, tested, and merged, and their acceptance checks in §14 must pass before G2b begins. A CI pass alone is not a usability verdict.
+G2a-A bounded chrome and G2a-B bounded Timeline density were completed as readiness work before the real dogfood. The requirements below document that historical scope; they are not a continuing cutover gate.
 
 ##### G2a-A — Bounded Chrome
 
-The first VS Code → SSH → tmux → `PINDIE_TUI=1` launch exposed that an unnamed Session can use the first real user message as its display identity. `PiRuntimeAdapter.getActiveSessionDisplayIdentity()` currently returns that fallback without a display-length bound; `formatHeader()` places the full value in persistent chrome. A long Prompt can therefore wrap the Header to dozens of rows and displace the Timeline and Composer. G2a-A must close this real failure, not treat it as cosmetic.
+The first VS Code → SSH → tmux → `PINDIE_TUI=1` launch exposed that an unnamed Session can use the first real user message as its display identity. `PiRuntimeAdapter.getActiveSessionDisplayIdentity()` then returned that fallback without a display-length bound; `formatHeader()` placed the full value in persistent chrome. A long Prompt could therefore wrap the Header to dozens of rows and displace the Timeline and Composer. G2a-A addressed this observed failure as part of the experiment.
 
 Acceptance contract:
 
@@ -1196,15 +1166,15 @@ Acceptance contract:
 - Running Tool / Command output keeps its existing bounded stdout/stderr tail; successful commands remain compact; failures preserve bounded diagnosis; Full viewer can inspect the available projected detail.
 - Do not apply routine-noise compression to Human Gate, Completion, or another meaningful semantic outcome merely for visual uniformity. Semantic importance outranks tool-noise density.
 
-#### G2b — Real Dogfood
+#### G2b — Real Dogfood (concluded)
 
-Only after G2a-A and G2a-B are merged and the owned TUI meets the baseline-usability acceptance in §14 may real `PINDIE_TUI=1` dogfood resume. Test the actual deployment path:
+Real dogfood was performed on the actual deployment path:
 
 ```text
 VS Code → SSH → tmux → PINDIE_TUI=1 → PindieInteractiveMode
 ```
 
-Automated tests cannot prove upstream key delivery, Chinese IME, terminal resize quality, tmux detach/reattach, or sustained usability. The real dogfood checklist must cover at least:
+Automated tests cannot prove upstream key delivery, Chinese IME, terminal resize quality, tmux detach/reattach, or sustained usability. The intended G2b dogfood checklist was:
 
 - Prompt / Steer / Follow-up;
 - Abort and queue restoration;
@@ -1223,49 +1193,37 @@ Automated tests cannot prove upstream key delivery, Chinese IME, terminal resize
 - tmux detach/reattach;
 - Session replacement/rebind.
 
-G2b fixes only issues exposed by this real dogfood. Do not use it to add speculative features or widen the feature set without new evidence and approval.
+The experiment was concluded before every checklist item was exercised. The observed usability evidence was already sufficient to reject cutover, so the remaining items are historical unexecuted coverage rather than active work.
 
-#### G2c — Cutover
+**Outcome:** The first real dogfood exposed unbounded Header identity, unbounded Timeline density, and persistent chrome hierarchy issues. Those were subsequently addressed through G2a work and the Header/Footer zoning fix. A second real dogfood round still showed substantial day-to-day friction, interaction/rendering rough edges, and an overall experience materially worse than Pi InteractiveMode; the user did not want to continue using the owned TUI. The full static audit also made clear that this shell owns a broad terminal lifecycle surface—IME, paste, focus, resize, tmux, overlays, and Session replacement—that require real lifecycle validation.
 
-The existing default-switch gate remains explicit and cumulative. Cutover is allowed only when all of these are true:
+The conclusion is that further investment would primarily recreate mature terminal interaction infrastructure rather than strengthen Pindie's differentiated Agent capabilities. The experiment ends here; the remaining audit checklist is not an active fix backlog or a prerequisite for cutover.
 
-```text
-CI green
-+
-G1 green
-+
-G2a readiness green
-+
-G2b real dogfood complete
-+
-no correctness blocker
-+
-no unresolved shortcut conflict
-+
-legacy Pi fallback runnable
-+
-explicit human approval
-```
+#### G2c — No Cutover Decision (cancelled / not proceeding)
 
-Until approval, preserve the current selection:
+The production selection remains:
 
 ```text
 default       → Pi InteractiveMode
-PINDIE_TUI=1  → PindieInteractiveMode
+PINDIE_TUI=1  → frozen experimental PindieInteractiveMode
 ```
 
-Only after every gate is satisfied may selection become:
+There is no plan to change the default, remove Pi fallback, complete the old G2b checklist as a cutover gate, or add tests/features for cutover. Owned TUI code remains in the repository as experimental output; it is frozen, not an active product path. If a future Pi upgrade makes its maintenance burden concrete, removal may be proposed as a separate cleanup rather than extending the compatibility work.
 
-```text
-default             → PindieInteractiveMode
-PINDIE_TUI=legacy   → Pi InteractiveMode
-```
+#### Re-entry rule
 
-The exact legacy opt-in spelling may be chosen during G2c, but fallback must remain explicit, easy to invoke, and runnable. Do not remove Pi InteractiveMode in v0.1. After cutover, retain the legacy fallback for a separate stability period before proposing removal.
+Reconsider owned/custom UI work only when all of the following hold:
 
-## 14. Testing contract
+1. Daily use of Pi InteractiveMode repeatedly exposes a specific, stable problem.
+2. That problem materially affects a core Pindie Agent workflow.
+3. A small incremental Pi extension/runtime integration cannot solve it.
+4. The expected benefit of taking on more interaction ownership clearly exceeds its maintenance cost.
 
-The TUI work must be testable below the terminal level.
+Otherwise, prefer Pi UI plus minimal Pindie integration. Do not start another full-TUI roadmap merely to pursue an idealized Agent-native UI.
+
+## 14. Experiment testing record
+
+The owned-TUI experiment used the following testing principles; they are historical contracts, not active cutover gates.
 
 Prefer:
 
@@ -1285,9 +1243,9 @@ manual dogfood in VS Code → SSH → tmux
 
 Do not rely primarily on terminal screenshots. Replace old existence-only assertions for permanent `Timeline`, `Composer`, `Status`, or `Hints` chrome with assertions for bounded normal rendering and preserved interaction behavior.
 
-### G2a usability acceptance
+### G2a usability acceptance (historical)
 
-Before G2b can start, focused projection/view tests must prove all of the following:
+Before dogfood, the readiness work required focused projection/view tests to prove the following:
 
 1. A 1,000+ character Session fallback identity cannot make the Header taller than one physical row; it is presentation-bounded and visibly truncated.
 2. At narrow terminal widths, Header and normal Footer remain bounded single rows, are clamped to available display width, and do not consume the Composer's reserved space. Normal idle chrome has no permanent Timeline/Composer heading, no `Status` / `Hints` labels, and an empty Timeline has no placeholder.
@@ -1300,7 +1258,7 @@ Before G2b can start, focused projection/view tests must prove all of the follow
 9. Pi Editor ownership is unchanged: Chinese IME, multiline input, paste, and draft behavior continue to work without a Pindie text-editor replacement.
 10. Timeline next/previous navigation, fold, selection visibility, and per-Block line-range bookkeeping remain correct after removing the Timeline heading, including after wrapped Preview changes and fold toggles.
 
-These are acceptance invariants, not permission to redesign adjacent interaction behavior. G2a may change presentation density only; it does not change the Action Registry, Human Signal policy, Extension semantics, Session/Model picker behavior, or Editor ownership.
+These were experiment acceptance invariants, not permission to redesign adjacent interaction behavior. G2a changed presentation density only; it did not change the Action Registry, Human Signal policy, Extension semantics, Session/Model picker behavior, or Editor ownership.
 
 At minimum preserve coverage for:
 
@@ -1338,7 +1296,7 @@ At minimum preserve coverage for:
 17. Pindie defaults must respect the real VS Code → SSH → tmux keyboard path.
 18. `@earendil-works/pi-tui` is infrastructure, not product ownership.
 19. Pindie must not deep-import Pi InteractiveMode private implementation.
-20. Migration stays reversible until the new TUI has been dogfooded and compatibility-closed.
+20. The owned-TUI experiment ended without cutover; Pi InteractiveMode remains the production interaction shell.
 21. Normal persistent chrome is bounded: Header is one width-clamped row with only Session identity/model id/thinking level, and normal Footer is one width-clamped row.
 22. Full projected history remains inspectable, while routine Message and running Observation previews have explicit character and physical-row bounds.
 23. Density cleanup preserves semantic Human Signal, Extension UI, Pi Editor, and Timeline navigation/fold ownership.

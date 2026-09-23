@@ -1,5 +1,7 @@
 # G2b Full Static + Automated Coverage Audit
 
+> **Closure note:** This audit is a historical experiment record. Later real dogfood led to the no-cutover architecture decision; this is not an active fix backlog. NOT COVERED and MANUAL DOGFOOD REQUIRED items do not need individual closure unless a concrete future need reopens them.
+
 Audited main SHA: `3dd868de0e517d60e5b4f644cc345474e6e9ed64` (audit branch forked directly from this main; **not** PR #178)
 Date: 2026-09-23 (UTC)
 Commands executed: `git status --short --branch`; `git show -s --format='%H %s' HEAD`; `gh pr view 178 --json number,state,headRefOid,baseRefName,url`; `git ls-remote --heads origin feat/tui-g2b-chrome-zones`; `git switch main`; `git pull --ff-only`; `git rev-parse HEAD`; `git merge-base --is-ancestor 3dd868de0e517d60e5b4f644cc345474e6e9ed64 HEAD`; `git switch -c docs/tui-g2b-full-audit`; `node --experimental-strip-types --test tests/tui.test.ts tests/tui-actions.test.ts tests/ui-projection.test.ts tests/remote-companion.test.ts`; `pnpm run check`; `git diff --check`.
