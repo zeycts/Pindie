@@ -268,6 +268,13 @@ export class PiRuntimeAdapter {
     return this.activeSession.thinkingLevel;
   }
 
+  /** Let Pi apply the requested level and report the current Session's effective level. */
+  setActiveSessionThinkingLevel(level: AgentSession["thinkingLevel"]): AgentSession["thinkingLevel"] {
+    const session = this.activeSession;
+    session.setThinkingLevel(level);
+    return session.thinkingLevel;
+  }
+
   /**
    * Bind the one custom interactive client's Session lifecycle callbacks.
    *
@@ -311,6 +318,13 @@ export class PiRuntimeAdapter {
       current: session.model?.provider === model.provider && session.model?.id === model.id,
       ...(thinkingLevel === undefined ? {} : { scopedThinkingLevel: thinkingLevel }),
     }));
+  }
+
+  /** Check exact model availability in Pi's registry, independent of picker scope. */
+  isActiveSessionModelAvailable(provider: string, modelId: string): boolean {
+    const registry = this.activeSession.extensionRunner.getModelRegistry();
+    return registry.find(provider, modelId) !== undefined && registry.getAvailable().some((model) =>
+      model.provider === provider && model.id === modelId);
   }
 
   async setActiveSessionModel(provider: string, modelId: string): Promise<void> {
