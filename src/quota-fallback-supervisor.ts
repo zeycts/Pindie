@@ -181,6 +181,14 @@ export class QuotaFallbackSupervisor {
     }
   }
 
+  /** Configuration preflight: exact Pi model availability, independent of current source or idle state. */
+  canUseBackup(sessionId: string): boolean {
+    try {
+      return !this.disposed && this.runtime.activeSessionId === sessionId &&
+        this.runtime.isActiveSessionModelAvailable(QUOTA_FALLBACK_PROVIDER, QUOTA_FALLBACK_MODEL_ID);
+    } catch { return false; }
+  }
+
   cancel(sessionId: string): void {
     if (this.lease?.plan.sessionId === sessionId) this.clearLease();
     if (this.committingSessionId === sessionId) ++this.generation;

@@ -138,13 +138,14 @@ test("global quota preferences round-trip and preserve unrelated fields", async 
   const baseDir = await mkdtemp(join(tmpdir(), "pindie-quota-preferences-"));
   try {
     const path = join(baseDir, "preferences.json");
-    await writeFile(path, JSON.stringify({ unrelated: { value: 7 }, other: false }));
+    await writeFile(path, JSON.stringify({ unrelated: { value: 7 }, other: false, quotaFallback: true }));
     const store = new FileQuotaResumePreferenceStore({ baseDir });
     await store.saveDefault(false);
     assert.equal(await store.loadDefault(), false);
     assert.deepEqual(JSON.parse(await readFile(path, "utf8")), {
       unrelated: { value: 7 },
       other: false,
+      quotaFallback: true,
       quotaAutoResume: false,
     });
     await store.saveDefault(true);

@@ -31,6 +31,7 @@ import {
   type QuotaResumeControlEvent,
 } from "../src/quota-resume-control.ts";
 import { installQuotaFallbackReceiver } from "../src/quota-fallback-control.ts";
+import { PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE } from "../src/quota-fallback.ts";
 import {
   PINDIE_QUOTA_RESUME_MESSAGE,
   PINDIE_QUOTA_RESUME_TYPE,
@@ -2765,17 +2766,19 @@ test("a replaced Session cannot receive an obsolete STOPPED milestone", async ()
   assert.equal(events.some((text) => text.startsWith("PINDIE STOPPED")), false);
 });
 
-test("Slice C arbitration shares one forced quota refresh, orders fallback before Resume, and keeps default OFF", async () => {
+test("quota preference arbitration shares one forced refresh, orders fallback before Resume, and keeps default OFF", async () => {
   const now = 1_700_000_000_000;
-  for (const [authorized, resumeEnabled, accepted, expectedRequests, expectedSchedules] of [
-    [false, true, true, 0, 1], [true, true, true, 1, 0],
-    [true, true, false, 1, 1], [true, false, false, 1, 0],
-    [false, false, false, 0, 0],
+  for (const [globalDefault, sessionOverride, resumeEnabled, accepted, expectedRequests, expectedSchedules] of [
+    [false, null, true, true, 0, 1], [true, null, true, true, 1, 0],
+    [true, null, true, false, 1, 1], [true, null, false, false, 1, 0],
+    [false, null, false, false, 0, 0],
+    [false, true, true, true, 1, 0], [true, false, true, true, 0, 1],
   ] as const) {
     const calls: string[] = [];
     let fetches = 0;
     const releaseFallback = installQuotaFallbackReceiver({
       request: async () => { calls.push("fallback"); return accepted; },
+      canUseBackup: () => true,
       cancel: () => { calls.push("cancel-fallback"); },
       observeModelSelect: () => false,
       backupFailed: async () => null,
@@ -2784,13 +2787,16 @@ test("Slice C arbitration shares one forced quota refresh, orders fallback befor
       if (event.type === "schedule") { calls.push("resume"); return true; }
     });
     try {
-      const branch = [{ type: "message", id: "quota", message: {
-        role: "assistant", content: [], provider: "openai-codex", model: "gpt-5-codex",
-        stopReason: "error", errorMessage: "The usage limit has been reached", timestamp: now,
-      } }] as SessionEntry[];
+      const branch = [
+        ...(sessionOverride === null ? [] : [{ type: "custom", id: "preference", customType: PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE, data: { enabled: sessionOverride } }]),
+        { type: "message", id: "quota", message: {
+          role: "assistant", content: [], provider: "openai-codex", model: "gpt-5-codex",
+          stopReason: "error", errorMessage: "The usage limit has been reached", timestamp: now,
+        } },
+      ] as SessionEntry[];
       const ctx = withBranch(context("/repo", branch), branch);
       const harness = createHarness([["/repo", activeState()]], {}, {
-        now: () => now, quotaFallbackAuthorized: authorized,
+        now: () => now, quotaFallbackPreferenceStore: { loadDefault: async () => globalDefault, saveDefault: async () => undefined },
         quotaResumePreferenceStore: { loadDefault: async () => resumeEnabled, saveDefault: async () => undefined },
         subscriptionUsageProvider: { fetchUsage: async () => {
           fetches++;
@@ -2813,11 +2819,46 @@ test("Slice C arbitration shares one forced quota refresh, orders fallback befor
   }
 });
 
+test("Extension restores branch-local fallback opt-in and disabling future fallback does not cancel active lease", async () => {
+  const calls: string[] = [];
+  const release = installQuotaFallbackReceiver({
+    request: () => false, canUseBackup: () => { calls.push("preflight"); return true; },
+    cancel: () => { calls.push("cancel-lease"); }, observeModelSelect: () => false, backupFailed: async () => null,
+  });
+  try {
+    let branch: SessionEntry[] = [{ type: "custom", id: "on", customType: PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE, data: { enabled: true } } as SessionEntry];
+    let selection = false;
+    const ctx = { ...context("/repo", branch), mode: "tui", sessionManager: {
+      getEntries: () => branch, getBranch: () => branch, getSessionId: () => "remote-session", getSessionName: () => undefined,
+    }, ui: {
+      notify: () => undefined,
+      custom: async (_factory: unknown) => ({ kind: "session", enabled: selection }),
+    } };
+    const h = createHarness([["/repo", activeState()]], {}, {
+      quotaFallbackPreferenceStore: { loadDefault: async () => false, saveDefault: async () => undefined },
+    });
+    await h.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+    assert.equal(h.integration.quotaFallbackEnabled, true);
+    await h.api.commands.get("quota-fallback").handler("", ctx);
+    assert.equal(h.integration.quotaFallbackEnabled, false);
+    assert.deepEqual(calls, []); // OFF neither preflights nor cancels the committed lease.
+    assert.deepEqual(h.api.appendedEntries.at(-1), { customType: PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE, data: { enabled: false } });
+    selection = true;
+    await h.api.commands.get("quota-fallback").handler("", ctx);
+    assert.deepEqual(calls, ["preflight"]);
+    assert.equal(h.integration.quotaFallbackEnabled, true);
+    branch = [];
+    await h.api.handler("session_tree")({ type: "session_tree" }, ctx);
+    assert.deepEqual(calls, ["preflight", "cancel-lease"]);
+    assert.equal(h.integration.quotaFallbackEnabled, false);
+  } finally { release(); }
+});
+
 test("fallback ownership distinguishes model_select; input preserves lease but tree cancels", async () => {
   const calls: string[] = [];
   let owned = true;
   const releaseFallback = installQuotaFallbackReceiver({
-    request: () => false, cancel: () => { calls.push("fallback-cancel"); },
+    request: () => false, canUseBackup: () => true, cancel: () => { calls.push("fallback-cancel"); },
     observeModelSelect: () => { calls.push("model-select"); return owned; }, backupFailed: async () => null,
   });
   const releaseResume = installQuotaResumeReceiver((event) => { if (event.type === "cancel") calls.push("resume-cancel"); });
@@ -2843,6 +2884,7 @@ test("model_select during fallback request preserves planning only for superviso
     const calls: string[] = [];
     let onModelSelect!: (event: unknown, ctx: unknown) => unknown;
     const releaseFallback = installQuotaFallbackReceiver({
+      canUseBackup: () => true,
       request: async () => {
         calls.push("fallback");
         await onModelSelect({ type: "model_select", model: { provider: "deepseek", id: "deepseek-flash" }, source: "set" }, ctx);
@@ -2857,7 +2899,7 @@ test("model_select during fallback request preserves planning only for superviso
     const ctx = withBranch(context("/repo", branch), branch);
     try {
       const h = createHarness([["/repo", activeState()]], {}, {
-        now: () => now, quotaFallbackAuthorized: true,
+        now: () => now, quotaFallbackPreferenceStore: { loadDefault: async () => true, saveDefault: async () => undefined },
         quotaResumePreferenceStore: { loadDefault: async () => true, saveDefault: async () => undefined },
         subscriptionUsageProvider: { fetchUsage: async () => ({ fetchedAt: now, windows: [
           { usedPercent: 100, windowMinutes: 300, resetsAt: now + 60_000 },
@@ -2879,7 +2921,7 @@ test("backup provider settlement restores source through Host and schedules anch
   for (const enabled of [true, false]) {
     const calls: string[] = [];
     const releaseFallback = installQuotaFallbackReceiver({
-      request: () => false, cancel: () => undefined, observeModelSelect: () => true,
+      request: () => false, canUseBackup: () => true, cancel: () => undefined, observeModelSelect: () => true,
       backupFailed: async () => { calls.push("restore"); return {
         sessionId: "remote-session", anchorEntryId: "quota", provider: "openai-codex",
         modelId: "gpt-5-codex", detectedAt: now, restoreAt: now + 60_000,
@@ -2911,7 +2953,7 @@ test("Remote suppresses STOPPED when fallback commits without starting another R
   const now = 1_700_000_000_000;
   const messages: string[] = []; const calls: string[] = [];
   const releaseFallback = installQuotaFallbackReceiver({
-    request: async () => { calls.push("fallback"); return true; }, cancel: () => undefined,
+    request: async () => { calls.push("fallback"); return true; }, canUseBackup: () => true, cancel: () => undefined,
     observeModelSelect: () => false, backupFailed: async () => null,
   });
   const releaseResume = installQuotaResumeReceiver((event) => { if (event.type === "schedule") calls.push("resume"); return true; });
@@ -2930,7 +2972,7 @@ test("Remote suppresses STOPPED when fallback commits without starting another R
     } }] as SessionEntry[];
     const ctx = withBranch(context("/repo", branch), branch);
     const h = createHarness([["/repo", activeState()]], {}, {
-      now: () => now, quotaFallbackAuthorized: true,
+      now: () => now, quotaFallbackPreferenceStore: { loadDefault: async () => true, saveDefault: async () => undefined },
       remoteCompanion: { companion, guildId: "guild" },
       quotaResumePreferenceStore: { loadDefault: async () => true, saveDefault: async () => undefined },
       subscriptionUsageProvider: { fetchUsage: async () => ({ fetchedAt: now, windows: [

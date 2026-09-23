@@ -137,6 +137,7 @@ import {
   registerQuotaResumeIntegration,
   type QuotaResumePreferenceStore,
 } from "./quota-resume.ts";
+import { registerQuotaFallbackIntegration, type QuotaFallbackPreferenceStore } from "./quota-fallback.ts";
 import {
   getQuotaResumePublisher,
   getQuotaResumeStatusObserver,
@@ -172,8 +173,7 @@ export interface PindieExtensionOptions {
   store?: PindieStateStore;
   continuityStore?: TaskContinuityStore;
   quotaResumePreferenceStore?: QuotaResumePreferenceStore;
-  /** Runtime-only paid authorization seam; Slice D supplies actual preference. Default OFF. */
-  quotaFallbackAuthorized?: boolean;
+  quotaFallbackPreferenceStore?: QuotaFallbackPreferenceStore;
   experienceStore?: RunExperienceStore;
   experienceReader?: RunExperienceReader;
   strategyCandidateStore?: StrategyCandidateStore;
@@ -241,6 +241,7 @@ export interface PindieExtensionIntegration {
   readonly policySnapshot: PolicySnapshot | null;
   readonly stateUnavailableReason: string | null;
   readonly quotaAutoResumeEnabled: boolean;
+  readonly quotaFallbackEnabled: boolean;
 }
 
 function errorMessage(error: unknown): string {
@@ -512,6 +513,12 @@ function registerComposedPindieExtension(
       if (!enabled) cancelQuotaResume(ctx);
     },
   });
+  const quotaFallback = registerQuotaFallbackIntegration(pi, options.quotaFallbackPreferenceStore!, {
+    canEnable: (sessionId) => {
+      try { return fallbackController?.canUseBackup(sessionId) === true; }
+      catch { return false; } // Released Host and stale Session fail closed.
+    },
+  });
   type LiveRemoteSession = { projectRoot: string; sessionId: string; ctx: ExtensionContext; generation: number };
   let liveRemoteSession: LiveRemoteSession | null = null;
   let nextRemoteLeaseGeneration = 0;
@@ -761,6 +768,7 @@ function registerComposedPindieExtension(
   pi.on("session_start", async (_event, ctx) => {
     ++agentRunLifecycleGeneration;
     await quotaResume.restoreSession(ctx);
+    await quotaFallback.restoreSession(ctx);
     const nativeSessionId = options.remoteCompanion || taskHandoffEnabled
       ? ctx.sessionManager.getSessionId()
       : null;
@@ -831,6 +839,7 @@ function registerComposedPindieExtension(
     cancelQuotaResume(ctx);
     try { fallbackController?.cancel(ctx.sessionManager.getSessionId()); } catch { /* Released Host. */ }
     await quotaResume.restoreBranch(ctx);
+    await quotaFallback.restoreBranch(ctx);
   });
 
   pi.on("input", (event, ctx) => {
@@ -1509,12 +1518,12 @@ function registerComposedPindieExtension(
       if (branch !== null) {
         const planningGeneration = quotaPlanningGeneration;
         if (detectCodexQuotaIncident(branch) !== null &&
-          ((options.quotaFallbackAuthorized === true && fallbackController !== null) ||
+          ((quotaFallback.quotaFallbackEnabled && fallbackController !== null) ||
             (quotaResumePublisher !== null && quotaResume.quotaAutoResumeEnabled))) {
           quotaSuccessorPromise = (async () => {
             const facts = await buildCodexQuotaRecoveryFacts({ ctx, branch, monitor: subscriptionUsageMonitor, now: continuityNow });
             if (facts === null || planningGeneration !== quotaPlanningGeneration || !isCurrentSettlement()) return false;
-            if (options.quotaFallbackAuthorized === true && fallbackController !== null) {
+            if (quotaFallback.quotaFallbackEnabled && fallbackController !== null) {
               try {
                 if (await fallbackController.request({
                   sessionId: facts.sessionId, anchorEntryId: facts.anchorEntryId,
@@ -1614,6 +1623,9 @@ function registerComposedPindieExtension(
     },
     get quotaAutoResumeEnabled() {
       return quotaResume.quotaAutoResumeEnabled;
+    },
+    get quotaFallbackEnabled() {
+      return quotaFallback.quotaFallbackEnabled;
     },
   };
 }
