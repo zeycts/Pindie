@@ -171,9 +171,20 @@ export class PindieControlClient {
     const unsubscribe = this.runtime.subscribeActiveSession((event) => {
       this.handleSessionEvent(sessionId, generation, event);
     });
-    this.binding = { generation, sessionId, lease, unsubscribe };
+    const binding: ControlBinding = { generation, sessionId, lease, unsubscribe };
+    this.binding = binding;
     this.lastFingerprint = "";
-    this.refresh(true);
+    try {
+      this.refresh(true);
+    } catch (error) {
+      if (this.binding === binding) {
+        binding.unsubscribe();
+        this.binding = null;
+        this.currentSnapshot = null;
+        this.automaticWorkSettled = false;
+      }
+      throw error;
+    }
   }
 
   private handleSessionEvent(
