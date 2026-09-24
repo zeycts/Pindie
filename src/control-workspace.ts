@@ -1,10 +1,10 @@
-import { readdir, realpath, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 
 import { PindieControlClient, type PindieControlSnapshot } from "./control-client.ts";
 import { createPindieHost, type PindieHost, type PindieHostOptions } from "./host.ts";
 
-export type PindieWorkspaceErrorCode = "no_active_project" | "invalid_project" | "project_not_found" | "project_switch_unsafe" | "project_open_failed";
+export type PindieWorkspaceErrorCode = "no_active_project" | "invalid_project" | "project_not_found" | "project_exists" | "project_create_failed" | "project_switch_unsafe" | "project_open_failed";
 
 export class PindieWorkspaceError extends Error {
   readonly code: PindieWorkspaceErrorCode;
@@ -59,13 +59,18 @@ export class PindieControlWorkspace {
     return result;
   }
 
-  private async target(name: string): Promise<string> {
+  private childPath(name: string): string {
     if (typeof name !== "string" || !name || name === "." || name === ".." || isAbsolute(name) ||
         name.includes("/") || name.includes("\\") || name.includes("\0")) {
       throw new PindieWorkspaceError("invalid_project", "Project must be a direct child name.");
     }
+    return join(this.workspaceRoot, name);
+  }
+
+  private async target(name: string): Promise<string> {
+    const child = this.childPath(name);
     try {
-      const path = await realpath(join(this.workspaceRoot, name));
+      const path = await realpath(child);
       if (dirname(path) !== this.workspaceRoot || !(await stat(path)).isDirectory()) {
         throw new PindieWorkspaceError("invalid_project", "Project must resolve to a direct workspace child directory.");
       }
@@ -113,19 +118,53 @@ export class PindieControlWorkspace {
     });
   }
 
+  private assertSafeToLeave(): void {
+    if (!this.slot) return;
+    let snapshot: PindieControlSnapshot;
+    try { snapshot = this.slot.client.observe(); } catch {
+      throw new PindieWorkspaceError("project_switch_unsafe", "Current project cannot be observed safely.");
+    }
+    if (!snapshot.runtime.idle || !snapshot.runtime.automaticWorkSettled || snapshot.runtime.pendingMessageCount !== 0 ||
+        snapshot.semantic.humanGate !== null || snapshot.recovery.quotaWaiting !== null) {
+      throw new PindieWorkspaceError("project_switch_unsafe", "Current project is not safe to leave.");
+    }
+  }
+
   openProject(name: string): Promise<WorkspaceObservation> {
     return this.serialize(async () => {
       const target = await this.target(name);
       if (this.slot?.name === name) return this.project();
+      this.assertSafeToLeave();
+      return this.activate(name, target);
+    });
+  }
+
+  createProject(name: string): Promise<WorkspaceObservation> {
+    return this.serialize(async () => {
+      const target = this.childPath(name);
+      // Existence includes files and symlinks (including dangling symlinks).
+      try {
+        await lstat(target);
+        throw new PindieWorkspaceError("project_exists", "Project already exists.");
+      } catch (error) {
+        if (error instanceof PindieWorkspaceError) throw error;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw new PindieWorkspaceError("project_create_failed", "Could not check project target.");
+        }
+      }
+      this.assertSafeToLeave();
+      try { await mkdir(target); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new PindieWorkspaceError("project_exists", "Project already exists.");
+        }
+        throw new PindieWorkspaceError("project_create_failed", `Could not create project: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return this.activate(name, target);
+    });
+  }
+
+  private async activate(name: string, target: string): Promise<WorkspaceObservation> {
       if (this.slot) {
-        let snapshot: PindieControlSnapshot;
-        try { snapshot = this.slot.client.observe(); } catch {
-          throw new PindieWorkspaceError("project_switch_unsafe", "Current project cannot be observed safely.");
-        }
-        if (!snapshot.runtime.idle || !snapshot.runtime.automaticWorkSettled || snapshot.runtime.pendingMessageCount !== 0 ||
-            snapshot.semantic.humanGate !== null || snapshot.recovery.quotaWaiting !== null) {
-          throw new PindieWorkspaceError("project_switch_unsafe", "Current project is not safe to leave.");
-        }
         const old = this.slot;
         // No second Host can be constructed until old Host disposal completes.
         this.slot = null;
@@ -156,7 +195,6 @@ export class PindieControlWorkspace {
         try { if (host) await host.dispose(); } catch { /* Preserve bootstrap failure. */ }
         throw new PindieWorkspaceError("project_open_failed", `Could not open project: ${error instanceof Error ? error.message : String(error)}`);
       }
-    });
   }
 
   close(): Promise<void> {
