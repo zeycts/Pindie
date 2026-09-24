@@ -106,6 +106,14 @@ pi -e ./src/extension.ts
 
 The package scripts are package-manager agnostic; pnpm is the recommended package manager for Pindie.
 
+For private local MCP control (for example, as the command launched by OpenAI Secure MCP Tunnel), supply one explicit project directory and run the headless stdio server instead of the TUI:
+
+```bash
+PINDIE_PROJECT_ROOT=/absolute/path/to/project pnpm control:mcp
+```
+
+The process exposes only six `pindie_*` Control tools. Its stdout is reserved for MCP; disconnect shuts down the Control client and Host. No public listener or Tunnel configuration is provided by this command.
+
 Optional Work Memory uses Notion when both environment variables are configured:
 
 ```text
