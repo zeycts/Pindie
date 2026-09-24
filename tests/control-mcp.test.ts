@@ -77,6 +77,32 @@ test("each MCP action delegates unchanged to Control client; stale lease returns
   } finally { await stale.close(); }
 });
 
+test("headless extension bootstrap failure fails process startup and disposes Host", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pindie-mcp-bind-fail-"));
+  let disposed = 0;
+  let callbacksCleared = 0;
+  try {
+    await assert.rejects(startControlMcpProcess({
+      projectRoot: root,
+      port: 0,
+      createHost: async () => ({
+        runtime: {
+          setActiveSessionClientLifecycle: (callbacks?: object) => {
+            if (callbacks === undefined) callbacksCleared++;
+          },
+          bindActiveSessionExtensions: async () => { throw new Error("session_start failed"); },
+        },
+        presentation: { current: () => null },
+        dispose: async () => { disposed++; },
+      }) as PindieHost,
+    }), /session_start failed/);
+    assert.equal(disposed, 1);
+    assert.equal(callbacksCleared, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("loopback MCP disconnect/reconnect retains one headless Host; explicit shutdown disposes once", async () => {
   await assert.rejects(resolveControlProjectRoot(undefined), /PINDIE_PROJECT_ROOT/);
   const root = await mkdtemp(join(tmpdir(), "pindie-mcp-"));

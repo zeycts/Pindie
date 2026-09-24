@@ -358,6 +358,90 @@ test("read-only Control client projects existing runtime and semantic truth", as
   }
 });
 
+test("Control binding waits for extension bootstrap on initial and replacement Sessions", async () => {
+  const first = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(first);
+  let release!: () => void;
+  let started!: () => void;
+  let bindingStarted = new Promise<void>((resolve) => { started = resolve; });
+  let bindingGate = new Promise<void>((resolve) => { release = resolve; });
+  const bound: string[] = [];
+  let sequence = 0;
+  const control = new PindieControlClient(
+    new PiRuntimeAdapter(native.runtime),
+    { current: () => ({ snapshot: () => presentationFor(activeState()) }) },
+    {
+      createLease: () => `lease-${++sequence}`,
+      bindActiveSession: async () => {
+        const sessionId = native.runtime.session.sessionId;
+        started();
+        await bindingGate;
+        bound.push(sessionId);
+      },
+    },
+  );
+  try {
+    const initial = control.start();
+    await bindingStarted;
+    assert.throws(() => control.observe(), /no active Session binding/);
+    release();
+    await initial;
+    const oldLease = control.observe().lease;
+    assert.deepEqual(bound, ["session-1"]);
+
+    bindingStarted = new Promise<void>((resolve) => { started = resolve; });
+    bindingGate = new Promise<void>((resolve) => { release = resolve; });
+    const replacement = native.replace(fakeSession("session-2", branchEntries()));
+    await bindingStarted;
+    assert.throws(() => control.observe(), /no active Session binding/);
+    release();
+    await replacement;
+    assert.deepEqual(bound, ["session-1", "session-2"]);
+    assert.equal(control.observe().lease, "lease-2");
+    await assert.rejects(control.input({ lease: oldLease, text: "stale" }),
+      (error: unknown) => error instanceof PindieControlError && error.code === "stale_control_lease");
+  } finally {
+    control.dispose();
+  }
+});
+
+test("failed extension bootstrap never exposes a Control lease", async () => {
+  const first = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(first);
+  let fail = false;
+  let sequence = 0;
+  const control = new PindieControlClient(
+    new PiRuntimeAdapter(native.runtime),
+    { current: () => ({ snapshot: () => presentationFor(activeState()) }) },
+    {
+      createLease: () => `lease-${++sequence}`,
+      bindActiveSession: async () => { if (fail) throw new Error("session_start failed"); },
+    },
+  );
+  await control.start();
+  try {
+    const oldLease = control.observe().lease;
+    fail = true;
+    await assert.rejects(native.replace(fakeSession("session-2", branchEntries())), /session_start failed/);
+    assert.throws(() => control.observe(), /no active Session binding/);
+    await assert.rejects(control.input({ lease: oldLease, text: "no write" }), /no active Session binding/);
+    fail = false;
+    await native.replace(fakeSession("session-3", branchEntries()));
+    assert.equal(control.observe().session.id, "session-3");
+  } finally {
+    control.dispose();
+  }
+
+  const initial = new PindieControlClient(
+    new PiRuntimeAdapter(fakeNativeRuntime(first).runtime),
+    { current: () => ({ snapshot: () => presentationFor(activeState()) }) },
+    { bindActiveSession: async () => { throw new Error("initial session_start failed"); } },
+  );
+  await assert.rejects(initial.start(), /initial session_start failed/);
+  assert.throws(() => initial.observe(), /no active Session binding/);
+  initial.dispose();
+});
+
 test("Control lease is lifecycle-scoped rather than native Session-ID-scoped", async () => {
   const first = fakeSession("same-session-id", branchEntries());
   const native = fakeNativeRuntime(first);

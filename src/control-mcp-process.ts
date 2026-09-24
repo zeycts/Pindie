@@ -40,7 +40,9 @@ export async function startControlMcpProcess(options: ControlMcpProcessOptions):
   let server: Server | undefined;
   let handler: ReturnType<typeof createMcpHandler> | undefined;
   try {
-    client = (options.createClient ?? ((h) => new PindieControlClient(h.runtime, h.presentation)))(host);
+    client = (options.createClient ?? ((h) => new PindieControlClient(h.runtime, h.presentation, {
+      bindActiveSession: () => h.runtime.bindActiveSessionExtensions({ mode: "print" }),
+    })))(host);
     await client.start();
     // The SDK creates a fresh protocol instance per request; all instances
     // delegate to the SAME Host-owned Control client and current lease.
