@@ -59,6 +59,7 @@ export interface PindieControlSnapshot {
   readonly executionConfig: {
     readonly model: PindieUiProjection["header"]["model"];
     readonly thinkingLevel: AgentSession["thinkingLevel"];
+    readonly reasoningMode: PindieUiProjection["status"]["reasoningMode"];
   };
   readonly recovery: {
     readonly quotaWaiting: PindiePresentationSnapshot["quotaResumeWaiting"];
@@ -74,6 +75,64 @@ export interface PindieControlClientOptions {
   readonly createLease?: () => string;
 }
 
+export type PindieControlErrorCode =
+  | "invalid_request"
+  | "stale_control_lease"
+  | "semantic_unavailable"
+  | "human_gate_required"
+  | "human_gate_mismatch"
+  | "unsafe_runtime_state"
+  | "model_unavailable"
+  | "reasoning_auto"
+  | "delivery_failed";
+
+export class PindieControlError extends Error {
+  readonly code: PindieControlErrorCode;
+  readonly snapshot: PindieControlSnapshot | null;
+
+  constructor(
+    code: PindieControlErrorCode,
+    message: string,
+    snapshot: PindieControlSnapshot | null = null,
+  ) {
+    super(message);
+    this.name = "PindieControlError";
+    this.code = code;
+    this.snapshot = snapshot;
+  }
+}
+
+export type PindieControlInputTiming = "now" | "after_current_run";
+export type PindieControlDelivery = "prompt" | "steer" | "followUp";
+
+export interface PindieControlDeliveryResult {
+  readonly delivery: PindieControlDelivery;
+  readonly snapshot: PindieControlSnapshot;
+}
+
+export interface PindieControlStopResult {
+  readonly stopped: boolean;
+  readonly cleared: {
+    readonly steering: number;
+    readonly followUp: number;
+  };
+  readonly snapshot: PindieControlSnapshot;
+}
+
+export interface PindieControlFreshSessionResult {
+  readonly cancelled: boolean;
+  readonly snapshot: PindieControlSnapshot;
+}
+
+export interface PindieControlConfigureRequest {
+  readonly lease: string;
+  readonly model?: {
+    readonly provider: string;
+    readonly modelId: string;
+  };
+  readonly thinkingLevel?: AgentSession["thinkingLevel"];
+}
+
 interface ControlBinding {
   readonly generation: number;
   readonly sessionId: string;
@@ -84,8 +143,9 @@ interface ControlBinding {
 /**
  * Transport-independent read/control client over the Host-owned Pi runtime.
  *
- * v0.1 starts read-only: it owns only disposable binding/settlement/revision
- * bookkeeping. Conversation and semantic truth remain Pi Session/PindieState.
+ * It owns only disposable binding/settlement/revision bookkeeping and routes
+ * bounded control operations through Pi-native primitives. Conversation and
+ * semantic truth remain Pi Session/PindieState.
  */
 export class PindieControlClient {
   private readonly runtime: PiRuntimeAdapter;
@@ -133,6 +193,193 @@ export class PindieControlClient {
     return this.currentSnapshot!;
   }
 
+  async input(request: {
+    readonly lease: string;
+    readonly text: string;
+    readonly timing?: PindieControlInputTiming;
+  }): Promise<PindieControlDeliveryResult> {
+    const binding = this.requireLease(request.lease);
+    const text = request.text.trim();
+    if (!text) {
+      throw new PindieControlError("invalid_request", "Pindie Control input text is required.");
+    }
+
+    const snapshot = this.observe();
+    this.requireOrdinaryInputAllowed(snapshot);
+    const facts = this.runtime.getActiveSessionFacts();
+    const timing = request.timing ?? "now";
+    const delivery: PindieControlDelivery = facts.isIdle
+      ? "prompt"
+      : timing === "after_current_run"
+        ? "followUp"
+        : "steer";
+
+    try {
+      if (delivery === "prompt") {
+        this.launchPrompt(text);
+      } else if (delivery === "steer") {
+        await this.runtime.steer(text);
+        this.requireSameBinding(binding);
+      } else {
+        await this.runtime.followUp(text);
+        this.requireSameBinding(binding);
+      }
+    } catch (error) {
+      if (error instanceof PindieControlError) throw error;
+      throw new PindieControlError(
+        "delivery_failed",
+        `Pindie Control could not deliver input: ${errorMessage(error)}`,
+        this.safeSnapshot(),
+      );
+    }
+
+    return { delivery, snapshot: this.observe() };
+  }
+
+  async respond(request: {
+    readonly lease: string;
+    readonly gateKey: string;
+    readonly response: string;
+  }): Promise<PindieControlDeliveryResult> {
+    this.requireLease(request.lease);
+    const response = request.response.trim();
+    if (!response) {
+      throw new PindieControlError("invalid_request", "Pindie Control gate response is required.");
+    }
+
+    const snapshot = this.observe();
+    const gate = snapshot.semantic.humanGate;
+    if (gate === null) {
+      throw new PindieControlError(
+        "human_gate_mismatch",
+        "Pindie Control has no current Human Gate to answer.",
+        snapshot,
+      );
+    }
+    if (gate.key !== request.gateKey) {
+      throw new PindieControlError(
+        "human_gate_mismatch",
+        "Pindie Control Human Gate changed before this response was applied.",
+        snapshot,
+      );
+    }
+    this.requireSafeIdle(snapshot);
+
+    try {
+      this.launchPrompt(response);
+    } catch (error) {
+      if (error instanceof PindieControlError) throw error;
+      throw new PindieControlError(
+        "delivery_failed",
+        `Pindie Control could not deliver the Human Gate response: ${errorMessage(error)}`,
+        this.safeSnapshot(),
+      );
+    }
+
+    return { delivery: "prompt", snapshot: this.observe() };
+  }
+
+  async stop(request: { readonly lease: string }): Promise<PindieControlStopResult> {
+    this.requireLease(request.lease);
+    const facts = this.runtime.getActiveSessionFacts();
+    if (facts.isIdle) {
+      return {
+        stopped: false,
+        cleared: { steering: 0, followUp: 0 },
+        snapshot: this.observe(),
+      };
+    }
+
+    const queued = this.runtime.clearActiveSessionQueue();
+    await this.runtime.abortActiveSession();
+    await this.runtime.waitForActiveSessionIdle();
+
+    return {
+      stopped: true,
+      cleared: {
+        steering: queued.steering.length,
+        followUp: queued.followUp.length,
+      },
+      snapshot: this.observe(),
+    };
+  }
+
+  async freshSession(request: {
+    readonly lease: string;
+  }): Promise<PindieControlFreshSessionResult> {
+    const binding = this.requireLease(request.lease);
+    const snapshot = this.observe();
+    this.requireSafeIdle(snapshot);
+    if (snapshot.semantic.humanGate !== null) {
+      throw new PindieControlError(
+        "human_gate_required",
+        "Resolve the current Human Gate before replacing the active Session.",
+        snapshot,
+      );
+    }
+
+    const result = await this.runtime.replaceWithFreshSession();
+    if (result.cancelled) {
+      this.requireSameBinding(binding);
+      return { cancelled: true, snapshot: this.observe() };
+    }
+
+    const next = this.requireActiveBinding();
+    if (next === binding || next.lease === binding.lease) {
+      throw new PindieControlError(
+        "stale_control_lease",
+        "Pindie replaced the Session without establishing a fresh Control lease.",
+        this.safeSnapshot(),
+      );
+    }
+    return { cancelled: false, snapshot: this.observe() };
+  }
+
+  async configure(
+    request: PindieControlConfigureRequest,
+  ): Promise<PindieControlSnapshot> {
+    const binding = this.requireLease(request.lease);
+    if (request.model === undefined && request.thinkingLevel === undefined) {
+      throw new PindieControlError(
+        "invalid_request",
+        "Pindie Control configure requires a model and/or thinking level.",
+      );
+    }
+
+    let snapshot = this.observe();
+    this.requireSafeIdle(snapshot);
+    this.requireOrdinaryInputAllowed(snapshot);
+
+    if (request.model !== undefined) {
+      const { provider, modelId } = request.model;
+      if (!this.runtime.isActiveSessionModelAvailable(provider, modelId)) {
+        throw new PindieControlError(
+          "model_unavailable",
+          `Pindie model is unavailable: ${provider}/${modelId}`,
+          snapshot,
+        );
+      }
+      await this.runtime.setActiveSessionModel(provider, modelId);
+      this.requireSameBinding(binding);
+      snapshot = this.observe();
+      this.requireSafeIdle(snapshot);
+    }
+
+    if (request.thinkingLevel !== undefined) {
+      if (snapshot.executionConfig.reasoningMode === "auto") {
+        throw new PindieControlError(
+          "reasoning_auto",
+          "Pindie reasoning is in auto mode; a fixed thinking level would be overridden.",
+          snapshot,
+        );
+      }
+      this.runtime.setActiveSessionThinkingLevel(request.thinkingLevel);
+      this.requireSameBinding(binding);
+    }
+
+    return this.observe();
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -142,6 +389,97 @@ export class PindieControlClient {
     this.automaticWorkSettled = false;
     if (this.started) this.runtime.setActiveSessionClientLifecycle();
     this.started = false;
+  }
+
+  private requireLease(lease: string): ControlBinding {
+    const binding = this.requireActiveBinding();
+    if (binding.lease === lease) return binding;
+    throw new PindieControlError(
+      "stale_control_lease",
+      "Pindie Control lease is stale. Observe the current Session before retrying.",
+      this.safeSnapshot(),
+    );
+  }
+
+  private requireSameBinding(expected: ControlBinding): void {
+    const current = this.requireActiveBinding();
+    if (
+      current !== expected ||
+      current.generation !== expected.generation ||
+      current.lease !== expected.lease ||
+      this.runtime.activeSessionId !== expected.sessionId
+    ) {
+      throw new PindieControlError(
+        "stale_control_lease",
+        "Pindie Control binding changed while the operation was in flight.",
+        this.safeSnapshot(),
+      );
+    }
+  }
+
+  private requireOrdinaryInputAllowed(snapshot: PindieControlSnapshot): void {
+    if (
+      snapshot.semantic.authority === "unavailable" ||
+      snapshot.semantic.authority === "presentation-unavailable"
+    ) {
+      throw new PindieControlError(
+        "semantic_unavailable",
+        "Pindie semantic authority is unavailable; ordinary remote input is fail-closed.",
+        snapshot,
+      );
+    }
+    if (snapshot.semantic.humanGate !== null) {
+      throw new PindieControlError(
+        "human_gate_required",
+        "Pindie is waiting for a Human Gate response; use the gate-response operation.",
+        snapshot,
+      );
+    }
+  }
+
+  private requireSafeIdle(snapshot: PindieControlSnapshot): void {
+    if (
+      !snapshot.runtime.idle ||
+      !snapshot.runtime.automaticWorkSettled ||
+      snapshot.runtime.pendingMessageCount !== 0
+    ) {
+      throw new PindieControlError(
+        "unsafe_runtime_state",
+        "Pindie Control requires an idle, settled Session with no pending messages.",
+        snapshot,
+      );
+    }
+  }
+
+  private launchPrompt(text: string): void {
+    let pending: Promise<void>;
+    try {
+      pending = this.runtime.prompt(text);
+    } catch (error) {
+      throw new PindieControlError(
+        "delivery_failed",
+        `Pindie prompt delivery failed: ${errorMessage(error)}`,
+        this.safeSnapshot(),
+      );
+    }
+    void pending.catch(() => {
+      // Pi owns the Agent Run and persists visible failure in Session history.
+      // Control must not turn a rejected Run Promise into a second result store.
+      try {
+        this.refresh();
+      } catch {
+        // A later explicit observation can recover current facts.
+      }
+    });
+  }
+
+  private safeSnapshot(): PindieControlSnapshot | null {
+    try {
+      this.refresh();
+      return this.currentSnapshot;
+    } catch {
+      return this.currentSnapshot;
+    }
   }
 
   private requireActiveBinding(): ControlBinding {
@@ -317,6 +655,7 @@ export class PindieControlClient {
           ? null
           : { ...projection.header.model },
         thinkingLevel: projection.header.thinkingLevel,
+        reasoningMode: projection.status.reasoningMode,
       },
       recovery: {
         quotaWaiting: presentation?.quotaResumeWaiting === null ||
@@ -349,4 +688,9 @@ function controlFingerprint(
     ...rest,
     runtime,
   });
+}
+
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
