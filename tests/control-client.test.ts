@@ -8,7 +8,10 @@ import type {
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 
-import { PindieControlClient } from "../src/control-client.ts";
+import {
+  PindieControlClient,
+  PindieControlError,
+} from "../src/control-client.ts";
 import { PiRuntimeAdapter } from "../src/pi-runtime.ts";
 import type { PindiePresentationSnapshot } from "../src/presentation-integration.ts";
 import { deriveSemanticSnapshot, type SemanticRunFacts } from "../src/semantics.ts";
@@ -446,6 +449,253 @@ test("Control rebind projection failure leaves no partially authorized binding",
     await native.replace(fakeSession("session-3", branchEntries()));
     assert.equal(control.observe().lease, "lease-3");
     assert.equal(control.observe().session.id, "session-3");
+  } finally {
+    control.dispose();
+  }
+});
+
+
+test("Control input maps user intent to Pi-native prompt, steer, and followUp", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState());
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => "lease-1" },
+  );
+
+  await control.start();
+  try {
+    const lease = control.observe().lease;
+
+    const prompt = await control.input({ lease, text: "start work" });
+    assert.equal(prompt.delivery, "prompt");
+    assert.deepEqual(session.prompts, ["start work"]);
+
+    session.start();
+    const steer = await control.input({ lease, text: "correct this now" });
+    assert.equal(steer.delivery, "steer");
+    assert.deepEqual(session.steers, ["correct this now"]);
+
+    const followUp = await control.input({
+      lease,
+      text: "after that, run the full check",
+      timing: "after_current_run",
+    });
+    assert.equal(followUp.delivery, "followUp");
+    assert.deepEqual(session.followUps, ["after that, run the full check"]);
+  } finally {
+    control.dispose();
+  }
+});
+
+test("Control separates ordinary input from a current Human Gate response", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState({
+    kind: "approval",
+    question: "Merge the reviewed PR?",
+    options: ["Approve", "Reject"],
+  }));
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => "lease-1" },
+  );
+
+  await control.start();
+  try {
+    const snapshot = control.observe();
+    const gate = snapshot.semantic.humanGate;
+    assert.ok(gate);
+
+    await assert.rejects(
+      control.input({ lease: snapshot.lease, text: "keep coding" }),
+      (error: unknown) =>
+        error instanceof PindieControlError &&
+        error.code === "human_gate_required",
+    );
+    assert.deepEqual(session.prompts, []);
+
+    await assert.rejects(
+      control.respond({
+        lease: snapshot.lease,
+        gateKey: "stale-gate",
+        response: "Approve",
+      }),
+      (error: unknown) =>
+        error instanceof PindieControlError &&
+        error.code === "human_gate_mismatch",
+    );
+
+    const response = await control.respond({
+      lease: snapshot.lease,
+      gateKey: gate.key,
+      response: "Approve",
+    });
+    assert.equal(response.delivery, "prompt");
+    assert.deepEqual(session.prompts, ["Approve"]);
+  } finally {
+    control.dispose();
+  }
+});
+
+test("Control stop clears native queues before aborting current work", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState());
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => "lease-1" },
+  );
+
+  await control.start();
+  try {
+    const lease = control.observe().lease;
+    session.start();
+    await control.input({ lease, text: "steer queued" });
+    await control.input({
+      lease,
+      text: "follow-up queued",
+      timing: "after_current_run",
+    });
+    assert.equal(session.queue.steering.length, 1);
+    assert.equal(session.queue.followUp.length, 1);
+
+    const stopped = await control.stop({ lease });
+    assert.equal(stopped.stopped, true);
+    assert.deepEqual(stopped.cleared, { steering: 1, followUp: 1 });
+    assert.equal(session.queue.steering.length, 0);
+    assert.equal(session.queue.followUp.length, 0);
+    assert.equal(session.abortCalls(), 1);
+    assert.equal(stopped.snapshot.runtime.idle, true);
+    assert.equal(stopped.snapshot.runtime.automaticWorkSettled, true);
+  } finally {
+    control.dispose();
+  }
+});
+
+test("Control fresh Session requires a safe boundary and returns a new lease", async () => {
+  const first = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(first);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState());
+  let leaseSequence = 0;
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => `lease-${++leaseSequence}` },
+  );
+
+  await control.start();
+  try {
+    const before = control.observe();
+    const replacement = fakeSession("session-2", branchEntries());
+    native.setNextFreshSession(replacement);
+
+    const replaced = await control.freshSession({ lease: before.lease });
+    assert.equal(replaced.cancelled, false);
+    assert.equal(replaced.snapshot.session.id, "session-2");
+    assert.notEqual(replaced.snapshot.lease, before.lease);
+
+    await assert.rejects(
+      control.input({ lease: before.lease, text: "stale write" }),
+      (error: unknown) =>
+        error instanceof PindieControlError &&
+        error.code === "stale_control_lease",
+    );
+  } finally {
+    control.dispose();
+  }
+});
+
+test("Control fresh Session does not bypass an unresolved Human Gate", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState({
+    kind: "decision",
+    question: "Choose the architecture.",
+    options: ["A", "B"],
+  }));
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => "lease-1" },
+  );
+
+  await control.start();
+  try {
+    const snapshot = control.observe();
+    await assert.rejects(
+      control.freshSession({ lease: snapshot.lease }),
+      (error: unknown) =>
+        error instanceof PindieControlError &&
+        error.code === "human_gate_required",
+    );
+  } finally {
+    control.dispose();
+  }
+});
+
+test("Control configure changes explicit model/thinking only at a safe idle boundary", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  let presentation = presentationFor(activeState(), { reasoningMode: "manual" });
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => "lease-1" },
+  );
+
+  await control.start();
+  try {
+    const lease = control.observe().lease;
+    const configured = await control.configure({
+      lease,
+      model: { provider: "openai-codex", modelId: "gpt-6-luna" },
+      thinkingLevel: "high",
+    });
+    assert.deepEqual(configured.executionConfig.model, {
+      provider: "openai-codex",
+      modelId: "gpt-6-luna",
+    });
+    assert.equal(configured.executionConfig.thinkingLevel, "high");
+
+    await assert.rejects(
+      control.configure({
+        lease,
+        model: { provider: "missing", modelId: "missing" },
+      }),
+      (error: unknown) =>
+        error instanceof PindieControlError &&
+        error.code === "model_unavailable",
+    );
+
+    presentation = presentationFor(activeState(), { reasoningMode: "auto" });
+    await assert.rejects(
+      control.configure({ lease, thinkingLevel: "medium" }),
+      (error: unknown) =>
+        error instanceof PindieControlError &&
+        error.code === "reasoning_auto",
+    );
+
+    session.start();
+    await assert.rejects(
+      control.configure({
+        lease,
+        model: { provider: "openai-codex", modelId: "gpt-6-sol" },
+      }),
+      (error: unknown) =>
+        error instanceof PindieControlError &&
+        error.code === "unsafe_runtime_state",
+    );
   } finally {
     control.dispose();
   }
