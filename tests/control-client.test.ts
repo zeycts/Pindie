@@ -320,3 +320,47 @@ test("Control client remains read-fail-closed while a Session binding is invalid
   assert.throws(() => control.observe(), /disposed/);
   await assert.rejects(control.start(), /disposed/);
 });
+
+
+test("Control rebind projection failure leaves no partially authorized binding", async () => {
+  const first = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(first);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState());
+  let failProjection = false;
+  let leaseSequence = 0;
+  const control = new PindieControlClient(
+    runtime,
+    {
+      current: () => ({
+        snapshot: () => {
+          if (failProjection) throw new Error("projection unavailable");
+          return presentation;
+        },
+      }),
+    },
+    { createLease: () => `lease-${++leaseSequence}` },
+  );
+
+  await control.start();
+  try {
+    assert.equal(control.observe().lease, "lease-1");
+
+    failProjection = true;
+    await assert.rejects(
+      native.replace(fakeSession("session-2", branchEntries())),
+      /projection unavailable/,
+    );
+    assert.throws(
+      () => control.observe(),
+      /no active Session binding/,
+    );
+
+    failProjection = false;
+    await native.replace(fakeSession("session-3", branchEntries()));
+    assert.equal(control.observe().lease, "lease-3");
+    assert.equal(control.observe().session.id, "session-3");
+  } finally {
+    control.dispose();
+  }
+});
