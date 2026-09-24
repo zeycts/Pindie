@@ -21,7 +21,7 @@ test("real pinned Pi headless Control bootstrap binds extensions and restores se
   let interactiveRuns = 0;
   try {
     const handle = await startControlMcpProcess({
-      projectRoot: project,
+      workspaceRoot: root,
       port: 0,
       createHost: async (options) => {
         host = await createPindieHost({
@@ -37,6 +37,13 @@ test("real pinned Pi headless Control bootstrap binds extensions and restores se
       },
     });
     try {
+      assert.equal(host, undefined);
+      const peer = new Client({ name: "headless-regression", version: "1" });
+      await peer.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${handle.port}/mcp`)));
+      const before = await peer.callTool({ name: "pindie_observe", arguments: {} });
+      assert.equal(before.structuredContent?.state, "no_active_project");
+      const opened = await peer.callTool({ name: "pindie_open_project", arguments: { project: "project" } });
+      assert.equal(opened.isError, undefined);
       assert.ok(host);
       // The actual MCP process starts Control only after Pi's public bindExtensions
       // completes; an independent client here would overwrite its lifecycle slot.
@@ -45,12 +52,10 @@ test("real pinned Pi headless Control bootstrap binds extensions and restores se
       assert.equal(snapshot.projectRoot, project);
       assert.ok(snapshot.status.state);
       assert.equal(snapshot.status.stateUnavailableReason, null);
-      const peer = new Client({ name: "headless-regression", version: "1" });
       try {
-        await peer.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${handle.port}/mcp`)));
         const observed = await peer.callTool({ name: "pindie_observe", arguments: {} });
         assert.equal(observed.isError, undefined);
-        const control = observed.structuredContent as { project: { root: string }; semantic: { authority: string } };
+        const control = (observed.structuredContent as { control: { project: { root: string }; semantic: { authority: string } } }).control;
         assert.equal(control.project.root, project);
         assert.notEqual(control.semantic.authority, "unavailable");
       } finally {

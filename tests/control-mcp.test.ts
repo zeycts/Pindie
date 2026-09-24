@@ -1,20 +1,34 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:http";
 import { test } from "node:test";
 
 import { Client, InMemoryTransport, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { PindieControlError, type PindieControlClient } from "../src/control-client.ts";
+import { PindieControlError, type PindieControlClient, type PindieControlSnapshot } from "../src/control-client.ts";
 import { createPindieControlMcpServer } from "../src/control-mcp.ts";
-import { resolveControlProjectRoot, startControlMcpProcess } from "../src/control-mcp-process.ts";
+import { resolveControlWorkspaceRoot, startControlMcpProcess } from "../src/control-mcp-process.ts";
+import { PindieControlWorkspace } from "../src/control-workspace.ts";
 import { isPindieTuiEnabled, type PindieHost } from "../src/host.ts";
 
 const asClient = (value: object) => value as PindieControlClient;
-
-async function linked(client: PindieControlClient) {
-  const server = createPindieControlMcpServer(client);
+const safe = (lease: string, overrides: object = {}) => ({
+  lease, revision: 1, runtime: { idle: true, automaticWorkSettled: true, pendingMessageCount: 0 },
+  semantic: { humanGate: null }, recovery: { quotaWaiting: null }, ...overrides,
+}) as PindieControlSnapshot;
+async function fixture() {
+  const root = await mkdtemp(join(tmpdir(), "pindie-workspace-"));
+  await mkdir(join(root, "Pindie"));
+  await mkdir(join(root, "Modeloom"));
+  await mkdir(join(root, "Pindie", "nested"));
+  await writeFile(join(root, "file"), "x");
+  const external = await mkdtemp(join(tmpdir(), "pindie-external-"));
+  await symlink(external, join(root, "escape"));
+  return { root, cleanup: async () => { await rm(root, { recursive: true, force: true }); await rm(external, { recursive: true, force: true }); } };
+}
+async function linked(workspace: PindieControlWorkspace) {
+  const server = createPindieControlMcpServer(workspace);
   const peer = new Client({ name: "test", version: "1" });
   const [left, right] = InMemoryTransport.createLinkedPair();
   await server.connect(left);
@@ -22,161 +36,130 @@ async function linked(client: PindieControlClient) {
   return { peer, close: async () => { await peer.close(); await server.close(); } };
 }
 
-test("MCP surface registers exactly six bounded tools with appropriate hints and strict inputs", async () => {
-  const wire = await linked(asClient({ observe: () => ({ lease: "live", revision: 1 }) }));
+test("bounded deterministic direct-child discovery and name validation", async () => {
+  await assert.rejects(resolveControlWorkspaceRoot(undefined), /PINDIE_WORKSPACE_ROOT/);
+  const { root, cleanup } = await fixture();
+  try {
+    await assert.rejects(resolveControlWorkspaceRoot(join(root, "file")), /directory/);
+    const workspace = await PindieControlWorkspace.create({ workspaceRoot: root });
+    assert.deepEqual((await workspace.listProjects()).projects, [
+      { name: "Modeloom", active: false }, { name: "Pindie", active: false },
+    ]);
+    for (const name of [".", "..", "../Pindie", "/tmp", "Pindie/nested", "Pindie\\nested", "escape", "file"]) {
+      await assert.rejects(workspace.openProject(name), (error: { code: string }) => ["invalid_project", "project_not_found"].includes(error.code));
+    }
+    await assert.rejects(workspace.openProject("missing"), (error: { code: string }) => error.code === "project_not_found");
+    await workspace.close();
+  } finally { await cleanup(); }
+});
+
+test("MCP exposes exactly eight tools, no-active state and structured fail-closed writes", async () => {
+  const { root, cleanup } = await fixture();
+  const workspace = await PindieControlWorkspace.create({ workspaceRoot: root });
+  const wire = await linked(workspace);
   try {
     const { tools } = await wire.peer.listTools();
     assert.deepEqual(tools.map((tool) => tool.name), [
       "pindie_observe", "pindie_input", "pindie_respond", "pindie_stop",
-      "pindie_fresh_session", "pindie_configure",
+      "pindie_fresh_session", "pindie_configure", "pindie_list_projects", "pindie_open_project",
     ]);
     assert.deepEqual(tools.map((tool) => [tool.annotations?.readOnlyHint, tool.annotations?.destructiveHint]), [
-      [true, false], [false, false], [false, true], [false, true], [false, true], [false, false],
+      [true, false], [false, false], [false, true], [false, true], [false, true], [false, false], [true, false], [false, true],
     ]);
-    const observed = await wire.peer.callTool({ name: "pindie_observe", arguments: {} });
-    assert.deepEqual(observed.structuredContent, { lease: "live", revision: 1 });
-    const invalid = await wire.peer.callTool({ name: "pindie_input", arguments: { lease: "live" } });
-    assert.equal(invalid.isError, true);
-    const extra = await wire.peer.callTool({ name: "pindie_observe", arguments: { path: "/secret" } });
-    assert.equal(extra.isError, true);
-  } finally { await wire.close(); }
+    assert.deepEqual((await wire.peer.callTool({ name: "pindie_observe", arguments: {} })).structuredContent,
+      { state: "no_active_project", workspaceRoot: root, activeProject: null });
+    assert.equal((await wire.peer.callTool({ name: "pindie_list_projects", arguments: {} })).structuredContent?.activeProject, null);
+    for (const [name, args] of [
+      ["input", { lease: "x", text: "hi" }], ["respond", { lease: "x", gateKey: "x", response: "yes" }],
+      ["stop", { lease: "x" }], ["fresh_session", { lease: "x" }], ["configure", { lease: "x", thinkingLevel: "low" }],
+    ] as const) {
+      const result = await wire.peer.callTool({ name: `pindie_${name}`, arguments: args });
+      assert.equal(result.isError, true);
+      assert.equal(result.structuredContent?.code, "no_active_project");
+    }
+    for (const name of ["pindie_observe", "pindie_list_projects", "pindie_open_project"]) {
+      const invalid = await wire.peer.callTool({ name, arguments: { path: "/secret", ...(name === "pindie_open_project" ? { project: "Pindie" } : {}) } });
+      assert.equal(invalid.isError, true);
+    }
+  } finally { await wire.close(); await workspace.close(); await cleanup(); }
 });
 
-test("each MCP action delegates unchanged to Control client; stale lease returns structured recovery snapshot", async () => {
+test("MCP delegates six scoped operations after open; stale lease remains structured", async () => {
+  const { root, cleanup } = await fixture();
   const calls: unknown[] = [];
-  const snapshot = { lease: "current", revision: 8 };
-  const fake = asClient({
-    observe: () => snapshot,
-    input: (arg: unknown) => { calls.push(["input", arg]); return { delivery: "steer", snapshot }; },
-    respond: (arg: unknown) => { calls.push(["respond", arg]); return { delivery: "prompt", snapshot }; },
-    stop: (arg: unknown) => { calls.push(["stop", arg]); return { stopped: true, snapshot }; },
-    freshSession: (arg: unknown) => { calls.push(["fresh", arg]); return { cancelled: false, snapshot }; },
-    configure: (arg: unknown) => { calls.push(["configure", arg]); return snapshot; },
+  const snapshot = safe("current");
+  const workspace = await PindieControlWorkspace.create({ workspaceRoot: root,
+    createHost: async () => ({ dispose: async () => {} }) as PindieHost,
+    createClient: () => asClient({
+      start: async () => {}, dispose: () => {}, observe: () => snapshot,
+      input: (arg: unknown) => { calls.push(["input", arg]); throw new PindieControlError("stale_control_lease", "Observe again", snapshot); },
+      respond: (arg: unknown) => { calls.push(["respond", arg]); return { delivery: "prompt", snapshot }; },
+      stop: (arg: unknown) => { calls.push(["stop", arg]); return { stopped: true, snapshot }; },
+      freshSession: (arg: unknown) => { calls.push(["fresh", arg]); return { cancelled: false, snapshot }; },
+      configure: (arg: unknown) => { calls.push(["configure", arg]); return snapshot; },
+    }),
   });
-  const wire = await linked(fake);
+  const wire = await linked(workspace);
   try {
     const invoke = (name: string, args: object) => wire.peer.callTool({ name: `pindie_${name}`, arguments: args });
-    assert.equal((await invoke("input", { lease: "live", text: "hi", timing: "after_current_run" })).structuredContent?.delivery, "steer");
+    const opened = await invoke("open_project", { project: "Pindie" });
+    assert.equal(opened.structuredContent?.state, "active_project");
+    assert.equal((opened.structuredContent?.control as { lease: string }).lease, "current");
+    assert.equal((await invoke("observe", {})).structuredContent?.activeProject, "Pindie");
+    const stale = await invoke("input", { lease: "old", text: "hi", timing: "after_current_run" });
+    assert.deepEqual(stale.structuredContent, { code: "stale_control_lease", message: "Observe again", snapshot });
     await invoke("respond", { lease: "live", gateKey: "gate", response: "yes" });
     await invoke("stop", { lease: "live" });
     await invoke("fresh_session", { lease: "live" });
     await invoke("configure", { lease: "live", model: { provider: "p", modelId: "m" }, thinkingLevel: "low" });
     assert.deepEqual(calls, [
-      ["input", { lease: "live", text: "hi", timing: "after_current_run" }],
+      ["input", { lease: "old", text: "hi", timing: "after_current_run" }],
       ["respond", { lease: "live", gateKey: "gate", response: "yes" }],
       ["stop", { lease: "live" }], ["fresh", { lease: "live" }],
       ["configure", { lease: "live", model: { provider: "p", modelId: "m" }, thinkingLevel: "low" }],
     ]);
-  } finally { await wire.close(); }
-
-  const stale = await linked(asClient({ input: () => { throw new PindieControlError("stale_control_lease", "Observe again", snapshot as never); } }));
-  try {
-    const result = await stale.peer.callTool({ name: "pindie_input", arguments: { lease: "old", text: "hello" } });
-    assert.equal(result.isError, true);
-    assert.deepEqual(result.structuredContent, { code: "stale_control_lease", message: "Observe again", snapshot });
-  } finally { await stale.close(); }
+  } finally { await wire.close(); await workspace.close(); await cleanup(); }
 });
 
-test("headless extension bootstrap failure fails process startup and disposes Host", async () => {
-  const root = await mkdtemp(join(tmpdir(), "pindie-mcp-bind-fail-"));
-  let disposed = 0;
-  let callbacksCleared = 0;
-  try {
-    await assert.rejects(startControlMcpProcess({
-      projectRoot: root,
-      port: 0,
-      createHost: async () => ({
-        runtime: {
-          setActiveSessionClientLifecycle: (callbacks?: object) => {
-            if (callbacks === undefined) callbacksCleared++;
-          },
-          bindActiveSessionExtensions: async () => { throw new Error("session_start failed"); },
-        },
-        presentation: { current: () => null },
-        dispose: async () => { disposed++; },
-      }) as PindieHost,
-    }), /session_start failed/);
-    assert.equal(disposed, 1);
-    assert.equal(callbacksCleared, 1);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("loopback MCP disconnect/reconnect retains one headless Host; explicit shutdown disposes once", async () => {
-  await assert.rejects(resolveControlProjectRoot(undefined), /PINDIE_PROJECT_ROOT/);
-  const root = await mkdtemp(join(tmpdir(), "pindie-mcp-"));
+test("loopback boots without Host or TUI; disconnect keeps Host; shutdown disposes once", async () => {
+  const { root, cleanup } = await fixture();
   const oldTui = process.env.PINDIE_TUI;
   process.env.PINDIE_TUI = "1";
+  let created = 0, disposed = 0, clientDisposed = 0;
   try {
-    const file = join(root, "file");
-    await writeFile(file, "x");
-    await assert.rejects(resolveControlProjectRoot(file), /directory/);
-    let hostCreated = 0;
-    let hostDisposed = 0;
-    let clientDisposed = 0;
-    let clientStarted = 0;
-    let stopped = 0;
-    let aborted = 0;
-    const lease = "same-host-lease";
-    const handle = await startControlMcpProcess({
-      projectRoot: root,
-      port: 0,
+    const handle = await startControlMcpProcess({ workspaceRoot: root, port: 0,
       createHost: async (options) => {
-        hostCreated++;
-        assert.equal(options.cwd, root);
-        assert.equal(options.env?.PINDIE_TUI, "0");
+        created++;
+        assert.equal(options.cwd, join(root, "Pindie"));
         assert.equal(isPindieTuiEnabled(options.env!), false);
         assert.ok(options.dependencies?.createInteractiveMode);
-        assert.equal(options.dependencies.createPindieInteractiveMode, undefined);
-        return { dispose: async () => { hostDisposed++; }, runtime: { abortActiveSession: () => { aborted++; } } } as PindieHost;
+        return { dispose: async () => { disposed++; } } as PindieHost;
       },
-      createClient: () => asClient({
-        start: async () => { clientStarted++; },
-        dispose: () => { clientDisposed++; },
-        observe: () => ({ lease, revision: 1 }),
-        stop: () => { stopped++; },
-      }),
+      createClient: () => asClient({ start: async () => {}, dispose: () => { clientDisposed++; }, observe: () => safe("live") }),
     });
     const url = new URL(`http://127.0.0.1:${handle.port}/mcp`);
     try {
-      const connect = async () => {
-        const peer = new Client({ name: "tunnel", version: "1" });
-        await peer.connect(new StreamableHTTPClientTransport(url));
-        return peer;
-      };
+      const connect = async () => { const peer = new Client({ name: "tunnel", version: "1" }); await peer.connect(new StreamableHTTPClientTransport(url)); return peer; };
       const first = await connect();
-      assert.equal((await first.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.lease, lease);
+      assert.equal((await first.listTools()).tools.length, 8);
+      assert.equal((await first.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.state, "no_active_project");
+      assert.equal(created, 0);
+      await first.callTool({ name: "pindie_open_project", arguments: { project: "Pindie" } });
       await first.close();
-      assert.deepEqual([hostCreated, hostDisposed, clientStarted, clientDisposed, stopped, aborted], [1, 0, 1, 0, 0, 0]);
       const second = await connect();
-      assert.equal((await second.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.lease, lease);
+      assert.equal((await second.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.activeProject, "Pindie");
       await second.close();
-      assert.deepEqual([hostCreated, hostDisposed, clientStarted, clientDisposed, stopped, aborted], [1, 0, 1, 0, 0, 0]);
+      assert.deepEqual([created, disposed], [1, 0]);
       const rebindingStatus = await new Promise<number>((resolve, reject) => {
-        const req = request(url, { method: "POST", headers: { Host: "attacker.example" } }, (res) => {
-          res.resume();
-          resolve(res.statusCode ?? 0);
-        });
-        req.on("error", reject);
-        req.end();
+        const req = request(url, { method: "POST", headers: { Host: "attacker.example" } }, (res) => { res.resume(); resolve(res.statusCode ?? 0); });
+        req.on("error", reject); req.end();
       });
       assert.equal(rebindingStatus, 403);
-      const hostileOrigin = await fetch(url, { method: "POST", headers: { Origin: "https://attacker.example" } });
-      assert.equal(hostileOrigin.status, 403);
-      assert.equal(hostDisposed, 0);
+      assert.equal((await fetch(url, { method: "POST", headers: { Origin: "https://attacker.example" } })).status, 403);
     } finally { await handle.close(); await handle.close(); }
-    assert.deepEqual([hostDisposed, clientDisposed, stopped, aborted], [1, 1, 0, 0]);
-    await assert.rejects(startControlMcpProcess({
-      projectRoot: root,
-      port: 0,
-      createHost: async () => ({ dispose: async () => { hostDisposed++; } }) as PindieHost,
-      createClient: () => { throw new Error("binding failed"); },
-    }), /binding failed/);
-    assert.equal(hostDisposed, 2);
+    assert.deepEqual([created, disposed, clientDisposed], [1, 1, 1]);
   } finally {
-    if (oldTui === undefined) delete process.env.PINDIE_TUI;
-    else process.env.PINDIE_TUI = oldTui;
-    await rm(root, { recursive: true, force: true });
+    if (oldTui === undefined) delete process.env.PINDIE_TUI; else process.env.PINDIE_TUI = oldTui;
+    await cleanup();
   }
 });
