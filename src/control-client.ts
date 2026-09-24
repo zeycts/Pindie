@@ -73,6 +73,8 @@ export interface PindieControlSnapshot {
 
 export interface PindieControlClientOptions {
   readonly createLease?: () => string;
+  /** Headless client binding; Pi emits session_start when this completes. */
+  readonly bindActiveSession?: () => Promise<void>;
 }
 
 export type PindieControlErrorCode =
@@ -151,6 +153,7 @@ export class PindieControlClient {
   private readonly runtime: PiRuntimeAdapter;
   private readonly presentation: PindieControlPresentationLease;
   private readonly createLease: () => string;
+  private readonly bindActiveSession?: () => Promise<void>;
   private binding: ControlBinding | null = null;
   private nextBindingGeneration = 0;
   private automaticWorkSettled = false;
@@ -168,6 +171,7 @@ export class PindieControlClient {
     this.runtime = runtime;
     this.presentation = presentation;
     this.createLease = options.createLease ?? randomUUID;
+    this.bindActiveSession = options.bindActiveSession;
   }
 
   async start(): Promise<void> {
@@ -501,7 +505,13 @@ export class PindieControlClient {
     if (this.disposed) return;
     this.binding?.unsubscribe();
 
+    this.binding = null;
+    this.currentSnapshot = null;
+    this.automaticWorkSettled = false;
     const generation = ++this.nextBindingGeneration;
+    // Do not expose a lease until Pi's extension session_start has finished.
+    // The same lifecycle callback handles initial bootstrap and native replacement.
+    await this.bindActiveSession?.();
     const sessionId = this.runtime.activeSessionId;
     const lease = this.createLease();
     this.automaticWorkSettled = this.runtime.getActiveSessionFacts().isIdle;
