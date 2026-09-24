@@ -16,6 +16,14 @@ import type { HumanGate, PindieState } from "../src/state.ts";
 
 interface FakeSessionControl {
   readonly session: AgentSession;
+  readonly prompts: string[];
+  readonly steers: string[];
+  readonly followUps: string[];
+  readonly queue: {
+    steering: string[];
+    followUp: string[];
+  };
+  readonly abortCalls: () => number;
   start(): void;
   settle(): void;
 }
@@ -27,11 +35,33 @@ function fakeSession(
   let idle = true;
   let streaming = false;
   let listener: ((event: AgentSessionEvent) => void) | undefined;
+  let abortCalls = 0;
+  let thinkingLevel: AgentSession["thinkingLevel"] = "medium";
+  let model: { provider: string; id: string; name?: string } = {
+    provider: "openai-codex",
+    id: "gpt-6-sol",
+    name: "GPT-6 Sol",
+  };
+  const availableModels = [
+    model,
+    { provider: "openai-codex", id: "gpt-6-luna", name: "GPT-6 Luna" },
+  ];
+  const prompts: string[] = [];
+  const steers: string[] = [];
+  const followUps: string[] = [];
+  const queue = {
+    steering: [] as string[],
+    followUp: [] as string[],
+  };
 
   const session = {
     sessionId,
-    model: { provider: "openai-codex", id: "gpt-6-sol" },
-    thinkingLevel: "medium",
+    get model() {
+      return model;
+    },
+    get thinkingLevel() {
+      return thinkingLevel;
+    },
     get isStreaming() {
       return streaming;
     },
@@ -39,7 +69,17 @@ function fakeSession(
     get isIdle() {
       return idle;
     },
-    pendingMessageCount: 0,
+    get pendingMessageCount() {
+      return queue.steering.length + queue.followUp.length;
+    },
+    extensionRunner: {
+      getModelRegistry: () => ({
+        find: (provider: string, id: string) =>
+          availableModels.find((candidate) =>
+            candidate.provider === provider && candidate.id === id),
+        getAvailable: () => [...availableModels],
+      }),
+    },
     sessionManager: {
       getSessionName: () => "Pindie Control",
       getEntries: () => [...entries],
@@ -51,17 +91,49 @@ function fakeSession(
         if (listener === next) listener = undefined;
       };
     },
-    prompt: async () => undefined,
-    steer: async () => undefined,
-    followUp: async () => undefined,
-    abort: async () => undefined,
-    clearQueue: () => ({ steering: [], followUp: [] }),
+    prompt: async (text: string) => {
+      prompts.push(text);
+    },
+    steer: async (text: string) => {
+      steers.push(text);
+      queue.steering.push(text);
+    },
+    followUp: async (text: string) => {
+      followUps.push(text);
+      queue.followUp.push(text);
+    },
+    abort: async () => {
+      abortCalls += 1;
+      idle = true;
+      streaming = false;
+      listener?.({ type: "agent_settled" } as AgentSessionEvent);
+    },
+    clearQueue: () => {
+      const cleared = {
+        steering: [...queue.steering],
+        followUp: [...queue.followUp],
+      };
+      queue.steering.length = 0;
+      queue.followUp.length = 0;
+      return cleared;
+    },
     bindExtensions: async () => undefined,
     waitForIdle: async () => undefined,
+    setModel: async (next: typeof model) => {
+      model = next;
+    },
+    setThinkingLevel: (level: AgentSession["thinkingLevel"]) => {
+      thinkingLevel = level;
+    },
   } as unknown as AgentSession;
 
   return {
     session,
+    prompts,
+    steers,
+    followUps,
+    queue,
+    abortCalls: () => abortCalls,
     start: () => {
       idle = false;
       streaming = true;
@@ -79,6 +151,13 @@ function fakeNativeRuntime(initial: FakeSessionControl) {
   let active = initial;
   let beforeInvalidate: (() => void) | undefined;
   let rebind: (() => Promise<void>) | undefined;
+  let nextFreshSession: FakeSessionControl | undefined;
+
+  const replace = async (next: FakeSessionControl) => {
+    beforeInvalidate?.();
+    active = next;
+    await rebind?.();
+  };
 
   const runtime = {
     get session() {
@@ -90,15 +169,21 @@ function fakeNativeRuntime(initial: FakeSessionControl) {
     setRebindSession: (callback?: () => Promise<void>) => {
       rebind = callback;
     },
+    newSession: async () => {
+      if (nextFreshSession === undefined) return { cancelled: true };
+      const next = nextFreshSession;
+      nextFreshSession = undefined;
+      await replace(next);
+      return { cancelled: false };
+    },
     dispose: async () => undefined,
   } as unknown as AgentSessionRuntime;
 
   return {
     runtime,
-    replace: async (next: FakeSessionControl) => {
-      beforeInvalidate?.();
-      active = next;
-      await rebind?.();
+    replace,
+    setNextFreshSession: (next: FakeSessionControl) => {
+      nextFreshSession = next;
     },
   };
 }
@@ -137,6 +222,7 @@ function presentationFor(
   options: {
     activity?: PindiePresentationSnapshot["status"]["activity"];
     quotaResumeWaiting?: PindiePresentationSnapshot["quotaResumeWaiting"];
+    reasoningMode?: PindiePresentationSnapshot["status"]["reasoningMode"];
   } = {},
 ): PindiePresentationSnapshot {
   const task = state.task;
@@ -155,7 +241,7 @@ function presentationFor(
     semantic,
     status: {
       consumption: null,
-      reasoningMode: "manual",
+      reasoningMode: options.reasoningMode ?? "manual",
       activity: options.activity ?? null,
       state,
       stateUnavailableReason: null,
