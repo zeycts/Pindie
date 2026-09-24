@@ -7,14 +7,15 @@ Pindie is a personal AI agent for indie development built on the Pi agent harnes
 For architecture or implementation work, use this order:
 
 1. The explicit approved task specification in the current request.
-2. `docs/quota-fallback-v0.1.md` — authoritative implemented contract when the task touches Quota Fallback, quota recovery, or temporary backup model switching; not authority over unrelated architecture.
-3. `docs/cross-project-learning-v0.2.md` — authoritative architecture contract when the task touches Cross-Project Learning v0.2 Strategy Synthesis, Synthesis Trial/Decision, shared cross-project validation, or synthesis-origin user-global trust.
-4. `docs/cross-project-learning-v0.1.md` — authoritative implemented contract for Cross-Project Strategy Trust Transfer. Preserve its Scope Candidate/source-project semantics unless v0.2 explicitly extends shared validation around them.
-5. `docs/composable-pindie-architecture-v0.1.md` — authoritative implemented architecture contract for the final composition boundary and its Slices A–F.
-6. `docs/architecture.md` — current architecture and ownership boundaries.
-7. `docs/remote-companion.md` — authoritative Remote Companion architecture/behavior when the task touches Remote Companion or Discord integration.
-8. `docs/behavior.md` — current semantic and behavioral contract.
-9. Existing source and tests — implemented runtime baseline.
+2. `docs/pindie-control-v0.1.md` — authoritative approved contract when the task touches ChatGPT/MCP control, headless Host control, Control Projection/lease semantics, or the Pindie Control surface. It is not yet an implemented baseline.
+3. `docs/quota-fallback-v0.1.md` — authoritative implemented contract when the task touches Quota Fallback, quota recovery, or temporary backup model switching; not authority over unrelated architecture.
+4. `docs/cross-project-learning-v0.2.md` — authoritative architecture contract when the task touches Cross-Project Learning v0.2 Strategy Synthesis, Synthesis Trial/Decision, shared cross-project validation, or synthesis-origin user-global trust.
+5. `docs/cross-project-learning-v0.1.md` — authoritative implemented contract for Cross-Project Strategy Trust Transfer. Preserve its Scope Candidate/source-project semantics unless v0.2 explicitly extends shared validation around them.
+6. `docs/composable-pindie-architecture-v0.1.md` — authoritative implemented architecture contract for the final composition boundary and its Slices A–F.
+7. `docs/architecture.md` — current architecture and ownership boundaries.
+8. `docs/remote-companion.md` — authoritative Remote Companion architecture/behavior when the task touches Remote Companion or Discord integration.
+9. `docs/behavior.md` — current semantic and behavioral contract.
+10. Existing source and tests — implemented runtime baseline.
 
 If those sources conflict, report the contradiction before widening scope. Do not preserve obsolete behavior merely because an older implementation or test encoded it.
 
@@ -90,7 +91,7 @@ Preserve these rules:
 
 For an approved task:
 
-1. Read only the relevant architecture/behavior sections, source, and tests. For CPL v0.2 work, read `docs/cross-project-learning-v0.2.md` first and preserve the implemented v0.1 transfer contract. For Composable Pindie work, read the relevant Slice and invariants in `docs/composable-pindie-architecture-v0.1.md`; for Remote Companion work, read `docs/remote-companion.md` before implementation.
+1. Read only the relevant architecture/behavior sections, source, and tests. For Pindie Control work, read `docs/pindie-control-v0.1.md` first and keep MCP/transport code subordinate to the existing Host/runtime truth. For CPL v0.2 work, read `docs/cross-project-learning-v0.2.md` first and preserve the implemented v0.1 transfer contract. For Composable Pindie work, read the relevant Slice and invariants in `docs/composable-pindie-architecture-v0.1.md`; for Remote Companion work, read `docs/remote-companion.md` before implementation.
 2. Preserve the requested scope; do not implement adjacent cleanup speculatively.
 3. Add focused tests for changed contracts.
 4. Implement the smallest change that satisfies them.
