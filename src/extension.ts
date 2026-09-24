@@ -1147,7 +1147,7 @@ function registerComposedPindieExtension(
 
     run.markContinuationAttempted();
     return {
-      entries: [{
+      entries: [...event.entries, {
         type: "custom_message" as const,
         customType: PINDIE_CONTINUATION_PROBE_TYPE,
         content: PINDIE_CONTINUATION_PROBE_MESSAGE,

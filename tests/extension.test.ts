@@ -975,6 +975,7 @@ function beforeSettle(stopReason: "stop" | "aborted" | "error" | "length" = "sto
   return {
     type: "agent_before_settle",
     outcome: stopReason === "aborted" ? "aborted" : stopReason === "error" ? "error" : "completed",
+    entries: [],
     context: { contextMessages: agentEnd(stopReason).messages, pendingMessages },
   };
 }
@@ -3549,6 +3550,29 @@ test("E01-E02/E08-E10 active Tasks append one hidden boundary probe per Run", as
   assert.equal((await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo"))).continue, true);
   assert.deepEqual(harness.api.sentMessages, []);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+});
+
+test("continuation boundary preserves prior drafts in order and appends the probe only once", async () => {
+  const harness = createHarness([["/repo", activeState()]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  const priorDrafts = [
+    { type: "custom", customType: "earlier-boundary-data", data: { id: 1 } },
+    { type: "custom_message", customType: "earlier-boundary-message", content: "keep me", display: false },
+  ];
+  const event = { ...beforeSettle(), entries: priorDrafts };
+  const first = await harness.api.handler("agent_before_settle")(event, context("/repo"));
+  assert.equal(first.continue, true);
+  assert.deepEqual(first.entries, [
+    ...priorDrafts,
+    { type: "custom_message", customType: PINDIE_CONTINUATION_PROBE_TYPE,
+      content: PINDIE_CONTINUATION_PROBE_MESSAGE, display: false },
+  ]);
+  assert.deepEqual(event.entries, priorDrafts);
+  assert.equal(await harness.api.handler("agent_before_settle")(
+    { ...event, entries: first.entries }, context("/repo"),
+  ), undefined);
+  assert.deepEqual(harness.api.sentMessages, []);
 });
 
 test("E03-E05/E07 semantic, authority, stop, and queue facts suppress ineligible probes", async () => {
