@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { request } from "node:http";
 import { test } from "node:test";
 
-import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
+import { Client, InMemoryTransport, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { PindieControlError, type PindieControlClient } from "../src/control-client.ts";
 import { createPindieControlMcpServer } from "../src/control-mcp.ts";
 import { resolveControlProjectRoot, startControlMcpProcess } from "../src/control-mcp-process.ts";
-import type { PindieHost } from "../src/host.ts";
+import { isPindieTuiEnabled, type PindieHost } from "../src/host.ts";
 
 const asClient = (value: object) => value as PindieControlClient;
 
@@ -76,44 +77,80 @@ test("each MCP action delegates unchanged to Control client; stale lease returns
   } finally { await stale.close(); }
 });
 
-test("MCP startup validates explicit project root; disconnect disposes headless client and Host only", async () => {
+test("loopback MCP disconnect/reconnect retains one headless Host; explicit shutdown disposes once", async () => {
   await assert.rejects(resolveControlProjectRoot(undefined), /PINDIE_PROJECT_ROOT/);
   const root = await mkdtemp(join(tmpdir(), "pindie-mcp-"));
+  const oldTui = process.env.PINDIE_TUI;
+  process.env.PINDIE_TUI = "1";
   try {
     const file = join(root, "file");
     await writeFile(file, "x");
     await assert.rejects(resolveControlProjectRoot(file), /directory/);
+    let hostCreated = 0;
     let hostDisposed = 0;
     let clientDisposed = 0;
-    let semanticMutations = 0;
-    let disconnect: (() => void) | undefined;
+    let clientStarted = 0;
+    let stopped = 0;
+    let aborted = 0;
+    const lease = "same-host-lease";
     const handle = await startControlMcpProcess({
       projectRoot: root,
+      port: 0,
       createHost: async (options) => {
+        hostCreated++;
         assert.equal(options.cwd, root);
+        assert.equal(options.env?.PINDIE_TUI, "0");
+        assert.equal(isPindieTuiEnabled(options.env!), false);
         assert.ok(options.dependencies?.createInteractiveMode);
         assert.equal(options.dependencies.createPindieInteractiveMode, undefined);
-        return { dispose: async () => { hostDisposed++; } } as PindieHost;
+        return { dispose: async () => { hostDisposed++; }, runtime: { abortActiveSession: () => { aborted++; } } } as PindieHost;
       },
-      createClient: () => asClient({ start: async () => {}, dispose: () => { clientDisposed++; }, observe: () => { semanticMutations++; } }),
-      serve: (factory) => {
-        const server = factory({} as never);
-        if (server instanceof Promise) throw new Error("Unexpected async MCP factory");
-        disconnect = () => { server.onclose?.(); };
-        return { close: async () => { disconnect?.(); } };
-      },
+      createClient: () => asClient({
+        start: async () => { clientStarted++; },
+        dispose: () => { clientDisposed++; },
+        observe: () => ({ lease, revision: 1 }),
+        stop: () => { stopped++; },
+      }),
     });
-    disconnect?.();
-    await handle.close();
-    await handle.close();
-    assert.equal(hostDisposed, 1);
-    assert.equal(clientDisposed, 1);
-    assert.equal(semanticMutations, 0);
+    const url = new URL(`http://127.0.0.1:${handle.port}/mcp`);
+    try {
+      const connect = async () => {
+        const peer = new Client({ name: "tunnel", version: "1" });
+        await peer.connect(new StreamableHTTPClientTransport(url));
+        return peer;
+      };
+      const first = await connect();
+      assert.equal((await first.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.lease, lease);
+      await first.close();
+      assert.deepEqual([hostCreated, hostDisposed, clientStarted, clientDisposed, stopped, aborted], [1, 0, 1, 0, 0, 0]);
+      const second = await connect();
+      assert.equal((await second.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.lease, lease);
+      await second.close();
+      assert.deepEqual([hostCreated, hostDisposed, clientStarted, clientDisposed, stopped, aborted], [1, 0, 1, 0, 0, 0]);
+      const rebindingStatus = await new Promise<number>((resolve, reject) => {
+        const req = request(url, { method: "POST", headers: { Host: "attacker.example" } }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on("error", reject);
+        req.end();
+      });
+      assert.equal(rebindingStatus, 403);
+      const hostileOrigin = await fetch(url, { method: "POST", headers: { Origin: "https://attacker.example" } });
+      assert.equal(hostileOrigin.status, 403);
+      assert.equal(hostDisposed, 0);
+    } finally { await handle.close(); await handle.close(); }
+    assert.deepEqual([hostDisposed, clientDisposed, stopped, aborted], [1, 1, 0, 0]);
     await assert.rejects(startControlMcpProcess({
       projectRoot: root,
+      port: 0,
       createHost: async () => ({ dispose: async () => { hostDisposed++; } }) as PindieHost,
       createClient: () => { throw new Error("binding failed"); },
     }), /binding failed/);
     assert.equal(hostDisposed, 2);
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally {
+    if (oldTui === undefined) delete process.env.PINDIE_TUI;
+    else process.env.PINDIE_TUI = oldTui;
+    await rm(root, { recursive: true, force: true });
+  }
 });
