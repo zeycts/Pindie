@@ -106,13 +106,21 @@ pi -e ./src/extension.ts
 
 The package scripts are package-manager agnostic; pnpm is the recommended package manager for Pindie.
 
-For private local MCP control, start one independent headless Host with an explicit project directory:
+For private local MCP control, start the workspace service without an active Host:
 
 ```bash
-PINDIE_PROJECT_ROOT=/absolute/path/to/project pnpm control:mcp
+PINDIE_WORKSPACE_ROOT=/home/dev/projects pnpm control:mcp
 ```
 
-It serves six `pindie_*` tools over Streamable HTTP at `http://127.0.0.1:8765/mcp` (override the port with `PINDIE_CONTROL_PORT`). Point OpenAI Secure MCP Tunnel at that local URL using `--mcp-server-url`, not `--mcp-command`; restarting the tunnel does not stop the Host. Only explicit process shutdown disposes the Host. The service binds loopback only and validates Host/Origin headers; it does not open a public listener.
+After merging, change the one environment line in the local user systemd service (do not change the Tunnel):
+
+```text
+PINDIE_PROJECT_ROOT=/home/dev/projects/Pindie
+→
+PINDIE_WORKSPACE_ROOT=/home/dev/projects
+```
+
+It serves eight `pindie_*` tools over Streamable HTTP at `http://127.0.0.1:8765/mcp` (override the port with `PINDIE_CONTROL_PORT`). List direct-child projects and explicitly open one before using project-scoped tools. Point OpenAI Secure MCP Tunnel at that local URL using `--mcp-server-url`, not `--mcp-command`; restarting the tunnel does not stop the Host. Only explicit project switching or process shutdown disposes the active Host. The service binds loopback only and validates Host/Origin headers; it does not open a public listener.
 
 Optional Work Memory uses Notion when both environment variables are configured:
 
