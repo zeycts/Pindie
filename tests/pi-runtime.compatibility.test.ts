@@ -12,12 +12,14 @@ import {
   SettingsManager,
   type AgentSession,
   type BeforeAgentStartEventResult,
+  type AgentBeforeSettleEventResult,
   type ExtensionAPI,
   type ExtensionContext,
   type InlineExtension,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { PINDIE_CONTINUATION_PROBE_MESSAGE, PINDIE_CONTINUATION_PROBE_TYPE } from "../src/continuation.ts";
 import { Type } from "typebox";
 import {
   PINDIE_QUOTA_RESUME_MESSAGE,
@@ -40,6 +42,7 @@ async function createRealPiHarness(
   beforeAgentStart?: BeforeAgentStartHook,
   customTools: ToolDefinition[] = [],
   onSettled?: (pi: ExtensionAPI) => void,
+  beforeSettle?: () => AgentBeforeSettleEventResult | undefined,
 ): Promise<RealPiHarness> {
   const root = await mkdtemp(join(tmpdir(), "pindie-pi-compatibility-"));
   const cwd = join(root, "project");
@@ -53,11 +56,12 @@ async function createRealPiHarness(
   await modelRuntime.refresh({ allowNetwork: false });
 
   const settingsManager = SettingsManager.create(cwd, agentDir);
-  const extensionFactories: InlineExtension[] = beforeAgentStart || onSettled
+  const extensionFactories: InlineExtension[] = beforeAgentStart || onSettled || beforeSettle
     ? [
         (pi) => {
           if (beforeAgentStart) pi.on("before_agent_start", (event, ctx) => beforeAgentStart(event, ctx, pi));
           if (onSettled) pi.on("agent_settled", () => onSettled(pi));
+          if (beforeSettle) pi.on("agent_before_settle", beforeSettle);
         },
       ]
     : [];
@@ -227,6 +231,46 @@ test("Pi 0.87.1 settled custom successor runs preflight with the current tool lo
     assert.equal(providerContexts.length, 2);
     assert.match(JSON.stringify(providerContexts[1]), /compatibility-tool/);
     assert.deepEqual(harness.session.getActiveToolNames(), ["compatibility-tool"]);
+  } finally {
+    await disposeHarness(harness);
+  }
+});
+
+test("Pi 0.87.1 boundary probe continues once within the same Run and settles after the final pass", async () => {
+  let preflights = 0;
+  let boundaries = 0;
+  let settlements = 0;
+  const contexts: { messages?: readonly unknown[] }[] = [];
+  const harness = await createRealPiHarness(
+    () => { preflights++; return undefined; },
+    [],
+    () => { settlements++; },
+    () => {
+      if (++boundaries !== 1) return undefined;
+      return {
+        entries: [{ type: "custom_message", customType: PINDIE_CONTINUATION_PROBE_TYPE,
+          content: PINDIE_CONTINUATION_PROBE_MESSAGE, display: false }],
+        continue: true,
+      };
+    },
+  );
+  try {
+    harness.faux.setResponses([
+      (context) => { contexts.push(context); assert.equal(settlements, 0); return fauxAssistantMessage("first"); },
+      (context) => { contexts.push(context); assert.equal(settlements, 0); return fauxAssistantMessage("second"); },
+    ]);
+    await harness.session.sendCustomMessage(
+      { customType: "runtime-trigger", content: "start", display: false },
+      { triggerTurn: true },
+    );
+    assert.equal(preflights, 1);
+    assert.equal(boundaries, 2);
+    assert.equal(settlements, 1);
+    assert.equal(contexts.length, 2);
+    assert.match(JSON.stringify(contexts[1]), /Pindie continuation probe/);
+    assert.equal(harness.session.sessionManager.getBranch().filter((entry) =>
+      entry.type === "custom_message" && entry.customType === PINDIE_CONTINUATION_PROBE_TYPE,
+    ).length, 1);
   } finally {
     await disposeHarness(harness);
   }

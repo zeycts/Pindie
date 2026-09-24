@@ -971,6 +971,14 @@ function agentEnd(stopReason: "stop" | "aborted" | "error" | "length" = "stop"):
   };
 }
 
+function beforeSettle(stopReason: "stop" | "aborted" | "error" | "length" = "stop", pendingMessages: unknown[] = []): Record<string, unknown> {
+  return {
+    type: "agent_before_settle",
+    outcome: stopReason === "aborted" ? "aborted" : stopReason === "error" ? "error" : "completed",
+    context: { contextMessages: agentEnd(stopReason).messages, pendingMessages },
+  };
+}
+
 function continuationProbe(
   content: string,
   timestamp: number,
@@ -2295,7 +2303,7 @@ test("Remote-disabled baseline registers only core and quota lifecycle hooks", (
   assert.equal(api.tools.has("pindie_state"), false);
   assert.equal(api.tools.has("pindie_gate"), false);
   assert.deepEqual([...api.handlers.keys()].sort(), [
-    "agent_end",
+    "agent_before_settle",
     "agent_settled",
     "before_agent_start",
     "context",
@@ -2507,7 +2515,7 @@ test("Remote completion attention waits for settled catch-up and execution summa
   await waitFor(() => events.some((event) => event.text.startsWith("VERIFICATION")));
   assert.equal(events.some((event) => event.text === "TASK COMPLETED"), false);
 
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo", entries));
+  assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo", entries)), undefined);
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(events.some((event) => event.text === "TASK COMPLETED"), false);
 
@@ -2554,7 +2562,7 @@ test("final active settlement emits one ordered STOPPED attention after catch-up
   await harness.api.handler("tool_execution_start")(toolExecution("tool_execution_start", "stop-check", "bash"), context("/repo", entries));
   await harness.api.handler("tool_execution_end")(toolExecution("tool_execution_end", "stop-check", "bash"), context("/repo", entries));
   entries.push({ id: "answer", message: { role: "assistant", content: "The work is still unfinished." } });
-  await harness.api.handler("agent_end")(agentEnd("aborted"), context("/repo", entries));
+  assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle("aborted"), context("/repo", entries)), undefined);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
   await waitFor(() => events.some((event) => event.text.startsWith("PINDIE STOPPED")));
 
@@ -2569,7 +2577,7 @@ test("final active settlement emits one ordered STOPPED attention after catch-up
   assert.doesNotMatch(events[stoppedIndex]?.text ?? "", /completed|failed|blocked/i);
 });
 
-test("agent_end continuation stays quiet until the existing continuation is exhausted", async () => {
+test("boundary continuation delays final settlement until its last pass", async () => {
   const events: string[] = [];
   const surface: RemoteSurface = {
     ensureProject: async () => ({ channelId: "channel" }),
@@ -2591,15 +2599,17 @@ test("agent_end continuation stays quiet until the existing continuation is exha
   await waitFor(() => events.includes("YOU\nContinue"));
   await beginAgentRun(harness, "/repo", entries);
 
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo", entries));
-  assert.equal(harness.api.sentMessages.length, 1);
+  const first = await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo", entries));
+  assert.equal(first.continue, true);
+  assert.equal(first.entries[0].customType, PINDIE_CONTINUATION_PROBE_TYPE);
+  assert.deepEqual(harness.api.sentMessages, []);
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(events.some((text) => text.startsWith("PINDIE STOPPED")), false);
 
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo", entries));
+  assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo", entries)), undefined);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
   await waitFor(() => events.some((text) => text.startsWith("PINDIE STOPPED")));
-  assert.equal(harness.api.sentMessages.length, 1);
+  assert.deepEqual(harness.api.sentMessages, []);
 });
 
 test("blocked, Human Gate, idle, and completed settlement states do not emit STOPPED", async () => {
@@ -2628,7 +2638,7 @@ test("blocked, Human Gate, idle, and completed settlement states do not emit STO
     const entries: unknown[] = [{ id: `prompt-${label}`, message: { role: "user", content: label } }];
     await startSession(harness, "/repo", "startup", entries);
     await beginAgentRun(harness, "/repo", entries);
-    await harness.api.handler("agent_end")(agentEnd("aborted"), context("/repo", entries));
+    assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle("aborted"), context("/repo", entries)), undefined);
     await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(events.some((text) => text.startsWith("PINDIE STOPPED")), false, label);
@@ -2659,7 +2669,7 @@ test("repeated settlement is deduplicated while a distinct Agent Run can stop ag
   const entries: unknown[] = [{ id: "prompt", message: { role: "user", content: "Repeat stop" } }];
   await startSession(harness, "/repo", "startup", entries);
   await beginAgentRun(harness, "/repo", entries);
-  await harness.api.handler("agent_end")(agentEnd("aborted"), context("/repo", entries));
+  assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle("aborted"), context("/repo", entries)), undefined);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
   await waitFor(() => events.filter((text) => text.startsWith("PINDIE STOPPED")).length === 1);
 
@@ -2668,7 +2678,7 @@ test("repeated settlement is deduplicated while a distinct Agent Run can stop ag
   assert.equal(events.filter((text) => text.startsWith("PINDIE STOPPED")).length, 1);
 
   await beginAgentRun(harness, "/repo", entries);
-  await harness.api.handler("agent_end")(agentEnd("aborted"), context("/repo", entries));
+  assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle("aborted"), context("/repo", entries)), undefined);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
   await waitFor(() => events.filter((text) => text.startsWith("PINDIE STOPPED")).length === 2);
 });
@@ -3211,7 +3221,8 @@ test("committed Long Task rollover suppresses STOPPED, while a rejected handoff 
         toolResult("pindie_task_handoff", false, `rollover-${accepted}`),
         context("/repo", entries),
       );
-      await harness.api.handler("agent_end")(agentEnd(), context("/repo", entries));
+      const boundary = await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo", entries));
+      assert.equal(boundary, undefined);
       await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo", entries));
       assert.equal(published, 1);
       if (accepted) {
@@ -3479,7 +3490,7 @@ test("Remote transport failure cannot disrupt startup, semantic milestones, veri
   assert.equal(harness.integration.stateUnavailableReason, null);
 });
 
-test("E01-E02/E08-E10 active Tasks queue one read-only hidden follow-up per Run", async () => {
+test("E01-E02/E08-E10 active Tasks append one hidden boundary probe per Run", async () => {
   const state = activeState();
   state.task!.openLoops.questions = ["Should the release note mention this?"];
   const harness = createHarness([["/repo", state]]);
@@ -3493,16 +3504,13 @@ test("E01-E02/E08-E10 active Tasks queue one read-only hidden follow-up per Run"
   const reasoningBefore = harness.integration.reasoning.snapshot;
   const activeToolsBefore = harness.api.getActiveTools();
 
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(harness.api.handlers.has("agent_end"), false);
+  const firstBoundary = await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo"));
 
-  assert.equal(harness.api.sentMessages.length, 1);
-  assert.deepEqual((harness.api.sentMessages[0] as {
-    message: { customType: string; display: boolean };
-    options: unknown;
-  }).options, { deliverAs: "followUp" });
-  const continuationMessage = (harness.api.sentMessages[0] as {
-    message: { customType: string; content: string; display: boolean };
-  }).message;
+  assert.deepEqual(harness.api.sentMessages, []);
+  assert.equal(firstBoundary.continue, true);
+  const continuationMessage = firstBoundary.entries[0];
+  assert.equal(continuationMessage.type, "custom_message");
   assert.equal(continuationMessage.customType, PINDIE_CONTINUATION_PROBE_TYPE);
   assert.equal(continuationMessage.display, false);
   assert.equal(continuationMessage.content, PINDIE_CONTINUATION_PROBE_MESSAGE);
@@ -3513,8 +3521,8 @@ test("E01-E02/E08-E10 active Tasks queue one read-only hidden follow-up per Run"
   assert.equal(harness.integration.runTimer.active, true);
   assert.equal(harness.integration.runCost.snapshot([] as any)?.active, true);
 
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
-  assert.equal(harness.api.sentMessages.length, 1);
+  assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo")), undefined);
+  assert.deepEqual(harness.api.sentMessages, []);
 
   await harness.api.tool("pindie_verification_record").execute("verify-after-probe", {
     check: {
@@ -3538,8 +3546,8 @@ test("E01-E02/E08-E10 active Tasks queue one read-only hidden follow-up per Run"
   assert.equal(harness.integration.runActivity.activity, null);
 
   await beginAgentRun(harness);
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
-  assert.equal(harness.api.sentMessages.length, 2);
+  assert.equal((await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo"))).continue, true);
+  assert.deepEqual(harness.api.sentMessages, []);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 });
 
@@ -3549,6 +3557,7 @@ test("E03-E05/E07 semantic, authority, stop, and queue facts suppress ineligible
     state: PindieState | undefined;
     stopReason?: "aborted" | "error" | "length";
     pending?: boolean;
+    previewOnlyPending?: boolean;
   }> = [
     { name: "no current Task", state: EMPTY_STATE },
     { name: "completed Task", state: completedState() },
@@ -3559,6 +3568,7 @@ test("E03-E05/E07 semantic, authority, stop, and queue facts suppress ineligible
     { name: "error stop", state: activeState(), stopReason: "error" },
     { name: "length stop", state: activeState(), stopReason: "length" },
     { name: "existing pending Pi message", state: activeState(), pending: true },
+    { name: "pending boundary preview", state: activeState(), previewOnlyPending: true },
   ];
 
   for (const scenario of cases) {
@@ -3568,10 +3578,11 @@ test("E03-E05/E07 semantic, authority, stop, and queue facts suppress ineligible
     }
     await startSession(harness, "/repo");
     await beginAgentRun(harness);
-    await harness.api.handler("agent_end")(
-      agentEnd(scenario.stopReason ?? "stop"),
+    const result = await harness.api.handler("agent_before_settle")(
+      beforeSettle(scenario.stopReason ?? "stop", scenario.pending || scenario.previewOnlyPending ? [{ role: "user", content: "queued" }] : []),
       context("/repo", [], scenario.pending),
     );
+    assert.equal(result, undefined, scenario.name);
     assert.deepEqual(harness.api.sentMessages, [], scenario.name);
   }
 });
@@ -4399,17 +4410,18 @@ test("H02-H04 continuation remains one-shot and append-only", async () => {
   const harness = createHarness([["/repo", activeState()]]);
   await startSession(harness, "/repo");
   await beginAgentRun(harness);
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
-  assert.equal(harness.api.sentMessages.length, 1);
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
-  assert.equal(harness.api.sentMessages.length, 1);
+  const first = await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo"));
+  assert.equal(first.continue, true);
+  assert.equal(first.entries.length, 1);
+  assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo")), undefined);
+  assert.deepEqual(harness.api.sentMessages, []);
 });
 
 test("H05 a fresh user Run does not rewrite prior continuation probes", async () => {
   const harness = createHarness([["/repo", activeState()]]);
   await startSession(harness, "/repo");
   await beginAgentRun(harness);
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo"));
   await harness.api.handler("agent_settled")(
     { type: "agent_settled" },
     context("/repo"),
@@ -6426,7 +6438,7 @@ test("PSC-A08-A09 stale Run suppresses continuation and equal refresh preserves 
   })), undefined);
   harness.store.states.set("/repo", activeState("External"));
   assertBlocked(await callGuard(harness, toolCall("edit")), /authority is stale.*project\.mutate/i);
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo")), undefined);
   assert.deepEqual(harness.api.sentMessages, []);
 });
 
@@ -6658,8 +6670,8 @@ test("TBE-E01-E20 idle State preserves observation and start_task guard ordering
   assertBlocked(await callGuard(harness, toolCall("pindie_task_replace", {
     goal: "Task B", successCriteria: ["Task B works"],
   })), /missing capability 'task\.replace'/i);
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
-  assert.equal(harness.api.sentMessages.length, 1);
+  assert.equal((await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo"))).continue, true);
+  assert.deepEqual(harness.api.sentMessages, []);
 });
 
 test("Task replace denial gives actionable start recovery only for idle or completed Tasks", async () => {
@@ -7912,9 +7924,8 @@ test("SI v0.5 /adapt is explicit, Run-bound, and Candidate creation stays inacti
   assert.equal(harness.integration.policySnapshot, null);
   assert.equal(harness.experienceStore.records.length, 0);
   await captureObservationEvidence(harness, "adaptation-observation");
-  const followUpsBeforeAdaptationEnd = harness.api.sentMessages.length;
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
-  assert.equal(harness.api.sentMessages.length, followUpsBeforeAdaptationEnd);
+  assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo")), undefined);
+  assert.deepEqual(harness.api.sentMessages, []);
 
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
   await beginAgentRun(harness);
@@ -8051,9 +8062,8 @@ test("SI v0.7 /derive is explicit, bounded, read-only, and consumes one Candidat
   );
   assert.deepEqual(harness.integration.runtime.state, stateBefore);
   assert.equal(harness.experienceStore.records.length, 0);
-  const followUpsBefore = harness.api.sentMessages.length;
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
-  assert.equal(harness.api.sentMessages.length, followUpsBefore);
+  assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo")), undefined);
+  assert.deepEqual(harness.api.sentMessages, []);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 
   await beginAgentRun(harness);
@@ -8147,9 +8157,10 @@ test("SI v0.6 Slice B /trial arms the next real Run without manufacturing user i
     modifiers: ["minimal-change"],
   });
   await captureObservationEvidence(harness, "trial-observation");
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
-  assert.equal(harness.api.sentMessages.length, 1);
-  assert.equal((harness.api.sentMessages[0] as { message: { customType: string } }).message.customType, PINDIE_CONTINUATION_PROBE_TYPE);
+  const boundary = await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo"));
+  assert.equal(boundary.continue, true);
+  assert.equal(boundary.entries[0].customType, PINDIE_CONTINUATION_PROBE_TYPE);
+  assert.deepEqual(harness.api.sentMessages, []);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 
   assert.equal(harness.integration.trial.hasTrial, false);
@@ -8299,9 +8310,10 @@ test("SI v0.7 Derivation /trial binds one exact Run, creates no packet attributi
     modifiers: ["minimal-change"],
   });
   await captureObservationEvidence(harness, "derivation-trial-observation");
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
-  assert.equal(harness.api.sentMessages.length, 1);
-  assert.equal((harness.api.sentMessages[0] as { message: { customType: string } }).message.customType, PINDIE_CONTINUATION_PROBE_TYPE);
+  const boundary = await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo"));
+  assert.equal(boundary.continue, true);
+  assert.equal(boundary.entries[0].customType, PINDIE_CONTINUATION_PROBE_TYPE);
+  assert.deepEqual(harness.api.sentMessages, []);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 
   assert.equal(harness.integration.trial.hasTrial, false);
@@ -8888,7 +8900,7 @@ test("Slice A handoff stages Task progress and commits continuity only after Exp
     context("/repo"),
   );
   assert.equal(continuityStore.records.length, 0);
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo")), undefined);
   assert.deepEqual(harness.api.sentMessages, []);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 
@@ -9988,16 +10000,13 @@ test("Slice B Scope Trial dispatches through the shared lease and preserves sour
     },
   });
   await captureObservationEvidence(harness, "scope-trial-observation");
-  await harness.api.handler("agent_end")(agentEnd(), context("/target"));
-  assert.equal(harness.api.sentMessages.length, 1);
-  const continuationMessage = harness.api.sentMessages[0] as {
-    message: { customType: string; content: string; display: boolean };
-    options: unknown;
-  };
-  assert.equal(continuationMessage.message.customType, PINDIE_CONTINUATION_PROBE_TYPE);
-  assert.equal(continuationMessage.message.content, PINDIE_CONTINUATION_PROBE_MESSAGE);
-  assert.equal(continuationMessage.message.display, false);
-  assert.deepEqual(continuationMessage.options, { deliverAs: "followUp" });
+  const boundary = await harness.api.handler("agent_before_settle")(beforeSettle(), context("/target"));
+  assert.equal(boundary.continue, true);
+  assert.deepEqual(boundary.entries, [{
+    type: "custom_message", customType: PINDIE_CONTINUATION_PROBE_TYPE,
+    content: PINDIE_CONTINUATION_PROBE_MESSAGE, display: false,
+  }]);
+  assert.deepEqual(harness.api.sentMessages, []);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/target"));
 
   assert.equal(harness.integration.trial.hasTrial, false);
@@ -10162,7 +10171,7 @@ test("Scope Trial handoff commits normally and automatic rollover does not inher
       toolResult("pindie_task_handoff", false, "scope-rollover-handoff"),
       context("/target"),
     );
-    await harness.api.handler("agent_end")(agentEnd(), context("/target"));
+    assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle(), context("/target")), undefined);
     assert.deepEqual(harness.api.sentMessages, []);
     await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/target"));
 
@@ -10342,7 +10351,7 @@ test("Slice B /derive-global admits once, binds one packet-only Run, and settles
     /already published or is publishing/i,
   );
   assert.equal(candidates.length, 1);
-  await harness.api.handler("agent_end")(agentEnd(), context("/repo"));
+  assert.equal(await harness.api.handler("agent_before_settle")(beforeSettle(), context("/repo")), undefined);
   assert.deepEqual(harness.api.sentMessages, []);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
   assert.equal(harness.integration.globalDerivation?.hasAttempt, false);

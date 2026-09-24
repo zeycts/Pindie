@@ -1121,7 +1121,7 @@ function registerComposedPindieExtension(
     };
   });
 
-  pi.on("agent_end", (event, ctx) => {
+  pi.on("agent_before_settle", (event, ctx) => {
     if (selfImprovement?.isSelfImprovementRunForGeneration(run.activeAgentRunGeneration) === true) return;
     if (taskHandoffEnabled) {
       try {
@@ -1135,25 +1135,26 @@ function registerComposedPindieExtension(
     } else if (handoff.shouldSuppressContinuation()) return;
     const derivation = run.deriveSnapshot();
     if (!derivation.ok) return;
-    const finalAssistantMessage = [...event.messages]
+    const finalAssistantMessage = [...event.context.contextMessages]
       .reverse()
       .find((message) => message.role === "assistant");
     const shouldProbe = shouldProbeContinuation(derivation.snapshot, {
       probeAlreadyAttempted: run.activeTaskContinuationAttempted,
-      hasPendingMessages: ctx.hasPendingMessages(),
-      stoppedNormally: finalAssistantMessage?.stopReason === "stop",
+      hasPendingMessages: ctx.hasPendingMessages() || event.context.pendingMessages.length > 0,
+      stoppedNormally: event.outcome === "completed" && finalAssistantMessage?.stopReason === "stop",
     });
     if (!shouldProbe) return;
 
     run.markContinuationAttempted();
-    pi.sendMessage(
-      {
+    return {
+      entries: [{
+        type: "custom_message" as const,
         customType: PINDIE_CONTINUATION_PROBE_TYPE,
         content: PINDIE_CONTINUATION_PROBE_MESSAGE,
         display: false,
-      },
-      { deliverAs: "followUp" },
-    );
+      }],
+      continue: true,
+    };
   });
 
   if (featureSelection.presentation || options.remoteCompanion) {

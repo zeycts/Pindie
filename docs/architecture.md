@@ -283,18 +283,17 @@ final assistant stopReason == stop
 
 `taskStatus == active` already closes idle, completed, blocked, and waiting-human branches. Continuation code does not independently re-read those Task fields.
 
-When eligible, Pindie sends at most one hidden Pi-native follow-up probe asking only whether the latest actual user intent still calls for consequential execution. The probe explicitly identifies itself as runtime-generated metadata, not user intent and not a new request.
+When eligible, Pindie appends at most one hidden Pi-native boundary probe asking only whether the latest actual user intent still calls for consequential execution. The probe explicitly identifies itself as runtime-generated metadata, not user intent and not a new request.
 
 The model may then choose any currently visible/legal action or return control. Tool Surface and Gateway own legality; the probe does not teach lifecycle rules or tool sequences.
 
 Delivery stays inside Pi's native lifecycle:
 
 ```text
-agent_end
+agent_before_settle
 → deterministic eligibility
-→ one hidden continuation custom message at most
-→ sendMessage(..., { deliverAs: "followUp" })
-→ Pi handles its own post-run continuation/compaction/retry machinery
+→ one hidden custom_message boundary draft at most + continue: true
+→ Pi performs one next provider request in the same Agent Run
 → agent_settled after automatic work is exhausted
 ```
 
