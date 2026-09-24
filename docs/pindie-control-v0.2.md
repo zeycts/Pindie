@@ -331,27 +331,138 @@ The project is a workspace child name, not a path.
 
 The server owns validation and safe Host replacement.
 
-## 10. Project creation is deliberately deferred
+## 10. Slice B — bounded project creation
 
-Real dogfood also exposed a likely future need:
+Slice A has now been real-dogfood validated through:
+
+```text
+no active project
+→ list projects
+→ open Modeloom
+→ observe Modeloom
+→ safe switch to Pindie
+→ observe Pindie
+```
+
+The next proven need is creation of a brand-new workspace project before normal Pindie work begins.
+
+Add one bounded workspace operation:
+
+```text
+createProject(name)
+```
+
+and one MCP tool:
 
 ```text
 pindie_create_project
 ```
 
-but it is **not part of Slice A**.
+This is **not** a generic filesystem API.
 
-First prove:
+### 10.1 Input and boundary
+
+Input is exactly one project name:
 
 ```text
-Pindie ↔ Modeloom
+project: string
 ```
 
-project discovery and switching using real existing projects.
+Use the same direct-child name validation as `openProject`:
 
-Only after that dogfood should v0.2 add bounded creation.
+- no absolute paths;
+- no `.` or `..`;
+- no slash/backslash separators;
+- no NUL;
+- no caller-supplied parent/path;
+- target is always derived as one direct child beneath the configured workspace root.
 
-The future creation operation should create exactly one direct workspace child directory and then open it. It must not also scaffold frameworks, run git init, write README/AGENTS, or perform coding setup; those are normal Pindie user intents after entering the project.
+If any filesystem entry already exists at that direct-child name, fail with a stable error such as:
+
+```text
+project_exists
+```
+
+Do not overwrite, reuse, delete, or reinterpret an existing file/directory/symlink.
+
+### 10.2 Semantics
+
+Successful creation means exactly:
+
+```text
+create one empty direct-child directory
+→ open that project using the existing single-active-project lifecycle
+→ return active-project/control projection
+```
+
+It must **not** also:
+
+- run `git init`;
+- create README/AGENTS/package files;
+- scaffold Next.js/React/Node/etc.;
+- install dependencies;
+- copy a template;
+- execute shell commands;
+- write project contents.
+
+Those are ordinary development intents delivered later through `pindie_input`.
+
+### 10.3 Safe-switch ordering
+
+Because creation also opens the new project, creation from an existing active project must first prove the current slot is safe to leave using the same Slice A conditions:
+
+- idle;
+- automatic work settled;
+- pending messages = 0;
+- no Human Gate;
+- no quota-resume waiting state.
+
+If unsafe:
+
+```text
+project_switch_unsafe
+```
+
+and **no directory is created**.
+
+After safety validation:
+
+```text
+validate name
+→ verify target absent
+→ create empty direct-child directory
+→ dispose old ControlClient + Host if present
+→ active slot = none
+→ bootstrap new Host + ControlClient
+→ publish new active project
+```
+
+Creation/open remains serialized by the existing workspace serialization boundary.
+
+### 10.4 Failure after mkdir
+
+Directory creation is the only filesystem mutation owned by this operation.
+
+If mkdir succeeds but Host/Control bootstrap later fails:
+
+- active project remains `none`;
+- return a structured `project_open_failed`/equivalent error;
+- **leave the newly created directory in place**;
+- do not recursively delete it as automatic rollback;
+- a later explicit `pindie_open_project` may retry opening it.
+
+This avoids turning failure recovery into a destructive filesystem operation.
+
+### 10.5 MCP metadata
+
+`pindie_create_project` is:
+
+- write;
+- non-destructive;
+- closed-world;
+- not read-only.
+
+It must not be marked as a generic filesystem or shell tool.
 
 ## 11. Security contract
 
@@ -362,7 +473,7 @@ Explicit non-capabilities remain:
 - no arbitrary path listing;
 - no caller-supplied absolute paths;
 - no recursive filesystem browsing;
-- no generic mkdir in Slice A;
+- no generic mkdir; only the bounded `pindie_create_project` direct-child creation operation;
 - no generic read/write file;
 - no shell;
 - no tmux;
@@ -478,12 +589,69 @@ At minimum:
 ✓ real ChatGPT dogfood switches between existing projects successfully
 ```
 
-## 16. Follow-up only after dogfood
+## 16. Slice B required tests
 
-After Slice A is merged and real switching works, evaluate one follow-up:
+At minimum:
+
+### Create from no active project
+
+- valid new name creates exactly one direct-child directory;
+- no extra files are written;
+- new project is opened and becomes active;
+- resulting project root/control snapshot is correct;
+- list_projects includes the new project as active.
+
+### Name/existence safety
+
+- absolute path, traversal, separators, NUL, `.`, and `..` fail closed;
+- existing directory returns `project_exists`;
+- existing file returns `project_exists`;
+- existing symlink returns `project_exists`;
+- no existing entry is modified or removed.
+
+### Create while another project is active
+
+- safe current project allows create+switch;
+- busy/streaming rejects before mkdir;
+- unsettled rejects before mkdir;
+- pending messages reject before mkdir;
+- Human Gate rejects before mkdir;
+- quota waiting rejects before mkdir;
+- unsafe rejection leaves active Host and filesystem unchanged.
+
+### Failure isolation
+
+- mkdir failure returns a structured create error and keeps the current safe Host active when disposal has not started;
+- after mkdir succeeds, old Host is disposed before new Host construction so Hosts never overlap;
+- target bootstrap failure leaves no active project and leaves the new directory intact;
+- concurrent create/open requests remain serialized.
+
+### MCP
+
+- exactly nine tools are registered after Slice B;
+- `pindie_create_project` accepts only `project`;
+- annotations are write + non-destructive + closed-world;
+- no generic path/mkdir/file/shell tools appear.
+
+## 17. Slice B Definition of Done
 
 ```text
-pindie_create_project
+✓ ChatGPT can create one new direct-child project by name
+✓ create automatically opens the new project
+✓ creation writes only the directory itself
+✓ existing paths are never overwritten/reused
+✓ unsafe active-project state prevents mkdir
+✓ bootstrap failure leaves the new directory but no partial active authority
+✓ existing list/open and six project-scoped tools remain unchanged
+✓ total MCP tool surface = 9
+✓ no shell/filesystem API is introduced
+✓ no git/scaffold/template behavior is hidden inside create_project
+✓ full pnpm run check is green
+✓ real ChatGPT dogfood creates and enters a disposable new project successfully
 ```
 
-Do not add it before list/open has been exercised in real ChatGPT Control use.
+## 18. After Slice B
+
+Do not add additional project-management tools merely for symmetry.
+
+Further workspace capabilities must be driven by real dogfood failures or explicit product needs.
