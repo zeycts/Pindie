@@ -39,6 +39,7 @@ type BeforeAgentStartHook = (
 async function createRealPiHarness(
   beforeAgentStart?: BeforeAgentStartHook,
   customTools: ToolDefinition[] = [],
+  onSettled?: (pi: ExtensionAPI) => void,
 ): Promise<RealPiHarness> {
   const root = await mkdtemp(join(tmpdir(), "pindie-pi-compatibility-"));
   const cwd = join(root, "project");
@@ -52,10 +53,11 @@ async function createRealPiHarness(
   await modelRuntime.refresh({ allowNetwork: false });
 
   const settingsManager = SettingsManager.create(cwd, agentDir);
-  const extensionFactories: InlineExtension[] = beforeAgentStart
+  const extensionFactories: InlineExtension[] = beforeAgentStart || onSettled
     ? [
         (pi) => {
-          pi.on("before_agent_start", (event, ctx) => beforeAgentStart(event, ctx, pi));
+          if (beforeAgentStart) pi.on("before_agent_start", (event, ctx) => beforeAgentStart(event, ctx, pi));
+          if (onSettled) pi.on("agent_settled", () => onSettled(pi));
         },
       ]
     : [];
@@ -117,10 +119,8 @@ const compatibilityTool: ToolDefinition = {
 };
 
 // Temporary downstream compatibility contract for the idle custom-triggered
-// turn path. It protects behavior Pindie needs until earendil-works/pi#8262
-// lands in a pinned Pi release. When it does: remove the downstream patch, then
-// keep/adapt this contract test against Pi's native behavior.
-test("Pi 0.86.1 compatibility: idle custom trigger runs before_agent_start preflight and applies its result", async () => {
+// turn path. Remove the downstream patch once native Pi covers this preflight.
+test("Pi 0.87.1 compatibility: idle custom trigger runs before_agent_start preflight and applies its result", async () => {
   let beforeAgentStartCalls = 0;
   let providerContext: { messages?: readonly unknown[] } | undefined;
   const harness = await createRealPiHarness(() => {
@@ -145,7 +145,7 @@ test("Pi 0.86.1 compatibility: idle custom trigger runs before_agent_start prefl
       { triggerTurn: true },
     );
 
-    // Without the downstream 0.86.1 patch, the native idle path enters
+    // Without the downstream patch, the native idle path enters
     // _runAgentPrompt() directly and skips this hook and its result.
     assert.equal(beforeAgentStartCalls, 1);
     assert.equal(providerSystemPrompt(providerContext), "downstream compatibility system prompt");
@@ -165,7 +165,7 @@ test("Pi 0.86.1 compatibility: idle custom trigger runs before_agent_start prefl
   }
 });
 
-test("Pi 0.86.1 compatibility: idle custom trigger preserves the live active tool loadout", async () => {
+test("Pi 0.87.1 compatibility: idle custom trigger preserves the live active tool loadout", async () => {
   let providerContext: { messages?: readonly unknown[] } | undefined;
   const harness = await createRealPiHarness((_event, _ctx, pi) => {
     pi.setActiveTools(["compatibility-tool"]);
@@ -192,7 +192,47 @@ test("Pi 0.86.1 compatibility: idle custom trigger preserves the live active too
   }
 });
 
-test("characterizes Pi 0.86.1 quota trigger: preflight exposes the hidden content before branch append", async () => {
+test("Pi 0.87.1 settled custom successor runs preflight with the current tool loadout", async () => {
+  const prompts: string[] = [];
+  const providerContexts: { messages?: readonly unknown[] }[] = [];
+  let settlements = 0;
+  const harness = await createRealPiHarness(
+    (event, _ctx, pi) => {
+      prompts.push(event.prompt);
+      if (prompts.length === 2) pi.setActiveTools(["compatibility-tool"]);
+      return undefined;
+    },
+    [compatibilityTool],
+    (pi) => {
+      if (++settlements === 1) {
+        void pi.sendMessage(
+          { customType: "settled-successor", content: "continue after settled", display: false },
+          { triggerTurn: true },
+        );
+      }
+    },
+  );
+  try {
+    harness.faux.setResponses([
+      (context) => { providerContexts.push(context); return fauxAssistantMessage("first"); },
+      (context) => { providerContexts.push(context); return fauxAssistantMessage("second"); },
+    ]);
+    await harness.session.sendCustomMessage(
+      { customType: "runtime-trigger", content: "start", display: false },
+      { triggerTurn: true },
+    );
+    await harness.session.waitForIdle();
+    assert.deepEqual(prompts, ["start", "continue after settled"]);
+    assert.equal(settlements, 2);
+    assert.equal(providerContexts.length, 2);
+    assert.match(JSON.stringify(providerContexts[1]), /compatibility-tool/);
+    assert.deepEqual(harness.session.getActiveToolNames(), ["compatibility-tool"]);
+  } finally {
+    await disposeHarness(harness);
+  }
+});
+
+test("characterizes Pi 0.87.1 quota trigger: preflight exposes the hidden content before branch append", async () => {
   let preflightPrompt: string | undefined;
   let preflightBranch: readonly unknown[] | undefined;
   const harness = await createRealPiHarness((event, ctx) => {
@@ -221,7 +261,7 @@ test("characterizes Pi 0.86.1 quota trigger: preflight exposes the hidden conten
   }
 });
 
-test("characterizes Pi 0.86.1: custom trigger Promise covers the full Agent Run", async () => {
+test("characterizes Pi 0.87.1: custom trigger Promise covers the full Agent Run", async () => {
   let resolveResponse: ((message: ReturnType<typeof fauxAssistantMessage>) => void) | undefined;
   const responseSettled = new Promise<ReturnType<typeof fauxAssistantMessage>>((resolve) => {
     resolveResponse = resolve;
