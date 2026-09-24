@@ -316,15 +316,11 @@ stoppedNormally === true
 
 Continuation code must not independently test `task.completed`, Human Gate, blockers, questions, verification status, `nextIntent`, or private Pi retry state. `taskStatus === active` is the semantic source for deterministic Task eligibility. Questions may coexist with active work and therefore do not suppress the probe by themselves.
 
-If eligible, Pindie queues exactly one hidden custom message through Pi:
-
-```text
-sendMessage(..., { deliverAs: "followUp" })
-```
+If eligible, Pindie marks the continuation attempt and returns exactly one hidden `custom_message` draft with `continue: true` at Pi's `agent_before_settle` boundary. Pi performs the next provider request in the same Agent Run, without another `before_agent_start`.
 
 The probe identifies itself as runtime-generated metadata, not user intent and not a new request. It asks only whether the latest actual user intent still calls for consequential execution. It does not teach Task/Gate/blocker/verification/completion procedures.
 
-The one-probe fuse is runtime-only. A fresh `before_agent_start` resets it; follow-up turns within the same high-level Run do not.
+The one-probe fuse is runtime-only. A fresh user-driven `before_agent_start` resets it; the boundary continuation does not.
 
 Pi owns retry, compaction, follow-up delivery, and final `agent_settled`. Pindie does not access or infer private retry state and does not create a second loop.
 
