@@ -65,5 +65,9 @@ export function createPindieControlMcpServer(workspace: PindieControlWorkspace):
     description: "Explicitly open or safely switch to an existing workspace project.",
     inputSchema: z.strictObject({ project: text }), annotations: consequential,
   }, async (args) => invoke(() => workspace.openProject(args.project)));
+  server.registerTool("pindie_create_project", {
+    description: "Create one empty direct-child workspace project and safely open it.",
+    inputSchema: z.strictObject({ project: text }), annotations: write,
+  }, async (args) => invoke(() => workspace.createProject(args.project)));
   return server;
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:http";
@@ -53,7 +53,7 @@ test("bounded deterministic direct-child discovery and name validation", async (
   } finally { await cleanup(); }
 });
 
-test("MCP exposes exactly eight tools, no-active state and structured fail-closed writes", async () => {
+test("MCP exposes exactly nine tools, no-active state and structured fail-closed writes", async () => {
   const { root, cleanup } = await fixture();
   const workspace = await PindieControlWorkspace.create({ workspaceRoot: root });
   const wire = await linked(workspace);
@@ -61,11 +61,16 @@ test("MCP exposes exactly eight tools, no-active state and structured fail-close
     const { tools } = await wire.peer.listTools();
     assert.deepEqual(tools.map((tool) => tool.name), [
       "pindie_observe", "pindie_input", "pindie_respond", "pindie_stop",
-      "pindie_fresh_session", "pindie_configure", "pindie_list_projects", "pindie_open_project",
+      "pindie_fresh_session", "pindie_configure", "pindie_list_projects", "pindie_open_project", "pindie_create_project",
     ]);
     assert.deepEqual(tools.map((tool) => [tool.annotations?.readOnlyHint, tool.annotations?.destructiveHint]), [
-      [true, false], [false, false], [false, true], [false, true], [false, true], [false, false], [true, false], [false, true],
+      [true, false], [false, false], [false, true], [false, true], [false, true], [false, false], [true, false], [false, true], [false, false],
     ]);
+    assert.deepEqual(tools.map((tool) => tool.annotations?.openWorldHint), Array(9).fill(false));
+    const create = tools.find((tool) => tool.name === "pindie_create_project")!;
+    assert.deepEqual(create.inputSchema.required, ["project"]);
+    assert.deepEqual(Object.keys(create.inputSchema.properties ?? {}), ["project"]);
+    assert.equal(create.inputSchema.additionalProperties, false);
     assert.deepEqual((await wire.peer.callTool({ name: "pindie_observe", arguments: {} })).structuredContent,
       { state: "no_active_project", workspaceRoot: root, activeProject: null });
     assert.equal((await wire.peer.callTool({ name: "pindie_list_projects", arguments: {} })).structuredContent?.activeProject, null);
@@ -77,10 +82,29 @@ test("MCP exposes exactly eight tools, no-active state and structured fail-close
       assert.equal(result.isError, true);
       assert.equal(result.structuredContent?.code, "no_active_project");
     }
-    for (const name of ["pindie_observe", "pindie_list_projects", "pindie_open_project"]) {
-      const invalid = await wire.peer.callTool({ name, arguments: { path: "/secret", ...(name === "pindie_open_project" ? { project: "Pindie" } : {}) } });
+    for (const name of ["pindie_observe", "pindie_list_projects", "pindie_open_project", "pindie_create_project"]) {
+      const invalid = await wire.peer.callTool({ name, arguments: { path: "/secret", ...(name.endsWith("_project") ? { project: "Pindie" } : {}) } });
       assert.equal(invalid.isError, true);
     }
+  } finally { await wire.close(); await workspace.close(); await cleanup(); }
+});
+
+test("MCP create accepts only a project name, opens it and reports existing entries", async () => {
+  const { root, cleanup } = await fixture();
+  const workspace = await PindieControlWorkspace.create({ workspaceRoot: root,
+    createHost: async () => ({ dispose: async () => {} }) as PindieHost,
+    createClient: () => asClient({ start: async () => {}, dispose: () => {}, observe: () => safe("new") }),
+  });
+  const wire = await linked(workspace);
+  try {
+    const invoke = (project: string) => wire.peer.callTool({ name: "pindie_create_project", arguments: { project } });
+    const result = await invoke("New");
+    assert.equal(result.structuredContent?.activeProject, "New");
+    assert.equal((result.structuredContent?.control as { lease: string }).lease, "new");
+    assert.deepEqual(await readdir(join(root, "New")), []);
+    assert.equal((await invoke("New")).structuredContent?.code, "project_exists");
+    assert.equal((await invoke("file")).structuredContent?.code, "project_exists");
+    assert.equal((await invoke("escape")).structuredContent?.code, "project_exists");
   } finally { await wire.close(); await workspace.close(); await cleanup(); }
 });
 
@@ -141,7 +165,7 @@ test("loopback boots without Host or TUI; disconnect keeps Host; shutdown dispos
     try {
       const connect = async () => { const peer = new Client({ name: "tunnel", version: "1" }); await peer.connect(new StreamableHTTPClientTransport(url)); return peer; };
       const first = await connect();
-      assert.equal((await first.listTools()).tools.length, 8);
+      assert.equal((await first.listTools()).tools.length, 9);
       assert.equal((await first.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.state, "no_active_project");
       assert.equal(created, 0);
       await first.callTool({ name: "pindie_open_project", arguments: { project: "Pindie" } });
