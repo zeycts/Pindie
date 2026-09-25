@@ -1110,6 +1110,25 @@ test("Presentation can be disabled without removing Core settlement or SI comman
   assert.equal(harness.integration.runTimer.active, false);
 });
 
+test("registered Candidate tool descriptions include admitted learning alongside explicit commands", () => {
+  const harness = createHarness([["/repo", activeState("Candidate descriptions")]]);
+  for (const [name, command] of [
+    ["pindie_strategy_candidate_create", "/adapt"],
+    ["pindie_strategy_derivation_candidate_create", "/derive"],
+    ["pindie_strategy_synthesis_candidate_create", "/derive-global"],
+  ]) {
+    const description = harness.api.tool(name).description as string;
+    assert.match(description, /live .*Run \(explicit/);
+    assert.ok(description.includes(command));
+    assert.match(description, /admitted autonomous learning/);
+    assert.match(description, /Candidate creation is optional/);
+    assert.doesNotMatch(description, /only during explicitly entered/);
+  }
+  assert.match(harness.api.tool("pindie_strategy_candidate_create").description, /target Strategy is fixed by that live adaptation attempt/);
+  assert.match(harness.api.tool("pindie_strategy_derivation_candidate_create").description, /does not establish novelty, usefulness, superiority, or causality/);
+  assert.match(harness.api.tool("pindie_strategy_synthesis_candidate_create").description, /does not establish novelty, usefulness, superiority, or causality/);
+});
+
 test("Slice E SI off keeps Core tools and Seed Policy without reading SI stores", async () => {
   const reader = new ExtensionTestExperienceReader();
   const experienceStore = new ExtensionTestExperienceStore();
@@ -8226,7 +8245,7 @@ test("SI v0.5 /adapt is explicit, Run-bound, and Candidate creation stays inacti
   );
   assertBlocked(
     await callGuard(harness, toolCall("pindie_strategy_candidate_create", candidateInput, "ordinary-candidate")),
-    /explicit adaptation|\/adapt <strategy-id>/i,
+    /requires a live Seed-targeted adaptation lease \(explicit \/adapt <strategy-id> or matching autonomously admitted learning Run\)/i,
   );
 });
 
@@ -8360,7 +8379,7 @@ test("SI v0.7 /derive is explicit, bounded, read-only, and consumes one Candidat
   await beginAgentRun(harness);
   assertBlocked(
     await callGuard(harness, toolCall("pindie_strategy_derivation_candidate_create", candidateInput, "ordinary-derive")),
-    /explicit \/derive|derive Run/i,
+    /Derivation or Synthesis Candidate creation requires a live matching lease \(explicit \/derive or \/derive-global Run, or matching autonomously admitted learning Run\)/i,
   );
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 });
@@ -10653,7 +10672,7 @@ test("Slice B /derive-global admits once, binds one packet-only Run, and settles
   assert.doesNotMatch(ordinaryRun.systemPrompt, /<PINDIE_GLOBAL_DERIVATION_RUN>/);
   assertBlocked(
     await callGuard(harness, toolCall("pindie_strategy_synthesis_candidate_create", input, "global-after-settlement")),
-    /requires a live explicit \/derive Run/i,
+    /Derivation or Synthesis Candidate creation requires a live matching lease \(explicit \/derive or \/derive-global Run, or matching autonomously admitted learning Run\).*use \/derive or \/derive-global as appropriate/i,
   );
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 });
