@@ -19,40 +19,33 @@ import {
   type NotionProjectMemoryConfigResult,
 } from "./notion-project-memory-config.ts";
 import { RemoteRoutingStore } from "./remote-routing.ts";
+import { FileStrategyKnowledge } from "./strategy-knowledge-file.ts";
 import {
-  FileStrategyCandidateStore,
   type StrategyCandidateReader,
   type StrategyCandidateStore,
 } from "./strategy-candidates.ts";
 import {
-  FileStrategyDecisionStore,
   type StrategyRevisionDecisionReader,
   type StrategyRevisionDecisionStore,
 } from "./strategy-decisions.ts";
 import {
-  FileStrategyDerivationCandidateStore,
   type StrategyDerivationCandidateReader,
   type StrategyDerivationCandidateStore,
 } from "./strategy-derivation-candidates.ts";
 import {
-  FileStrategyDerivationDecisionStore,
   type StrategyDerivationDecisionReader,
   type StrategyDerivationDecisionStore,
 } from "./strategy-derivation-decisions.ts";
 import {
-  FileStrategyTrustScopeCandidateStore,
   type StrategyTrustScopeCandidateStore,
 } from "./strategy-trust-scope-candidates.ts";
 import {
-  FileStrategyTrustScopeDecisionStore,
   type StrategyTrustScopeDecisionStore,
 } from "./strategy-trust-scope-decisions.ts";
 import {
-  FileStrategyTrustScopeSourceResolver,
   type StrategyTrustScopeSourceResolver,
 } from "./strategy-trust-scope-resolution.ts";
 import {
-  FileProjectTrustedStrategyPortfolioReader,
   type ProjectTrustedStrategyPortfolioReader,
 } from "./strategy-trust-safety.ts";
 import {
@@ -76,14 +69,10 @@ import { FileQuotaFallbackPreferenceStore, type QuotaFallbackPreferenceStore } f
 import type { NotionProjectMemoryClient } from "./notion-project-memory.ts";
 import type { ProjectMemorySink } from "./project-memory.ts";
 import {
-  FileStrategySynthesisCandidateReader,
-  FileStrategySynthesisCandidateStore,
   type StrategySynthesisCandidateReader,
   type StrategySynthesisCandidateStore,
 } from "./strategy-synthesis-candidates.ts";
 import {
-  FileStrategySynthesisDecisionReader,
-  FileStrategySynthesisDecisionStore,
   type StrategySynthesisDecisionReader,
   type StrategySynthesisDecisionStore,
 } from "./strategy-synthesis-decisions.ts";
@@ -321,14 +310,19 @@ export function composePindieExtension(
   let strategySynthesisCandidateStore: StrategySynthesisCandidateStore | undefined;
   let strategySynthesisDecisionStore: StrategySynthesisDecisionStore | undefined;
 
+  const strategyKnowledge = new FileStrategyKnowledge({
+    projectsBaseDir: roots.projectsBaseDir,
+    globalBaseDir: roots.globalBaseDir,
+  });
+
   // The mutable Synthesis Stores are also the read-only SI authority readers
   // when CPL is selected. Reuse the exact production instances so the two
   // feature boundaries cannot silently observe different global namespaces.
   if (selection.crossProjectLearning) {
     strategySynthesisCandidateStore = input.strategySynthesisCandidateStore ??
-      new FileStrategySynthesisCandidateStore({ baseDir: roots.globalBaseDir });
+      strategyKnowledge.synthesisCandidates;
     strategySynthesisDecisionStore = input.strategySynthesisDecisionStore ??
-      new FileStrategySynthesisDecisionStore({ baseDir: roots.globalBaseDir });
+      strategyKnowledge.synthesisDecisions;
   }
 
   if (selection.selfImprovement) {
@@ -339,32 +333,32 @@ export function composePindieExtension(
       baseDir: roots.projectsBaseDir,
     });
     strategyCandidateStore = input.strategyCandidateStore ??
-      new FileStrategyCandidateStore({ baseDir: roots.projectsBaseDir });
+      strategyKnowledge.revisionCandidates;
     strategyCandidateReader = input.strategyCandidateReader ??
       (typeof (strategyCandidateStore as Partial<StrategyCandidateReader>).read === "function"
         ? strategyCandidateStore as unknown as StrategyCandidateReader
-        : new FileStrategyCandidateStore({ baseDir: roots.projectsBaseDir }));
+        : strategyKnowledge.revisionCandidates);
 
     strategyDerivationCandidateStore = input.strategyDerivationCandidateStore ??
-      new FileStrategyDerivationCandidateStore({ baseDir: roots.projectsBaseDir });
+      strategyKnowledge.derivationCandidates;
     strategyDerivationCandidateReader = input.strategyDerivationCandidateReader ??
       (typeof (strategyDerivationCandidateStore as Partial<StrategyDerivationCandidateReader>).read === "function"
         ? strategyDerivationCandidateStore as unknown as StrategyDerivationCandidateReader
-        : new FileStrategyDerivationCandidateStore({ baseDir: roots.projectsBaseDir }));
+        : strategyKnowledge.derivationCandidates);
 
     strategyDecisionStore = input.strategyDecisionStore ??
-      new FileStrategyDecisionStore({ baseDir: roots.projectsBaseDir });
+      strategyKnowledge.revisionDecisions;
     strategyDecisionReader = input.strategyDecisionReader ?? strategyDecisionStore;
     strategyDerivationDecisionStore = input.strategyDerivationDecisionStore ??
-      new FileStrategyDerivationDecisionStore({ baseDir: roots.projectsBaseDir });
+      strategyKnowledge.derivationDecisions;
     strategyDerivationDecisionReader = input.strategyDerivationDecisionReader ?? strategyDerivationDecisionStore;
 
     strategyTrustScopeCandidateStore = input.strategyTrustScopeCandidateStore ??
-      new FileStrategyTrustScopeCandidateStore({ baseDir: roots.globalBaseDir });
+      strategyKnowledge.scopeCandidates;
     strategyTrustScopeDecisionStore = input.strategyTrustScopeDecisionStore ??
-      new FileStrategyTrustScopeDecisionStore({ baseDir: roots.globalBaseDir });
+      strategyKnowledge.scopeDecisions;
     strategyTrustScopeSourceResolver = input.strategyTrustScopeSourceResolver ??
-      new FileStrategyTrustScopeSourceResolver({ projectsBaseDir: roots.projectsBaseDir });
+      strategyKnowledge.sourceResolver;
     strategyTrustScopeWriterLock = input.strategyTrustScopeWriterLock ?? new FileGlobalWriterLock({
       baseDir: roots.globalBaseDir,
     });
@@ -374,20 +368,17 @@ export function composePindieExtension(
     strategySynthesisCandidateReader = input.strategySynthesisCandidateReader ??
       strategySynthesisCandidateStore ??
       input.strategySynthesisCandidateStore ??
-      new FileStrategySynthesisCandidateReader({ baseDir: roots.globalBaseDir });
+      strategyKnowledge.synthesisCandidateReader;
     strategySynthesisDecisionReader = input.strategySynthesisDecisionReader ??
       strategySynthesisDecisionStore ??
       input.strategySynthesisDecisionStore ??
-      new FileStrategySynthesisDecisionReader({ baseDir: roots.globalBaseDir });
+      strategyKnowledge.synthesisDecisionReader;
   }
 
   if (selection.crossProjectLearning) {
     crossProjectExperienceReader = input.crossProjectExperienceReader ??
       (experienceReader !== undefined && isProjectReader(experienceReader) ? experienceReader : undefined);
-    crossProjectTrustReader = input.crossProjectTrustReader ?? new FileProjectTrustedStrategyPortfolioReader({
-      projectsBaseDir: roots.projectsBaseDir,
-      globalBaseDir: roots.globalBaseDir,
-    });
+    crossProjectTrustReader = input.crossProjectTrustReader ?? strategyKnowledge.projectTrust;
     scopeProjectTrustReader = input.scopeProjectTrustReader ??
       new FileScopeProjectTrustReader({ projectsBaseDir: roots.projectsBaseDir });
     if (crossProjectExperienceReader === undefined) {
