@@ -2282,6 +2282,81 @@ test("Host lifecycle wiring receives the native Session shutdown boundary", asyn
   }
 });
 
+test("Slice C signal remains optional and Gate runs only after source Experience settlement", async () => {
+  const order: string[] = [];
+  const assessments: Array<{ status: string; reason?: string }> = [];
+  const harness = createHarness([["/repo", activeState("Opportunity")]], {}, {
+    onLearningOpportunityAssessment: (assessment) => { order.push("gate"); assessments.push(assessment); },
+    learningAssessmentReceipts: { hasTerminal: async () => false },
+  });
+  (harness.experienceStore as ExtensionTestExperienceStore).events = order;
+  await startSession(harness, "/repo");
+  const prompt = await harnessBeforeAgentStart(harness);
+  assert.match(prompt.systemPrompt, /Silence is normal/);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+  assert.equal((await callGuard(harness, toolCall("read", { path: "/repo/file" }, "source-read")))?.block, undefined);
+  await harness.api.handler("tool_result")(
+    toolResult("read", false, "source-read", [{ type: "text", text: "source" }]), context("/repo"),
+  );
+  const call = toolCall("pindie_learning_signal", {
+    intent: "derive-local", reason: "A reusable Strategy lesson",
+  }, "learning-call");
+  assert.equal((await callGuard(harness, call))?.block, undefined);
+  const signal = await harness.api.tool("pindie_learning_signal").execute(
+    "learning-call", call.input, undefined, undefined, context("/repo"),
+  );
+  assert.notEqual(signal.isError, true);
+  assert.deepEqual(order, []);
+  await harness.api.handler("tool_result")(
+    toolResult("pindie_learning_signal", false, "learning-call"), context("/repo"),
+  );
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" }, context("/repo"),
+  );
+  assert.deepEqual(order, ["experience", "gate"]);
+  assert.equal(assessments.length, 1);
+  assert.equal(assessments[0].status, "rejected");
+  assert.equal(harness.api.sentUserMessages.length, 0);
+  await beginAgentRun(harness);
+  await harness.api.handler("agent_settled")(
+    { type: "agent_settled" }, context("/repo"),
+  );
+  assert.equal(assessments.length, 1, "a normal Run without a signal does not assess learning");
+});
+
+test("Slice C signal Gateway rejects outside an active ordinary Run and during adaptation", async () => {
+  const harness = createHarness([["/repo", activeState("Opportunity")]]);
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  const call = toolCall("pindie_learning_signal", {
+    intent: "derive-global", reason: "A reusable lesson",
+  }, "signal-one");
+  assert.equal((await callGuard(harness, call))?.block, undefined);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  const after = await callGuard(harness, { ...call, toolCallId: "signal-two" });
+  assert.equal(after?.block, true);
+
+  const reader = new ExtensionTestExperienceReader();
+  reader.result = {
+    records: [
+      { recordId: "adapt-one", experience: commandExperience("one", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "adapt-two", experience: commandExperience("two", createPolicySnapshot({ approach: "direct-action" })) },
+    ],
+    loadedRecords: 2, unsupportedSchema: 0, invalid: 0,
+  };
+  const adapt = createHarness([["/repo", activeState()]], {}, { experienceReader: reader });
+  await startSession(adapt, "/repo");
+  await adapt.api.commands.get("adapt").handler("direct-action", {
+    ...context("/repo"), isIdle: () => true,
+    ui: { notify: () => undefined },
+  });
+  await beginAgentRun(adapt);
+  const denied = await callGuard(adapt, toolCall("pindie_learning_signal", {
+    intent: "revise-existing", targetStrategyId: "direct-action", reason: "A reusable lesson",
+  }, "adapt-signal"));
+  assert.equal(denied?.block, true);
+});
+
 test("Remote-disabled baseline registers only core and quota lifecycle hooks", () => {
   const { api } = createHarness();
 
@@ -2290,6 +2365,7 @@ test("Remote-disabled baseline registers only core and quota lifecycle hooks", (
     "pindie_gate_open",
     "pindie_gate_resolve",
     "pindie_git_observe",
+    "pindie_learning_signal",
     "pindie_policy_set",
     "pindie_strategy_candidate_create",
     "pindie_strategy_derivation_candidate_create",
@@ -2378,7 +2454,7 @@ test("Remote-enabled wiring observes public input without altering Pindie tools"
   const sent: string[] = [];
   const surface: RemoteSurface = { ensureProject: async () => ({ channelId: "channel" }), ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }), send: async (_thread, event) => { sent.push(event.text); }, updateSessionPresentation: async () => undefined };
   const { api } = createHarness([], {}, { remoteCompanion: { companion: new RemoteCompanion(surface), guildId: "guild" } });
-  assert.ok(api.handlers.has("input")); assert.ok(api.handlers.has("message_end")); assert.equal(api.tools.size, 13);
+  assert.ok(api.handlers.has("input")); assert.ok(api.handlers.has("message_end")); assert.equal(api.tools.size, 14);
   await api.handler("session_start")({ type: "session_start", reason: "startup" }, context("/repo", [{ id: "u", message: { role: "user", content: "hello" } }]));
   assert.ok(Array.isArray(sent));
 });
