@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyToolEffect } from "../src/execution-semantics.ts";
@@ -13,6 +13,7 @@ import {
 import type { SelfImprovementIntegration } from "../src/self-improvement-integration.ts";
 import type { CrossProjectLearningIntegration } from "../src/cross-project-learning-integration.ts";
 import { RunExperienceTracker } from "../src/run-experience.ts";
+import { FileGlobalWriterLock } from "../src/store.ts";
 
 const signalEffect = classifyToolEffect("pindie_learning_signal");
 
@@ -124,4 +125,49 @@ test("receipt reader accepts only bounded terminal outcomes and no admission wri
   assert.equal(await reader.hasTerminal(`sha256:${"b".repeat(64)}`), false);
   await writeFile(join(dir, "learning-assessment-receipts-v1.json"), JSON.stringify([{ identity, outcome: "admitted" }]));
   await assert.rejects(reader.hasTerminal(identity), /Invalid/);
+});
+
+test("terminal writer is bounded, atomic, idempotent, and rejects conflicting or malformed receipts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pindie-learning-writer-"));
+  const reader = new FileLearningAssessmentReceiptReader(dir);
+  const id = (n: number) => `sha256:${n.toString(16).padStart(64, "0")}`;
+  await reader.writeTerminal(id(0), "no-candidate");
+  await reader.writeTerminal(id(0), "no-candidate");
+  await assert.rejects(reader.writeTerminal(id(0), "candidate-created"), /Conflicting/);
+  for (let i = 1; i <= 130; i++) await reader.writeTerminal(id(i), "candidate-created");
+  const entries = JSON.parse(await readFile(join(dir, "learning-assessment-receipts-v1.json"), "utf8"));
+  assert.equal(entries.length, 128);
+  assert.equal(await reader.hasTerminal(id(0)), false);
+  assert.equal(await reader.hasTerminal(id(130)), true);
+  await assert.rejects(reader.writeTerminal(id(131), "admitted" as never), /Invalid/);
+  await writeFile(join(dir, "learning-assessment-receipts-v1.json"), "not json");
+  await assert.rejects(reader.writeTerminal(id(131), "no-candidate"));
+  assert.equal(await readFile(join(dir, "learning-assessment-receipts-v1.json"), "utf8"), "not json");
+});
+
+test("receipt writers serialize and recover a valid dead-owner global lock without stealing ambiguous ownership", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pindie-learning-recovery-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const lockPath = join(dir, "writer.lock");
+  await mkdir(lockPath);
+  await writeFile(join(lockPath, "owner.json"), JSON.stringify({ token: "dead-owner", pid: 999999, acquiredAt: 1 }));
+  const lock = () => new FileGlobalWriterLock({
+    baseDir: dir, lockRetryMs: 2, lockTimeoutMs: 500,
+    isProcessAlive: (pid) => pid === process.pid,
+  });
+  const first = new FileLearningAssessmentReceiptReader(dir, lock());
+  const second = new FileLearningAssessmentReceiptReader(dir, lock());
+  const id = (n: number) => `sha256:${n.toString(16).padStart(64, "0")}`;
+  await first.writeTerminal(id(1), "candidate-created");
+  assert.equal(await first.hasTerminal(id(1)), true, "dead-owner lock was safely reclaimed");
+  await Promise.all([first.writeTerminal(id(2), "no-candidate"), second.writeTerminal(id(3), "candidate-created")]);
+  const entries = JSON.parse(await readFile(join(dir, "learning-assessment-receipts-v1.json"), "utf8"));
+  assert.deepEqual(entries.sort((a: { identity: string }, b: { identity: string }) => a.identity.localeCompare(b.identity)), [
+    { identity: id(1), outcome: "candidate-created" },
+    { identity: id(2), outcome: "no-candidate" },
+    { identity: id(3), outcome: "candidate-created" },
+  ]);
+  await mkdir(lockPath);
+  await assert.rejects(first.writeTerminal(id(4), "no-candidate"), /writer lock|Retry/i);
+  assert.equal(await first.hasTerminal(id(4)), false);
 });

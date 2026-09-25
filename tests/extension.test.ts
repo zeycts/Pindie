@@ -2324,6 +2324,197 @@ test("Slice C signal remains optional and Gate runs only after source Experience
   assert.equal(assessments.length, 1, "a normal Run without a signal does not assess learning");
 });
 
+test("Slice D admitted local learning reuses exact command packets, stays optional, and writes terminal receipts", async () => {
+  for (const intent of ["revise-existing", "derive-local"] as const) {
+    const reader = new ExtensionTestExperienceReader();
+    reader.result = {
+      records: [
+        { recordId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.json", experience: commandExperience("goal one", createPolicySnapshot({ approach: "direct-action" })) },
+        { recordId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.json", experience: commandExperience("goal two", createPolicySnapshot({ approach: "explore-first" })) },
+        { recordId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc.json", experience: commandExperience("goal three", createPolicySnapshot({ approach: "direct-action" })) },
+      ], loadedRecords: 3, unsupportedSchema: 0, invalid: 0,
+    };
+    const receipts = new Map<string, string>();
+    const assessments: Array<{ status: string; identity?: string }> = [];
+    const harness = createHarness([["/repo", activeState("Source work")]], {}, {
+      experienceReader: reader,
+      learningAssessmentReceipts: {
+        hasTerminal: async (id) => receipts.has(id),
+        writeTerminal: async (id, outcome) => { receipts.set(id, outcome); },
+      },
+      onLearningOpportunityAssessment: (assessment) => assessments.push(assessment),
+    });
+    const idle = { ...context("/repo"), isIdle: () => true };
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+    const signal = { intent, ...(intent === "revise-existing" ? { targetStrategyId: "direct-action" } : {}), reason: "Reusable lesson" };
+    const call = toolCall("pindie_learning_signal", signal, "autonomous-signal");
+    assert.equal((await callGuard(harness, call))?.block, undefined);
+    await harness.api.tool("pindie_learning_signal").execute("autonomous-signal", signal, undefined, undefined, idle);
+    await harness.api.handler("tool_result")(toolResult("pindie_learning_signal", false, "autonomous-signal"), idle);
+    await harness.api.handler("agent_settled")({ type: "agent_settled" }, idle);
+    assert.equal(assessments[0]?.status, "admitted", JSON.stringify(assessments));
+    await waitFor(() => harness.api.sentUserMessages.length === 1);
+    assert.equal(harness.api.sentUserMessages.length, 1);
+    assert.equal(receipts.size, 0, "admission is not terminal");
+    const prompt = await harnessBeforeAgentStart(harness);
+    assert.match(prompt.systemPrompt, intent === "revise-existing" ? /<PINDIE_ADAPTATION_PACKET>/ : /<PINDIE_DERIVATION_PACKET>/);
+    assert.equal(harness.integration.runtime.state.task?.goal, "Source work");
+    await harness.api.handler("agent_before_settle")({ type: "agent_before_settle", outcome: "completed", entries: [], continue: false, context: {} }, idle);
+    await harness.api.handler("agent_settled")({ type: "agent_settled" }, idle);
+    assert.equal(receipts.get(assessments[0]!.identity!), "no-candidate");
+    assert.equal(harness.api.sentUserMessages.length, 1);
+    assert.equal(harness.integration.runtime.state.task?.goal, "Source work");
+  }
+});
+
+test("Slice D exact successful Candidate, abort, Human preemption and restart fail closed", async () => {
+  const make = (preempt: "input" | "session" | null = null) => {
+    const reader = new ExtensionTestExperienceReader();
+    reader.result = { records: [
+      { recordId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.json", experience: commandExperience("one", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.json", experience: commandExperience("two", createPolicySnapshot({ approach: "direct-action" })) },
+    ], loadedRecords: 2, unsupportedSchema: 0, invalid: 0 };
+    const receipts = new Map<string, string>();
+    const assessments: Array<{ status: string; identity?: string }> = [];
+    const harness = createHarness([["/repo", activeState("Unchanged work")]], {}, {
+      experienceReader: reader,
+      strategyCandidateReader: { read: async (_root, id) => ({ candidateId: id } as never) },
+      learningAssessmentReceipts: { hasTerminal: async (id) => receipts.has(id), writeTerminal: async (id, outcome) => { receipts.set(id, outcome); } },
+      onLearningOpportunityAssessment: (assessment) => {
+        assessments.push(assessment);
+        if (preempt === "input" && assessment.status === "admitted") void harness.api.handler("input")(
+          { type: "input", source: "interactive", streamingBehavior: "steer" }, { ...context("/repo"), isIdle: () => true },
+        );
+        if (preempt === "session" && assessment.status === "admitted") void harness.api.handler("session_shutdown")(
+          { type: "session_shutdown", reason: "replacement" }, { ...context("/repo"), isIdle: () => true },
+        );
+      },
+    });
+    return { harness, receipts, assessments };
+  };
+  const signal = { intent: "revise-existing", targetStrategyId: "direct-action", reason: "Reusable lesson" };
+  const source = async (harness: ReturnType<typeof createHarness>) => {
+    const idle = { ...context("/repo"), isIdle: () => true };
+    await startSession(harness, "/repo");
+    await beginAgentRun(harness);
+    const call = toolCall("pindie_learning_signal", signal, "signal");
+    assert.equal((await callGuard(harness, call))?.block, undefined);
+    await harness.api.tool("pindie_learning_signal").execute("signal", signal, undefined, undefined, idle);
+    await harness.api.handler("tool_result")(toolResult("pindie_learning_signal", false, "signal"), idle);
+    await harness.api.handler("agent_settled")({ type: "agent_settled" }, idle);
+    return idle;
+  };
+  const created = make();
+  const idle = await source(created.harness);
+  assert.equal(created.assessments[0]?.status, "admitted", JSON.stringify(created.assessments));
+  await waitFor(() => created.harness.api.sentUserMessages.length === 1);
+  assert.equal(created.harness.api.sentUserMessages.length, 1);
+  await harnessBeforeAgentStart(created.harness);
+  await created.harness.api.handler("input")(
+    { type: "input", source: "interactive", streamingBehavior: "steer" }, idle,
+  );
+  const candidateCall = toolCall("pindie_strategy_candidate_create", {}, "candidate");
+  assert.equal((await callGuard(created.harness, candidateCall))?.block, undefined);
+  await created.harness.api.handler("tool_result")({ ...toolResult("pindie_strategy_candidate_create", false, "candidate"), details: { candidateId: "exact-candidate" } }, idle);
+  await created.harness.api.handler("agent_before_settle")(beforeSettle(), idle);
+  await created.harness.api.handler("agent_settled")({ type: "agent_settled" }, idle);
+  assert.equal(created.receipts.get(created.assessments[0]!.identity!), "candidate-created");
+  assert.equal(created.harness.integration.runtime.state.task?.goal, "Unchanged work");
+  await beginAgentRun(created.harness);
+  const duplicate = toolCall("pindie_learning_signal", signal, "duplicate-signal");
+  assert.equal((await callGuard(created.harness, duplicate))?.block, undefined);
+  await created.harness.api.tool("pindie_learning_signal").execute("duplicate-signal", signal, undefined, undefined, idle);
+  await created.harness.api.handler("tool_result")(toolResult("pindie_learning_signal", false, "duplicate-signal"), idle);
+  await created.harness.api.handler("agent_settled")({ type: "agent_settled" }, idle);
+  assert.equal(created.assessments.at(-1)?.status, "rejected");
+  assert.equal(created.harness.api.sentUserMessages.length, 1, "exact terminal identity suppresses a second attempt");
+
+  const aborted = make();
+  const abortedIdle = await source(aborted.harness);
+  await waitFor(() => aborted.harness.api.sentUserMessages.length === 1);
+  await harnessBeforeAgentStart(aborted.harness);
+  await aborted.harness.api.handler("agent_before_settle")(beforeSettle("aborted"), abortedIdle);
+  await aborted.harness.api.handler("agent_settled")({ type: "agent_settled" }, abortedIdle);
+  assert.equal(aborted.receipts.size, 0);
+
+  const failed = make();
+  const failedIdle = await source(failed.harness);
+  await waitFor(() => failed.harness.api.sentUserMessages.length === 1);
+  await harnessBeforeAgentStart(failed.harness);
+  const failedCall = toolCall("pindie_strategy_candidate_create", {}, "failed-candidate");
+  assert.equal((await callGuard(failed.harness, failedCall))?.block, undefined);
+  await failed.harness.api.handler("tool_result")(toolResult("pindie_strategy_candidate_create", true, "failed-candidate"), failedIdle);
+  await failed.harness.api.handler("agent_before_settle")(beforeSettle(), failedIdle);
+  await failed.harness.api.handler("agent_settled")({ type: "agent_settled" }, failedIdle);
+  assert.equal(failed.receipts.size, 0, "failed Candidate publication is not a no-candidate conclusion");
+
+  const retried = make();
+  const retriedIdle = await source(retried.harness);
+  await waitFor(() => retried.harness.api.sentUserMessages.length === 1);
+  await harnessBeforeAgentStart(retried.harness);
+  const rejectedCall = toolCall("pindie_strategy_candidate_create", {}, "retry-failed");
+  const publishedCall = toolCall("pindie_strategy_candidate_create", {}, "retry-succeeded");
+  assert.equal((await callGuard(retried.harness, rejectedCall))?.block, undefined);
+  await retried.harness.api.handler("tool_result")(toolResult("pindie_strategy_candidate_create", true, "retry-failed"), retriedIdle);
+  assert.equal((await callGuard(retried.harness, publishedCall))?.block, undefined);
+  await retried.harness.api.handler("tool_result")({
+    ...toolResult("pindie_strategy_candidate_create", false, "retry-succeeded"),
+    details: { candidateId: "retry-exact-candidate" },
+  }, retriedIdle);
+  await retried.harness.api.handler("agent_before_settle")(beforeSettle(), retriedIdle);
+  await retried.harness.api.handler("agent_settled")({ type: "agent_settled" }, retriedIdle);
+  assert.equal(retried.receipts.get(retried.assessments[0]!.identity!), "candidate-created");
+
+  const human = make("input");
+  await source(human.harness);
+  assert.equal(human.assessments[0]?.status, "admitted");
+  assert.equal(human.harness.api.sentUserMessages.length, 0);
+  await human.harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "reload" }, idle);
+  assert.equal(human.harness.integration.trial?.hasTrial, false);
+  assert.equal(human.receipts.size, 0);
+  const stale = make("session");
+  await source(stale.harness);
+  assert.equal(stale.harness.api.sentUserMessages.length, 0);
+  assert.equal(stale.receipts.size, 0);
+  assert.equal(stale.harness.integration.runtime.state.task?.goal ?? null, null);
+});
+
+test("Slice D admitted global synthesis uses the existing reservation and packet, not a Task Run", async () => {
+  const projectA = getProjectId("/global-source-a");
+  const projectB = getProjectId("/global-source-b");
+  const records = new Map([
+    [projectA, [
+      { recordId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.json", experience: commandExperience("alpha", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.json", experience: commandExperience("beta", createPolicySnapshot({ approach: "explore-first" })) },
+    ]],
+    [projectB, [{ recordId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc.json", experience: commandExperience("gamma", createPolicySnapshot({ approach: "direct-action" })) }]],
+  ]);
+  const harness = createHarness([["/repo", activeState("Source work")]], {}, {
+    crossProjectExperienceReader: {
+      listProjectIds: async () => [projectA, projectB],
+      readProjectId: async (id) => ({ records: records.get(id) ?? [], loadedRecords: (records.get(id) ?? []).length, unsupportedSchema: 0, invalid: 0 }),
+    },
+    crossProjectTrustReader: { readProjectId: async (id) => createTrustedStrategyPortfolioForProjectId(id, createPromotedStrategyRevisionCatalog([])) },
+    learningAssessmentReceipts: { hasTerminal: async () => false, writeTerminal: async () => undefined },
+  });
+  const idle = { ...context("/repo"), isIdle: () => true };
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  const signal = { intent: "derive-global", reason: "Shared lesson" };
+  const call = toolCall("pindie_learning_signal", signal, "global-signal");
+  assert.equal((await callGuard(harness, call))?.block, undefined);
+  await harness.api.tool("pindie_learning_signal").execute("global-signal", signal, undefined, undefined, idle);
+  await harness.api.handler("tool_result")(toolResult("pindie_learning_signal", false, "global-signal"), idle);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, idle);
+  await waitFor(() => harness.api.sentUserMessages.length === 1);
+  assert.equal(harness.api.sentUserMessages.length, 1);
+  assert.equal(harness.integration.globalDerivation?.hasPending, true);
+  const prompt = await harnessBeforeAgentStart(harness);
+  assert.match(prompt.systemPrompt, /<PINDIE_GLOBAL_DERIVATION_RUN>/);
+  assert.equal(harness.integration.runtime.state.task?.goal, "Source work");
+});
+
 test("Slice C signal Gateway rejects outside an active ordinary Run and during adaptation", async () => {
   const harness = createHarness([["/repo", activeState("Opportunity")]]);
   await startSession(harness, "/repo");

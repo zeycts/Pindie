@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
+  ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
 import {
@@ -300,9 +301,17 @@ export class CrossProjectLearningIntegration {
     return buildCrossProjectSynthesisPacket({ scan, capturedAt });
   }
 
+  async admitAutonomousLearning(ctx: ExtensionContext, isCurrent: () => boolean): Promise<boolean> {
+    if (!isCurrent()) return false;
+    await this.handleGlobalDerivationCommand("", ctx, "autonomous-signal", isCurrent);
+    return this.pendingGlobalDerivation !== null;
+  }
+
   private async handleGlobalDerivationCommand(
     args: string,
-    ctx: ExtensionCommandContext,
+    ctx: ExtensionContext,
+    origin: "human-command" | "autonomous-signal" = "human-command",
+    isCurrent: () => boolean = () => true,
   ): Promise<void> {
     if (args.trim() !== "") {
       ctx.ui.notify("Usage: /derive-global", "warning");
@@ -313,7 +322,7 @@ export class CrossProjectLearningIntegration {
       ctx.ui.notify("Pindie could not start /derive-global: no current project root is loaded.", "warning");
       return;
     }
-    if (!ctx.isIdle()) {
+    if (!ctx.isIdle() || !isCurrent()) {
       ctx.ui.notify("Pindie could not start /derive-global: the Agent is busy.", "warning");
       return;
     }
@@ -347,14 +356,14 @@ export class CrossProjectLearningIntegration {
         !this.learning.globalDerivation.isCurrent(reservation) ||
         ctx.sessionManager.getSessionId() !== sessionId ||
         this.learning.getProjectRoot() !== projectRoot ||
-        !ctx.isIdle()
+        !ctx.isIdle() || !isCurrent()
       ) throw new Error("the current Session, project, Agent state, or Global Derivation reservation changed while scanning evidence");
 
       if (
         !this.learning.globalDerivation.isCurrent(reservation) ||
         ctx.sessionManager.getSessionId() !== sessionId ||
         this.learning.getProjectRoot() !== projectRoot ||
-        !ctx.isIdle()
+        !ctx.isIdle() || !isCurrent()
       ) throw new Error("the current Session, project, Agent state, or Global Derivation reservation changed before launch");
 
       const candidateId = randomUUID().toLowerCase();
@@ -370,7 +379,7 @@ export class CrossProjectLearningIntegration {
       });
       try {
         this.pi.sendUserMessage(
-          "Begin the explicitly requested cross-project Strategy Synthesis discovery Run. Use only the frozen Cross-Project Synthesis Packet supplied for this Run. Candidate creation is optional missing-abstraction hypothesis generation, not project implementation work.",
+          `Begin the ${origin === "human-command" ? "explicitly requested" : "autonomously admitted"} cross-project Strategy Synthesis discovery Run. Use only the frozen Cross-Project Synthesis Packet supplied for this Run. Candidate creation is optional missing-abstraction hypothesis generation, not project implementation work.`,
         );
       } catch (error) {
         this.clearGlobalDerivationPreparation();

@@ -218,7 +218,7 @@ export function createPindieStrategyCandidateTool(
   return defineTool({
     name: "pindie_strategy_candidate_create",
     label: "Create Strategy Revision Candidate",
-    description: "Propose one bounded inactive Strategy Revision Candidate during an explicit /adapt <strategy-id> Run. The target Strategy is fixed by that live adaptation attempt; do not use this during ordinary coding Runs. Candidate creation is optional and evidence is not causal proof.",
+    description: "Propose one bounded inactive Strategy Revision Candidate during a live Seed-targeted adaptation Run (explicit /adapt or admitted autonomous learning). The target Strategy is fixed by that live adaptation attempt; do not use this during ordinary coding Runs. Candidate creation is optional and evidence is not causal proof.",
     parameters: StrategyCandidateParameters,
     executionMode: "sequential",
     async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext) {
