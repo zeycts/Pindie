@@ -1,6 +1,6 @@
 # Pindie Autonomous Learning Loop v0.1 — Architecture Boundary
 
-Status: approved architecture contract; Slices A–C implemented (remaining slices not started).
+Status: approved architecture contract; Slices A–D implemented (Slice E dogfood closure remains).
 
 This document defines the next Self-Improvement boundary after the frozen SI v0.7 and Cross-Project Learning v0.2 contracts. It does not rewrite those contracts or reinterpret their historical artifacts.
 

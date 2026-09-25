@@ -26,13 +26,11 @@ Persistent State + Run Facts
 Semantic Snapshot
   ↓
 Capabilities
-  ├─ Knowledge Surface
-  ├─ Tool Surface
-  └─ Execution Authorization
-          ↓
-         LLM
-          ↓
-   Execution Gateway
+  ├─ Knowledge Surface → LLM ← Pi tool baseline
+  └─ Execution Authorization ─────┐
+                   LLM choice ─────┤
+                                  ↓
+                         Execution Gateway
           ↓
        Reducer
           ↓
@@ -47,7 +45,7 @@ The semantic layer is deliberately small. Pindie does not add a second Agent Loo
 
 - one durable current Task with explicit success criteria, open loops, verification, and Human Gate;
 - pure `SemanticRunFacts → SemanticSnapshot → Capabilities` derivation;
-- capability-driven model Tool Surface over the current Pi/user tool baseline;
+- capability-driven execution authorization for the current Pi/user tool baseline (tool visibility alone is not authorization);
 - an execution Gateway that re-authorizes consequential calls against fresh authority;
 - factual Snapshot-aligned Runtime Context instead of a global lifecycle-policy prompt;
 - Project Mutation Freshness for keeping verification current with project Reality;
@@ -64,12 +62,18 @@ pindie_task_start
 pindie_task_replace
 pindie_task_refine
 pindie_task_progress
+pindie_task_handoff (when Host rollover is enabled)
 pindie_verification_record
 pindie_task_complete
 pindie_gate_open
 pindie_gate_resolve
 pindie_git_observe
 pindie_policy_set
+pindie_strategy_candidate_create (Self-Improvement)
+pindie_strategy_derivation_candidate_create (Self-Improvement)
+pindie_strategy_synthesis_candidate_create (Cross-Project Learning)
+pindie_learning_signal (Self-Improvement)
+pindie_memory_capture (when Work Memory is configured)
 ```
 
 ## Documentation
@@ -112,7 +116,7 @@ For private local MCP control, start the workspace service without an active Hos
 PINDIE_WORKSPACE_ROOT=/home/dev/projects pnpm control:mcp
 ```
 
-After merging, change the one environment line in the local user systemd service (do not change the Tunnel):
+For an existing single-project user systemd service, set the workspace root instead of the old project root (the Tunnel URL does not change):
 
 ```text
 PINDIE_PROJECT_ROOT=/home/dev/projects/Pindie
@@ -120,7 +124,7 @@ PINDIE_PROJECT_ROOT=/home/dev/projects/Pindie
 PINDIE_WORKSPACE_ROOT=/home/dev/projects
 ```
 
-It serves eight `pindie_*` tools over Streamable HTTP at `http://127.0.0.1:8765/mcp` (override the port with `PINDIE_CONTROL_PORT`). List direct-child projects and explicitly open one before using project-scoped tools. Point OpenAI Secure MCP Tunnel at that local URL using `--mcp-server-url`, not `--mcp-command`; restarting the tunnel does not stop the Host. Only explicit project switching or process shutdown disposes the active Host. The service binds loopback only and validates Host/Origin headers; it does not open a public listener.
+It serves nine `pindie_*` tools (the six project-scoped Control tools, list/open project, and create project) over Streamable HTTP at `http://127.0.0.1:8765/mcp` (override the port with `PINDIE_CONTROL_PORT`). List direct-child projects and explicitly open one before using project-scoped tools. Point OpenAI Secure MCP Tunnel at that local URL using `--mcp-server-url`, not `--mcp-command`; restarting the tunnel does not stop the Host. Only explicit project switching or process shutdown disposes the active Host. The service binds loopback only and validates Host/Origin headers; it does not open a public listener.
 
 Optional Work Memory uses Notion when both environment variables are configured:
 

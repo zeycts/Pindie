@@ -197,10 +197,15 @@ Pindie exposes narrow semantic affordances:
 ```text
 pindie_policy_set          → policy.declare
 pindie_strategy_candidate_create → policy.adapt
+pindie_strategy_derivation_candidate_create → policy.derive
+pindie_strategy_synthesis_candidate_create → policy.derive
+pindie_learning_signal      → learning.signal
+pindie_memory_capture      → memory.capture (configured Work Memory)
 pindie_task_start          → task.start
 pindie_task_replace        → task.replace
 pindie_task_refine         → task.refine
 pindie_task_progress       → task.progress
+pindie_task_handoff        → task.progress (enabled Host rollover)
 pindie_verification_record → verification.record
 pindie_task_complete       → task.complete
 pindie_gate_open           → gate.open

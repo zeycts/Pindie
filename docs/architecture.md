@@ -27,17 +27,17 @@ Persistent State + runtime-only Run Facts
 Semantic Snapshot
   ↓
 Capabilities
-  ├───────────────┬──────────────────┐
-  ↓               ↓                  ↓
-Knowledge      Tool Surface      Authorization
-Surface            │                  │
-  │                └──────┬───────────┘
-  │                       ↓
-  └────────────────────── LLM
-                          ↓
-                    semantic choice
-                          ↓
-                  Execution Gateway
+  ├─────────────────────────┐
+  ↓                         ↓
+Knowledge              Authorization
+Surface                     │
+  ↓                         │
+ LLM ← Pi tool baseline      │
+  ↓                         │
+semantic choice             │
+  └──────────┬──────────────┘
+             ↓
+      Execution Gateway
                           ↓
                        Reducer
                           ↓
@@ -125,7 +125,7 @@ gate.open
 gate.resolve
 ```
 
-Ordinary Task/verification/Gate capabilities are pure derived authority and are never persisted. `policy.adapt` is a runtime-only control capability granted only to the active Candidate tool while an explicit adaptation lease is bound to the current Agent Run; it is never persisted or included in ordinary capability sets.
+Ordinary Task/verification/Gate capabilities are pure derived authority and are never persisted. Candidate creation uses runtime-only `policy.adapt` or `policy.derive` control authority bound to the corresponding explicit or admitted learning Run; it is not persisted as Task State.
 
 Important capability consequences:
 
@@ -152,7 +152,9 @@ pindie_git_observe      → observe.git / mutation none
 edit / write            → project.mutate / mutation known
 bash / unknown/custom   → project.mutate / mutation ambiguous
 semantic Pindie tool    → exact semantic capability / mutation none
-strategy Candidate tool  → policy.adapt / mutation none (active adaptation lease only)
+strategy Candidate tools → policy.adapt or policy.derive / mutation none (matching Run lease only)
+learning signal tool    → learning.signal / mutation none
+Work Memory tool        → memory.capture / mutation none
 ```
 
 Unknown/custom tools are conservative. Generic shell commands are not parsed into read-only exceptions.
@@ -174,10 +176,15 @@ Model-facing Pindie semantic tools are narrow capability-shaped adapters:
 ```text
 pindie_policy_set          → policy.declare
 pindie_strategy_candidate_create → policy.adapt
+pindie_strategy_derivation_candidate_create → policy.derive
+pindie_strategy_synthesis_candidate_create → policy.derive
+pindie_learning_signal      → learning.signal
+pindie_memory_capture      → memory.capture (configured Work Memory)
 pindie_task_start          → task.start
 pindie_task_replace        → task.replace
 pindie_task_refine         → task.refine
 pindie_task_progress       → task.progress
+pindie_task_handoff        → task.progress (enabled Host rollover)
 pindie_verification_record → verification.record
 pindie_task_complete       → task.complete
 pindie_gate_open           → gate.open
@@ -189,7 +196,7 @@ Internal reducer events remain tool-agnostic.
 
 Pi owns the active model Tool Surface. Pindie does not narrow, expand, capture, or restore that surface as semantic State changes. A currently unauthorized tool may remain visible to the model; visibility is not authorization.
 
-The Gateway remains authoritative for every consequential call, including races, stale pre-generated calls, and calls generated before a same-Run semantic change. It derives current capabilities from the current semantic Snapshot and blocks or allows the concrete effect at execution time. Self-Improvement Candidate creation is a separate `policy.adapt` control effect with no project mutation; it additionally requires a live explicit `/adapt <strategy-id>` runtime lease.
+The Gateway remains authoritative for every consequential call, including races, stale pre-generated calls, and calls generated before a same-Run semantic change. It derives current capabilities from the current semantic Snapshot and blocks or allows the concrete effect at execution time. Candidate creation is a separate non-project-mutating `policy.adapt` or `policy.derive` control effect and requires the matching live Run lease.
 
 ## 7. Knowledge Surface and prompt ownership
 
