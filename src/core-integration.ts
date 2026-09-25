@@ -177,10 +177,10 @@ export function coreGatewayDenialReason(
   requiredCapability: ToolEffect["requiredCapability"],
 ): string {
   if (requiredCapability === "policy.adapt") {
-    return "Pindie blocked this call: Strategy Candidate creation requires a live explicit adaptation attempt. Use /adapt <strategy-id> while the Agent is idle.";
+    return "Pindie blocked this call: Strategy Candidate creation requires a live Seed-targeted adaptation lease (explicit /adapt <strategy-id> or matching autonomously admitted learning Run). Outside an admitted Run, use /adapt <strategy-id> while the Agent is idle.";
   }
   if (requiredCapability === "policy.derive") {
-    return "Pindie blocked this call: Strategy Derivation Candidate creation requires a live explicit /derive Run. Use /derive while the Agent is idle.";
+    return "Pindie blocked this call: Strategy Derivation Candidate creation requires a live local Derivation lease (explicit /derive or matching autonomously admitted learning Run). Outside an admitted Run, use /derive while the Agent is idle.";
   }
   if (snapshot.authority === "coherent" && requiredCapability === "task.replace") {
     if (snapshot.taskStatus === "done") {
