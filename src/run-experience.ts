@@ -140,7 +140,8 @@ export class RunExperienceTracker {
     const isPolicy = effect.requiredCapability === "policy.declare";
     const isSelfImprovement = effect.requiredCapability === "policy.adapt" ||
       effect.requiredCapability === "policy.derive";
-    const isMemory = effect.requiredCapability === "memory.capture";
+    const isMemory = effect.requiredCapability === "memory.capture" ||
+      effect.requiredCapability === "learning.signal";
     this.authorizedCalls.set(
       toolCallId,
       isPolicy
@@ -179,7 +180,8 @@ export class RunExperienceTracker {
       effect.requiredCapability === "policy.declare" ||
       effect.requiredCapability === "policy.adapt" ||
       effect.requiredCapability === "policy.derive" ||
-      effect.requiredCapability === "memory.capture"
+      effect.requiredCapability === "memory.capture" ||
+      effect.requiredCapability === "learning.signal"
     ) return;
     this.counters = {
       ...this.counters,

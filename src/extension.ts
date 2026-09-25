@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   composeConfiguredPindieExtension,
   composePindieExtension,
+  resolvePindieStorageRoots,
   type PindieFeatureSelection,
   type PindieStorageRoots,
 } from "./composition.ts";
@@ -42,6 +43,13 @@ import {
 import { PINDIE_REMOTE_NOTICE_TYPE, renderPindieRemoteNotice } from "./remote-notice.ts";
 import { CrossProjectLearningIntegration } from "./cross-project-learning-integration.ts";
 import { SelfImprovementIntegration } from "./self-improvement-integration.ts";
+import { LEARNING_SIGNAL_POLICY, LearningSignalHolder, createPindieLearningSignalTool } from "./learning-signal.ts";
+import {
+  assessLearningOpportunity,
+  FileLearningAssessmentReceiptReader,
+  type LearningAssessmentReceiptReader,
+  type LearningOpportunityAssessment,
+} from "./learning-opportunity.ts";
 import type {
   RunExperienceProjectReader,
   RunExperienceReader,
@@ -176,6 +184,9 @@ export interface PindieExtensionOptions {
   quotaFallbackPreferenceStore?: QuotaFallbackPreferenceStore;
   experienceStore?: RunExperienceStore;
   experienceReader?: RunExperienceReader;
+  /** Internal read-only assessment seams; no receipt writing in Slice C. */
+  learningAssessmentReceipts?: LearningAssessmentReceiptReader;
+  onLearningOpportunityAssessment?: (assessment: LearningOpportunityAssessment) => void;
   strategyCandidateStore?: StrategyCandidateStore;
   strategyCandidateReader?: StrategyCandidateReader;
   strategyDerivationCandidateStore?: StrategyDerivationCandidateStore;
@@ -379,6 +390,9 @@ function registerComposedPindieExtension(
   });
   const runtime = core.runtime;
   const run = core.run;
+  const learningSignal = new LearningSignalHolder();
+  const learningAssessmentReceipts = options.learningAssessmentReceipts ??
+    new FileLearningAssessmentReceiptReader(resolvePindieStorageRoots(options.storageRoots).globalBaseDir);
   const handoff = core.handoff;
   const contextGovernor = core.contextGovernor;
   const execution = core.execution;
@@ -737,6 +751,15 @@ function registerComposedPindieExtension(
   });
   selfImprovement?.registerTools();
   crossProjectLearning?.registerTools();
+  if (featureSelection.selfImprovement) {
+    pi.registerTool(createPindieLearningSignalTool({
+      holder: learningSignal,
+      getGeneration: () => run.activeAgentRunGeneration,
+      isOrdinary: () => run.hasActiveAgentRun &&
+        selfImprovement !== null && !selfImprovement.hasConflictingLearningPath &&
+        (() => { const derived = run.deriveSnapshot(); return derived.ok && derived.snapshot.authority === "coherent"; })(),
+    }));
+  }
 
   if (options.projectMemorySink !== undefined) {
     pi.registerTool(createPindieMemoryCaptureTool({
@@ -767,6 +790,7 @@ function registerComposedPindieExtension(
 
   pi.on("session_start", async (_event, ctx) => {
     ++agentRunLifecycleGeneration;
+    learningSignal.begin(null);
     await quotaResume.restoreSession(ctx);
     await quotaFallback.restoreSession(ctx);
     const nativeSessionId = options.remoteCompanion || taskHandoffEnabled
@@ -836,6 +860,7 @@ function registerComposedPindieExtension(
 
   pi.on("session_tree", async (_event, ctx) => {
     ++agentRunLifecycleGeneration;
+    learningSignal.begin(null);
     cancelQuotaResume(ctx);
     try { fallbackController?.cancel(ctx.sessionManager.getSessionId()); } catch { /* Released Host. */ }
     await quotaResume.restoreBranch(ctx);
@@ -883,6 +908,7 @@ function registerComposedPindieExtension(
 
   pi.on("session_shutdown", (event, ctx) => {
     ++agentRunLifecycleGeneration;
+    learningSignal.begin(null);
     cancelQuotaResume(ctx);
     releaseQuotaStatusObserver?.();
     releaseQuotaStatusObserver = null;
@@ -916,6 +942,7 @@ function registerComposedPindieExtension(
 
   pi.on("before_agent_start", async (event, ctx) => {
     ++agentRunLifecycleGeneration;
+    learningSignal.begin(null);
     let preparationGeneration: number | null = null;
     try {
       presentation.setStatusContext(ctx);
@@ -940,6 +967,7 @@ function registerComposedPindieExtension(
       // authoritative project State rather than a previous session snapshot.
       core.beginAgentRunFacts(ctx);
       preparationGeneration = run.activeAgentRunGeneration;
+      learningSignal.begin(preparationGeneration);
       const selfImprovementRun = selfImprovement === null
         ? {
             adaptationLease: null,
@@ -1004,6 +1032,11 @@ function registerComposedPindieExtension(
           ? []
           : [corePromptContribution(appendPindieWorkMemoryContract(""))]),
         ...selfImprovementRun.promptContributions.map((content) => corePromptContribution(content)),
+        ...(featureSelection.selfImprovement &&
+          selfImprovementRun.adaptationLease === null && selfImprovementRun.derivationLease === null &&
+          selfImprovementRun.globalDerivationLease === null && selfImprovementRun.trialLease === null &&
+          derivation.snapshot.authority === "coherent"
+          ? [corePromptContribution(LEARNING_SIGNAL_POLICY)] : []),
       ];
       const systemPrompt = core.buildSystemPrompt(
         event.systemPrompt,
@@ -1204,7 +1237,11 @@ function registerComposedPindieExtension(
       if (isHandoffCall) handoff.cancelHandoffReservation(event.toolCallId);
       else handoff.cancelNormalToolCall(event.toolCallId);
     };
-    const selfImprovementRestriction = selfImprovement?.restrictToolCall(effect, event.toolName) ?? null;
+    const selfImprovementRestriction = effect.requiredCapability === "learning.signal" &&
+      (!featureSelection.selfImprovement || !run.hasActiveAgentRun ||
+        selfImprovement?.hasConflictingLearningPath !== false)
+      ? "Pindie blocked this call: learning signals require an ordinary normal-use Run."
+      : selfImprovement?.restrictToolCall(effect, event.toolName) ?? null;
     if (selfImprovementRestriction !== null) {
       cancelToolAdmission();
       run.recordDeniedCall(effect);
@@ -1271,6 +1308,11 @@ function registerComposedPindieExtension(
     const derivationActive = selfImprovement?.isDerivationRunActive === true;
     const globalDerivationActive = selfImprovement?.isGlobalDerivationRunActive === true;
     const capabilities = new Set<PindieCapability>(deriveCapabilities(snapshot));
+    if (effect.requiredCapability === "learning.signal" && featureSelection.selfImprovement &&
+        run.hasActiveAgentRun && selfImprovement?.hasConflictingLearningPath === false &&
+        snapshot.authority === "coherent") {
+      capabilities.add("learning.signal");
+    }
     if (effect.requiredCapability === "policy.adapt" && adaptationActive) {
       capabilities.add("policy.adapt");
     }
@@ -1494,6 +1536,32 @@ function registerComposedPindieExtension(
       selfImprovement?.createSettlementObserver(),
     );
     if (result.status !== "settled") return;
+
+    // Core's settlement observer has already frozen/persisted ordinary Experience.
+    // This read-only Gate cannot affect the completed work or start a successor Run.
+    const acceptedLearningSignal = learningSignal.take(result.facts?.settlementGeneration ?? null);
+    if (acceptedLearningSignal !== null &&
+        (result.facts?.snapshot?.authority !== "coherent" || result.facts.projectRoot === null || selfImprovement === null)) {
+      options.onLearningOpportunityAssessment?.({ status: "rejected", reason: "Source project authority is unavailable." });
+    } else if (acceptedLearningSignal !== null && result.facts?.snapshot?.authority === "coherent" &&
+        result.facts.projectRoot !== null && selfImprovement !== null) {
+      const projectRoot = result.facts.projectRoot;
+      const assessment = await assessLearningOpportunity({
+        signal: acceptedLearningSignal,
+        projectRoot,
+        selfImprovement,
+        crossProjectLearning,
+        receipts: learningAssessmentReceipts,
+        now: continuityNow,
+        isCurrent: () => {
+          const fresh = run.deriveSnapshot();
+          return isCurrentSettlement() && runtime.projectRoot === projectRoot &&
+            fresh.ok && fresh.snapshot.authority === "coherent" &&
+            selfImprovement?.hasConflictingLearningPath === false;
+        },
+      });
+      options.onLearningOpportunityAssessment?.(assessment);
+    }
 
     presentation.clearActivityLingerRefresh();
     presentation.runActivity?.settle();

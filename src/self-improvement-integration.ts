@@ -440,6 +440,11 @@ export class SelfImprovementIntegration {
     return this.currentTrustedStrategyPortfolio;
   }
 
+  get hasConflictingLearningPath(): boolean {
+    return this.adaptation.hasAttempt || this.derivation.hasDerivation ||
+      this.globalDerivation.hasAttempt || this.trial.hasTrial;
+  }
+
   get isAdaptationRunActive(): boolean {
     const generation = this.core.getActiveAgentRunGeneration();
     return generation !== null && this.adaptationRunGeneration === generation;
@@ -1729,6 +1734,30 @@ export class SelfImprovementIntegration {
     ctx.ui.notify("No Candidate selected. Use command completion to choose one.", "warning");
   }
 
+  async prepareTrustedLearningPortfolio(projectRoot: string): Promise<TrustedStrategyPortfolio> {
+    return this.loadTrustedPortfolio(projectRoot);
+  }
+
+  /** Read-only eligibility shared by explicit adaptation and the post-Run Gate. */
+  async prepareAdaptationEvidence(projectRoot: string, targetId: string) {
+    const target = getSeedStrategy(targetId);
+    if (target === null) throw new Error("Target is not an immutable Seed Strategy.");
+    const read = await this.experienceReader.read(projectRoot);
+    const packet = buildAdaptationPacket(target, read.records);
+    if (packet.evidence.eligibleRunCount < 2) {
+      throw new Error(`only ${packet.evidence.eligibleRunCount} eligible attributable Run${packet.evidence.eligibleRunCount === 1 ? " is" : "s are"} available; at least 2 are required`);
+    }
+    return { target, packet };
+  }
+
+  /** Read-only eligibility shared by explicit derivation and the post-Run Gate. */
+  async prepareDerivationEvidence(projectRoot: string) {
+    const portfolio = await this.loadProjectTrustedPortfolio(projectRoot);
+    const read = await this.experienceReader.read(projectRoot);
+    const packet = buildDerivationPacket(projectRoot, portfolio, read.records);
+    return { portfolio, packet };
+  }
+
   private async handleAdaptationCommand(
     args: string,
     ctx: ExtensionCommandContext,
@@ -1776,25 +1805,11 @@ export class SelfImprovementIntegration {
       ctx.ui.notify(`Pindie could not start /adapt: ${errorMessage(error)}`, "warning");
       return;
     }
-    let read;
-    try {
-      read = await this.experienceReader.read(projectRoot);
-    } catch (error) {
-      ctx.ui.notify(`Pindie could not start /adapt: Experience reading failed: ${errorMessage(error)}`, "warning");
-      return;
-    }
     let packet;
     try {
-      packet = buildAdaptationPacket(target, read.records);
+      ({ packet } = await this.prepareAdaptationEvidence(projectRoot, target.id));
     } catch (error) {
-      ctx.ui.notify(`Pindie could not start /adapt: evidence evaluation failed: ${errorMessage(error)}`, "warning");
-      return;
-    }
-    if (packet.evidence.eligibleRunCount < 2) {
-      ctx.ui.notify(
-        `Pindie could not start /adapt '${target.id}': only ${packet.evidence.eligibleRunCount} eligible attributable Run${packet.evidence.eligibleRunCount === 1 ? " is" : "s are"} available; at least 2 are required.`,
-        "warning",
-      );
+      ctx.ui.notify(`Pindie could not start /adapt: evidence preparation failed: ${errorMessage(error)}`, "warning");
       return;
     }
     if (this.core.getProjectRoot() !== projectRoot) {
@@ -2398,29 +2413,14 @@ export class SelfImprovementIntegration {
       return;
     }
 
-    let portfolio;
+    let prepared;
     try {
-      portfolio = await this.loadProjectTrustedPortfolio(projectRoot);
+      prepared = await this.prepareDerivationEvidence(projectRoot);
     } catch (error) {
-      ctx.ui.notify(`Pindie could not start /derive: trusted Strategy portfolio validation failed: ${errorMessage(error)}`, "warning");
+      ctx.ui.notify(`Pindie could not start /derive: evidence preparation failed: ${errorMessage(error)}`, "warning");
       return;
     }
-
-    let read;
-    try {
-      read = await this.experienceReader.read(projectRoot);
-    } catch (error) {
-      ctx.ui.notify(`Pindie could not start /derive: Experience reading failed: ${errorMessage(error)}`, "warning");
-      return;
-    }
-
-    let packet;
-    try {
-      packet = buildDerivationPacket(projectRoot, portfolio, read.records);
-    } catch (error) {
-      ctx.ui.notify(`Pindie could not start /derive: evidence evaluation failed: ${errorMessage(error)}`, "warning");
-      return;
-    }
+    const { portfolio, packet } = prepared;
 
     let currentSessionId: string;
     try {

@@ -1,6 +1,6 @@
 # Pindie Autonomous Learning Loop v0.1 — Architecture Boundary
 
-Status: approved architecture contract; Slices A–B implemented (remaining slices not started).
+Status: approved architecture contract; Slices A–C implemented (remaining slices not started).
 
 This document defines the next Self-Improvement boundary after the frozen SI v0.7 and Cross-Project Learning v0.2 contracts. It does not rewrite those contracts or reinterpret their historical artifacts.
 
@@ -585,6 +585,8 @@ Goal: make Experience explicitly forgettable and bounded.
 No semantic summarizer and no background GC.
 
 ### Slice C — Learning Opportunity Gate
+
+Implemented: one runtime-only signal per ordinary Run, evaluated read-only after ordinary Experience persistence and Core settlement. Exact factual identities check bounded terminal receipts; no receipt is written on admission. Gate outcomes are internal diagnostics only, and no learning Run or Candidate is started. Slice D remains unstarted.
 
 Goal: let a normal Agent Run identify one possible learning opportunity without starting learning yet.
 

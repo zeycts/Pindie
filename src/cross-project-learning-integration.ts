@@ -291,6 +291,15 @@ export class CrossProjectLearningIntegration {
     this.clearGlobalDerivationPreparation();
   }
 
+  /** Read-only discovery preparation; reservation/launch remain explicit-command only. */
+  async prepareGlobalDerivationEvidence(capturedAt: string): Promise<CrossProjectSynthesisPacket> {
+    const scan = await scanCrossProjectSynthesisEvidence({
+      experienceReader: this.crossProjectExperienceReader,
+      trustedPortfolioReader: this.crossProjectTrustReader,
+    });
+    return buildCrossProjectSynthesisPacket({ scan, capturedAt });
+  }
+
   private async handleGlobalDerivationCommand(
     args: string,
     ctx: ExtensionCommandContext,
@@ -333,10 +342,7 @@ export class CrossProjectLearningIntegration {
     }
     const reservation = admission.reservation;
     try {
-      const scan = await scanCrossProjectSynthesisEvidence({
-        experienceReader: this.crossProjectExperienceReader,
-        trustedPortfolioReader: this.crossProjectTrustReader,
-      });
+      const packet = await this.prepareGlobalDerivationEvidence(new Date(this.now()).toISOString());
       if (
         !this.learning.globalDerivation.isCurrent(reservation) ||
         ctx.sessionManager.getSessionId() !== sessionId ||
@@ -344,10 +350,6 @@ export class CrossProjectLearningIntegration {
         !ctx.isIdle()
       ) throw new Error("the current Session, project, Agent state, or Global Derivation reservation changed while scanning evidence");
 
-      const packet = buildCrossProjectSynthesisPacket({
-        scan,
-        capturedAt: new Date(this.now()).toISOString(),
-      });
       if (
         !this.learning.globalDerivation.isCurrent(reservation) ||
         ctx.sessionManager.getSessionId() !== sessionId ||
