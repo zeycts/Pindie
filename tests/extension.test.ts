@@ -8379,7 +8379,7 @@ test("SI v0.7 /derive is explicit, bounded, read-only, and consumes one Candidat
   await beginAgentRun(harness);
   assertBlocked(
     await callGuard(harness, toolCall("pindie_strategy_derivation_candidate_create", candidateInput, "ordinary-derive")),
-    /explicit \/derive|derive Run/i,
+    /Derivation or Synthesis Candidate creation requires a live matching lease \(explicit \/derive or \/derive-global Run, or matching autonomously admitted learning Run\)/i,
   );
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 });
@@ -10672,7 +10672,7 @@ test("Slice B /derive-global admits once, binds one packet-only Run, and settles
   assert.doesNotMatch(ordinaryRun.systemPrompt, /<PINDIE_GLOBAL_DERIVATION_RUN>/);
   assertBlocked(
     await callGuard(harness, toolCall("pindie_strategy_synthesis_candidate_create", input, "global-after-settlement")),
-    /requires a live local Derivation lease \(explicit \/derive or matching autonomously admitted learning Run\)/i,
+    /Derivation or Synthesis Candidate creation requires a live matching lease \(explicit \/derive or \/derive-global Run, or matching autonomously admitted learning Run\).*use \/derive or \/derive-global as appropriate/i,
   );
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
 });
