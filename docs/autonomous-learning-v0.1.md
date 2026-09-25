@@ -45,6 +45,21 @@ explicit Trial / Review / Human trust remains unchanged
 
 v0.1 therefore removes the Human requirement to notice and manually start every learning opportunity. It does **not** remove the Human trust boundary.
 
+This is a **v0.1 staging boundary, not the long-term ownership model**. The intended end state is a fully autonomous learning loop in which ordinary learning requires no Human participation:
+
+```text
+normal work
+→ detect learning opportunity
+→ derive / revise hypothesis
+→ choose and run bounded Trials
+→ evaluate evidence
+→ promote / reject / refine
+→ update the trusted Strategy portfolio
+→ continue normal work
+```
+
+Human authority in that end state moves upward: the Human defines goals, safety/authority limits, resource budgets, and exceptional override boundaries, but does not manually operate routine Candidate, Trial, Review, or trust transitions. Later milestones must therefore remove the remaining Human gates only when equivalent bounded evidence, rollback, and trust-safety contracts exist. v0.1 intentionally does not fake that safety before those contracts have been dogfooded.
+
 Success means that a real normal Task can produce a useful inactive Strategy Candidate without the Human issuing `/adapt`, `/derive`, or `/derive-global`, while ordinary project work remains primary and unaffected when learning is unnecessary or fails.
 
 ## 2. Non-goals
@@ -622,6 +637,8 @@ Also prove negative behavior:
 Only after this dogfood should Pindie consider Autonomous Trials or generalized Strategy refinement.
 
 ## 11. Future boundary after v0.1
+
+The long-term target is **fully autonomous learning with no routine Human participation**. The following are deferred stages toward that target, not optional permanent Human workflows:
 
 The next questions are intentionally deferred:
 
