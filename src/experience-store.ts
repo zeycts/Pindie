@@ -20,6 +20,8 @@ export interface FileRunExperienceStoreOptions {
   baseDir?: string;
   /** Test-only barrier immediately before the atomic rename. */
   onBeforeRename?: () => Promise<void>;
+  /** Best-effort maintenance runs only after a committed Experience write. */
+  onSaved?: (projectRoot: string) => Promise<void>;
 }
 
 export interface RunExperienceSourceRecord {
@@ -186,10 +188,12 @@ export class FileRunExperienceReader implements RunExperienceReader, RunExperien
 export class FileRunExperienceStore implements RunExperienceStore {
   private readonly baseDir: string;
   private readonly onBeforeRename: (() => Promise<void>) | undefined;
+  private readonly onSaved: ((projectRoot: string) => Promise<void>) | undefined;
 
   constructor(options: FileRunExperienceStoreOptions = {}) {
     this.baseDir = options.baseDir ?? join(homedir(), ".pindie", "projects");
     this.onBeforeRename = options.onBeforeRename;
+    this.onSaved = options.onSaved;
   }
 
   async save(
@@ -222,6 +226,13 @@ export class FileRunExperienceStore implements RunExperienceStore {
       throw new Error(
         `Could not save Pindie Run Experience file '${recordPath}': ${errorMessage(error)}`,
       );
+    }
+    try {
+      await this.onSaved?.(projectRoot);
+    } catch (error) {
+      // The Experience is already committed. Cleanup failures must not turn a
+      // successful normal Run into a failed save; report partial deletion explicitly.
+      console.warn(`[Pindie] Experience maintenance failed: ${errorMessage(error)}`);
     }
   }
 
