@@ -1,6 +1,6 @@
 # Pindie Autonomous Learning Loop v0.1 — Architecture Boundary
 
-Status: proposed architecture contract; implementation not started.
+Status: approved architecture contract; Slice A implemented (remaining slices not started).
 
 This document defines the next Self-Improvement boundary after the frozen SI v0.7 and Cross-Project Learning v0.2 contracts. It does not rewrite those contracts or reinterpret their historical artifacts.
 
@@ -340,7 +340,7 @@ StrategyKnowledgeSnapshotV1
 - user-global trust artifacts
 - exact schema/version metadata
 - integrity fingerprints
-- bounded autonomous-learning dedupe receipts
+- no operational assessment receipts in Slice A (Slice C may provide separately portable bounded dedupe metadata without granting trust)
 ```
 
 It must exclude:
@@ -566,7 +566,8 @@ Goal: make Strategy cognition Harness-owned rather than path-owned without chang
 - introduce the narrow Strategy knowledge persistence boundary;
 - adapt existing File-based stores behind it;
 - preserve all current candidate/decision validation and portfolio reconstruction;
-- add versioned Strategy cognition export/import;
+- add versioned Strategy cognition export/import; the first File adapter publishes a validated snapshot into a fresh, isolated host-migration namespace only, never merges into an existing `~/.pindie` tree;
+- bounded assessment receipts are operational deduplication metadata for Slice C, not durable Strategy cognition in the Slice A snapshot;
 - prove current SI/CPL behavior is byte-for-byte semantically unchanged.
 
 No autonomy and no Experience deletion yet.

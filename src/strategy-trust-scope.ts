@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
+import { FileStrategyKnowledge } from "./strategy-knowledge-file.ts";
 
 import {
   createStrategyTrustScopeCandidate,
-  FileStrategyTrustScopeCandidateStore,
   isCanonicalStrategyTrustScopeCandidateId,
   strategyTrustScopeCandidateFingerprint,
   validateStrategyTrustScopeCandidateArtifact,
@@ -14,7 +14,6 @@ import {
 } from "./strategy-trust-scope-candidates.ts";
 import {
   createStrategyTrustScopeDecision,
-  FileStrategyTrustScopeDecisionStore,
   validateStrategyTrustScopeDecisionArtifact,
   validateStrategyTrustScopeDecisionBinding,
   type StrategyTrustScopeDecisionReader,
@@ -23,7 +22,6 @@ import {
   type StrategyTrustScopeDecisionV1,
 } from "./strategy-trust-scope-decisions.ts";
 import {
-  FileStrategyTrustScopeSourceResolver,
   type ResolvedStrategyTrustScopeSource,
   type StrategyTrustScopeSourceResolver,
 } from "./strategy-trust-scope-resolution.ts";
@@ -496,11 +494,10 @@ export function defaultStrategyTrustScopeDependencies(
     readonly globalBaseDir?: string;
   } = {},
 ): StrategyTrustScopeCandidateCreationDependencies {
-  const candidateStore = new FileStrategyTrustScopeCandidateStore({ baseDir: options.globalBaseDir });
-  const decisionStore = new FileStrategyTrustScopeDecisionStore({ baseDir: options.globalBaseDir });
-  const sourceResolver = new FileStrategyTrustScopeSourceResolver({
-    projectsBaseDir: options.projectsBaseDir,
-  });
+  const knowledge = new FileStrategyKnowledge(options);
+  const candidateStore = knowledge.scopeCandidates;
+  const decisionStore = knowledge.scopeDecisions;
+  const sourceResolver = knowledge.sourceResolver;
   const writerLock = new FileGlobalWriterLock({ baseDir: options.globalBaseDir });
   return { candidateStore, decisionReader: decisionStore, sourceResolver, writerLock };
 }
