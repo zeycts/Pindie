@@ -182,7 +182,7 @@ export function createPindieStrategyDerivationCandidateTool(
   return defineTool({
     name: "pindie_strategy_derivation_candidate_create",
     label: "Create Strategy Derivation Candidate",
-    description: "Propose one bounded inactive new-logical-Strategy hypothesis during an explicit /derive Run. Candidate creation is optional; evidence permits only a hypothesis and does not establish novelty, usefulness, superiority, or causality.",
+    description: "Propose one bounded inactive new-logical-Strategy hypothesis during a live local Derivation Run (explicit /derive or admitted autonomous learning). Candidate creation is optional; evidence permits only a hypothesis and does not establish novelty, usefulness, superiority, or causality.",
     parameters: StrategyDerivationCandidateParameters,
     executionMode: "sequential",
     async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext) {

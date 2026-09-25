@@ -2411,6 +2411,9 @@ test("Slice D exact successful Candidate, abort, Human preemption and restart fa
   await waitFor(() => created.harness.api.sentUserMessages.length === 1);
   assert.equal(created.harness.api.sentUserMessages.length, 1);
   await harnessBeforeAgentStart(created.harness);
+  await created.harness.api.handler("input")(
+    { type: "input", source: "interactive", streamingBehavior: "steer" }, idle,
+  );
   const candidateCall = toolCall("pindie_strategy_candidate_create", {}, "candidate");
   assert.equal((await callGuard(created.harness, candidateCall))?.block, undefined);
   await created.harness.api.handler("tool_result")({ ...toolResult("pindie_strategy_candidate_create", false, "candidate"), details: { candidateId: "exact-candidate" } }, idle);
@@ -2445,6 +2448,23 @@ test("Slice D exact successful Candidate, abort, Human preemption and restart fa
   await failed.harness.api.handler("agent_before_settle")(beforeSettle(), failedIdle);
   await failed.harness.api.handler("agent_settled")({ type: "agent_settled" }, failedIdle);
   assert.equal(failed.receipts.size, 0, "failed Candidate publication is not a no-candidate conclusion");
+
+  const retried = make();
+  const retriedIdle = await source(retried.harness);
+  await waitFor(() => retried.harness.api.sentUserMessages.length === 1);
+  await harnessBeforeAgentStart(retried.harness);
+  const rejectedCall = toolCall("pindie_strategy_candidate_create", {}, "retry-failed");
+  const publishedCall = toolCall("pindie_strategy_candidate_create", {}, "retry-succeeded");
+  assert.equal((await callGuard(retried.harness, rejectedCall))?.block, undefined);
+  await retried.harness.api.handler("tool_result")(toolResult("pindie_strategy_candidate_create", true, "retry-failed"), retriedIdle);
+  assert.equal((await callGuard(retried.harness, publishedCall))?.block, undefined);
+  await retried.harness.api.handler("tool_result")({
+    ...toolResult("pindie_strategy_candidate_create", false, "retry-succeeded"),
+    details: { candidateId: "retry-exact-candidate" },
+  }, retriedIdle);
+  await retried.harness.api.handler("agent_before_settle")(beforeSettle(), retriedIdle);
+  await retried.harness.api.handler("agent_settled")({ type: "agent_settled" }, retriedIdle);
+  assert.equal(retried.receipts.get(retried.assessments[0]!.identity!), "candidate-created");
 
   const human = make("input");
   await source(human.harness);

@@ -7,7 +7,7 @@ import type { SelfImprovementIntegration } from "./self-improvement-integration.
 import type { CrossProjectLearningIntegration } from "./cross-project-learning-integration.ts";
 import { MAX_PROMOTED_DERIVED_STRATEGIES } from "./strategy-portfolio.ts";
 import { MAX_USER_GLOBAL_DERIVED_STRATEGIES } from "./strategy-trust-scope-constants.ts";
-import { getProjectId } from "./store.ts";
+import { FileGlobalWriterLock, getProjectId, type GlobalWriterLock } from "./store.ts";
 
 /** Terminal receipts are operational metadata, never Strategy knowledge. Slice C reads only. */
 export interface LearningAssessmentReceiptReader {
@@ -20,7 +20,11 @@ export const MAX_LEARNING_ASSESSMENT_RECEIPTS = 128;
 
 export class FileLearningAssessmentReceiptReader implements LearningAssessmentReceiptReader {
   private readonly globalBaseDir: string;
-  constructor(globalBaseDir: string) { this.globalBaseDir = globalBaseDir; }
+  private readonly writerLock: GlobalWriterLock;
+  constructor(globalBaseDir: string, writerLock: GlobalWriterLock = new FileGlobalWriterLock({ baseDir: globalBaseDir })) {
+    this.globalBaseDir = globalBaseDir;
+    this.writerLock = writerLock;
+  }
 
   private async readReceipts(): Promise<Array<{ identity: string; outcome: "candidate-created" | "no-candidate" }>> {
     let raw: string;
@@ -59,13 +63,10 @@ export class FileLearningAssessmentReceiptReader implements LearningAssessmentRe
     if (!HASH.test(identity) || (outcome !== "candidate-created" && outcome !== "no-candidate")) {
       throw new Error("Invalid terminal assessment receipt.");
     }
-    await mkdir(this.globalBaseDir, { recursive: true });
-    const lock = join(this.globalBaseDir, "learning-assessment-receipts-v1.lock");
-    // Exclusive create fails closed if another process owns the writer. Never overwrite a stale lock blindly.
-    const handle = await open(lock, "wx", 0o600);
-    const file = join(this.globalBaseDir, "learning-assessment-receipts-v1.json");
-    const temp = `${file}.${randomUUID()}.tmp`;
-    try {
+    await this.writerLock.withLock(async () => {
+      await mkdir(this.globalBaseDir, { recursive: true });
+      const file = join(this.globalBaseDir, "learning-assessment-receipts-v1.json");
+      const temp = `${file}.${randomUUID()}.tmp`;
       const entries = await this.readReceipts();
       const existing = entries.find((entry) => entry.identity === identity);
       if (existing) {
@@ -79,10 +80,7 @@ export class FileLearningAssessmentReceiptReader implements LearningAssessmentRe
         finally { await output.close(); }
         await rename(temp, file);
       } finally { await rm(temp, { force: true }); }
-    } finally {
-      await handle.close();
-      await rm(lock, { force: true });
-    }
+    });
   }
 }
 

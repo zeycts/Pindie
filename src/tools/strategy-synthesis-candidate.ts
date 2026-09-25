@@ -181,7 +181,7 @@ export function createPindieStrategySynthesisCandidateTool(
   return defineTool({
     name: "pindie_strategy_synthesis_candidate_create",
     label: "Create Strategy Synthesis Candidate",
-    description: "Propose one bounded inactive Strategy Synthesis hypothesis during an explicit /derive-global Run. Candidate creation is optional; cited packet evidence permits only a hypothesis and does not establish novelty, usefulness, superiority, or causality.",
+    description: "Propose one bounded inactive Strategy Synthesis hypothesis during a live cross-project Synthesis Run (explicit /derive-global or admitted autonomous learning). Candidate creation is optional; cited packet evidence permits only a hypothesis and does not establish novelty, usefulness, superiority, or causality.",
     parameters: StrategySynthesisCandidateParameters,
     executionMode: "sequential",
     async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext) {

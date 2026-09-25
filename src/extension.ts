@@ -881,7 +881,7 @@ function registerComposedPindieExtension(
   });
 
   pi.on("input", (event, ctx) => {
-    if (event.source !== "extension") autonomousAttempt = null;
+    if (event.source !== "extension" && autonomousAttempt?.generation === null) autonomousAttempt = null;
     ++agentRunLifecycleGeneration;
     cancelQuotaResume(ctx);
     options.remoteCompanion?.companion.observeInput(event.source, event.streamingBehavior);
@@ -1578,7 +1578,8 @@ function registerComposedPindieExtension(
     const settledAttempt = autonomousAttempt?.generation !== null &&
       autonomousAttempt?.generation === result.facts?.settlementGeneration ? autonomousAttempt : null;
     if (settledAttempt !== null) autonomousAttempt = null;
-    if (settledAttempt?.completed && !settledAttempt.candidateToolFailed && settlementSessionId === settledAttempt.sessionId &&
+    if (settledAttempt?.completed && (settledAttempt.candidateId !== null || !settledAttempt.candidateToolFailed) &&
+        settlementSessionId === settledAttempt.sessionId &&
         result.facts?.projectRoot === settledAttempt.projectRoot && isCurrentSettlement() &&
         learningAssessmentReceipts.writeTerminal) {
       try {
