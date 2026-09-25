@@ -1,6 +1,6 @@
 # Pindie Autonomous Learning Loop v0.1 — Architecture Boundary
 
-Status: approved architecture contract; Slice A implemented (remaining slices not started).
+Status: approved architecture contract; Slices A–B implemented (remaining slices not started).
 
 This document defines the next Self-Improvement boundary after the frozen SI v0.7 and Cross-Project Learning v0.2 contracts. It does not rewrite those contracts or reinterpret their historical artifacts.
 
@@ -446,7 +446,7 @@ keep newest 256 valid ordinary Experience records per project
 + keep any older record that is still protected
 ```
 
-The number is an implementation constant, not semantic truth, and may be changed by later dogfood if the bounded discovery windows prove too small or unnecessarily large.
+The number is an implementation constant, not semantic truth, and may be changed by later dogfood if the bounded discovery windows prove too small or unnecessarily large. Schema-v4 permits non-ISO `recordedAt` strings, so maintenance fails closed rather than guessing their chronological order; newly written records use canonical ISO instants.
 
 Pruning runs opportunistically after Experience persistence or at project-store maintenance boundaries. It is not a timer, daemon, or background worker.
 

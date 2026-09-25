@@ -20,6 +20,7 @@ import {
 } from "./notion-project-memory-config.ts";
 import { RemoteRoutingStore } from "./remote-routing.ts";
 import { FileStrategyKnowledge } from "./strategy-knowledge-file.ts";
+import { FileRunExperienceMaintenance } from "./experience-lifecycle.ts";
 import {
   type StrategyCandidateReader,
   type StrategyCandidateStore,
@@ -328,6 +329,10 @@ export function composePindieExtension(
   if (selection.selfImprovement) {
     experienceStore = input.experienceStore ?? new FileRunExperienceStore({
       baseDir: roots.projectsBaseDir,
+      onSaved: (projectRoot) => new FileRunExperienceMaintenance({
+        projectsBaseDir: roots.projectsBaseDir,
+        globalBaseDir: roots.globalBaseDir,
+      }).prune(projectRoot).then(() => undefined),
     });
     experienceReader = input.experienceReader ?? new FileRunExperienceReader({
       baseDir: roots.projectsBaseDir,
