@@ -1758,9 +1758,26 @@ export class SelfImprovementIntegration {
     return { portfolio, packet };
   }
 
+  async admitAutonomousLearning(
+    intent: "revise-existing" | "derive-local",
+    targetId: string | undefined,
+    ctx: ExtensionContext,
+    isCurrent: () => boolean,
+  ): Promise<boolean> {
+    if (!isCurrent()) return false;
+    if (intent === "revise-existing") {
+      await this.handleAdaptationCommand(targetId ?? "", ctx, "autonomous-signal", isCurrent);
+      return this.adaptation.hasAttempt;
+    }
+    await this.handleDerivationCommand("", ctx, "autonomous-signal", isCurrent);
+    return this.derivation.hasDerivation;
+  }
+
   private async handleAdaptationCommand(
     args: string,
-    ctx: ExtensionCommandContext,
+    ctx: ExtensionContext,
+    origin: "human-command" | "autonomous-signal" = "human-command",
+    isCurrent: () => boolean = () => true,
   ): Promise<void> {
     const requestedId = args.trim();
     if (!requestedId || /\s/.test(requestedId)) {
@@ -1812,8 +1829,8 @@ export class SelfImprovementIntegration {
       ctx.ui.notify(`Pindie could not start /adapt: evidence preparation failed: ${errorMessage(error)}`, "warning");
       return;
     }
-    if (this.core.getProjectRoot() !== projectRoot) {
-      ctx.ui.notify("Pindie could not start /adapt: the current project changed while reading Experience.", "warning");
+    if (!isCurrent() || this.core.getProjectRoot() !== projectRoot || ctx.sessionManager.getSessionId() !== sessionId) {
+      ctx.ui.notify("Pindie could not start /adapt: the current Session or project changed while reading Experience.", "warning");
       return;
     }
     if (!ctx.isIdle()) {
@@ -1832,13 +1849,13 @@ export class SelfImprovementIntegration {
       ctx.ui.notify("Pindie could not start /adapt: a Global Derivation attempt is already pending or active.", "warning");
       return;
     }
-    if (!this.adaptation.establish(sessionId, target, packet)) {
+    if (!isCurrent() || !this.adaptation.establish(sessionId, target, packet)) {
       ctx.ui.notify("Pindie could not start /adapt: another adaptation attempt is already active.", "warning");
       return;
     }
     try {
       this.pi.sendUserMessage(
-        `Begin the explicitly requested Self-Improvement adaptation for Seed Strategy '${target.id}'. Use the bounded Adaptation Packet supplied for this Run. This is optional hypothesis generation, not project implementation work.`,
+        `Begin the ${origin === "human-command" ? "explicitly requested" : "autonomously admitted"} Self-Improvement adaptation for Seed Strategy '${target.id}'. Use the bounded Adaptation Packet supplied for this Run. This is optional hypothesis generation, not project implementation work.`,
       );
     } catch (error) {
       this.adaptation.clear();
@@ -2373,7 +2390,9 @@ export class SelfImprovementIntegration {
 
   private async handleDerivationCommand(
     args: string,
-    ctx: ExtensionCommandContext,
+    ctx: ExtensionContext,
+    origin: "human-command" | "autonomous-signal" = "human-command",
+    isCurrent: () => boolean = () => true,
   ): Promise<void> {
     if (args.trim() !== "") {
       ctx.ui.notify("Usage: /derive", "warning");
@@ -2432,7 +2451,7 @@ export class SelfImprovementIntegration {
     if (
       currentSessionId !== sessionId ||
       this.core.getProjectRoot() !== projectRoot ||
-      !ctx.isIdle()
+      !ctx.isIdle() || !isCurrent()
     ) {
       ctx.ui.notify("Pindie could not start /derive: the current Session, project, or Agent state changed while reading evidence.", "warning");
       return;
@@ -2441,13 +2460,13 @@ export class SelfImprovementIntegration {
       ctx.ui.notify("Pindie could not start /derive: another Self-Improvement attempt became active while reading evidence.", "warning");
       return;
     }
-    if (!this.derivation.establish(sessionId, portfolio, packet)) {
+    if (!isCurrent() || !this.derivation.establish(sessionId, portfolio, packet)) {
       ctx.ui.notify("Pindie could not start /derive: another derivation attempt is already pending or active.", "warning");
       return;
     }
     try {
       this.pi.sendUserMessage(
-        "Begin the explicitly requested Self-Improvement Strategy Derivation. Use the bounded Derivation Packet supplied for this Run. This is optional missing-abstraction hypothesis generation, not project implementation work.",
+        `Begin the ${origin === "human-command" ? "explicitly requested" : "autonomously admitted"} Self-Improvement Strategy Derivation. Use the bounded Derivation Packet supplied for this Run. This is optional missing-abstraction hypothesis generation, not project implementation work.`,
       );
     } catch (error) {
       this.derivation.clear();

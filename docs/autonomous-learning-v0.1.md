@@ -586,7 +586,7 @@ No semantic summarizer and no background GC.
 
 ### Slice C — Learning Opportunity Gate
 
-Implemented: one runtime-only signal per ordinary Run, evaluated read-only after ordinary Experience persistence and Core settlement. Exact factual identities check bounded terminal receipts; no receipt is written on admission. Gate outcomes are internal diagnostics only, and no learning Run or Candidate is started. Slice D remains unstarted.
+Implemented: one runtime-only signal per ordinary Run, evaluated read-only after ordinary Experience persistence and Core settlement. Exact factual identities check bounded terminal receipts; no receipt is written on admission. Gate outcomes are internal diagnostics only; Slice D admits safe opportunities after this Gate.
 
 Goal: let a normal Agent Run identify one possible learning opportunity without starting learning yet.
 
@@ -600,6 +600,8 @@ Goal: let a normal Agent Run identify one possible learning opportunity without 
 No automatic Candidate Run yet.
 
 ### Slice D — Autonomous Learning Admission
+
+Implemented: admitted opportunities use the existing explicit-command preparation, lease, packet and Candidate tool paths. One native Pi Run may start after settlement and a fresh idle/Session check; runtime origin and exact Candidate tool-result identity remain ephemeral. Completed outcomes write bounded atomic terminal receipts only after exact Candidate revalidation (or normal no-Candidate settlement). Unsafe opportunities silently drop; Trial and trust remain explicit.
 
 Goal: remove the Human command requirement for the first learning step.
 

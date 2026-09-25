@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, open, rename, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { LearningSignal } from "./learning-signal.ts";
 import type { SelfImprovementIntegration } from "./self-improvement-integration.ts";
@@ -11,6 +12,7 @@ import { getProjectId } from "./store.ts";
 /** Terminal receipts are operational metadata, never Strategy knowledge. Slice C reads only. */
 export interface LearningAssessmentReceiptReader {
   hasTerminal(identity: string): Promise<boolean>;
+  writeTerminal?(identity: string, outcome: "candidate-created" | "no-candidate"): Promise<void>;
 }
 
 const HASH = /^sha256:[0-9a-f]{64}$/;
@@ -20,13 +22,12 @@ export class FileLearningAssessmentReceiptReader implements LearningAssessmentRe
   private readonly globalBaseDir: string;
   constructor(globalBaseDir: string) { this.globalBaseDir = globalBaseDir; }
 
-  async hasTerminal(identity: string): Promise<boolean> {
-    if (!HASH.test(identity)) throw new Error("Invalid assessment identity.");
+  private async readReceipts(): Promise<Array<{ identity: string; outcome: "candidate-created" | "no-candidate" }>> {
     let raw: string;
     try {
       raw = await readFile(join(this.globalBaseDir, "learning-assessment-receipts-v1.json"), "utf8");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
     }
     if (raw.length > 65536) throw new Error("Assessment receipts exceed the bounded read limit.");
@@ -46,7 +47,42 @@ export class FileLearningAssessmentReceiptReader implements LearningAssessmentRe
           seen.has(item.identity)) throw new Error("Invalid or duplicate terminal assessment receipt.");
       seen.add(item.identity);
     }
-    return seen.has(identity);
+    return parsed as Array<{ identity: string; outcome: "candidate-created" | "no-candidate" }>;
+  }
+
+  async hasTerminal(identity: string): Promise<boolean> {
+    if (!HASH.test(identity)) throw new Error("Invalid assessment identity.");
+    return (await this.readReceipts()).some((item) => item.identity === identity);
+  }
+
+  async writeTerminal(identity: string, outcome: "candidate-created" | "no-candidate"): Promise<void> {
+    if (!HASH.test(identity) || (outcome !== "candidate-created" && outcome !== "no-candidate")) {
+      throw new Error("Invalid terminal assessment receipt.");
+    }
+    await mkdir(this.globalBaseDir, { recursive: true });
+    const lock = join(this.globalBaseDir, "learning-assessment-receipts-v1.lock");
+    // Exclusive create fails closed if another process owns the writer. Never overwrite a stale lock blindly.
+    const handle = await open(lock, "wx", 0o600);
+    const file = join(this.globalBaseDir, "learning-assessment-receipts-v1.json");
+    const temp = `${file}.${randomUUID()}.tmp`;
+    try {
+      const entries = await this.readReceipts();
+      const existing = entries.find((entry) => entry.identity === identity);
+      if (existing) {
+        if (existing.outcome !== outcome) throw new Error("Conflicting terminal assessment receipt.");
+        return;
+      }
+      const next = [...entries, { identity, outcome }].slice(-MAX_LEARNING_ASSESSMENT_RECEIPTS);
+      try {
+        const output = await open(temp, "wx", 0o600);
+        try { await output.writeFile(JSON.stringify(next)); await output.sync(); }
+        finally { await output.close(); }
+        await rename(temp, file);
+      } finally { await rm(temp, { force: true }); }
+    } finally {
+      await handle.close();
+      await rm(lock, { force: true });
+    }
   }
 }
 
