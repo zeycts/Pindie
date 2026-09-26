@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -32,21 +33,9 @@ const exactCases = [
   ["ls", "observe.project", "none"],
   ["web_search", "observe.project", "none"],
   ["url_context", "observe.project", "none"],
-  ["pindie_git_observe", "observe.git", "none"],
   ["edit", "project.mutate", "known"],
   ["write", "project.mutate", "known"],
   ["bash", "project.mutate", "ambiguous"],
-  ["pindie_policy_set", "policy.declare", "none"],
-  ["pindie_memory_capture", "memory.capture", "none"],
-  ["pindie_strategy_derivation_candidate_create", "policy.derive", "none"],
-  ["pindie_task_start", "task.start", "none"],
-  ["pindie_task_replace", "task.replace", "none"],
-  ["pindie_task_refine", "task.refine", "none"],
-  ["pindie_task_progress", "task.progress", "none"],
-  ["pindie_verification_record", "verification.record", "none"],
-  ["pindie_task_complete", "task.complete", "none"],
-  ["pindie_gate_open", "gate.open", "none"],
-  ["pindie_gate_resolve", "gate.resolve", "none"],
 ] as const satisfies ReadonlyArray<
   readonly [string, PindieCapability, ToolEffect["projectMutation"]]
 >;
@@ -56,6 +45,45 @@ for (const [toolName, requiredCapability, projectMutation] of exactCases) {
     assertEffect(toolName, requiredCapability, projectMutation);
   });
 }
+
+// Explicit expectations, independent of the classifier. Check the tool definitions too,
+// so registering a new semantic tool cannot silently inherit the custom-tool fallback.
+const semanticToolEffects = [
+  ["pindie_policy_set", "policy.declare", "none"],
+  ["pindie_memory_capture", "memory.capture", "none"],
+  ["pindie_learning_signal", "learning.signal", "none"],
+  ["pindie_strategy_candidate_create", "policy.adapt", "none"],
+  ["pindie_strategy_derivation_candidate_create", "policy.derive", "none"],
+  ["pindie_strategy_synthesis_candidate_create", "policy.derive", "none"],
+  ["pindie_task_start", "task.start", "none"],
+  ["pindie_task_replace", "task.replace", "none"],
+  ["pindie_task_refine", "task.refine", "none"],
+  ["pindie_task_progress", "task.progress", "none"],
+  ["pindie_task_handoff", "task.progress", "none"],
+  ["pindie_verification_record", "verification.record", "none"],
+  ["pindie_task_complete", "task.complete", "none"],
+  ["pindie_gate_open", "gate.open", "none"],
+  ["pindie_gate_resolve", "gate.resolve", "none"],
+  ["pindie_git_observe", "observe.git", "none"],
+] as const satisfies ReadonlyArray<
+  readonly [string, PindieCapability, ToolEffect["projectMutation"]]
+>;
+
+test("every defined Pindie semantic tool has its explicit effect classification", () => {
+  const toolDirectory = new URL("../src/tools/", import.meta.url);
+  const sources = [
+    ...readdirSync(toolDirectory).filter((name) => name.endsWith(".ts"))
+      .map((name) => readFileSync(new URL(name, toolDirectory), "utf8")),
+    readFileSync(new URL("../src/learning-signal.ts", import.meta.url), "utf8"),
+  ];
+  const definedNames = sources.flatMap((source) =>
+    [...source.matchAll(/\bname:\s*"(pindie_[a-z0-9_]+)"/g)].map((match) => match[1]!),
+  );
+  assert.deepEqual(definedNames.sort(), semanticToolEffects.map(([name]) => name).sort());
+  for (const [name, capability, mutation] of semanticToolEffects) {
+    assertEffect(name, capability, mutation);
+  }
+});
 
 test("unknown tools always fail safe to ambiguous project mutation", () => {
   for (const toolName of ["custom_observer", "read_database", "future.pindie.tool"]) {
