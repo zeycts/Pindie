@@ -972,34 +972,342 @@ watch Pindie
 
 ### 20.6 Slice D2 — Local read-only monitor
 
-After D1 is dogfood-validated, add a local read-only monitor such as:
+D1 has now been real-dogfood validated: ChatGPT can submit a task, wait across repeated bounded timeouts, inspect the live timeline, continue waiting, and return only after the runtime is truly settled without requiring the human to monitor Pindie or send “继续”.
 
-```text
+D2 adds a local read-only observer for the same Control Host:
+
+\`\`\`text
 pnpm control:watch
-```
+\`\`\`
 
-or an equivalent narrow CLI.
+The monitor is not another Pindie runtime. It is a loopback MCP client over the already-running Control service.
 
-It connects to the existing loopback Pindie Control service and renders the same bounded UI projection/timeline.
+Target ownership:
 
-It must:
+\`\`\`text
+                         OpenAI Secure Tunnel
+                               ↑
+                         ChatGPT Control
+                               │
+                   ┌───────────┴───────────┐
+                   │ Pindie Control Host   │
+                   │ single runtime owner  │
+                   │ 127.0.0.1:8765/mcp   │
+                   └───────────┬───────────┘
+                               │
+                          loopback MCP
+                               │
+                     pnpm control:watch
+                               │
+                      read-only monitor
+\`\`\`
 
-- never create or resume another Pi AgentSession;
-- never become a second writer;
-- never own Host lifecycle;
-- never gain project mutation capabilities;
-- remain read-only.
+The invariant remains:
 
-The target ownership remains:
+\`\`\`text
+one runtime owner
++
+multiple read-only observers
+\`\`\`
 
-```text
-Pindie Control Host  (single runtime owner)
-        │
-        ├── ChatGPT Control
-        └── local read-only monitor
-```
+#### 20.6.1 Process boundary
 
-Do not implement D2 before D1 is validated.
+The monitor MUST NOT:
+
+- create \`PindieControlWorkspace\`;
+- create \`PindieHost\`;
+- create/resume/switch a Pi AgentSession directly;
+- read Session JSONL or native Session paths;
+- subscribe directly to Pi runtime events;
+- call filesystem/shell/Git APIs;
+- call any write/consequential Pindie Control tool;
+- own or restart the Control service.
+
+It connects only to the existing loopback MCP endpoint:
+
+\`\`\`text
+http://127.0.0.1:\${PINDIE_CONTROL_PORT ?? 8765}/mcp
+\`\`\`
+
+D2 v0.1 does not accept an arbitrary remote MCP URL.
+
+The Control MCP tool surface remains exactly 13 tools. D2 adds no server protocol capability.
+
+#### 20.6.2 Narrow monitor client
+
+Introduce a transport adapter conceptually:
+
+\`\`\`text
+PindieControlMonitorClient
+\`\`\`
+
+Its public capability surface is limited to:
+
+\`\`\`text
+observe()
+readTimeline(limit?)
+wait(...)
+close()
+\`\`\`
+
+It must not expose a generic \`callTool(name, args)\` method to monitor orchestration/view code.
+
+At startup the transport may use MCP \`listTools\` only for compatibility verification. Require these tools:
+
+\`\`\`text
+pindie_observe
+pindie_read_timeline
+pindie_wait
+\`\`\`
+
+and verify that each is advertised as read-only, non-destructive, and closed-world.
+
+If the required read-only surface is unavailable or incorrectly annotated, fail closed with a clear incompatible-service message. Do not fall back to private endpoints or write tools.
+
+#### 20.6.3 View boundary
+
+D2 uses a dedicated read-only monitor view. Do not instantiate the writable \`PindieTuiView\` with empty callbacks.
+
+The monitor view contains only:
+
+\`\`\`text
+Header
+Timeline
+Footer/status
+\`\`\`
+
+There is no composer, attention editor, model/session picker, abort action, extension dialog, or mutation command.
+
+Reuse existing renderer-independent presentation semantics wherever practical. In particular, the current \`formatBlock(UiTimelineBlock)\` formatting should remain the canonical textual representation instead of duplicating message/work/semantic formatting rules.
+
+A large refactor of the existing TUI is not required merely to make D2 aesthetically pure. Extract only a narrow shared formatter/component seam if the real import graph requires it.
+
+#### 20.6.4 Attach and observation loop
+
+Startup:
+
+\`\`\`text
+connect loopback MCP
+→ verify read-only capabilities
+→ pindie_observe
+\`\`\`
+
+If no project is active:
+
+\`\`\`text
+state = no_active_project
+\`\`\`
+
+render a waiting state. Because there is no Control lease, bounded bootstrap observation may re-run \`pindie_observe\` approximately once per second until an active project appears. This is the only intended polling fallback and it does not inspect Pi/Session storage.
+
+When a project is active:
+
+\`\`\`text
+observe
+→ obtain lease + revision
+→ read_timeline(limit = 50)
+→ render
+→ wait(meaningful_change, afterRevision = revision)
+\`\`\`
+
+The monitor's normal observation loop is driven by \`pindie_wait\`, not generic interval polling.
+
+#### 20.6.5 Streaming sampling
+
+D1 deliberately suppresses revision churn for assistant token streaming, partial tool-result updates, and activity-only changes.
+
+The monitor still needs visually useful streaming progress.
+
+Therefore, while the current snapshot is running/not idle:
+
+\`\`\`text
+wait meaningful_change with a short bounded timeout (~2s)
+\`\`\`
+
+- on \`changed\`: refresh timeline immediately;
+- on \`timeout\` while still running: sample \`read_timeline(50)\` once to show the latest streaming text/tool output;
+- continue waiting.
+
+While safely idle, use the normal longer Control wait timeout (up to the D1 server maximum) and do not re-read the timeline on idle timeout.
+
+This gives immediate lifecycle updates while sampling token-level progress at low frequency.
+
+Do not create a separate streaming protocol, WebSocket/SSE endpoint, or per-token MCP wake mechanism in D2.
+
+#### 20.6.6 Project/Session replacement
+
+A project or Session replacement invalidates the old Control binding and wakes the old wait with:
+
+\`\`\`text
+binding_changed
+\`\`\`
+
+The monitor must then:
+
+\`\`\`text
+observe workspace again
+→ obtain the new active project/binding when present
+→ read current timeline
+→ reset local monitor epoch/view state
+→ resume wait
+\`\`\`
+
+Project and Session switching therefore require no monitor restart.
+
+#### 20.6.7 Human Gate behavior
+
+Because every D1 wait mode is interrupted by a current Human Gate, repeatedly calling \`pindie_wait\` while a Gate remains open would create an immediate-return busy loop.
+
+When a wait returns \`human_gate\`:
+
+- render the Gate prominently;
+- remain read-only;
+- do not call \`pindie_respond\`;
+- enter a temporary bounded observation mode (for example, \`pindie_observe\` about once per second) until the Gate is resolved or the binding changes;
+- then return to the normal wait loop.
+
+The monitor should tell the user to respond through ChatGPT / Pindie Control rather than implying the local monitor can answer.
+
+#### 20.6.8 Connection loss and restart
+
+The monitor must treat the Control service as independently restartable infrastructure.
+
+On transport closure, connection refusal, or MCP call failure:
+
+- show a disconnected/reconnecting state;
+- close/discard the failed transport;
+- retry connection with bounded exponential backoff, conceptually:
+  \`250ms → 500ms → 1s → 2s → 5s max\`;
+- after reconnect, repeat capability verification, observe, and timeline attach.
+
+The monitor must never invoke \`systemctl\`, spawn \`control:mcp\`, restart Pindie, or otherwise self-heal the server.
+
+#### 20.6.9 Exit semantics
+
+\`Ctrl+C\` and an optional local \`q\` gesture mean only:
+
+\`\`\`text
+cancel/close outstanding monitor request
+→ close MCP client/transport
+→ stop monitor TUI
+→ restore terminal
+→ exit
+\`\`\`
+
+They MUST NOT:
+
+- call \`pindie_stop\`;
+- abort the Agent;
+- clear native queues;
+- dispose the Pindie Host;
+- mutate the current project or Session.
+
+Closing the observer must have zero effect on Pindie execution.
+
+#### 20.6.10 Local interaction scope
+
+D2 v0.1 may provide only read-only navigation:
+
+- \`j/k\` or arrow keys for timeline scroll;
+- PageUp/PageDown;
+- End or \`G\` to return to the live tail;
+- \`q\` / Ctrl+C to exit.
+
+Do not add a composer, Session/project picker, model picker, Human Gate response, stop button, or other Control action.
+
+The monitor is a window into Control, not a second Control surface.
+
+#### 20.6.11 Rendering
+
+Use the existing \`@earendil-works/pi-tui\` primitives and terminal diff rendering rather than repeatedly printing/clearing the full timeline.
+
+Maintain a small monitor view model and update Header/Timeline/Footer components in place.
+
+The first D2 implementation may show only the bounded tail already returned by D1:
+
+\`\`\`text
+pindie_read_timeline(limit = 50)
+\`\`\`
+
+If earlier content exists, indicate that older timeline blocks are omitted. Do not add a historical timeline cursor, archive reader, or durable monitor event database in D2.
+
+#### 20.6.12 D2 implementation shape
+
+Prefer a small explicit structure:
+
+\`\`\`text
+src/control-watch.ts
+src/control-monitor-client.ts
+src/control-monitor-view.ts
+\`\`\`
+
+and:
+
+\`\`\`json
+"control:watch": "node --experimental-strip-types src/control-watch.ts"
+\`\`\`
+
+Equivalent names are acceptable if the ownership remains the same.
+
+No systemd unit is required for the monitor. It is an on-demand local client.
+
+#### 20.6.13 D2 required tests
+
+At minimum:
+
+**Transport/security**
+- monitor endpoint is loopback-only;
+- startup verifies the three required read-only MCP tools;
+- incompatible/mis-annotated tool surface fails closed;
+- orchestration/view code cannot issue generic MCP tool names;
+- no write/consequential tool is invoked.
+
+**Attach lifecycle**
+- no active project renders waiting state;
+- active project loads initial snapshot + timeline;
+- meaningful change refreshes timeline immediately;
+- running timeout samples streaming timeline;
+- idle timeout avoids unnecessary timeline reads;
+- project replacement auto-reattaches after \`binding_changed\`;
+- Session replacement auto-reattaches after \`binding_changed\`;
+- Human Gate does not create a tight immediate-wait loop.
+
+**Coexistence**
+- ChatGPT waiter and monitor waiter can coexist;
+- monitor creates no Pi AgentSession/runtime subscription;
+- a monitor wait does not block project or Session replacement.
+
+**Resilience**
+- transport failure renders disconnected state;
+- reconnect uses bounded backoff;
+- successful reconnect repeats capability check + attach.
+
+**Terminal**
+- Ctrl+C/\`q\` exits only the monitor;
+- no \`pindie_stop\` or mutation tool is called on exit;
+- terminal/view is cleaned up;
+- manual scroll is preserved across updates;
+- End/\`G\` restores follow-tail.
+
+### 20.7 Slice D2 Definition of Done
+
+\`\`\`text
+✓ pnpm control:watch connects only to loopback Pindie Control
+✓ no second Host/AgentSession/Session reader is created
+✓ current project + Session + human-visible timeline are visible
+✓ meaningful lifecycle changes render immediately
+✓ streaming progress becomes visible within the short sampling window
+✓ idle monitor has low request overhead
+✓ project/Session replacement auto-reattaches
+✓ Human Gate is visible but cannot be answered locally
+✓ Control service restart auto-reconnects
+✓ Ctrl+C/q closes only the monitor and does not affect Agent execution
+✓ bounded timeline tail uses existing presentation formatting
+✓ MCP Control surface remains exactly 13 tools
+✓ no new server protocol/systemd/Tunnel change is required
+✓ full pnpm run check is green
+✓ real dogfood watches a ChatGPT-controlled task without opening/resuming Pi TUI
+\`\`\`
 
 ## 21. Slice D1 required tests
 
