@@ -86,7 +86,11 @@ export type PindieControlErrorCode =
   | "unsafe_runtime_state"
   | "model_unavailable"
   | "reasoning_auto"
-  | "delivery_failed";
+  | "delivery_failed"
+  | "session_not_found"
+  | "session_ambiguous"
+  | "session_switch_unsafe"
+  | "session_switch_failed";
 
 export class PindieControlError extends Error {
   readonly code: PindieControlErrorCode;
@@ -122,6 +126,30 @@ export interface PindieControlStopResult {
 }
 
 export interface PindieControlFreshSessionResult {
+  readonly cancelled: boolean;
+  readonly snapshot: PindieControlSnapshot;
+}
+
+export interface PindieControlSessionChoice {
+  readonly id: string;
+  readonly name: string | null;
+  readonly created: string;
+  readonly modified: string;
+  readonly messageCount: number;
+  readonly firstMessagePreview: string;
+  readonly current: boolean;
+}
+
+export interface PindieControlSessionPage {
+  readonly activeSessionId: string;
+  readonly total: number;
+  readonly offset: number;
+  readonly limit: number;
+  readonly hasMore: boolean;
+  readonly sessions: readonly PindieControlSessionChoice[];
+}
+
+export interface PindieControlSwitchSessionResult {
   readonly cancelled: boolean;
   readonly snapshot: PindieControlSnapshot;
 }
@@ -339,6 +367,147 @@ export class PindieControlClient {
     return { cancelled: false, snapshot: this.observe() };
   }
 
+  async listSessions(
+    request: { readonly offset?: number; readonly limit?: number } = {},
+  ): Promise<PindieControlSessionPage> {
+    const offset = request.offset ?? 0;
+    const limit = request.limit ?? 20;
+    if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 50) {
+      throw new PindieControlError("invalid_request", "Session listing requires offset >= 0 and limit between 1 and 50.");
+    }
+
+    const binding = this.requireActiveBinding();
+    let choices: Awaited<ReturnType<PiRuntimeAdapter["getActiveProjectSessionChoices"]>>;
+    try {
+      choices = await this.runtime.getActiveProjectSessionChoices();
+    } catch {
+      // Pi's internal Session path must not escape through discovery errors.
+      throw new Error("Pindie Control could not list Sessions.");
+    }
+    this.requireSameSessionBinding(binding);
+    const snapshot = this.observe();
+    const sessions = choices
+      .map((choice): PindieControlSessionChoice => ({
+        id: choice.id,
+        name: boundedSessionText(choice.name ?? "", 96) || null,
+        created: choice.created.toISOString(),
+        modified: choice.modified.toISOString(),
+        messageCount: choice.messageCount,
+        firstMessagePreview: boundedSessionText(choice.firstMessage, 160),
+        current: choice.current,
+      }))
+      .sort((left, right) => {
+        if (left.modified !== right.modified) return left.modified > right.modified ? -1 : 1;
+        return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+      });
+    return {
+      activeSessionId: snapshot.session.id,
+      total: sessions.length,
+      offset,
+      limit,
+      hasMore: offset + limit < sessions.length,
+      sessions: sessions.slice(offset, offset + limit),
+    };
+  }
+
+  async switchSession(
+    request: { readonly lease: string; readonly sessionId: string },
+  ): Promise<PindieControlSwitchSessionResult> {
+    const binding = this.requireLease(request.lease);
+    let choices: Awaited<ReturnType<PiRuntimeAdapter["getActiveProjectSessionChoices"]>>;
+    try {
+      choices = await this.runtime.getActiveProjectSessionChoices();
+    } catch {
+      throw new PindieControlError(
+        "session_switch_failed",
+        "Pindie Control could not resolve the requested Session.",
+        this.safeSnapshot(),
+      );
+    }
+    this.requireSameSessionBinding(binding);
+    const matches = choices.filter((choice) => choice.id === request.sessionId);
+    if (matches.length === 0) {
+      throw new PindieControlError(
+        "session_not_found",
+        "The requested Session is not available in the active project.",
+        this.safeSnapshot(),
+      );
+    }
+    if (matches.length > 1) {
+      throw new PindieControlError(
+        "session_ambiguous",
+        "The requested Session ID is ambiguous in the active project.",
+        this.safeSnapshot(),
+      );
+    }
+
+    const target = matches[0]!;
+    if (target.current || target.id === binding.sessionId) {
+      return { cancelled: false, snapshot: this.observe() };
+    }
+
+    const snapshot = this.observe();
+    const facts = this.runtime.getActiveSessionFacts();
+    if (
+      !facts.isIdle ||
+      !snapshot.runtime.automaticWorkSettled ||
+      facts.pendingMessageCount !== 0 ||
+      snapshot.semantic.humanGate !== null ||
+      snapshot.recovery.quotaWaiting !== null
+    ) {
+      throw new PindieControlError(
+        "session_switch_unsafe",
+        "Pindie Control requires an idle, settled Session with no pending messages, Human Gate, or quota wait.",
+        snapshot,
+      );
+    }
+
+    this.requireSameBinding(binding);
+    let result: Awaited<ReturnType<PiRuntimeAdapter["switchActiveSession"]>>;
+    try {
+      result = await this.runtime.switchActiveSession(target.path);
+    } catch {
+      throw new PindieControlError(
+        "session_switch_failed",
+        "Pi could not switch to the requested Session.",
+        this.safeSnapshot(),
+      );
+    }
+    if (result.cancelled) {
+      this.requireSameSessionBinding(binding);
+      return { cancelled: true, snapshot: this.observe() };
+    }
+
+    let next: ControlBinding;
+    try {
+      next = this.requireActiveBinding();
+    } catch {
+      throw new PindieControlError(
+        "session_switch_failed",
+        "Pi replaced the Session without completing Control bootstrap.",
+        this.safeSnapshot(),
+      );
+    }
+    if (next === binding || next.lease === binding.lease || this.runtime.activeSessionId !== request.sessionId) {
+      this.beforeSessionInvalidate();
+      throw new PindieControlError(
+        "session_switch_failed",
+        "Pi did not establish the requested Session with a fresh Control lease.",
+        this.safeSnapshot(),
+      );
+    }
+    const switchedSnapshot = this.observe();
+    if (switchedSnapshot.session.id !== request.sessionId) {
+      this.beforeSessionInvalidate();
+      throw new PindieControlError(
+        "session_switch_failed",
+        "Pi did not expose the requested Session in the Control projection.",
+        this.safeSnapshot(),
+      );
+    }
+    return { cancelled: false, snapshot: switchedSnapshot };
+  }
+
   async configure(
     request: PindieControlConfigureRequest,
   ): Promise<PindieControlSnapshot> {
@@ -403,6 +572,18 @@ export class PindieControlClient {
       "Pindie Control lease is stale. Observe the current Session before retrying.",
       this.safeSnapshot(),
     );
+  }
+
+  private requireSameSessionBinding(expected: ControlBinding): void {
+    try {
+      this.requireSameBinding(expected);
+    } catch {
+      throw new PindieControlError(
+        "stale_control_lease",
+        "Pindie Control binding changed while the Session operation was in flight.",
+        this.safeSnapshot(),
+      );
+    }
   }
 
   private requireSameBinding(expected: ControlBinding): void {
@@ -712,4 +893,14 @@ function controlFingerprint(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+const sessionTextSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function boundedSessionText(value: string, maxGraphemes: number): string {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  const segments = Array.from(sessionTextSegmenter.segment(normalized), ({ segment }) => segment);
+  return segments.length <= maxGraphemes
+    ? normalized
+    : `${segments.slice(0, maxGraphemes - 1).join("")}…`;
 }

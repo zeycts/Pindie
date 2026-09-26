@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 import { PindieControlClient, PindieControlError } from "../src/control-client.ts";
@@ -66,6 +67,68 @@ test("real pinned Pi headless Control bootstrap binds extensions and restores se
       await handle.close();
     }
   } finally {
+    await host?.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("real pinned Pi Session navigation lists and switches native persisted Sessions within one Host", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pindie-control-session-switch-"));
+  const project = join(root, "project");
+  const agentDir = join(root, "agent");
+  const sessionDir = join(root, "sessions");
+  await mkdir(project);
+  await mkdir(agentDir);
+  await mkdir(sessionDir);
+  let host: PindieHost | undefined;
+  let control: PindieControlClient | undefined;
+  try {
+    const managerA = SessionManager.create(project, sessionDir);
+    managerA.appendMessage({ role: "user", content: [{ type: "text", text: "Session A" }], timestamp: Date.now() } as never);
+    managerA.appendMessage(fauxAssistantMessage("Persisted Session A") as never);
+    const managerB = SessionManager.create(project, sessionDir);
+    managerB.appendMessage({ role: "user", content: [{ type: "text", text: "Session B" }], timestamp: Date.now() } as never);
+    managerB.appendMessage(fauxAssistantMessage("Persisted Session B") as never);
+    const sessionBId = managerB.getSessionId();
+    const sessionBPath = managerB.getSessionFile();
+
+    host = await createPindieHost({
+      cwd: project,
+      agentDir,
+      sessionManager: managerA,
+      env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: "0" },
+      dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
+    });
+    const boundSessions: string[] = [];
+    control = new PindieControlClient(host.runtime, host.presentation, {
+      bindActiveSession: async () => {
+        const id = host!.runtime.activeSessionId;
+        await host!.runtime.bindActiveSessionExtensions({ mode: "print" });
+        boundSessions.push(id);
+      },
+    });
+    await control.start();
+    const before = control.observe();
+    assert.equal(before.project.root, project);
+    assert.equal(before.session.id, managerA.getSessionId());
+    const page = await control.listSessions();
+    assert.equal(page.activeSessionId, before.session.id);
+    assert.equal(page.total >= 2, true);
+    assert.ok(page.sessions.some((choice) => choice.id === before.session.id && choice.current));
+    assert.ok(page.sessions.some((choice) => choice.id === sessionBId && !choice.current));
+    assert.equal(JSON.stringify(page).includes(sessionBPath), false);
+
+    const switched = await control.switchSession({ lease: before.lease, sessionId: sessionBId });
+    assert.equal(switched.cancelled, false);
+    assert.equal(switched.snapshot.session.id, sessionBId);
+    assert.notEqual(switched.snapshot.lease, before.lease);
+    assert.equal(switched.snapshot.project.root, project);
+    assert.notEqual(switched.snapshot.semantic.authority, "unavailable");
+    assert.deepEqual(boundSessions, [before.session.id, sessionBId]);
+    await assert.rejects(control.input({ lease: before.lease, text: "old lease" }),
+      (error: unknown) => error instanceof PindieControlError && error.code === "stale_control_lease");
+  } finally {
+    control?.dispose();
     await host?.dispose();
     await rm(root, { recursive: true, force: true });
   }

@@ -155,6 +155,10 @@ function fakeNativeRuntime(initial: FakeSessionControl) {
   let beforeInvalidate: (() => void) | undefined;
   let rebind: (() => Promise<void>) | undefined;
   let nextFreshSession: FakeSessionControl | undefined;
+  let nextSwitchSession: FakeSessionControl | undefined;
+  let switchCancelled = false;
+  let switchFailure: Error | undefined;
+  const switchCalls: string[] = [];
 
   const replace = async (next: FakeSessionControl) => {
     beforeInvalidate?.();
@@ -179,6 +183,16 @@ function fakeNativeRuntime(initial: FakeSessionControl) {
       await replace(next);
       return { cancelled: false };
     },
+    switchSession: async (path: string) => {
+      switchCalls.push(path);
+      if (switchFailure) throw switchFailure;
+      if (switchCancelled) return { cancelled: true };
+      if (!nextSwitchSession) throw new Error("No fake Session for path");
+      const next = nextSwitchSession;
+      nextSwitchSession = undefined;
+      await replace(next);
+      return { cancelled: false };
+    },
     dispose: async () => undefined,
   } as unknown as AgentSessionRuntime;
 
@@ -188,6 +202,24 @@ function fakeNativeRuntime(initial: FakeSessionControl) {
     setNextFreshSession: (next: FakeSessionControl) => {
       nextFreshSession = next;
     },
+    setNextSwitchSession: (next: FakeSessionControl) => { nextSwitchSession = next; },
+    setSwitchCancelled: (value: boolean) => { switchCancelled = value; },
+    setSwitchFailure: (error: Error | undefined) => { switchFailure = error; },
+    switchCalls,
+  };
+}
+
+function setSessionChoices(
+  runtime: PiRuntimeAdapter,
+  choices: readonly { path: string; id: string; name?: string; created: Date; modified: Date; messageCount: number; firstMessage: string; current: boolean }[],
+): void {
+  runtime.getActiveProjectSessionChoices = async () => choices;
+}
+
+function sessionChoice(id: string, path: string, modified: string, overrides: object = {}) {
+  return {
+    id, path, created: new Date("2026-01-01T00:00:00.000Z"), modified: new Date(modified),
+    messageCount: 3, firstMessage: `  first\n message   ${"👨‍👩‍👧‍👦".repeat(40)}`, current: false, ...overrides,
   };
 }
 
@@ -817,6 +849,199 @@ test("Control fresh Session does not bypass an unresolved Human Gate", async () 
   } finally {
     control.dispose();
   }
+});
+
+test("Control lists bounded, deterministic Session projections without internal paths", async () => {
+  const session = fakeSession("session-current", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  setSessionChoices(runtime, [
+    sessionChoice("z", "/private/session-z", "2026-03-01T00:00:00.000Z"),
+    sessionChoice("b", "/private/session-b", "2026-03-02T00:00:00.000Z", { name: `  ${"n".repeat(110)}  ` }),
+    sessionChoice("a", "/private/session-a", "2026-03-02T00:00:00.000Z", { firstMessage: `  hello\n   ${"👨‍👩‍👧‍👦".repeat(40)}  ` }),
+    sessionChoice("session-current", "/private/current", "2026-02-01T00:00:00.000Z", { current: true }),
+  ]);
+  const control = new PindieControlClient(runtime, { current: () => ({ snapshot: () => presentationFor(activeState()) }) });
+  await control.start();
+  try {
+    const page = await control.listSessions({ offset: 1, limit: 2 });
+    assert.equal(page.activeSessionId, "session-current");
+    assert.equal(page.total, 4);
+    assert.equal(page.offset, 1);
+    assert.equal(page.limit, 2);
+    assert.equal(page.hasMore, true);
+    assert.deepEqual(page.sessions.map(({ id }) => id), ["b", "z"]);
+    assert.equal(page.sessions[0]?.created, "2026-01-01T00:00:00.000Z");
+    assert.equal(page.sessions[0]?.modified, "2026-03-02T00:00:00.000Z");
+    assert.equal(page.sessions[0]?.name, "n".repeat(95) + "…");
+    const all = await control.listSessions({ limit: 50 });
+    const preview = all.sessions.find(({ id }) => id === "a")!.firstMessagePreview;
+    assert.equal(preview.startsWith("hello "), true);
+    assert.ok(Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(preview)).length <= 160);
+    assert.equal(all.sessions.find(({ id }) => id === "session-current")?.current, true);
+    assert.equal(JSON.stringify({ page, all }).includes("/private/"), false);
+    assert.equal(JSON.stringify({ page, all }).includes("path"), false);
+    await assert.rejects(control.listSessions({ limit: 51 }), (error: unknown) => error instanceof PindieControlError && error.code === "invalid_request");
+  } finally { control.dispose(); }
+});
+
+test("Control Session switch resolves fresh IDs, checks binding after discovery, and rejects stale leases", async () => {
+  const first = fakeSession("session-current", branchEntries());
+  const native = fakeNativeRuntime(first);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const choices = [sessionChoice("target", "/private/target.jsonl", "2026-03-02T00:00:00.000Z")];
+  setSessionChoices(runtime, choices);
+  const control = new PindieControlClient(runtime, { current: () => ({ snapshot: () => presentationFor(activeState()) }) });
+  await control.start();
+  try {
+    const lease = control.observe().lease;
+    await assert.rejects(control.switchSession({ lease, sessionId: "unknown" }), (error: unknown) => error instanceof PindieControlError && error.code === "session_not_found");
+    setSessionChoices(runtime, [...choices, { ...choices[0]!, path: "/private/duplicate.jsonl" }]);
+    await assert.rejects(control.switchSession({ lease, sessionId: "target" }), (error: unknown) => error instanceof PindieControlError && error.code === "session_ambiguous");
+    let discoveries = 0;
+    runtime.getActiveProjectSessionChoices = async () => { discoveries++; return choices; };
+    await assert.rejects(control.switchSession({ lease: "stale", sessionId: "target" }), (error: unknown) => error instanceof PindieControlError && error.code === "stale_control_lease");
+    assert.equal(discoveries, 0);
+
+    let release!: (value: typeof choices) => void;
+    runtime.getActiveProjectSessionChoices = () => new Promise((resolve) => { release = resolve; });
+    const inFlight = control.switchSession({ lease, sessionId: "target" });
+    await native.replace(fakeSession("session-replaced", branchEntries()));
+    release(choices);
+    await assert.rejects(inFlight, (error: unknown) => error instanceof PindieControlError && error.code === "stale_control_lease");
+    assert.deepEqual(native.switchCalls, []);
+  } finally { control.dispose(); }
+});
+
+test("same-Session switch is idempotent before safety checks", async () => {
+  const session = fakeSession("session-current", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  setSessionChoices(runtime, [sessionChoice("session-current", "/private/current", "2026-03-02T00:00:00.000Z", { current: true })]);
+  const control = new PindieControlClient(runtime, { current: () => ({ snapshot: () => presentationFor(activeState()) }) }, { createLease: () => "same-lease" });
+  await control.start();
+  try {
+    const before = control.observe();
+    session.start();
+    const result = await control.switchSession({ lease: before.lease, sessionId: "session-current" });
+    assert.equal(result.snapshot.lease, before.lease);
+    assert.deepEqual(native.switchCalls, []);
+    assert.equal(result.snapshot.runtime.idle, false);
+  } finally { control.dispose(); }
+});
+
+test("real Session switches enforce only runtime, gate and recovery safety", async () => {
+  for (const unsafe of [
+    { label: "busy", runtime: { idle: false, streaming: true, automaticWorkSettled: true, pendingMessageCount: 0 } },
+    { label: "unsettled", runtime: { idle: true, streaming: false, automaticWorkSettled: false, pendingMessageCount: 0 } },
+    { label: "pending", runtime: { idle: true, streaming: false, automaticWorkSettled: true, pendingMessageCount: 1 } },
+    { label: "Human Gate", gate: { kind: "approval" as const, question: "Approve?" } },
+    { label: "quota wait", quota: { sessionId: "session-current", resumeAt: 1 } },
+  ]) {
+    const current = fakeSession("session-current", branchEntries());
+    const native = fakeNativeRuntime(current);
+    const runtime = new PiRuntimeAdapter(native.runtime);
+    setSessionChoices(runtime, [sessionChoice("target", "/private/target", "2026-03-02T00:00:00.000Z")]);
+    const state = activeState(unsafe.gate ?? null);
+    const presentation = presentationFor(state, { quotaResumeWaiting: unsafe.quota ?? null });
+    const control = new PindieControlClient(runtime, { current: () => ({ snapshot: () => presentation }) });
+    await control.start();
+    try {
+      if (unsafe.runtime) {
+        if (unsafe.runtime.pendingMessageCount) await current.session.steer("pending");
+        else if (!unsafe.runtime.idle) current.start();
+        if (!unsafe.runtime.automaticWorkSettled) current.start();
+      }
+      await assert.rejects(control.switchSession({ lease: control.observe().lease, sessionId: "target" }), (error: unknown) => error instanceof PindieControlError && error.code === "session_switch_unsafe", unsafe.label);
+      assert.deepEqual(native.switchCalls, [], unsafe.label);
+    } finally { control.dispose(); }
+  }
+});
+
+test("active or blocked Tasks and pending verification do not block safe Session switches", async () => {
+  for (const taskStatus of ["active", "blocked"] as const) {
+    const first = fakeSession("session-current", branchEntries());
+    const native = fakeNativeRuntime(first);
+    const runtime = new PiRuntimeAdapter(native.runtime);
+    const target = sessionChoice("target", "/private/target", "2026-03-02T00:00:00.000Z");
+    setSessionChoices(runtime, [target]);
+    native.setNextSwitchSession(fakeSession("target", branchEntries()));
+    const state = activeState();
+    if (taskStatus === "blocked") state.task!.openLoops.blockers.push("External dependency");
+    const control = new PindieControlClient(runtime, { current: () => ({ snapshot: () => presentationFor(state) }) });
+    await control.start();
+    try {
+      const result = await control.switchSession({ lease: control.observe().lease, sessionId: target.id });
+      assert.equal(result.snapshot.session.id, "target");
+      assert.equal(state.task?.completed, false);
+      assert.equal(result.snapshot.semantic.taskStatus, taskStatus);
+      assert.equal(result.snapshot.semantic.verificationStatus, "pending");
+    } finally { control.dispose(); }
+  }
+});
+
+test("successful Session switch rotates the Control binding; cancellation and failures fail closed", async () => {
+  const first = fakeSession("session-current", branchEntries());
+  const native = fakeNativeRuntime(first);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  setSessionChoices(runtime, [sessionChoice("target", "/internal/target.jsonl", "2026-03-02T00:00:00.000Z")]);
+  native.setNextSwitchSession(fakeSession("target", branchEntries()));
+  let bound: string[] = [];
+  let leaseSequence = 0;
+  const control = new PindieControlClient(runtime, { current: () => ({ snapshot: () => presentationFor(activeState()) }) }, {
+    createLease: () => `switch-lease-${++leaseSequence}`,
+    bindActiveSession: async () => { bound.push(runtime.activeSessionId); },
+  });
+  await control.start();
+  try {
+    const before = control.observe();
+    const switched = await control.switchSession({ lease: before.lease, sessionId: "target" });
+    assert.deepEqual(native.switchCalls, ["/internal/target.jsonl"]);
+    assert.deepEqual(bound, ["session-current", "target"]);
+    assert.equal(switched.snapshot.session.id, "target");
+    assert.notEqual(switched.snapshot.lease, before.lease);
+    await assert.rejects(control.input({ lease: before.lease, text: "stale" }), (error: unknown) => error instanceof PindieControlError && error.code === "stale_control_lease");
+  } finally { control.dispose(); }
+
+  const old = fakeSession("old", branchEntries());
+  const cancelledNative = fakeNativeRuntime(old);
+  const cancelledRuntime = new PiRuntimeAdapter(cancelledNative.runtime);
+  setSessionChoices(cancelledRuntime, [sessionChoice("target", "/private/target", "2026-03-02T00:00:00.000Z")]);
+  cancelledNative.setSwitchCancelled(true);
+  const cancelledControl = new PindieControlClient(cancelledRuntime, { current: () => ({ snapshot: () => presentationFor(activeState()) }) }, { createLease: () => "cancel-lease" });
+  await cancelledControl.start();
+  try {
+    const before = cancelledControl.observe();
+    const cancelled = await cancelledControl.switchSession({ lease: before.lease, sessionId: "target" });
+    assert.equal(cancelled.cancelled, true);
+    assert.equal(cancelled.snapshot.lease, before.lease);
+    assert.equal(cancelledControl.observe().session.id, "old");
+  } finally { cancelledControl.dispose(); }
+
+  const failing = fakeNativeRuntime(fakeSession("old", branchEntries()));
+  const failingRuntime = new PiRuntimeAdapter(failing.runtime);
+  setSessionChoices(failingRuntime, [sessionChoice("target", "/private/target", "2026-03-02T00:00:00.000Z")]);
+  failing.setSwitchFailure(new Error("private /path/must/not/leak"));
+  const failedControl = new PindieControlClient(failingRuntime, { current: () => ({ snapshot: () => presentationFor(activeState()) }) }, { createLease: () => "failure-lease" });
+  await failedControl.start();
+  try {
+    await assert.rejects(failedControl.switchSession({ lease: "failure-lease", sessionId: "target" }), (error: unknown) => error instanceof PindieControlError && error.code === "session_switch_failed" && !error.message.includes("/path"));
+  } finally { failedControl.dispose(); }
+
+  const bootstrapFailure = fakeNativeRuntime(fakeSession("old", branchEntries()));
+  const bootstrapRuntime = new PiRuntimeAdapter(bootstrapFailure.runtime);
+  setSessionChoices(bootstrapRuntime, [sessionChoice("target", "/private/target", "2026-03-02T00:00:00.000Z")]);
+  bootstrapFailure.setNextSwitchSession(fakeSession("target", branchEntries()));
+  const bootstrapControl = new PindieControlClient(bootstrapRuntime, { current: () => ({ snapshot: () => presentationFor(activeState()) }) }, {
+    createLease: () => "bootstrap-lease",
+    bindActiveSession: async () => { if (bootstrapRuntime.activeSessionId === "target") throw new Error("session_start failed"); },
+  });
+  await bootstrapControl.start();
+  try {
+    await assert.rejects(bootstrapControl.switchSession({ lease: "bootstrap-lease", sessionId: "target" }),
+      (error: unknown) => error instanceof PindieControlError && error.code === "session_switch_failed" && error.snapshot === null);
+    assert.throws(() => bootstrapControl.observe(), /no active Session binding/);
+  } finally { bootstrapControl.dispose(); }
 });
 
 test("Control configure changes explicit model/thinking only at a safe idle boundary", async () => {

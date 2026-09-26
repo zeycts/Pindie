@@ -69,5 +69,15 @@ export function createPindieControlMcpServer(workspace: PindieControlWorkspace):
     description: "Create one empty direct-child workspace project and safely open it.",
     inputSchema: z.strictObject({ project: text }), annotations: write,
   }, async (args) => invoke(() => workspace.createProject(args.project)));
+  server.registerTool("pindie_list_sessions", {
+    description: "List a bounded page of native Pi Sessions in the active project.",
+    inputSchema: z.strictObject({ offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(50).optional() }),
+    annotations: read,
+  }, async (args) => invoke(() => workspace.withClient((client) => client.listSessions(args))));
+  server.registerTool("pindie_switch_session", {
+    description: "Switch the active project Host to one of its native Pi Sessions.",
+    inputSchema: z.strictObject({ lease, sessionId: text }),
+    annotations: consequential,
+  }, async (args) => invoke(() => workspace.withClient((client) => client.switchSession(args))));
   return server;
 }

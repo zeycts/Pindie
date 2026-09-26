@@ -111,7 +111,7 @@ test("bounded deterministic direct-child discovery and name validation", async (
   } finally { await cleanup(); }
 });
 
-test("MCP exposes exactly nine tools, no-active state and structured fail-closed writes", async () => {
+test("MCP exposes exactly eleven tools, no-active state and structured fail-closed writes", async () => {
   const { root, cleanup } = await fixture();
   const workspace = await PindieControlWorkspace.create({ workspaceRoot: root });
   const wire = await linked(workspace);
@@ -120,27 +120,38 @@ test("MCP exposes exactly nine tools, no-active state and structured fail-closed
     assert.deepEqual(tools.map((tool) => tool.name), [
       "pindie_observe", "pindie_input", "pindie_respond", "pindie_stop",
       "pindie_fresh_session", "pindie_configure", "pindie_list_projects", "pindie_open_project", "pindie_create_project",
+      "pindie_list_sessions", "pindie_switch_session",
     ]);
     assert.deepEqual(tools.map((tool) => [tool.annotations?.readOnlyHint, tool.annotations?.destructiveHint]), [
       [true, false], [false, false], [false, true], [false, true], [false, true], [false, false], [true, false], [false, true], [false, false],
+      [true, false], [false, true],
     ]);
-    assert.deepEqual(tools.map((tool) => tool.annotations?.openWorldHint), Array(9).fill(false));
+    assert.deepEqual(tools.map((tool) => tool.annotations?.openWorldHint), Array(11).fill(false));
     const create = tools.find((tool) => tool.name === "pindie_create_project")!;
     assert.deepEqual(create.inputSchema.required, ["project"]);
     assert.deepEqual(Object.keys(create.inputSchema.properties ?? {}), ["project"]);
     assert.equal(create.inputSchema.additionalProperties, false);
+    const listSessions = tools.find((tool) => tool.name === "pindie_list_sessions")!;
+    assert.deepEqual(Object.keys(listSessions.inputSchema.properties ?? {}), ["offset", "limit"]);
+    assert.deepEqual(listSessions.inputSchema.required ?? [], []);
+    assert.equal(listSessions.inputSchema.additionalProperties, false);
+    const switchSession = tools.find((tool) => tool.name === "pindie_switch_session")!;
+    assert.deepEqual(Object.keys(switchSession.inputSchema.properties ?? {}), ["lease", "sessionId"]);
+    assert.deepEqual(switchSession.inputSchema.required, ["lease", "sessionId"]);
+    assert.equal(switchSession.inputSchema.additionalProperties, false);
     assert.deepEqual((await wire.peer.callTool({ name: "pindie_observe", arguments: {} })).structuredContent,
       { state: "no_active_project", workspaceRoot: root, activeProject: null });
     assert.equal((await wire.peer.callTool({ name: "pindie_list_projects", arguments: {} })).structuredContent?.activeProject, null);
     for (const [name, args] of [
       ["input", { lease: "x", text: "hi" }], ["respond", { lease: "x", gateKey: "x", response: "yes" }],
       ["stop", { lease: "x" }], ["fresh_session", { lease: "x" }], ["configure", { lease: "x", thinkingLevel: "low" }],
+      ["list_sessions", { offset: 0 }], ["switch_session", { lease: "x", sessionId: "id" }],
     ] as const) {
       const result = await wire.peer.callTool({ name: `pindie_${name}`, arguments: args });
       assert.equal(result.isError, true);
       assert.equal(result.structuredContent?.code, "no_active_project");
     }
-    for (const name of ["pindie_observe", "pindie_list_projects", "pindie_open_project", "pindie_create_project"]) {
+    for (const name of ["pindie_observe", "pindie_list_projects", "pindie_open_project", "pindie_create_project", "pindie_list_sessions"]) {
       const invalid = await wire.peer.callTool({ name, arguments: { path: "/secret", ...(name.endsWith("_project") ? { project: "Pindie" } : {}) } });
       assert.equal(invalid.isError, true);
     }
@@ -179,6 +190,8 @@ test("MCP delegates six scoped operations after open; stale lease remains struct
       stop: (arg: unknown) => { calls.push(["stop", arg]); return { stopped: true, snapshot }; },
       freshSession: (arg: unknown) => { calls.push(["fresh", arg]); return { cancelled: false, snapshot }; },
       configure: (arg: unknown) => { calls.push(["configure", arg]); return snapshot; },
+      listSessions: (arg: unknown) => { calls.push(["listSessions", arg]); return { activeSessionId: "session", total: 1, offset: 0, limit: 20, hasMore: false, sessions: [{ id: "session", name: null, created: "2026-01-01T00:00:00.000Z", modified: "2026-01-01T00:00:00.000Z", messageCount: 1, firstMessagePreview: "Hello", current: true }] }; },
+      switchSession: (arg: unknown) => { calls.push(["switchSession", arg]); return { cancelled: false, snapshot }; },
     }),
   });
   const wire = await linked(workspace);
@@ -194,11 +207,15 @@ test("MCP delegates six scoped operations after open; stale lease remains struct
     await invoke("stop", { lease: "live" });
     await invoke("fresh_session", { lease: "live" });
     await invoke("configure", { lease: "live", model: { provider: "p", modelId: "m" }, thinkingLevel: "low" });
+    const sessions = await invoke("list_sessions", { offset: 2, limit: 3 });
+    assert.equal(JSON.stringify(sessions.structuredContent).includes("path"), false);
+    await invoke("switch_session", { lease: "live", sessionId: "session-2" });
     assert.deepEqual(calls, [
       ["input", { lease: "old", text: "hi", timing: "after_current_run" }],
       ["respond", { lease: "live", gateKey: "gate", response: "yes" }],
       ["stop", { lease: "live" }], ["fresh", { lease: "live" }],
       ["configure", { lease: "live", model: { provider: "p", modelId: "m" }, thinkingLevel: "low" }],
+      ["listSessions", { offset: 2, limit: 3 }], ["switchSession", { lease: "live", sessionId: "session-2" }],
     ]);
   } finally { await wire.close(); await workspace.close(); await cleanup(); }
 });
@@ -223,7 +240,7 @@ test("loopback boots without Host or TUI; disconnect keeps Host; shutdown dispos
     try {
       const connect = async () => { const peer = new Client({ name: "tunnel", version: "1" }); await peer.connect(new StreamableHTTPClientTransport(url)); return peer; };
       const first = await connect();
-      assert.equal((await first.listTools()).tools.length, 9);
+      assert.equal((await first.listTools()).tools.length, 11);
       assert.equal((await first.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.state, "no_active_project");
       assert.equal(created, 0);
       await first.callTool({ name: "pindie_open_project", arguments: { project: "Pindie" } });
