@@ -105,6 +105,8 @@ export interface CoreToolRegistrationOptions {
   readonly onPolicySet?: (snapshot: PolicySnapshot) => void;
   /** Read-only projection refresh after a Core semantic State transition. */
   readonly onSemanticStateChange?: () => void;
+  /** Optional model-facing suffix for successful in-Run Task completion. */
+  readonly completionLearningCheckpoint?: () => string | null;
 }
 
 export interface CoreSettlementFacts {
@@ -280,6 +282,7 @@ export class CoreIntegration {
         options.onSemanticStateChange?.();
         return result;
       },
+      completionLearningCheckpoint: options.completionLearningCheckpoint,
       onStateChange: onSemanticStateChange,
       onMutationUncertain,
     };

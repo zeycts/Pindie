@@ -615,6 +615,8 @@ This Slice is the actual command-driven → autonomous-learning transition.
 
 ### Slice E — Dogfood Closure
 
+Dogfood correction (in progress): ordinary Runs #208 and #210 completed without signaling. A successful `pindie_task_complete` during the current ordinary Run now carries a bounded, model-facing, optional learning checkpoint in its normal tool result; the Run-start policy clarifies that the model recognizes a plausible Strategy-level pattern while the Harness decides evidence sufficiency. Neither surface creates a signal, Candidate, receipt, notification, or extra Run. Slow-path and completed-before-run discussion Runs do not receive the checkpoint. This does not complete Slice E dogfood validation.
+
 Goal: prove the feature reduces Human meta-work without causing learning noise.
 
 Required real dogfood:
