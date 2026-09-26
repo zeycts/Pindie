@@ -17,6 +17,8 @@ export async function dispatchOrThrow(
   event: PindieEvent,
   signal: AbortSignal | undefined,
   options: SemanticDispatchToolOptions = {},
+  onCommitted?: () => void,
+  onCommitUncertain?: () => void,
 ): Promise<PindieState> {
   let result: TransitionResult;
   try {
@@ -30,6 +32,7 @@ export async function dispatchOrThrow(
       throw new Error("Another Pindie process currently owns this project's State lock. Retry shortly.");
     }
     if (error instanceof PindieStateMutationUncertainError) {
+      onCommitUncertain?.();
       options.onMutationUncertain?.(error.message);
       throw error;
     }
@@ -41,6 +44,7 @@ export async function dispatchOrThrow(
     );
   }
 
+  onCommitted?.();
   options.onStateChange?.();
   return runtime.state;
 }

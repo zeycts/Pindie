@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { PindieRuntime } from "../src/runtime.ts";
+import { PindieRuntime, PindieStateMutationUncertainError } from "../src/runtime.ts";
+import { LearningSignalHolder, createCompletionLearningDispositionSeam } from "../src/learning-signal.ts";
 import { EMPTY_STATE, getTaskStatus, type PindieState } from "../src/state.ts";
 import type { PindieStateStore } from "../src/store.ts";
 import {
@@ -429,15 +430,85 @@ test("complete dispatches complete_task, preserves result semantics, and require
   assert.match(textOf(result), /Verification:\s*\n- tests: passed/);
 });
 
-test("completion with a learning checkpoint leaves Pi's same-Run tool-result continuation available", async () => {
+test("Core-only completion stays terminal without SI disposition", async () => {
   const h = await harness(verifiedState());
-  const completion = createPindieTaskCompleteTool(h.runtime, {
-    completionLearningCheckpoint: () => "Optional same-Run learning judgment.",
-  });
-  const result = await completion.execute("complete", { summary: "Finished." });
-  assert.equal(result.terminate, undefined);
-  assert.match(textOf(result), /Optional same-Run learning judgment/);
+  const result = await h.tools.complete.execute("complete", { summary: "Finished." });
+  assert.equal(result.terminate, true);
+  assert.doesNotMatch(textOf(result), /learning checkpoint/i);
   assert.equal(h.runtime.state.task?.completed, true);
+});
+
+test("completion seam stages before dispatch, commits on success and rolls back only its own signal on failure", async () => {
+  const h = await harness(verifiedState());
+  const holder = new LearningSignalHolder();
+  holder.begin(1);
+  const learningDisposition = createCompletionLearningDispositionSeam({
+    holder, getGeneration: () => 1, isRequired: () => true,
+  });
+  const complete = createPindieTaskCompleteTool(h.runtime, { learningDisposition });
+  const input = { summary: "Done", learningDisposition: { kind: "signal" as const, signal: { intent: "derive-local" as const, reason: "Lesson" } } };
+  const originalSave = h.store.save.bind(h.store);
+  let observedBeforeSave = false;
+  h.store.save = async (root, state) => {
+    observedBeforeSave = holder.has(1) && h.runtime.state.task?.completed === false;
+    throw new Error("save failed");
+  };
+  await assert.rejects(complete.execute("failed", input), /save failed/);
+  assert.equal(observedBeforeSave, true, "signal was staged before asynchronous dispatch");
+  assert.equal(holder.has(1), false, "failed dispatch rolls back the staged signal");
+  assert.equal(h.runtime.state.task?.completed, false);
+  h.store.save = originalSave;
+  assert.equal((await complete.execute("success", input)).terminate, true);
+  assert.equal(holder.has(1), true, "successful dispatch retains the staged signal");
+  assert.equal(holder.take(1)?.reason, "Lesson");
+
+  const callbackFailure = await harness(verifiedState());
+  const committedSignal = new LearningSignalHolder();
+  committedSignal.begin(3);
+  await assert.rejects(createPindieTaskCompleteTool(callbackFailure.runtime, {
+    learningDisposition: createCompletionLearningDispositionSeam({
+      holder: committedSignal, getGeneration: () => 3, isRequired: () => true,
+    }),
+    onStateChange: () => { throw new Error("projection failed after commit"); },
+  }).execute("committed", input), /projection failed after commit/);
+  assert.equal(callbackFailure.runtime.state.task?.completed, true);
+  assert.equal(committedSignal.take(3)?.reason, "Lesson", "post-commit callback failure must not roll back the signal");
+
+  const prior = await harness(verifiedState());
+  const earlier = new LearningSignalHolder();
+  earlier.begin(2);
+  assert.equal(earlier.accept(2, { intent: "derive-local", reason: "Earlier" }), true);
+  const priorSeam = createCompletionLearningDispositionSeam({ holder: earlier, getGeneration: () => 2, isRequired: () => true });
+  prior.store.saveError = new Error("save failed");
+  await assert.rejects(createPindieTaskCompleteTool(prior.runtime, { learningDisposition: priorSeam }).execute("prior", {
+    summary: "Done", learningDisposition: { kind: "already-signaled" },
+  }), /save failed/);
+  assert.equal(earlier.take(2)?.reason, "Earlier", "independent earlier signal is not rolled back");
+});
+
+test("mutation-uncertain completion retains its staged signal and reports unavailable authority", async () => {
+  const h = await harness(verifiedState());
+  const holder = new LearningSignalHolder();
+  holder.begin(4);
+  const uncertain = new PindieStateMutationUncertainError();
+  let observedBeforeDispatch = false;
+  h.runtime.dispatchBounded = async () => {
+    observedBeforeDispatch = holder.has(4);
+    throw uncertain;
+  };
+  let reportedReason: string | null = null;
+  const complete = createPindieTaskCompleteTool(h.runtime, {
+    learningDisposition: createCompletionLearningDispositionSeam({
+      holder, getGeneration: () => 4, isRequired: () => true,
+    }),
+    onMutationUncertain: (reason) => { reportedReason = reason; },
+  });
+  await assert.rejects(complete.execute("uncertain", {
+    summary: "Done", learningDisposition: { kind: "signal", signal: { intent: "derive-local", reason: "Lesson" } },
+  }), (error: unknown) => error === uncertain);
+  assert.equal(observedBeforeDispatch, true);
+  assert.equal(reportedReason, uncertain.message);
+  assert.equal(holder.take(4)?.reason, "Lesson", "uncertain durable completion must retain its signal");
 });
 
 test("Gate open and resolve dispatch existing events and preserve result semantics", async () => {

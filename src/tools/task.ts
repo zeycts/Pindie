@@ -2,6 +2,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { LearningDispositionSchema, type LearningDispositionSeam } from "../learning-disposition-contract.ts";
 import { formatRunCost } from "../run-cost.ts";
 import { formatDuration } from "../run-timer.ts";
 import type { ConsumptionMetrics } from "../task-metrics.ts";
@@ -137,6 +138,7 @@ const TaskCompleteParameters = Type.Object(
       description:
         "Concise user-facing summary of the completed outcome and meaningful changes. Recorded verification evidence is rendered separately.",
     }),
+    learningDisposition: Type.Optional(LearningDispositionSchema),
   },
   { additionalProperties: false },
 );
@@ -153,7 +155,7 @@ export interface PindieTaskToolOptions {
   ) => void;
   onTaskRefined?: (state: PindieState) => void;
   onTaskCompleted?: (state: PindieState) => ConsumptionMetrics | null;
-  completionLearningCheckpoint?: () => string | null;
+  learningDisposition?: LearningDispositionSeam;
   onStateChange?: () => void;
   onMutationUncertain?: (reason: string) => void;
 }
@@ -530,21 +532,26 @@ export function createPindieTaskCompleteTool(
           "Invalid pindie_task_complete input: non-empty summary is required.",
         );
       }
-      const state = await dispatchOrThrow(
-        runtime,
-        { type: "complete_task" },
-        signal,
-        options,
-      );
+      const disposition = params.learningDisposition;
+      const learning = options.learningDisposition;
+      if (learning?.isRequired() && disposition === undefined) {
+        throw new Error("Invalid pindie_task_complete input: learningDisposition is required for ordinary SI-enabled completion.");
+      }
+      if (disposition !== undefined && !learning) {
+        throw new Error("Invalid pindie_task_complete input: learningDisposition conflicts with this Run or is invalid.");
+      }
+      const rollback = disposition === undefined ? null : learning!.stage(disposition);
+      let state: PindieState;
+      let mayHaveCommitted = false;
+      const retainSignal = () => { mayHaveCommitted = true; };
+      try {
+        state = await dispatchOrThrow(runtime, { type: "complete_task" }, signal, options, retainSignal, retainSignal);
+      } catch (error) {
+        if (!mayHaveCommitted) rollback?.();
+        throw error;
+      }
       const taskMetrics = options.onTaskCompleted?.(state) ?? null;
-      const checkpoint = options.completionLearningCheckpoint?.() ?? null;
-      return result(
-        [formatCompletionResult(state, params.summary, taskMetrics), checkpoint]
-          .filter((part) => part !== null).join("\n\n"),
-        state,
-        null,
-        checkpoint === null,
-      );
+      return result(formatCompletionResult(state, params.summary, taskMetrics), state, null, true);
     },
   });
 }
