@@ -1359,6 +1359,10 @@ export class SelfImprovementIntegration {
     ctx: ExtensionCommandContext,
   ): Promise<void> {
     const requestedId = args.trim();
+    if (/\s/.test(requestedId)) {
+      ctx.ui.notify("Usage: /trial-review <candidate-id> | /trial-review scope:<candidate-id> | /trial-review synthesis:<candidate-id>", "warning");
+      return;
+    }
     if (requestedId.startsWith("synthesis:")) {
       if (this.crossProjectLearning === null) {
         ctx.ui.notify("Pindie could not show Trial review: unknown Candidate subject namespace.", "warning");
@@ -1389,7 +1393,7 @@ export class SelfImprovementIntegration {
       ctx.ui.notify("Pindie could not show Trial review: unknown Candidate subject namespace.", "warning");
       return;
     }
-    if (!requestedId || /\s/.test(requestedId)) {
+    if (!requestedId) {
       ctx.ui.notify("Usage: /trial-review <candidate-id> | /trial-review scope:<candidate-id> | /trial-review synthesis:<candidate-id>", "warning");
       return;
     }
