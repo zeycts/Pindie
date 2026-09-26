@@ -1,7 +1,7 @@
 import { defineTool } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { LearningSignalSchema, MAX_LEARNING_SIGNAL_REASON_LENGTH, type LearningDispositionSeam } from "./learning-disposition-contract.ts";
 
-export const MAX_LEARNING_SIGNAL_REASON_LENGTH = 512;
+export { MAX_LEARNING_SIGNAL_REASON_LENGTH } from "./learning-disposition-contract.ts";
 export const LEARNING_SIGNAL_POLICY = "Learning opportunities are optional. A project-local engineering or procedural rule can be Strategy-level if it generalizes across future similar tasks; it need not be cross-domain or broadly abstract. If current work reveals a plausible reusable decision rule, you may signal it once with pindie_learning_signal; recognize the lesson, not whether the evidence is sufficient. Do not wait to prove recurrence or evidence counts: the Harness independently decides evidence sufficiency. Silence is normal for routine success, one-off facts, temporary fixes, outages and trivial details.";
 
 export type LearningSignal = Readonly<{
@@ -32,21 +32,47 @@ export class LearningSignalHolder {
   }
 
   accept(generation: number | null, signal: LearningSignal): boolean {
-    if (generation === null || generation !== this.generation || this.accepted !== null) return false;
-    this.accepted = Object.freeze({ ...signal });
-    return true;
+    return this.stage(generation, signal) !== null;
+  }
+
+  /** Rollback is scoped to this exact staged value; an earlier signal is never cleared. */
+  stage(generation: number | null, signal: LearningSignal): (() => void) | null {
+    if (generation === null || generation !== this.generation || this.accepted !== null) return null;
+    const staged = Object.freeze({ ...signal });
+    this.accepted = staged;
+    return () => {
+      if (this.generation === generation && this.accepted === staged) this.accepted = null;
+    };
   }
 }
 
-const Parameters = Type.Object({
-  intent: Type.Union([
-    Type.Literal("revise-existing"),
-    Type.Literal("derive-local"),
-    Type.Literal("derive-global"),
-  ]),
-  targetStrategyId: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
-  reason: Type.String({ minLength: 1, maxLength: MAX_LEARNING_SIGNAL_REASON_LENGTH }),
-}, { additionalProperties: false });
+export function createCompletionLearningDispositionSeam(options: {
+  holder: LearningSignalHolder;
+  getGeneration: () => number | null;
+  isRequired: () => boolean;
+}): LearningDispositionSeam {
+  return {
+    isRequired: options.isRequired,
+    stage(disposition) {
+      const valid = disposition !== null && typeof disposition === "object" && !Array.isArray(disposition) &&
+        (disposition.kind === "signal"
+          ? Object.keys(disposition).length === 2 && isValidLearningSignal(disposition.signal)
+          : (disposition.kind === "none" || disposition.kind === "already-signaled") &&
+            Object.keys(disposition).length === 1);
+      const generation = options.getGeneration();
+      if (!valid || (disposition.kind === "already-signaled") !== options.holder.has(generation) ||
+          (disposition.kind === "signal" && !options.isRequired())) {
+        throw new Error("Invalid pindie_task_complete input: learningDisposition conflicts with this Run or is invalid.");
+      }
+      if (disposition.kind !== "signal") return null;
+      const rollback = options.holder.stage(generation, disposition.signal);
+      if (!rollback) throw new Error("Invalid pindie_task_complete input: learningDisposition conflicts with this Run or is invalid.");
+      return rollback;
+    },
+  };
+}
+
+const Parameters = LearningSignalSchema;
 
 export function isValidLearningSignal(value: unknown): value is LearningSignal {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
@@ -60,8 +86,6 @@ export function isValidLearningSignal(value: unknown): value is LearningSignal {
     signal.reason.trim().length > 0 &&
     Object.keys(signal).every((key) => key === "intent" || key === "targetStrategyId" || key === "reason");
 }
-
-export const LearningSignalParameters = Parameters;
 
 export function createPindieLearningSignalTool(options: {
   holder: LearningSignalHolder;

@@ -43,7 +43,7 @@ import {
 import { PINDIE_REMOTE_NOTICE_TYPE, renderPindieRemoteNotice } from "./remote-notice.ts";
 import { CrossProjectLearningIntegration } from "./cross-project-learning-integration.ts";
 import { SelfImprovementIntegration } from "./self-improvement-integration.ts";
-import { LEARNING_SIGNAL_POLICY, LearningSignalHolder, createPindieLearningSignalTool } from "./learning-signal.ts";
+import { LEARNING_SIGNAL_POLICY, LearningSignalHolder, createCompletionLearningDispositionSeam, createPindieLearningSignalTool } from "./learning-signal.ts";
 import {
   assessLearningOpportunity,
   FileLearningAssessmentReceiptReader,
@@ -756,13 +756,13 @@ function registerComposedPindieExtension(
       presentation.refreshStatus();
       projectRemoteSemantics();
     },
-    learningDisposition: featureSelection.selfImprovement ? {
+    learningDisposition: featureSelection.selfImprovement ? createCompletionLearningDispositionSeam({
       holder: learningSignal,
       getGeneration: () => run.activeAgentRunGeneration,
       isRequired: () => run.hasActiveAgentRun && selfImprovement !== null &&
         !selfImprovement.hasConflictingLearningPath &&
         (() => { const derived = run.deriveSnapshot(); return derived.ok && derived.snapshot.authority === "coherent"; })(),
-    } : undefined,
+    }) : undefined,
     resolveRevisionSelector: selfImprovement === null
       ? undefined
       : (selector, kind, ctx) => selfImprovement!.resolveRevisionSelector(selector, kind, ctx),

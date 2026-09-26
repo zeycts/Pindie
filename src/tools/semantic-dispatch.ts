@@ -17,6 +17,7 @@ export async function dispatchOrThrow(
   event: PindieEvent,
   signal: AbortSignal | undefined,
   options: SemanticDispatchToolOptions = {},
+  onCommitted?: () => void,
 ): Promise<PindieState> {
   let result: TransitionResult;
   try {
@@ -41,6 +42,7 @@ export async function dispatchOrThrow(
     );
   }
 
+  onCommitted?.();
   options.onStateChange?.();
   return runtime.state;
 }
