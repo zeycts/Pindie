@@ -36,6 +36,64 @@ async function linked(workspace: PindieControlWorkspace) {
   return { peer, close: async () => { await peer.close(); await server.close(); } };
 }
 
+test("MCP preserves the complete bounded Control snapshot and report discriminants", async () => {
+  const { root, cleanup } = await fixture();
+  const base = {
+    lease: "lease-1", revision: 7,
+    project: { root: join(root, "Pindie") },
+    session: { id: "session-1", displayIdentity: "Pindie Control" },
+    runtime: { idle: true, streaming: false, compacting: false, pendingMessageCount: 0,
+      automaticWorkSettled: true, activity: "reading" },
+    semantic: { authority: "coherent", taskStatus: "done", taskGoal: "Deliver the fix",
+      blockers: [], questions: [], verificationStatus: "passed", verificationProgress: { covered: 2, total: 2 },
+      humanGate: null, unavailableReason: null },
+    executionConfig: { model: { provider: "openai-codex", modelId: "gpt-6-sol" },
+      thinkingLevel: "medium", reasoningMode: "manual" },
+    recovery: { quotaWaiting: null },
+    latestAssistant: { entryId: "semantic:completion:complete", text: "Delivered the fix.",
+      lifecycle: "complete", source: "task_completion" },
+  } satisfies PindieControlSnapshot;
+  let current: PindieControlSnapshot = base;
+  const workspace = await PindieControlWorkspace.create({ workspaceRoot: root,
+    createHost: async () => ({ dispose: async () => {} }) as PindieHost,
+    createClient: () => asClient({ start: async () => {}, dispose: () => {}, observe: () => current,
+      input: () => { throw new PindieControlError("stale_control_lease", "Observe again", current); } }),
+  });
+  const wire = await linked(workspace);
+  try {
+    const open = await wire.peer.callTool({ name: "pindie_open_project", arguments: { project: "Pindie" } });
+    assert.deepEqual(open.structuredContent, { state: "active_project", workspaceRoot: root, activeProject: "Pindie", control: base });
+    const stale = await wire.peer.callTool({ name: "pindie_input", arguments: { lease: "old", text: "hello" } });
+    assert.equal(stale.isError, true);
+    assert.deepEqual(stale.structuredContent, { code: "stale_control_lease", message: "Observe again", snapshot: base });
+
+    const assistant = { ...base, latestAssistant: { entryId: "reply", text: "Still working", lifecycle: "streaming", source: "assistant" } } satisfies PindieControlSnapshot;
+    current = assistant;
+    assert.deepEqual((await wire.peer.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.control, assistant);
+
+    const gated = { ...base,
+      runtime: { ...base.runtime, idle: false, streaming: true, automaticWorkSettled: false, pendingMessageCount: 1 },
+      semantic: { ...base.semantic, taskStatus: "waiting_human", blockers: ["Need approval"], questions: ["Merge?"],
+        humanGate: { key: "human-gate:1", kind: "approval", question: "Merge?", options: ["Yes", "No"] } },
+      recovery: { quotaWaiting: { sessionId: "session-1", resumeAt: 12345 } },
+      latestAssistant: { entryId: "error-reply", text: "Could not complete.", lifecycle: "error", source: "assistant" },
+    } satisfies PindieControlSnapshot;
+    current = gated;
+    assert.deepEqual((await wire.peer.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.control, gated);
+
+    const unavailable = { ...base,
+      project: { root: null },
+      runtime: { ...base.runtime, activity: null },
+      semantic: { ...base.semantic, authority: "presentation-unavailable", taskStatus: null, taskGoal: null,
+        verificationStatus: null, verificationProgress: null, unavailableReason: "Presentation unavailable" },
+      executionConfig: { ...base.executionConfig, model: null, reasoningMode: null },
+      latestAssistant: null,
+    } satisfies PindieControlSnapshot;
+    current = unavailable;
+    assert.deepEqual((await wire.peer.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.control, unavailable);
+  } finally { await wire.close(); await workspace.close(); await cleanup(); }
+});
+
 test("bounded deterministic direct-child discovery and name validation", async () => {
   await assert.rejects(resolveControlWorkspaceRoot(undefined), /PINDIE_WORKSPACE_ROOT/);
   const { root, cleanup } = await fixture();

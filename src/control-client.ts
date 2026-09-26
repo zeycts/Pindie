@@ -65,12 +65,10 @@ export interface PindieControlSnapshot {
     readonly quotaWaiting: PindiePresentationSnapshot["quotaResumeWaiting"];
   };
   /** Latest visible assistant text or successful semantic Task completion, in timeline order. */
-  readonly latestAssistant: {
-    readonly entryId: string;
-    readonly text: string;
-    readonly lifecycle: "streaming" | "complete" | "error";
-    readonly source: "assistant" | "task_completion";
-  } | null;
+  readonly latestAssistant: (
+    | { readonly entryId: string; readonly text: string; readonly lifecycle: "streaming" | "complete" | "error"; readonly source: "assistant" }
+    | { readonly entryId: string; readonly text: string; readonly lifecycle: "complete"; readonly source: "task_completion" }
+  ) | null;
 }
 
 export interface PindieControlClientOptions {
