@@ -79,5 +79,20 @@ export function createPindieControlMcpServer(workspace: PindieControlWorkspace):
     inputSchema: z.strictObject({ lease, sessionId: text }),
     annotations: consequential,
   }, async (args) => invoke(() => workspace.withClient((client) => client.switchSession(args))));
+  server.registerTool("pindie_read_timeline", {
+    description: "Read a bounded tail of the current human-visible Pindie timeline.",
+    inputSchema: z.strictObject({ limit: z.number().int().min(1).max(50).optional() }),
+    annotations: read,
+  }, async (args) => invoke(() => workspace.withClient((client) => client.readTimeline(args))));
+  server.registerTool("pindie_wait", {
+    description: "Wait for a meaningful Control change, safe settlement, or Human Gate.",
+    inputSchema: z.strictObject({
+      lease,
+      until: z.enum(["meaningful_change", "settled", "human_gate"]),
+      afterRevision: z.number().int().min(0).optional(),
+      timeoutSeconds: z.number().int().min(1).max(30).optional(),
+    }),
+    annotations: read,
+  }, async (args) => invoke(() => workspace.wait(args)));
   return server;
 }

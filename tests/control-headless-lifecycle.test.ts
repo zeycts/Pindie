@@ -134,6 +134,43 @@ test("real pinned Pi Session navigation lists and switches native persisted Sess
   }
 });
 
+test("real pinned Pi Session events reach the live timeline and replacement releases a waiter", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pindie-control-live-events-"));
+  const project = join(root, "project");
+  const agentDir = join(root, "agent");
+  await mkdir(project);
+  await mkdir(agentDir);
+  let host: PindieHost | undefined;
+  let control: PindieControlClient | undefined;
+  try {
+    host = await createPindieHost({
+      cwd: project, agentDir, sessionManager: SessionManager.inMemory(project),
+      env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: "0" },
+      dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
+    });
+    control = new PindieControlClient(host.runtime, host.presentation, {
+      bindActiveSession: () => host!.runtime.bindActiveSessionExtensions({ mode: "print" }),
+    });
+    await control.start();
+    const before = control.observe();
+    const changed = control.wait({ lease: before.lease, until: "meaningful_change", afterRevision: before.revision, timeoutSeconds: 5 });
+    await host.runtime.steer("queued lifecycle observation");
+    assert.equal((await changed).reason, "changed");
+    const timeline = control.readTimeline();
+    assert.equal(timeline.sessionId, before.session.id);
+    assert.equal(timeline.timeline.some((block) => block.type === "message" && block.text.includes("queued lifecycle observation")), false);
+    host.runtime.clearActiveSessionQueue();
+    const pending = control.wait({ lease: before.lease, until: "human_gate", timeoutSeconds: 30 });
+    const replacement = await control.freshSession({ lease: before.lease });
+    assert.notEqual(replacement.snapshot.session.id, before.session.id);
+    assert.equal((await pending).reason, "binding_changed");
+  } finally {
+    control?.dispose();
+    await host?.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("real pinned Pi Control rebinds after fresh Session before exposing a new lease", async () => {
   const root = await mkdtemp(join(tmpdir(), "pindie-control-rebind-"));
   const project = join(root, "project");

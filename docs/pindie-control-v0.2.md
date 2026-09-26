@@ -837,14 +837,17 @@ Read-only and project/Session scoped.
 
 It must expose only the existing **human-visible Pindie UI projection**, never raw Session storage.
 
-Authoritative source:
+Authoritative source is one disposable `PindieUiProjection` retained by `PindieControlClient` for each Session epoch:
 
 ```text
-active Pi Session
-→ createPindieUiProjection(...)
-→ visible timeline blocks
-→ bounded Control result
+Session bind/bootstrap succeeds
+→ rebuildProjection(native branch + current facts)
+→ one existing AgentSession subscription
+→ reduceProjectionEvent + refreshProjectionFacts
+→ bounded current timeline tail
 ```
+
+Explicit observation refreshes current facts while preserving live timeline blocks. Session replacement discards the old projection and rebuilds after the new extension `session_start`; no lease is published before that bootstrap and initial projection succeed. Control deliveries append through the existing `appendUserDelivery` helper until native persistence reconciles them. This projection is runtime-only and is not a second event store.
 
 The result may contain human-visible projected blocks such as:
 
@@ -871,7 +874,7 @@ Conceptual input:
 limit?: integer
 ```
 
-with a conservative server-side maximum.
+with default 20 and maximum 50. The result returns only the current tail of the existing human-visible `UiTimelineBlock` projection and sets `hasMoreBefore` when earlier in-memory blocks exist. There is no historical cursor or raw Session/storage exposure.
 
 Conceptual result:
 
@@ -907,7 +910,9 @@ until: meaningful_change | settled | human_gate
 timeoutSeconds?
 ```
 
-A conservative server-side timeout cap is required. Timeout is a normal result, not a protocol error.
+Timeout defaults to 20 seconds, has a 30-second maximum, and is a normal result, not a protocol error. `settled` requires all of: runtime idle, automatic work settled, zero pending messages, and no quota wait; Task completion is not required. A current Human Gate interrupts every wait mode, and Session binding replacement interrupts with `binding_changed`.
+
+Wait is event-driven over the one existing ControlClient AgentSession subscription; it does not poll, persist wait state, or create per-wait subscriptions. Workspace captures the active client inside its serialization boundary and waits after releasing that boundary so project replacement/stop are not blocked by a long observation.
 
 Conceptual result:
 
@@ -936,13 +941,13 @@ Do not use high-frequency activity-only churn as the primary wake boundary.
 
 A meaningful change includes, at minimum:
 
-- assistant visible text/lifecycle change;
-- projected work/tool lifecycle change;
-- Task/verification/Human Gate semantic change;
+- a new visible assistant episode and assistant completion/error (not each streaming token);
+- projected work start and completion/failure (not partial tool-result updates);
+- Task/verification/Human-Gate visible state/lifecycle change;
 - Agent Run start/settle;
-- Session binding replacement.
+- Session binding replacement and other existing Control snapshot semantic/runtime changes.
 
-The implementation may maintain disposable in-memory waiter bookkeeping. It must not create a second durable event log.
+Activity-only churn is excluded. The fingerprint and waiter bookkeeping are disposable in-memory state, not a second durable event log.
 
 ### 20.5 D1 orchestration goal
 
@@ -1018,8 +1023,8 @@ At minimum:
 
 ### Wait
 
-- meaningful_change waits until revision advances;
-- settled returns immediately when already settled;
+- meaningful_change waits until revision advances and requires `afterRevision`;
+- settled returns immediately when already safely settled using the full idle/settled/empty-queue/no-quota definition;
 - settled waits through a running Agent Run and returns on settle;
 - human_gate waits until a Gate appears;
 - timeout returns normally with current snapshot;
