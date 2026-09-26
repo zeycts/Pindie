@@ -362,13 +362,13 @@ test("Host-owned automatic rollover persists native lineage naming without addin
     scheduledRollover();
     await freshSessionReboundPromise;
 
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const currentSession = host.runtime.activeSession;
-      if (
-        currentSession.sessionId !== sourceSessionId &&
-        currentSession.sessionManager.getSessionName() !== undefined
-      ) break;
-      await new Promise<void>((resolve) => setImmediate(resolve));
+    const replacementDeadline = Date.now() + 15_000;
+    while (
+      host.runtime.activeSession.sessionId === sourceSessionId ||
+      host.runtime.activeSession.sessionManager.getSessionName() === undefined
+    ) {
+      assert.ok(Date.now() < replacementDeadline, "timed out waiting for the named replacement Session");
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
     }
     assert.notEqual(host.runtime.activeSessionId, sourceSessionId);
     const freshSession = host.runtime.activeSession;
