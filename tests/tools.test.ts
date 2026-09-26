@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { PindieRuntime } from "../src/runtime.ts";
+import { PindieRuntime, PindieStateMutationUncertainError } from "../src/runtime.ts";
 import { LearningSignalHolder, createCompletionLearningDispositionSeam } from "../src/learning-signal.ts";
 import { EMPTY_STATE, getTaskStatus, type PindieState } from "../src/state.ts";
 import type { PindieStateStore } from "../src/store.ts";
@@ -484,6 +484,31 @@ test("completion seam stages before dispatch, commits on success and rolls back 
     summary: "Done", learningDisposition: { kind: "already-signaled" },
   }), /save failed/);
   assert.equal(earlier.take(2)?.reason, "Earlier", "independent earlier signal is not rolled back");
+});
+
+test("mutation-uncertain completion retains its staged signal and reports unavailable authority", async () => {
+  const h = await harness(verifiedState());
+  const holder = new LearningSignalHolder();
+  holder.begin(4);
+  const uncertain = new PindieStateMutationUncertainError();
+  let observedBeforeDispatch = false;
+  h.runtime.dispatchBounded = async () => {
+    observedBeforeDispatch = holder.has(4);
+    throw uncertain;
+  };
+  let reportedReason: string | null = null;
+  const complete = createPindieTaskCompleteTool(h.runtime, {
+    learningDisposition: createCompletionLearningDispositionSeam({
+      holder, getGeneration: () => 4, isRequired: () => true,
+    }),
+    onMutationUncertain: (reason) => { reportedReason = reason; },
+  });
+  await assert.rejects(complete.execute("uncertain", {
+    summary: "Done", learningDisposition: { kind: "signal", signal: { intent: "derive-local", reason: "Lesson" } },
+  }), (error: unknown) => error === uncertain);
+  assert.equal(observedBeforeDispatch, true);
+  assert.equal(reportedReason, uncertain.message);
+  assert.equal(holder.take(4)?.reason, "Lesson", "uncertain durable completion must retain its signal");
 });
 
 test("Gate open and resolve dispatch existing events and preserve result semantics", async () => {

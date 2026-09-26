@@ -542,11 +542,12 @@ export function createPindieTaskCompleteTool(
       }
       const rollback = disposition === undefined ? null : learning!.stage(disposition);
       let state: PindieState;
-      let committed = false;
+      let mayHaveCommitted = false;
+      const retainSignal = () => { mayHaveCommitted = true; };
       try {
-        state = await dispatchOrThrow(runtime, { type: "complete_task" }, signal, options, () => { committed = true; });
+        state = await dispatchOrThrow(runtime, { type: "complete_task" }, signal, options, retainSignal, retainSignal);
       } catch (error) {
-        if (!committed) rollback?.();
+        if (!mayHaveCommitted) rollback?.();
         throw error;
       }
       const taskMetrics = options.onTaskCompleted?.(state) ?? null;
