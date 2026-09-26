@@ -655,3 +655,393 @@ At minimum:
 Do not add additional project-management tools merely for symmetry.
 
 Further workspace capabilities must be driven by real dogfood failures or explicit product needs.
+
+
+## 19. Slice C — Session Discovery & Switch
+
+Real dogfood now proves that project selection alone is not enough. ChatGPT must also be able to select the correct persisted Pi Session inside the active project before continuing work.
+
+Slice C adds exactly two project-scoped tools:
+
+```text
+pindie_list_sessions
+pindie_switch_session
+```
+
+After Slice C the MCP surface contains 11 tools.
+
+### 19.1 Session authority
+
+Pi remains the sole Session authority.
+
+Pindie Control must reuse the existing native runtime seams:
+
+```text
+PiRuntimeAdapter.getActiveProjectSessionChoices()
+PiRuntimeAdapter.switchActiveSession(...)
+```
+
+Do not introduce a second Session registry, copied Session metadata store, or synthetic conversation identity.
+
+### 19.2 pindie_list_sessions
+
+Read-only and project-scoped.
+
+If no project is active, return the existing structured `no_active_project` error.
+
+Return a bounded projection of Sessions belonging to the active project's native Pi Session directory:
+
+```text
+activeSessionId
+
+sessions:
+  - id
+  - name/display identity when available
+  - created
+  - modified
+  - messageCount
+  - firstMessage preview
+  - current
+```
+
+The underlying Session file path is internal routing data and must **not** be returned to ChatGPT.
+
+Do not expose arbitrary Session directories or caller-provided paths.
+
+### 19.3 pindie_switch_session
+
+Write/consequential and project-scoped.
+
+Input:
+
+```text
+lease
+sessionId
+```
+
+The caller supplies a native Session ID, never a path.
+
+On every call:
+
+```text
+validate current Control lease
+→ enumerate current project's native Session choices
+→ resolve sessionId to the current-project internal Session path
+→ reject missing/ambiguous IDs
+→ verify safe Session-replacement boundary
+→ native switchSession(path)
+→ existing beforeSessionInvalidate lifecycle
+→ existing headless bindExtensions/session_start lifecycle
+→ publish fresh Control binding/lease
+```
+
+Never trust a stale cached Session path.
+
+### 19.4 Safe Session switch
+
+Require:
+
+- runtime idle;
+- automatic work settled;
+- pending messages = 0;
+- no current Human Gate;
+- no quota-resume waiting state.
+
+If unsafe, fail closed with a stable error such as:
+
+```text
+session_switch_unsafe
+```
+
+Do not use semantic Task status as a switch prohibition. A durable project Task may legitimately span multiple Pi Sessions.
+
+Switching to the already-active Session is idempotent:
+
+- no native replacement;
+- no new lease;
+- return the current snapshot.
+
+A real Session replacement must invalidate the old lease and expose a new lease only after extension bootstrap and Control projection succeed.
+
+### 19.5 Failure behavior
+
+If the requested Session no longer exists, return a structured `session_not_found` error.
+
+If native switch/bootstrap fails after invalidation, remain fail-closed with no partially authorized binding. Do not silently switch to another Session.
+
+Do not add Session delete, rename, fork, or tree-navigation tools in Slice C.
+
+### 19.6 Slice C tests
+
+At minimum:
+
+- list returns only active-project native Sessions;
+- no Session file paths are exposed;
+- no-active-project fails closed;
+- current Session is correctly marked;
+- switch accepts Session ID only;
+- unknown/stale Session ID fails;
+- busy/unsettled/pending/Human Gate/quota wait reject before replacement;
+- active durable Task does not by itself block switching;
+- same-Session switch is idempotent and preserves lease;
+- real switch rotates lease;
+- old lease becomes stale;
+- extension bootstrap completes before new lease publication;
+- switch/bootstrap failure leaves no partially authorized binding;
+- total MCP surface = 11;
+- no fork/delete/rename/tree/path-generic Session tools appear.
+
+## 20. Slice D — Live Work Observation
+
+Real ChatGPT-driven work exposed a second problem: when the Control Host owns the running Pi AgentSession, opening the same persisted Session in another Pi TUI process only shows the persisted snapshot at resume time. It is not a live observer of the Control Host.
+
+The desired model is:
+
+```text
+one runtime owner
++
+multiple read-only observers
+```
+
+Do not solve this by having a second Pi AgentSession repeatedly reload the same Session file.
+
+Slice D is split into two parts.
+
+### 20.1 Slice D1 — Control-side live observation
+
+D1 adds two read-only Control tools:
+
+```text
+pindie_read_timeline
+pindie_wait
+```
+
+These two tools are a pair:
+
+- `read_timeline` removes the black-box view of what Pindie has actually been doing;
+- `wait` lets ChatGPT remain in the orchestration loop without requiring the human to watch Pindie and send “继续”.
+
+After D1 the MCP surface contains 13 tools.
+
+### 20.2 pindie_read_timeline
+
+Read-only and project/Session scoped.
+
+It must expose only the existing **human-visible Pindie UI projection**, never raw Session storage.
+
+Authoritative source:
+
+```text
+active Pi Session
+→ createPindieUiProjection(...)
+→ visible timeline blocks
+→ bounded Control result
+```
+
+The result may contain human-visible projected blocks such as:
+
+- user/assistant visible text;
+- projected tool/work blocks;
+- projected tool results;
+- semantic Task/verification blocks;
+- projected runtime blocks when available.
+
+It must never expose:
+
+- assistant hidden reasoning/thinking;
+- hidden custom messages;
+- raw Session JSONL;
+- arbitrary Session file paths;
+- raw extension/runtime secrets;
+- content intentionally filtered out by the UI projection.
+
+The initial implementation should favor a bounded current tail over inventing a second persistent event store.
+
+Conceptual input:
+
+```text
+limit?: integer
+```
+
+with a conservative server-side maximum.
+
+Conceptual result:
+
+```text
+sessionId
+revision
+timeline: [...human-visible projected blocks...]
+hasMoreBefore
+```
+
+The exact pagination cursor may be added only if required by real dogfood. Do not persist a duplicate timeline database.
+
+### 20.3 pindie_wait
+
+Read-only, project/Session scoped, and bounded-duration.
+
+Purpose:
+
+```text
+observe snapshot
+→ submit/steer work
+→ wait for a meaningful runtime/control boundary
+→ inspect timeline/snapshot
+→ continue automatically or return to human
+```
+
+Conceptual input:
+
+```text
+lease
+afterRevision
+until: meaningful_change | settled | human_gate
+timeoutSeconds?
+```
+
+A conservative server-side timeout cap is required. Timeout is a normal result, not a protocol error.
+
+Conceptual result:
+
+```text
+reason: changed | settled | human_gate | timeout | binding_changed
+snapshot
+```
+
+Semantics:
+
+- `meaningful_change`: return after Control revision advances beyond `afterRevision`;
+- `settled`: return once automatic work is settled at a safe idle boundary;
+- `human_gate`: return once a current Human Gate exists;
+- if the Session/lease changes while waiting, return `binding_changed` with the current safe snapshot when available;
+- on timeout, refresh once and return the current snapshot.
+
+Waiting must subscribe to the existing live Control/AgentSession lifecycle. Do not create a second polling daemon or persist wait state.
+
+A wait call must never hold or create semantic authority. It is observation only.
+
+### 20.4 Meaningful revision boundary
+
+D1 may extend Control's observation bookkeeping so that human-visible timeline changes can wake `pindie_wait(until=meaningful_change)`.
+
+Do not use high-frequency activity-only churn as the primary wake boundary.
+
+A meaningful change includes, at minimum:
+
+- assistant visible text/lifecycle change;
+- projected work/tool lifecycle change;
+- Task/verification/Human Gate semantic change;
+- Agent Run start/settle;
+- Session binding replacement.
+
+The implementation may maintain disposable in-memory waiter bookkeeping. It must not create a second durable event log.
+
+### 20.5 D1 orchestration goal
+
+The target ChatGPT loop is:
+
+```text
+pindie_input
+→ pindie_wait
+→ pindie_read_timeline
+→ inspect current snapshot
+→ if ordinary continuation is clear, continue through Pindie Control
+→ if Human Gate or real judgment is required, return to user
+```
+
+This is specifically intended to eliminate the human pattern:
+
+```text
+watch Pindie
+→ guess it may be done
+→ send “继续”
+```
+
+### 20.6 Slice D2 — Local read-only monitor
+
+After D1 is dogfood-validated, add a local read-only monitor such as:
+
+```text
+pnpm control:watch
+```
+
+or an equivalent narrow CLI.
+
+It connects to the existing loopback Pindie Control service and renders the same bounded UI projection/timeline.
+
+It must:
+
+- never create or resume another Pi AgentSession;
+- never become a second writer;
+- never own Host lifecycle;
+- never gain project mutation capabilities;
+- remain read-only.
+
+The target ownership remains:
+
+```text
+Pindie Control Host  (single runtime owner)
+        │
+        ├── ChatGPT Control
+        └── local read-only monitor
+```
+
+Do not implement D2 before D1 is validated.
+
+## 21. Slice D1 required tests
+
+At minimum:
+
+### Timeline safety
+
+- returns current human-visible projected timeline;
+- hidden reasoning/thinking is absent;
+- hidden custom messages are absent;
+- raw Session file path/storage is absent;
+- result is server-bounded;
+- no-active-project fails closed.
+
+### Live projection
+
+- assistant streaming/complete lifecycle is reflected;
+- visible tool call/result lifecycle changes are reflected;
+- semantic Task/verification/Human Gate changes are reflected;
+- activity-only churn does not create unbounded wake noise.
+
+### Wait
+
+- meaningful_change waits until revision advances;
+- settled returns immediately when already settled;
+- settled waits through a running Agent Run and returns on settle;
+- human_gate waits until a Gate appears;
+- timeout returns normally with current snapshot;
+- Session replacement returns binding_changed/stale-safe result;
+- disposal releases all waiters;
+- multiple waiters do not create multiple Agent owners or subscriptions that mutate runtime.
+
+### MCP
+
+- D1 adds exactly two read-only closed-world tools;
+- total MCP surface = 13;
+- wait has a server-side timeout cap;
+- no raw log/file/session-path API is introduced.
+
+## 22. Implementation order
+
+Proceed strictly:
+
+```text
+Slice C
+Session discovery + switch
+↓ real dogfood
+
+Slice D1
+read-only live timeline + pindie_wait
+↓ real dogfood
+
+Slice D2
+local read-only control:watch monitor
+↓ real dogfood
+```
+
+Further observability/control features must be driven by real failures after these slices.
