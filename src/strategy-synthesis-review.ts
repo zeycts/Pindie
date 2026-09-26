@@ -871,7 +871,7 @@ export function parseSynthesisTrialReviewCommandValue(value: string): string | n
   if (!value.startsWith(SYNTHESIS_TRIAL_REVIEW_COMMAND_PREFIX)) return null;
   const candidateId = value.slice(SYNTHESIS_TRIAL_REVIEW_COMMAND_PREFIX.length);
   if (!isCanonicalStrategySynthesisCandidateId(candidateId)) {
-    throw new Error("Synthesis review Candidate ID must be a canonical lowercase UUID-v4.");
+    throw new Error("Synthesis Candidate ID must be a canonical lowercase UUID-v4.");
   }
   return candidateId;
 }
