@@ -2,9 +2,9 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 export const MAX_LEARNING_SIGNAL_REASON_LENGTH = 512;
-export const LEARNING_SIGNAL_POLICY = "Learning opportunities are optional. If current real work reveals a plausible reusable Strategy-level pattern, you may signal it once with pindie_learning_signal; recognize the lesson, not whether the evidence is sufficient. Do not wait to prove recurrence or evidence counts: the Harness independently decides evidence sufficiency. Silence is normal for routine success, one-off facts, temporary fixes, outages and trivial details.";
+export const LEARNING_SIGNAL_POLICY = "Learning opportunities are optional. A project-local engineering or procedural rule can be Strategy-level if it generalizes across future similar tasks; it need not be cross-domain or broadly abstract. If current work reveals a plausible reusable decision rule, you may signal it once with pindie_learning_signal; recognize the lesson, not whether the evidence is sufficient. Do not wait to prove recurrence or evidence counts: the Harness independently decides evidence sufficiency. Silence is normal for routine success, one-off facts, temporary fixes, outages and trivial details.";
 
-export const LEARNING_COMPLETION_CHECKPOINT = "Primary work is complete. If this Run revealed a reusable Strategy-level lesson, now is the moment to call pindie_learning_signal once before ending. You need not prove recurrence or evidence sufficiency from this Run alone; the Harness decides independently. Silence is normal for routine success, one-off facts, temporary fixes, outages and trivial details.";
+export const LEARNING_COMPLETION_CHECKPOINT = "Primary work is complete. Before ending this same ordinary Run, briefly decide whether current work revealed a reusable decision rule or pattern that would change how you approach a future similar task. A project-local engineering or procedural rule qualifies as Strategy-level if it generalizes across future similar tasks; it need not be cross-domain or broadly abstract. If yes, call pindie_learning_signal once; if no, end silently. Do not narrate this judgment to the user. Do not wait to prove recurrence or evidence counts: the Harness independently decides evidence sufficiency. Routine success, one-off facts, temporary fixes, outages and trivial details are not learning opportunities.";
 
 export type LearningSignal = Readonly<{
   intent: "revise-existing" | "derive-local" | "derive-global";
@@ -54,7 +54,7 @@ export function createPindieLearningSignalTool(options: {
   return defineTool({
     name: "pindie_learning_signal",
     label: "Signal learning opportunity",
-    description: "Optionally signal one reusable Strategy-level lesson in an ordinary Run. Silence is normal: ordinary errors, temporary workarounds, one-off repository facts, outages, trivial details and routine success are not learning opportunities. Supply only semantic intent; the Harness independently assesses evidence after the Run settles.",
+    description: "Optionally signal one reusable decision rule or pattern that would change how a future similar task is approached in an ordinary Run. A project-local engineering or procedural rule qualifies as Strategy-level when it generalizes across future similar tasks; it need not be cross-domain or broadly abstract. Silence is normal: ordinary errors, temporary workarounds, one-off repository facts, outages, trivial details and routine success are not learning opportunities. Supply only semantic intent; do not wait for recurrence proof or evidence counts. The Harness independently assesses evidence after the Run settles.",
     parameters: Parameters,
     executionMode: "sequential",
     async execute(_id, params) {

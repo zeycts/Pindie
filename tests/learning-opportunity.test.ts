@@ -31,6 +31,18 @@ test("learning signal is a non-mutating semantic effect and excluded from execut
   assert.equal(run.execution.deniedCalls, 0);
 });
 
+test("learning signal description admits reusable project-local procedures without claiming evidence authority", () => {
+  const tool = createPindieLearningSignalTool({
+    holder: new LearningSignalHolder(), getGeneration: () => 1, isOrdinary: () => true,
+  });
+  assert.match(tool.description, /decision rule or pattern that would change how a future similar task is approached/);
+  assert.match(tool.description, /project-local engineering or procedural rule qualifies as Strategy-level when it generalizes across future similar tasks/);
+  assert.match(tool.description, /need not be cross-domain or broadly abstract/);
+  assert.match(tool.description, /Silence is normal/);
+  assert.match(tool.description, /do not wait for recurrence proof or evidence counts/);
+  assert.match(tool.description, /Harness independently assesses evidence after the Run settles/);
+});
+
 test("strict target semantics, one successful signal and lifecycle replacement", async () => {
   const holder = new LearningSignalHolder();
   let ordinary = true;
