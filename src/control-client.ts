@@ -17,6 +17,8 @@ import {
   reduceProjectionEvent,
   refreshProjectionFacts,
   type PindieUiProjection,
+  type PindieUiProjectionFactsInput,
+  type PindieUiProjectionInput,
   type UiTimelineBlock,
 } from "./ui-projection.ts";
 
@@ -852,7 +854,7 @@ export class PindieControlClient {
     this.lastFingerprint = "";
     try {
       const presentation = this.presentation.current()?.snapshot() ?? null;
-      this.projection = rebuildProjection(this.projectionInput(binding, presentation));
+      this.projection = rebuildProjection(this.projectionRebuildInput(binding, presentation));
       this.refresh(true);
       const unsubscribe = this.runtime.subscribeActiveSession((event) => {
         this.handleSessionEvent(sessionId, generation, event);
@@ -898,10 +900,10 @@ export class PindieControlClient {
     }
   }
 
-  private projectionInput(
+  private projectionFactsInput(
     binding: ControlBinding,
     presentation: PindiePresentationSnapshot | null,
-  ) {
+  ): PindieUiProjectionFactsInput {
     return {
       presentation,
       session: {
@@ -911,6 +913,19 @@ export class PindieControlClient {
         thinkingLevel: this.runtime.getActiveSessionThinkingLevel(),
         runtime: this.runtime.getActiveSessionFacts(),
         automaticWorkSettled: this.automaticWorkSettled,
+      },
+    };
+  }
+
+  private projectionRebuildInput(
+    binding: ControlBinding,
+    presentation: PindiePresentationSnapshot | null,
+  ): PindieUiProjectionInput {
+    const facts = this.projectionFactsInput(binding, presentation);
+    return {
+      ...facts,
+      session: {
+        ...facts.session,
         branch: this.runtime.getActiveSessionBranch(),
       },
     };
@@ -926,7 +941,7 @@ export class PindieControlClient {
     const presentation = this.presentation.current()?.snapshot() ?? null;
     this.projection = refreshProjectionFacts(
       this.projection,
-      this.projectionInput(binding, presentation),
+      this.projectionFactsInput(binding, presentation),
     );
     const next = this.project(binding, presentation, this.projection);
     const fingerprint = `${controlFingerprint(next)}\u0000${timelineObservationFingerprint(this.projection.timeline)}`;

@@ -16,6 +16,7 @@ import {
   reduceProjectionEvent,
   refreshProjectionFacts,
   type PindieUiProjection,
+  type PindieUiProjectionFactsInput,
   type PindieUiProjectionInput,
 } from "../src/ui-projection.ts";
 import { deriveSemanticSnapshot, type SemanticRunFacts } from "../src/semantics.ts";
@@ -219,12 +220,12 @@ class ControlProjectionSpike {
 
   observe(): SpikeSnapshot {
     assert.ok(this.projection);
-    const next = refreshProjectionFacts(this.projection, this.input());
+    const next = refreshProjectionFacts(this.projection, this.factsInput());
     this.publish(next);
     return this.snapshot();
   }
 
-  private input(): PindieUiProjectionInput {
+  private factsInput(): PindieUiProjectionFactsInput {
     return {
       presentation: this.presentation(),
       session: {
@@ -234,8 +235,15 @@ class ControlProjectionSpike {
         thinkingLevel: this.runtime.getActiveSessionThinkingLevel(),
         runtime: this.runtime.getActiveSessionFacts(),
         automaticWorkSettled: this.automaticWorkSettled,
-        branch: this.runtime.getActiveSessionBranch(),
       },
+    };
+  }
+
+  private input(): PindieUiProjectionInput {
+    const facts = this.factsInput();
+    return {
+      ...facts,
+      session: { ...facts.session, branch: this.runtime.getActiveSessionBranch() },
     };
   }
 
@@ -251,7 +259,7 @@ class ControlProjectionSpike {
       assert.ok(this.projection);
       let next = reduceProjectionEvent(this.projection, event);
       if (event.type === "agent_start" || event.type === "agent_settled") {
-        next = refreshProjectionFacts(next, this.input());
+        next = refreshProjectionFacts(next, this.factsInput());
       }
       this.publish(next);
     });

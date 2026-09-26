@@ -234,7 +234,7 @@ export interface PindieUiProjection {
   readonly semanticTimeline: UiSemanticTimelineReducerState;
 }
 
-export interface PindieUiProjectionInput {
+export interface PindieUiProjectionFactsInput {
   readonly presentation: PindiePresentationSnapshot | null;
   readonly session: {
     readonly sessionId: string;
@@ -243,9 +243,14 @@ export interface PindieUiProjectionInput {
     readonly thinkingLevel: AgentSession["thinkingLevel"];
     readonly runtime: ActiveSessionFacts;
     readonly automaticWorkSettled: boolean;
-    readonly branch: readonly SessionEntry[];
   };
 }
+
+export type PindieUiProjectionInput = PindieUiProjectionFactsInput & {
+  readonly session: PindieUiProjectionFactsInput["session"] & {
+    readonly branch: readonly SessionEntry[];
+  };
+};
 
 interface MessageLike {
   readonly role?: unknown;
@@ -1029,7 +1034,7 @@ function copyGate(
 }
 
 function projectCurrentHumanSignal(
-  input: PindieUiProjectionInput,
+  input: PindieUiProjectionFactsInput,
   semantic: SemanticProjection,
 ): HumanSignalDecision | null {
   if (input.presentation === null) return null;
@@ -1075,14 +1080,13 @@ function copyModel(
   return model === null ? null : { provider: model.provider, modelId: model.modelId };
 }
 
-/** Build a disposable projection from one Session-scoped source snapshot. */
-export function createProjection(
-  input: PindieUiProjectionInput,
-): PindieUiProjection {
+/** Project current facts without reading Session history or resetting reducers. */
+function projectCurrentFacts(
+  input: PindieUiProjectionFactsInput,
+): Pick<PindieUiProjection, "header" | "status" | "queue" | "attention" | "softSignal"> {
   const semantic = semanticProjection(input.presentation);
   const presentationStatus = input.presentation?.status;
   const runtime = input.session.runtime;
-  const history = buildSessionTimeline(input.session.branch);
   const humanSignal = projectCurrentHumanSignal(input, semantic);
   const status: UiStatusProjection = {
     presentationAvailability: input.presentation === null ? "unavailable" : "available",
@@ -1120,7 +1124,6 @@ export function createProjection(
       semanticAuthority: semantic.authority,
     },
     status,
-    timeline: history.timeline,
     queue: {
       state: "unknown",
       steering: null,
@@ -1129,6 +1132,18 @@ export function createProjection(
     },
     attention: projectAttention(input.presentation, humanSignal),
     softSignal: projectSoftSignal(humanSignal),
+  };
+}
+
+/** Build a disposable projection from one Session epoch snapshot and history. */
+export function createProjection(
+  input: PindieUiProjectionInput,
+): PindieUiProjection {
+  const facts = projectCurrentFacts(input);
+  const history = buildSessionTimeline(input.session.branch);
+  return {
+    ...facts,
+    timeline: history.timeline,
     liveAssistant: {
       activeId: null,
       nextSequence: 1,
@@ -1725,33 +1740,30 @@ export function appendUserDelivery(
 }
 
 /**
- * Refresh current Session-bound facts without rebuilding live Timeline state.
- *
- * A Session identity change is an epoch boundary and therefore performs a full
- * rebuild. Within one Session, the current header/status/attention facts are
- * disposable presentation data; live blocks and an authoritative queue
- * observation remain owned by the existing projection.
+ * Refresh current Session-bound facts only. Historical rebuilding belongs to
+ * createProjection/rebuildProjection at an explicit Session epoch boundary.
  */
 export function refreshProjectionFacts(
   current: PindieUiProjection,
-  input: PindieUiProjectionInput,
+  input: PindieUiProjectionFactsInput,
 ): PindieUiProjection {
   if (current.header.sessionId !== input.session.sessionId) {
-    return createProjection(input);
+    throw new Error("Cannot refresh projection facts across Session epochs; rebuild the projection.");
   }
 
-  const fresh = createProjection(input);
+  const facts = projectCurrentFacts(input);
   return {
     ...current,
-    header: fresh.header,
-    status: fresh.status,
-    attention: fresh.attention,
-    softSignal: fresh.softSignal,
+    ...facts,
+    timeline: current.timeline,
+    liveAssistant: current.liveAssistant,
+    workTimeline: current.workTimeline,
+    semanticTimeline: current.semanticTimeline,
     queue: current.queue.state === "authoritative"
       ? current.queue
       : {
           ...current.queue,
-          pendingMessageCount: fresh.queue.pendingMessageCount,
+          pendingMessageCount: facts.queue.pendingMessageCount,
         },
   };
 }

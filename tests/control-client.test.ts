@@ -27,6 +27,7 @@ interface FakeSessionControl {
     followUp: string[];
   };
   readonly abortCalls: () => number;
+  readonly branchReads: () => number;
   start(): void;
   settle(): void;
   emit(event: AgentSessionEvent): void;
@@ -40,6 +41,7 @@ function fakeSession(
   let streaming = false;
   let listener: ((event: AgentSessionEvent) => void) | undefined;
   let abortCalls = 0;
+  let branchReadCount = 0;
   let thinkingLevel: AgentSession["thinkingLevel"] = "medium";
   let model: { provider: string; id: string; name?: string } = {
     provider: "openai-codex",
@@ -87,7 +89,7 @@ function fakeSession(
     sessionManager: {
       getSessionName: () => "Pindie Control",
       getEntries: () => [...entries],
-      getBranch: () => [...entries],
+      getBranch: () => { branchReadCount += 1; return [...entries]; },
     },
     subscribe: (next: (event: AgentSessionEvent) => void) => {
       listener = next;
@@ -138,6 +140,7 @@ function fakeSession(
     followUps,
     queue,
     abortCalls: () => abortCalls,
+    branchReads: () => branchReadCount,
     start: () => {
       idle = false;
       streaming = true;
@@ -1113,6 +1116,39 @@ test("Control retains live timeline events, reconciles persistence, and filters 
     const reconciled = control.readTimeline().timeline.filter((block) => block.type === "message" && block.role === "assistant" && block.text === "Visible, still streaming");
     assert.equal(reconciled.length, 1);
     assert.equal(reconciled[0]?.source, "session");
+  } finally { control.dispose(); }
+});
+
+test("Control reads persisted branch only once per Session epoch", async () => {
+  const first = fakeSession("branch-count-1", branchEntries());
+  const native = fakeNativeRuntime(first);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const control = new PindieControlClient(runtime, {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    assert.equal(first.branchReads(), 1);
+    const message = { role: "assistant", content: [{ type: "text", text: "branch-free stream" }] };
+    first.emit({ type: "message_start", message } as AgentSessionEvent);
+    first.emit({ type: "message_update", message: { ...message, content: [{ type: "text", text: "branch-free update one" }] } } as AgentSessionEvent);
+    first.emit({ type: "message_update", message: { ...message, content: [{ type: "text", text: "branch-free update two" }] } } as AgentSessionEvent);
+    first.emit({ type: "message_end", message: { ...message, content: [{ type: "text", text: "branch-free complete" }], stopReason: "stop" } as never } as AgentSessionEvent);
+    first.emit({ type: "tool_execution_start", toolCallId: "branch-tool", toolName: "bash", args: { command: "echo test" } } as AgentSessionEvent);
+    first.emit({ type: "tool_execution_update", toolCallId: "branch-tool", toolName: "bash", args: { command: "echo test" }, partialResult: { content: "partial" } } as AgentSessionEvent);
+    first.emit({ type: "tool_execution_end", toolCallId: "branch-tool", toolName: "bash", result: { content: "done" }, isError: false } as AgentSessionEvent);
+    assert.equal(first.branchReads(), 1);
+
+    control.observe();
+    assert.equal(first.branchReads(), 1);
+    control.readTimeline();
+    assert.equal(first.branchReads(), 1);
+
+    const second = fakeSession("branch-count-2", branchEntries());
+    await native.replace(second);
+    assert.equal(first.branchReads(), 1);
+    assert.equal(second.branchReads(), 1);
+    assert.equal(first.branchReads() + second.branchReads(), 2);
   } finally { control.dispose(); }
 });
 
