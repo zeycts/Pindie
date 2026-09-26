@@ -1095,6 +1095,8 @@ export class CrossProjectLearningIntegration {
       projectRoot,
       portfolio,
       this.trust.scopeSourceResolver,
+      this.trust.scopeCandidateStore,
+      this.trust.scopeDecisionStore,
     );
   }
 

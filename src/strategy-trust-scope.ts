@@ -253,19 +253,11 @@ export async function createStrategyTrustScopeCandidateForProject(
       throw new Error(`Global Scope artifacts are malformed or ambiguous; no hypothesis was created: ${errorMessage(error)}`);
     }
 
-    const expectedFingerprint = strategyTrustScopeCandidateFingerprint({
-      sourceStrategy: resolved.sourceStrategy,
-      currentTrustScope: "project",
-      proposedTrustScope: "user-global",
-    });
-    if (candidates.some((candidate) =>
-      strategyTrustScopeCandidateFingerprint(candidate) === expectedFingerprint)) {
+    if (hasExistingTransferHypothesis(candidates, resolved.sourceStrategy)) {
       throw new Error("An identical trust-transfer hypothesis already exists; rejected hypotheses cannot be reopened.");
     }
 
-    if (decisions.some((decision) =>
-      decision.decision === "promoted" &&
-      decision.sourceStrategy.strategyId === resolved.sourceStrategy.strategyId)) {
+    if (hasPromotedTransferForStrategy(decisions, resolved.sourceStrategy)) {
       throw new Error("A user-global trusted revision already owns this logical Strategy ID.");
     }
 
@@ -277,6 +269,26 @@ export async function createStrategyTrustScopeCandidateForProject(
     await dependencies.candidateStore.save(candidate);
     return candidate;
   });
+}
+
+function hasExistingTransferHypothesis(
+  candidates: readonly StrategyTrustScopeCandidateV1[],
+  source: StrategyTrustScopeSourceStrategyV1,
+): boolean {
+  const fingerprint = strategyTrustScopeCandidateFingerprint({
+    sourceStrategy: source,
+    currentTrustScope: "project",
+    proposedTrustScope: "user-global",
+  });
+  return candidates.some((candidate) => strategyTrustScopeCandidateFingerprint(candidate) === fingerprint);
+}
+
+function hasPromotedTransferForStrategy(
+  decisions: readonly StrategyTrustScopeDecisionV1[],
+  source: StrategyTrustScopeSourceStrategyV1,
+): boolean {
+  return decisions.some((decision) =>
+    decision.decision === "promoted" && decision.sourceStrategy.strategyId === source.strategyId);
 }
 
 export const createTrustScopeCandidateForProject = createStrategyTrustScopeCandidateForProject;
@@ -462,10 +474,18 @@ export async function listTransferableDerivedStrategies(
   projectRoot: string,
   portfolio: TrustedStrategyPortfolio,
   sourceResolver: StrategyTrustScopeSourceResolver,
+  candidateReader: StrategyTrustScopeCandidateReader,
+  decisionReader: StrategyTrustScopeDecisionReader,
 ): Promise<TrustTransferCommandProjection> {
   const projection = buildTrustTransferCommandProjection(projectRoot, portfolio);
+  const [candidates, decisions] = await Promise.all([
+    candidateReader.readAll(), decisionReader.readAll(),
+  ]);
+  validateGlobalFacts(candidates, decisions);
   const valid: TrustTransferCompletionEntry[] = [];
   for (const entry of projection.entries) {
+    if (hasExistingTransferHypothesis(candidates, entry.sourceStrategy) ||
+      hasPromotedTransferForStrategy(decisions, entry.sourceStrategy)) continue;
     try {
       const resolved = await sourceResolver.resolve(entry.sourceStrategy);
       if (sameSourceBinding(resolved.sourceStrategy, entry.sourceStrategy)) valid.push(entry);
