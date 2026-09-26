@@ -172,7 +172,7 @@ interface PindieControlSnapshot {
     compacting: boolean;
     pendingMessageCount: number;
     automaticWorkSettled: boolean;
-    activity: string | null;
+    activity: RunActivity | null;
   };
 
   semantic: {
@@ -194,22 +194,22 @@ interface PindieControlSnapshot {
 
   executionConfig: {
     model: { provider: string; modelId: string } | null;
-    thinkingLevel: string;
+    thinkingLevel: AgentSession["thinkingLevel"];
+    reasoningMode: "auto" | "manual" | null;
   };
 
   recovery: {
     quotaWaiting: { sessionId: string; resumeAt: number } | null;
   };
 
-  latestAssistant: {
-    entryId: string;
-    text: string;
-    stopReason?: string;
-  } | null;
+  latestAssistant: (
+    | { entryId: string; text: string; lifecycle: "streaming" | "complete" | "error"; source: "assistant" }
+    | { entryId: string; text: string; lifecycle: "complete"; source: "task_completion" }
+  ) | null;
 }
 ```
 
-Exact wire shape may be reduced after the spikes. This is a control contract, not a requirement to serialize the complete TUI projection.
+The current MCP adapter serializes this bounded internal snapshot under `control` in the active-project observation; it does not reduce or transform nested fields. `project.root`, `executionConfig.model`, `executionConfig.reasoningMode`, `runtime.activity`, `semantic.taskStatus`, `semantic.verificationStatus`, `semantic.verificationProgress`, `semantic.humanGate`, `semantic.unavailableReason`, `recovery.quotaWaiting`, and `latestAssistant` can be null. The no-active-project observation has no `control` field. This is a control contract, not a requirement to serialize the complete TUI projection.
 
 The implemented `latestAssistant` report field selects the latest visible assistant message or successful semantic Task completion in projected timeline order. Its `source` distinguishes `assistant` from `task_completion`; a completion uses the bounded semantic summary and completion block ID with `lifecycle: "complete"`, not a fabricated Pi assistant message. Failed completion blocks are not completion reports. Ordinary assistant replies (including errors) retain their own lifecycle and take precedence when later in the timeline.
 
