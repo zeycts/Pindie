@@ -1129,6 +1129,30 @@ test("registered Candidate tool descriptions include admitted learning alongside
   assert.match(harness.api.tool("pindie_strategy_synthesis_candidate_create").description, /does not establish novelty, usefulness, superiority, or causality/);
 });
 
+test("shared Candidate decision descriptions and usage cover local, scope, and synthesis routes", async () => {
+  const harness = createHarness([["/repo", activeState("Candidate command help")]]);
+  const notices: Array<{ message: string; type: string }> = [];
+  const ctx = {
+    ...context("/repo"),
+    isIdle: () => true,
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+  for (const commandName of ["promote", "reject"] as const) {
+    const command = harness.api.commands.get(commandName);
+    assert.match(command.description, /Strategy Candidate \(local, scope, or synthesis\)/);
+    await command.handler("id extra", ctx);
+    assert.deepEqual(notices.at(-1), {
+      message: `Usage: /${commandName} <candidate-id> | /${commandName} scope:<candidate-id> | /${commandName} synthesis:<candidate-id>`,
+      type: "warning",
+    });
+  }
+  await harness.api.commands.get("trial-review").handler("id extra", ctx);
+  assert.deepEqual(notices.at(-1), {
+    message: "Usage: /trial-review <candidate-id> | /trial-review scope:<candidate-id> | /trial-review synthesis:<candidate-id>",
+    type: "warning",
+  });
+});
+
 test("Slice E SI off keeps Core tools and Seed Policy without reading SI stores", async () => {
   const reader = new ExtensionTestExperienceReader();
   const experienceStore = new ExtensionTestExperienceStore();

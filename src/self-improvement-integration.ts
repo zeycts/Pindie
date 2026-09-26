@@ -1339,12 +1339,12 @@ export class SelfImprovementIntegration {
       },
     });
     this.pi.registerCommand("promote", {
-      description: "Explicitly promote one eligible Strategy Revision Candidate",
+      description: "Explicitly promote one eligible Strategy Candidate (local, scope, or synthesis)",
       getArgumentCompletions: (prefix) => this.candidateCommandCompletions("promote", prefix),
       handler: async (args, ctx) => this.handleStrategyDecisionCommand("promoted", args, ctx),
     });
     this.pi.registerCommand("reject", {
-      description: "Explicitly reject one Strategy Revision Candidate",
+      description: "Explicitly reject one Strategy Candidate (local, scope, or synthesis)",
       getArgumentCompletions: (prefix) => this.candidateCommandCompletions("reject", prefix),
       handler: async (args, ctx) => this.handleStrategyDecisionCommand("rejected", args, ctx),
     });
@@ -1390,7 +1390,7 @@ export class SelfImprovementIntegration {
       return;
     }
     if (!requestedId || /\s/.test(requestedId)) {
-      ctx.ui.notify("Usage: /trial-review <candidate-id>", "warning");
+      ctx.ui.notify("Usage: /trial-review <candidate-id> | /trial-review scope:<candidate-id> | /trial-review synthesis:<candidate-id>", "warning");
       return;
     }
     if (!isCanonicalStrategyCandidateId(requestedId)) {
@@ -1886,7 +1886,7 @@ export class SelfImprovementIntegration {
       return;
     }
     if (/\s/.test(requestedId)) {
-      ctx.ui.notify(`Usage: ${command} <candidate-id> (or scope:<candidate-id>)`, "warning");
+      ctx.ui.notify(`Usage: ${command} <candidate-id> | ${command} scope:<candidate-id> | ${command} synthesis:<candidate-id>`, "warning");
       return;
     }
     if (requestedId.startsWith("synthesis:")) {
