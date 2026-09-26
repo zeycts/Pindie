@@ -2002,6 +2002,8 @@ test("same-session fact refresh preserves live timeline identity and authoritati
   }));
   const timelineBefore = projection.timeline;
   const liveBefore = projection.liveAssistant;
+  const workTimelineBefore = projection.workTimeline;
+  const semanticTimelineBefore = projection.semanticTimeline;
 
   const refreshed = refreshProjectionFacts(projection, input({
     presentation: presentation({
@@ -2022,7 +2024,9 @@ test("same-session fact refresh preserves live timeline identity and authoritati
   }));
 
   assert.equal(refreshed.timeline, timelineBefore);
-  assert.deepEqual(refreshed.liveAssistant, liveBefore);
+  assert.equal(refreshed.liveAssistant, liveBefore);
+  assert.equal(refreshed.workTimeline, workTimelineBefore);
+  assert.equal(refreshed.semanticTimeline, semanticTimelineBefore);
   assert.deepEqual(refreshed.queue, {
     state: "authoritative",
     steering: ["queued steer"],

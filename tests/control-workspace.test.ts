@@ -84,6 +84,36 @@ test("replacement disposes old client/Host once, stales lease, and never overlap
   assert.equal(live, 0);
 });
 
+test("detached wait does not hold Workspace serialization during project replacement", async () => {
+  const { root, cleanup } = await setup();
+  let waitStarted!: () => void;
+  const started = new Promise<void>((resolve) => { waitStarted = resolve; });
+  const workspace = await PindieControlWorkspace.create({ workspaceRoot: root,
+    createHost: async () => ({ dispose: async () => {} }) as PindieHost,
+    createClient: () => {
+      let finish!: (value: { reason: string; snapshot: PindieControlSnapshot }) => void;
+      const pending = new Promise<{ reason: string; snapshot: PindieControlSnapshot }>((resolve) => { finish = resolve; });
+      return ({ start: async () => {}, observe: () => snapshot("live"),
+        wait: () => { waitStarted(); return pending; },
+        dispose: () => finish({ reason: "binding_changed", snapshot: snapshot("live") }),
+      }) as unknown as PindieControlClient;
+    },
+  });
+  try {
+    await workspace.openProject("A");
+    const waiting = workspace.wait({ lease: "live", until: "settled" });
+    await started;
+    let switched = false;
+    const replacement = await Promise.race([
+      workspace.openProject("B").then((result) => { switched = true; return result; }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("project replacement blocked by wait")), 500)),
+    ]);
+    assert.equal(switched, true);
+    assert.equal(replacement.activeProject, "B");
+    assert.equal((await waiting).reason, "binding_changed");
+  } finally { await workspace.close(); await cleanup(); }
+});
+
 test("bootstrap failure is structured, cleans up and leaves no active slot; concurrent opens serialize", async () => {
   const { root, cleanup } = await setup();
   let live = 0, disposed = 0, clientDisposed = 0, fail = true;

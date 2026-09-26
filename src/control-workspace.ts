@@ -118,6 +118,15 @@ export class PindieControlWorkspace {
     });
   }
 
+  /** Capture the current client under serialization, then wait outside the workspace mutex. */
+  async wait(request: Parameters<PindieControlClient["wait"]>[0]): ReturnType<PindieControlClient["wait"]> {
+    const client = await this.serialize(() => {
+      if (!this.slot) throw new PindieWorkspaceError("no_active_project", "Open a project first.");
+      return this.slot.client;
+    });
+    return client.wait(request);
+  }
+
   private assertSafeToLeave(): void {
     if (!this.slot) return;
     let snapshot: PindieControlSnapshot;

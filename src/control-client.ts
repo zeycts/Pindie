@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AgentSession,
   AgentSessionEvent,
+  PromptOptions,
 } from "@earendil-works/pi-coding-agent";
 
 import { classifyHumanSignal } from "./human-signal.ts";
@@ -12,8 +13,14 @@ import type {
   PindiePresentationSnapshot,
 } from "./presentation-integration.ts";
 import {
-  createPindieUiProjection,
+  appendUserDelivery,
+  rebuildProjection,
+  reduceProjectionEvent,
+  refreshProjectionFacts,
   type PindieUiProjection,
+  type PindieUiProjectionFactsInput,
+  type PindieUiProjectionInput,
+  type UiTimelineBlock,
 } from "./ui-projection.ts";
 
 export interface PindieControlPresentationLease {
@@ -154,6 +161,14 @@ export interface PindieControlSwitchSessionResult {
   readonly snapshot: PindieControlSnapshot;
 }
 
+export type PindieControlWaitUntil = "meaningful_change" | "settled" | "human_gate";
+export type PindieControlWaitReason = "changed" | "settled" | "human_gate" | "timeout" | "binding_changed";
+
+export interface PindieControlWaitResult {
+  readonly reason: PindieControlWaitReason;
+  readonly snapshot: PindieControlSnapshot | null;
+}
+
 export interface PindieControlConfigureRequest {
   readonly lease: string;
   readonly model?: {
@@ -169,6 +184,20 @@ interface ControlBinding {
   readonly lease: string;
   readonly unsubscribe: () => void;
 }
+
+interface ControlWaiter {
+  readonly binding: ControlBinding;
+  readonly until: PindieControlWaitUntil;
+  readonly afterRevision?: number;
+  readonly resolve: (result: PindieControlWaitResult) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const DEFAULT_WAIT_TIMEOUT_SECONDS = 20;
+const MAX_WAIT_TIMEOUT_SECONDS = 30;
+const MEANINGFUL_TIMELINE_FINGERPRINT_BLOCKS = 32;
+const DEFAULT_TIMELINE_LIMIT = 20;
+const MAX_TIMELINE_LIMIT = 50;
 
 /**
  * Transport-independent read/control client over the Host-owned Pi runtime.
@@ -188,6 +217,9 @@ export class PindieControlClient {
   private revision = 0;
   private lastFingerprint = "";
   private currentSnapshot: PindieControlSnapshot | null = null;
+  private projection: PindieUiProjection | null = null;
+  private nextDeliverySequence = 1;
+  private readonly waiters = new Set<ControlWaiter>();
   private started = false;
   private disposed = false;
 
@@ -225,6 +257,75 @@ export class PindieControlClient {
     return this.currentSnapshot!;
   }
 
+  readTimeline(request: { readonly limit?: number } = {}): {
+    readonly sessionId: string;
+    readonly revision: number;
+    readonly hasMoreBefore: boolean;
+    readonly timeline: readonly UiTimelineBlock[];
+  } {
+    const snapshot = this.observe();
+    const limit = request.limit ?? DEFAULT_TIMELINE_LIMIT;
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_TIMELINE_LIMIT) {
+      throw new PindieControlError("invalid_request", "Timeline limit must be an integer between 1 and 50.", snapshot);
+    }
+    const timeline = this.projection?.timeline;
+    if (timeline === undefined) throw new Error("Pindie Control live projection is unavailable.");
+    const count = Math.min(limit, timeline.length);
+    return {
+      sessionId: snapshot.session.id,
+      revision: snapshot.revision,
+      hasMoreBefore: timeline.length > count,
+      timeline: timeline.slice(-count),
+    };
+  }
+
+  wait(request: {
+    readonly lease: string;
+    readonly until: PindieControlWaitUntil;
+    readonly afterRevision?: number;
+    readonly timeoutSeconds?: number;
+  }): Promise<PindieControlWaitResult> {
+    const binding = this.requireLease(request.lease);
+    if (request.until !== "meaningful_change" && request.until !== "settled" && request.until !== "human_gate") {
+      throw new PindieControlError("invalid_request", "Pindie Control wait condition is invalid.");
+    }
+    if (request.afterRevision !== undefined &&
+      (!Number.isInteger(request.afterRevision) || request.afterRevision < 0)) {
+      throw new PindieControlError("invalid_request", "afterRevision must be an integer >= 0.");
+    }
+    if (request.until === "meaningful_change" && request.afterRevision === undefined) {
+      throw new PindieControlError("invalid_request", "meaningful_change requires afterRevision >= 0.");
+    }
+    const timeoutSeconds = request.timeoutSeconds ?? DEFAULT_WAIT_TIMEOUT_SECONDS;
+    if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > MAX_WAIT_TIMEOUT_SECONDS) {
+      throw new PindieControlError("invalid_request", "Wait timeoutSeconds must be an integer between 1 and 30.");
+    }
+
+    const snapshot = this.observe();
+    const immediate = this.waitReason(request.until, request.afterRevision, snapshot);
+    if (immediate !== null) return Promise.resolve({ reason: immediate, snapshot });
+
+    return new Promise((resolve) => {
+      const waiter: ControlWaiter = {
+        binding,
+        until: request.until,
+        ...(request.afterRevision === undefined ? {} : { afterRevision: request.afterRevision }),
+        resolve,
+        timer: setTimeout(() => {
+          let current = this.currentSnapshot;
+          try {
+            if (this.binding === binding) {
+              this.refresh();
+              current = this.currentSnapshot;
+            }
+          } catch { /* Return only the last safely bound snapshot. */ }
+          this.resolveWaiter(waiter, { reason: "timeout", snapshot: current });
+        }, timeoutSeconds * 1000),
+      };
+      this.waiters.add(waiter);
+    });
+  }
+
   async input(request: {
     readonly lease: string;
     readonly text: string;
@@ -248,7 +349,8 @@ export class PindieControlClient {
 
     try {
       if (delivery === "prompt") {
-        this.launchPrompt(text);
+        await this.launchPrompt(text);
+        this.requireSameBinding(binding);
       } else if (delivery === "steer") {
         await this.runtime.steer(text);
         this.requireSameBinding(binding);
@@ -256,6 +358,7 @@ export class PindieControlClient {
         await this.runtime.followUp(text);
         this.requireSameBinding(binding);
       }
+      this.appendDelivery(text, delivery);
     } catch (error) {
       if (error instanceof PindieControlError) throw error;
       throw new PindieControlError(
@@ -273,7 +376,7 @@ export class PindieControlClient {
     readonly gateKey: string;
     readonly response: string;
   }): Promise<PindieControlDeliveryResult> {
-    this.requireLease(request.lease);
+    const binding = this.requireLease(request.lease);
     const response = request.response.trim();
     if (!response) {
       throw new PindieControlError("invalid_request", "Pindie Control gate response is required.");
@@ -298,7 +401,9 @@ export class PindieControlClient {
     this.requireSafeIdle(snapshot);
 
     try {
-      this.launchPrompt(response);
+      await this.launchPrompt(response);
+      this.requireSameBinding(binding);
+      this.appendDelivery(response, "prompt");
     } catch (error) {
       if (error instanceof PindieControlError) throw error;
       throw new PindieControlError(
@@ -555,9 +660,12 @@ export class PindieControlClient {
 
   dispose(): void {
     if (this.disposed) return;
+    const snapshot = this.currentSnapshot;
+    this.resolveAllWaiters({ reason: "binding_changed", snapshot });
     this.disposed = true;
     this.binding?.unsubscribe();
     this.binding = null;
+    this.projection = null;
     this.currentSnapshot = null;
     this.automaticWorkSettled = false;
     if (this.started) this.runtime.setActiveSessionClientLifecycle();
@@ -636,10 +744,65 @@ export class PindieControlClient {
     }
   }
 
-  private launchPrompt(text: string): void {
+  private appendDelivery(text: string, delivery: PindieControlDelivery): void {
+    const binding = this.requireActiveBinding();
+    if (this.projection === null) throw new Error("Pindie Control live projection is unavailable.");
+    this.projection = appendUserDelivery(this.projection, {
+      id: `live:${binding.sessionId}:control:${this.nextDeliverySequence++}`,
+      text,
+      delivery,
+    });
+    this.refresh();
+  }
+
+  private waitReason(
+    until: PindieControlWaitUntil,
+    afterRevision: number | undefined,
+    snapshot: PindieControlSnapshot,
+  ): PindieControlWaitReason | null {
+    if (snapshot.semantic.humanGate !== null) return "human_gate";
+    if (until === "human_gate") return null;
+    if (until === "meaningful_change" && snapshot.revision > afterRevision!) return "changed";
+    if (until === "settled" && snapshot.runtime.idle && snapshot.runtime.automaticWorkSettled &&
+      snapshot.runtime.pendingMessageCount === 0 && snapshot.recovery.quotaWaiting === null) return "settled";
+    return null;
+  }
+
+  private notifyWaiters(binding: ControlBinding, snapshot: PindieControlSnapshot): void {
+    for (const waiter of this.waiters) {
+      if (waiter.binding !== binding) {
+        this.resolveWaiter(waiter, { reason: "binding_changed", snapshot: this.currentSnapshot });
+        continue;
+      }
+      const reason = this.waitReason(waiter.until, waiter.afterRevision, snapshot);
+      if (reason !== null) this.resolveWaiter(waiter, { reason, snapshot });
+    }
+  }
+
+  private resolveWaiter(waiter: ControlWaiter, result: PindieControlWaitResult): void {
+    if (!this.waiters.delete(waiter)) return;
+    clearTimeout(waiter.timer);
+    waiter.resolve(result);
+  }
+
+  private resolveAllWaiters(result: PindieControlWaitResult): void {
+    for (const waiter of [...this.waiters]) this.resolveWaiter(waiter, result);
+  }
+
+  private async launchPrompt(text: string): Promise<void> {
+    let reportPreflight!: (accepted: boolean) => void;
+    let preflightReported = false;
+    const preflight = new Promise<boolean>((resolve) => {
+      reportPreflight = (accepted) => {
+        if (preflightReported) return;
+        preflightReported = true;
+        resolve(accepted);
+      };
+    });
+
     let pending: Promise<void>;
     try {
-      pending = this.runtime.prompt(text);
+      pending = this.runtime.prompt(text, { preflightResult: reportPreflight } satisfies PromptOptions);
     } catch (error) {
       throw new PindieControlError(
         "delivery_failed",
@@ -647,7 +810,8 @@ export class PindieControlClient {
         this.safeSnapshot(),
       );
     }
-    void pending.catch(() => {
+    void pending.catch((error) => {
+      reportPreflight(false);
       // Pi owns the Agent Run and persists visible failure in Session history.
       // Control must not turn a rejected Run Promise into a second result store.
       try {
@@ -655,7 +819,16 @@ export class PindieControlClient {
       } catch {
         // A later explicit observation can recover current facts.
       }
+      return error;
     });
+
+    if (!await preflight) {
+      throw new PindieControlError(
+        "delivery_failed",
+        "Pindie prompt delivery was rejected during Pi preflight.",
+        this.safeSnapshot(),
+      );
+    }
   }
 
   private safeSnapshot(): PindieControlSnapshot | null {
@@ -676,8 +849,10 @@ export class PindieControlClient {
   }
 
   private beforeSessionInvalidate(): void {
+    this.resolveAllWaiters({ reason: "binding_changed", snapshot: this.currentSnapshot });
     this.binding?.unsubscribe();
     this.binding = null;
+    this.projection = null;
     this.currentSnapshot = null;
     this.automaticWorkSettled = false;
   }
@@ -685,30 +860,33 @@ export class PindieControlClient {
   private async rebindSession(): Promise<void> {
     if (this.disposed) return;
     this.binding?.unsubscribe();
-
     this.binding = null;
+    this.projection = null;
     this.currentSnapshot = null;
     this.automaticWorkSettled = false;
+    this.nextDeliverySequence = 1;
     const generation = ++this.nextBindingGeneration;
     // Do not expose a lease until Pi's extension session_start has finished.
     // The same lifecycle callback handles initial bootstrap and native replacement.
     await this.bindActiveSession?.();
     const sessionId = this.runtime.activeSessionId;
-    const lease = this.createLease();
-    this.automaticWorkSettled = this.runtime.getActiveSessionFacts().isIdle;
-
-    const unsubscribe = this.runtime.subscribeActiveSession((event) => {
-      this.handleSessionEvent(sessionId, generation, event);
-    });
-    const binding: ControlBinding = { generation, sessionId, lease, unsubscribe };
+    const binding: ControlBinding = { generation, sessionId, lease: this.createLease(), unsubscribe: () => {} };
     this.binding = binding;
+    this.automaticWorkSettled = this.runtime.getActiveSessionFacts().isIdle;
     this.lastFingerprint = "";
     try {
+      const presentation = this.presentation.current()?.snapshot() ?? null;
+      this.projection = rebuildProjection(this.projectionRebuildInput(binding, presentation));
       this.refresh(true);
+      const unsubscribe = this.runtime.subscribeActiveSession((event) => {
+        this.handleSessionEvent(sessionId, generation, event);
+      });
+      this.binding = { ...binding, unsubscribe };
     } catch (error) {
-      if (this.binding === binding) {
-        binding.unsubscribe();
+      if (this.binding?.generation === generation) {
+        this.binding.unsubscribe();
         this.binding = null;
+        this.projection = null;
         this.currentSnapshot = null;
         this.automaticWorkSettled = false;
       }
@@ -735,20 +913,20 @@ export class PindieControlClient {
     // Projection is an optional control surface. A projection failure must not
     // perturb the underlying Agent Run.
     try {
+      if (this.projection === null) return;
+      this.projection = reduceProjectionEvent(this.projection, event);
       this.refresh();
     } catch {
-      // A subsequent explicit observation can retry against current Reality.
+      // A subsequent explicit observation can retry current facts without
+      // inventing a competing timeline when the live projection is absent.
     }
   }
 
-  private refresh(force = false): void {
-    const binding = this.requireActiveBinding();
-    if (this.runtime.activeSessionId !== binding.sessionId) {
-      throw new Error("Pindie Control Session binding is stale.");
-    }
-
-    const presentation = this.presentation.current()?.snapshot() ?? null;
-    const projection = createPindieUiProjection({
+  private projectionFactsInput(
+    binding: ControlBinding,
+    presentation: PindiePresentationSnapshot | null,
+  ): PindieUiProjectionFactsInput {
+    return {
       presentation,
       session: {
         sessionId: binding.sessionId,
@@ -757,21 +935,46 @@ export class PindieControlClient {
         thinkingLevel: this.runtime.getActiveSessionThinkingLevel(),
         runtime: this.runtime.getActiveSessionFacts(),
         automaticWorkSettled: this.automaticWorkSettled,
+      },
+    };
+  }
+
+  private projectionRebuildInput(
+    binding: ControlBinding,
+    presentation: PindiePresentationSnapshot | null,
+  ): PindieUiProjectionInput {
+    const facts = this.projectionFactsInput(binding, presentation);
+    return {
+      ...facts,
+      session: {
+        ...facts.session,
         branch: this.runtime.getActiveSessionBranch(),
       },
-    });
-    const next = this.project(binding, presentation, projection);
-    const fingerprint = controlFingerprint(next);
+    };
+  }
+
+  private refresh(force = false): void {
+    const binding = this.requireActiveBinding();
+    if (this.runtime.activeSessionId !== binding.sessionId) {
+      throw new Error("Pindie Control Session binding is stale.");
+    }
+    if (this.projection === null) throw new Error("Pindie Control live projection is unavailable.");
+
+    const presentation = this.presentation.current()?.snapshot() ?? null;
+    this.projection = refreshProjectionFacts(
+      this.projection,
+      this.projectionFactsInput(binding, presentation),
+    );
+    const next = this.project(binding, presentation, this.projection);
+    const fingerprint = `${controlFingerprint(next)}\u0000${timelineObservationFingerprint(this.projection.timeline)}`;
 
     if (force || fingerprint !== this.lastFingerprint) {
       this.revision += 1;
       this.lastFingerprint = fingerprint;
     }
 
-    this.currentSnapshot = {
-      ...next,
-      revision: this.revision,
-    };
+    this.currentSnapshot = { ...next, revision: this.revision };
+    this.notifyWaiters(binding, this.currentSnapshot);
   }
 
   private project(
@@ -879,15 +1082,30 @@ function controlFingerprint(
 ): string {
   const {
     runtime: { activity: _activity, ...runtime },
+    latestAssistant,
     ...rest
   } = snapshot;
-  // Activity is useful diagnostic context but is deliberately not a wake-up
-  // boundary. Tool-by-tool activity churn must not turn observation into log
-  // polling.
+  // Activity and changing streaming text are useful context but not wake-up
+  // boundaries; lifecycle identity remains in the timeline fingerprint.
   return JSON.stringify({
     ...rest,
     runtime,
+    latestAssistant: latestAssistant?.lifecycle === "streaming"
+      ? { ...latestAssistant, text: "" }
+      : latestAssistant,
   });
+}
+
+function timelineObservationFingerprint(timeline: readonly UiTimelineBlock[]): string {
+  return JSON.stringify(timeline.slice(-MEANINGFUL_TIMELINE_FINGERPRINT_BLOCKS).map((block) => {
+    if (block.type === "message") return [block.type, block.id, block.role, block.lifecycle];
+    if (block.type === "work") {
+      return block.kind === "observation"
+        ? [block.type, block.kind, block.items.map(({ toolCallId, lifecycle }) => [toolCallId, lifecycle])]
+        : [block.type, block.kind, block.id, block.lifecycle];
+    }
+    return block;
+  }));
 }
 
 

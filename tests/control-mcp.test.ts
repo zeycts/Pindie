@@ -111,7 +111,7 @@ test("bounded deterministic direct-child discovery and name validation", async (
   } finally { await cleanup(); }
 });
 
-test("MCP exposes exactly eleven tools, no-active state and structured fail-closed writes", async () => {
+test("MCP exposes exactly thirteen tools, no-active state and structured fail-closed writes", async () => {
   const { root, cleanup } = await fixture();
   const workspace = await PindieControlWorkspace.create({ workspaceRoot: root });
   const wire = await linked(workspace);
@@ -120,13 +120,13 @@ test("MCP exposes exactly eleven tools, no-active state and structured fail-clos
     assert.deepEqual(tools.map((tool) => tool.name), [
       "pindie_observe", "pindie_input", "pindie_respond", "pindie_stop",
       "pindie_fresh_session", "pindie_configure", "pindie_list_projects", "pindie_open_project", "pindie_create_project",
-      "pindie_list_sessions", "pindie_switch_session",
+      "pindie_list_sessions", "pindie_switch_session", "pindie_read_timeline", "pindie_wait",
     ]);
     assert.deepEqual(tools.map((tool) => [tool.annotations?.readOnlyHint, tool.annotations?.destructiveHint]), [
       [true, false], [false, false], [false, true], [false, true], [false, true], [false, false], [true, false], [false, true], [false, false],
-      [true, false], [false, true],
+      [true, false], [false, true], [true, false], [true, false],
     ]);
-    assert.deepEqual(tools.map((tool) => tool.annotations?.openWorldHint), Array(11).fill(false));
+    assert.deepEqual(tools.map((tool) => tool.annotations?.openWorldHint), Array(13).fill(false));
     const create = tools.find((tool) => tool.name === "pindie_create_project")!;
     assert.deepEqual(create.inputSchema.required, ["project"]);
     assert.deepEqual(Object.keys(create.inputSchema.properties ?? {}), ["project"]);
@@ -139,6 +139,14 @@ test("MCP exposes exactly eleven tools, no-active state and structured fail-clos
     assert.deepEqual(Object.keys(switchSession.inputSchema.properties ?? {}), ["lease", "sessionId"]);
     assert.deepEqual(switchSession.inputSchema.required, ["lease", "sessionId"]);
     assert.equal(switchSession.inputSchema.additionalProperties, false);
+    const timeline = tools.find((tool) => tool.name === "pindie_read_timeline")!;
+    assert.deepEqual(Object.keys(timeline.inputSchema.properties ?? {}), ["limit"]);
+    assert.deepEqual(timeline.inputSchema.required ?? [], []);
+    assert.deepEqual(timeline.annotations, { readOnlyHint: true, destructiveHint: false, openWorldHint: false });
+    const wait = tools.find((tool) => tool.name === "pindie_wait")!;
+    assert.deepEqual(Object.keys(wait.inputSchema.properties ?? {}), ["lease", "until", "afterRevision", "timeoutSeconds"]);
+    assert.deepEqual(wait.inputSchema.required, ["lease", "until"]);
+    assert.deepEqual(wait.annotations, { readOnlyHint: true, destructiveHint: false, openWorldHint: false });
     assert.deepEqual((await wire.peer.callTool({ name: "pindie_observe", arguments: {} })).structuredContent,
       { state: "no_active_project", workspaceRoot: root, activeProject: null });
     assert.equal((await wire.peer.callTool({ name: "pindie_list_projects", arguments: {} })).structuredContent?.activeProject, null);
@@ -146,6 +154,7 @@ test("MCP exposes exactly eleven tools, no-active state and structured fail-clos
       ["input", { lease: "x", text: "hi" }], ["respond", { lease: "x", gateKey: "x", response: "yes" }],
       ["stop", { lease: "x" }], ["fresh_session", { lease: "x" }], ["configure", { lease: "x", thinkingLevel: "low" }],
       ["list_sessions", { offset: 0 }], ["switch_session", { lease: "x", sessionId: "id" }],
+      ["read_timeline", {}], ["wait", { lease: "x", until: "settled" }],
     ] as const) {
       const result = await wire.peer.callTool({ name: `pindie_${name}`, arguments: args });
       assert.equal(result.isError, true);
@@ -192,6 +201,8 @@ test("MCP delegates six scoped operations after open; stale lease remains struct
       configure: (arg: unknown) => { calls.push(["configure", arg]); return snapshot; },
       listSessions: (arg: unknown) => { calls.push(["listSessions", arg]); return { activeSessionId: "session", total: 1, offset: 0, limit: 20, hasMore: false, sessions: [{ id: "session", name: null, created: "2026-01-01T00:00:00.000Z", modified: "2026-01-01T00:00:00.000Z", messageCount: 1, firstMessagePreview: "Hello", current: true }] }; },
       switchSession: (arg: unknown) => { calls.push(["switchSession", arg]); return { cancelled: false, snapshot }; },
+      readTimeline: (arg: unknown) => { calls.push(["readTimeline", arg]); return { sessionId: "session", revision: 1, hasMoreBefore: false, timeline: [] }; },
+      wait: (arg: unknown) => { calls.push(["wait", arg]); return Promise.resolve({ reason: "timeout", snapshot }); },
     }),
   });
   const wire = await linked(workspace);
@@ -210,12 +221,15 @@ test("MCP delegates six scoped operations after open; stale lease remains struct
     const sessions = await invoke("list_sessions", { offset: 2, limit: 3 });
     assert.equal(JSON.stringify(sessions.structuredContent).includes("path"), false);
     await invoke("switch_session", { lease: "live", sessionId: "session-2" });
+    await invoke("read_timeline", { limit: 5 });
+    await invoke("wait", { lease: "live", until: "settled", timeoutSeconds: 2 });
     assert.deepEqual(calls, [
       ["input", { lease: "old", text: "hi", timing: "after_current_run" }],
       ["respond", { lease: "live", gateKey: "gate", response: "yes" }],
       ["stop", { lease: "live" }], ["fresh", { lease: "live" }],
       ["configure", { lease: "live", model: { provider: "p", modelId: "m" }, thinkingLevel: "low" }],
       ["listSessions", { offset: 2, limit: 3 }], ["switchSession", { lease: "live", sessionId: "session-2" }],
+      ["readTimeline", { limit: 5 }], ["wait", { lease: "live", until: "settled", timeoutSeconds: 2 }],
     ]);
   } finally { await wire.close(); await workspace.close(); await cleanup(); }
 });
@@ -240,7 +254,7 @@ test("loopback boots without Host or TUI; disconnect keeps Host; shutdown dispos
     try {
       const connect = async () => { const peer = new Client({ name: "tunnel", version: "1" }); await peer.connect(new StreamableHTTPClientTransport(url)); return peer; };
       const first = await connect();
-      assert.equal((await first.listTools()).tools.length, 11);
+      assert.equal((await first.listTools()).tools.length, 13);
       assert.equal((await first.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.state, "no_active_project");
       assert.equal(created, 0);
       await first.callTool({ name: "pindie_open_project", arguments: { project: "Pindie" } });

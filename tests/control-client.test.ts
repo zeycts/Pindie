@@ -27,8 +27,10 @@ interface FakeSessionControl {
     followUp: string[];
   };
   readonly abortCalls: () => number;
+  readonly branchReads: () => number;
   start(): void;
   settle(): void;
+  emit(event: AgentSessionEvent): void;
 }
 
 function fakeSession(
@@ -39,6 +41,7 @@ function fakeSession(
   let streaming = false;
   let listener: ((event: AgentSessionEvent) => void) | undefined;
   let abortCalls = 0;
+  let branchReadCount = 0;
   let thinkingLevel: AgentSession["thinkingLevel"] = "medium";
   let model: { provider: string; id: string; name?: string } = {
     provider: "openai-codex",
@@ -86,7 +89,7 @@ function fakeSession(
     sessionManager: {
       getSessionName: () => "Pindie Control",
       getEntries: () => [...entries],
-      getBranch: () => [...entries],
+      getBranch: () => { branchReadCount += 1; return [...entries]; },
     },
     subscribe: (next: (event: AgentSessionEvent) => void) => {
       listener = next;
@@ -94,8 +97,9 @@ function fakeSession(
         if (listener === next) listener = undefined;
       };
     },
-    prompt: async (text: string) => {
+    prompt: async (text: string, options?: { preflightResult?: (accepted: boolean) => void }) => {
       prompts.push(text);
+      options?.preflightResult?.(true);
     },
     steer: async (text: string) => {
       steers.push(text);
@@ -137,6 +141,7 @@ function fakeSession(
     followUps,
     queue,
     abortCalls: () => abortCalls,
+    branchReads: () => branchReadCount,
     start: () => {
       idle = false;
       streaming = true;
@@ -147,6 +152,7 @@ function fakeSession(
       streaming = false;
       listener?.({ type: "agent_settled" } as AgentSessionEvent);
     },
+    emit: (event) => listener?.(event),
   };
 }
 
@@ -293,6 +299,15 @@ function branchEntries(): readonly SessionEntry[] {
   return [
     {
       type: "custom_message",
+      id: "probe-hidden",
+      parentId: null,
+      timestamp: "2026-09-24T00:00:00.000Z",
+      customType: "pindie-active-task-continuation",
+      content: "private continuation probe sentinel",
+      display: true,
+    } as unknown as SessionEntry,
+    {
+      type: "custom_message",
       id: "hidden",
       parentId: null,
       timestamp: "2026-09-24T00:00:00.000Z",
@@ -412,21 +427,25 @@ test("Control projects terminal semantic completion without inventing an assista
   );
   await control.start();
   try {
-    entries.push({
+    const completionCall: SessionEntry = {
       type: "message", id: "completion-call", parentId: null, timestamp: "2026-09-24T00:00:01.000Z",
       message: {
         role: "assistant", content: [{ type: "toolCall", id: "complete", name: "pindie_task_complete",
           arguments: { summary: "Delivered the fix and opened the PR." } }], stopReason: "toolUse",
       },
-    } as unknown as SessionEntry);
-    entries.push({
+    } as unknown as SessionEntry;
+    entries.push(completionCall);
+    session.emit({ type: "entry_appended", entry: completionCall } as AgentSessionEvent);
+    const completionResult: SessionEntry = {
       type: "message", id: "completion-result", parentId: "completion-call", timestamp: "2026-09-24T00:00:02.000Z",
       message: {
         role: "toolResult", toolCallId: "complete", toolName: "pindie_task_complete",
         content: [{ type: "text", text: "Summary: WRONG RESULT PROSE" }],
         details: { state: completed }, isError: false,
       },
-    } as unknown as SessionEntry);
+    } as unknown as SessionEntry;
+    entries.push(completionResult);
+    session.emit({ type: "entry_appended", entry: completionResult } as AgentSessionEvent);
     session.start();
     session.settle();
     const terminal = control.observe();
@@ -440,10 +459,12 @@ test("Control projects terminal semantic completion without inventing an assista
     });
     assert.equal(entries.length, 2);
 
-    entries.push({
+    const ordinaryReply: SessionEntry = {
       type: "message", id: "ordinary-reply", parentId: "completion-result", timestamp: "2026-09-24T00:00:03.000Z",
       message: { role: "assistant", content: [{ type: "text", text: "Here is the follow-up." }], stopReason: "stop" },
-    } as unknown as SessionEntry);
+    } as unknown as SessionEntry;
+    entries.push(ordinaryReply);
+    session.emit({ type: "entry_appended", entry: ordinaryReply } as AgentSessionEvent);
     assert.deepEqual(control.observe().latestAssistant, {
       entryId: "ordinary-reply", text: "Here is the follow-up.", lifecycle: "complete", source: "assistant",
     });
@@ -470,10 +491,12 @@ test("Control does not present a failed completion as a successful report", asyn
   await control.start();
   try {
     assert.equal(control.observe().latestAssistant, null);
-    entries.push({
+    const errorReply: SessionEntry = {
       type: "message", id: "error-reply", parentId: "failed-result", timestamp: "2026-09-24T00:00:03.000Z",
       message: { role: "assistant", content: [{ type: "text", text: "Completion failed." }], stopReason: "error" },
-    } as unknown as SessionEntry);
+    } as unknown as SessionEntry;
+    entries.push(errorReply);
+    session.emit({ type: "entry_appended", entry: errorReply } as AgentSessionEvent);
     assert.deepEqual(control.observe().latestAssistant, {
       entryId: "error-reply", text: "Completion failed.", lifecycle: "error", source: "assistant",
     });
@@ -663,6 +686,44 @@ test("Control rebind projection failure leaves no partially authorized binding",
 });
 
 
+test("Control timeline fingerprint inspects only the fixed recent tail", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState());
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => "lease-1" },
+  );
+
+  await control.start();
+  try {
+    const projection = (control as unknown as { projection: { timeline: unknown[] } }).projection;
+    const history = [...projection.timeline];
+    const historicalBlock = history[0];
+    assert.ok(historicalBlock);
+    const largeTimeline = [...history, ...Array.from({ length: 2000 }, () => historicalBlock)];
+    let observedSlice: unknown[] | undefined;
+    projection.timeline = new Proxy(largeTimeline, {
+      get(target, property, receiver) {
+        if (property === "slice") {
+          return (...args: unknown[]) => {
+            observedSlice = args;
+            return Array.prototype.slice.apply(target, args as [number?]);
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    control.observe();
+    assert.deepEqual(observedSlice, [-32]);
+  } finally {
+    control.dispose();
+  }
+});
+
 test("Control input maps user intent to Pi-native prompt, steer, and followUp", async () => {
   const session = fakeSession("session-1", branchEntries());
   const native = fakeNativeRuntime(session);
@@ -694,6 +755,112 @@ test("Control input maps user intent to Pi-native prompt, steer, and followUp", 
     });
     assert.equal(followUp.delivery, "followUp");
     assert.deepEqual(session.followUps, ["after that, run the full check"]);
+  } finally {
+    control.dispose();
+  }
+});
+
+test("Control prompt input waits for preflight acceptance and cannot settle before the Agent Run", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState());
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => "lease-1" },
+  );
+  let accept!: (accepted: boolean) => void;
+  runtime.prompt = async (text, options) => {
+    session.prompts.push(text);
+    accept = options!.preflightResult!;
+  };
+
+  await control.start();
+  try {
+    const lease = control.observe().lease;
+    let completed = false;
+    const input = control.input({ lease, text: "start work" }).then((result) => {
+      completed = true;
+      return result;
+    });
+    await Promise.resolve();
+    assert.equal(completed, false);
+    assert.equal(control.readTimeline().timeline.some((block) => block.type === "message" && block.role === "user" && block.text === "start work"), false);
+
+    accept(true);
+    session.start();
+    const delivered = await input;
+    assert.equal(delivered.delivery, "prompt");
+    assert.equal(delivered.snapshot.runtime.idle, false);
+    assert.equal(control.readTimeline().timeline.some((block) => block.type === "message" && block.role === "user" && block.text === "start work"), true);
+
+    let settled = false;
+    const waiting = control.wait({ lease, until: "settled" }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await Promise.resolve();
+    assert.equal(settled, false);
+    session.settle();
+    assert.equal((await waiting).reason, "settled");
+  } finally {
+    control.dispose();
+  }
+});
+
+test("Control rejected prompt preflight returns delivery_failed without a timeline echo", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState());
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => "lease-1" },
+  );
+  runtime.prompt = async (_text, options) => {
+    options!.preflightResult!(false);
+    throw new Error("preflight rejected");
+  };
+
+  await control.start();
+  try {
+    const lease = control.observe().lease;
+    await assert.rejects(control.input({ lease, text: "rejected" }), (error: unknown) =>
+      error instanceof PindieControlError && error.code === "delivery_failed");
+    assert.equal(control.readTimeline().timeline.some((block) => block.type === "message" && block.role === "user" && block.text === "rejected"), false);
+  } finally {
+    control.dispose();
+  }
+});
+
+test("Control Human Gate response waits for the same prompt preflight acceptance", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState({ kind: "approval", question: "Proceed?" }));
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => "lease-1" },
+  );
+  let accept!: (accepted: boolean) => void;
+  runtime.prompt = async (_text, options) => { accept = options!.preflightResult!; };
+
+  await control.start();
+  try {
+    const snapshot = control.observe();
+    const gate = snapshot.semantic.humanGate!;
+    let completed = false;
+    const response = control.respond({ lease: snapshot.lease, gateKey: gate.key, response: "Approve" })
+      .then((result) => { completed = true; return result; });
+    await Promise.resolve();
+    assert.equal(completed, false);
+    accept(true);
+    session.start();
+    assert.equal((await response).delivery, "prompt");
+    assert.equal(control.observe().runtime.idle, false);
   } finally {
     control.dispose();
   }
@@ -803,10 +970,12 @@ test("Control fresh Session requires a safe boundary and returns a new lease", a
   await control.start();
   try {
     const before = control.observe();
+    const waiting = control.wait({ lease: before.lease, until: "human_gate", timeoutSeconds: 30 });
     const replacement = fakeSession("session-2", branchEntries());
     native.setNextFreshSession(replacement);
 
     const replaced = await control.freshSession({ lease: before.lease });
+    assert.equal((await waiting).reason, "binding_changed");
     assert.equal(replaced.cancelled, false);
     assert.equal(replaced.snapshot.session.id, "session-2");
     assert.notEqual(replaced.snapshot.lease, before.lease);
@@ -995,7 +1164,9 @@ test("successful Session switch rotates the Control binding; cancellation and fa
   await control.start();
   try {
     const before = control.observe();
+    const waiting = control.wait({ lease: before.lease, until: "human_gate", timeoutSeconds: 30 });
     const switched = await control.switchSession({ lease: before.lease, sessionId: "target" });
+    assert.equal((await waiting).reason, "binding_changed");
     assert.deepEqual(native.switchCalls, ["/internal/target.jsonl"]);
     assert.deepEqual(bound, ["session-current", "target"]);
     assert.equal(switched.snapshot.session.id, "target");
@@ -1042,6 +1213,195 @@ test("successful Session switch rotates the Control binding; cancellation and fa
       (error: unknown) => error instanceof PindieControlError && error.code === "session_switch_failed" && error.snapshot === null);
     assert.throws(() => bootstrapControl.observe(), /no active Session binding/);
   } finally { bootstrapControl.dispose(); }
+});
+
+test("Control retains live timeline events, reconciles persistence, and filters unsafe Session content", async () => {
+  const session = fakeSession("live-session", branchEntries());
+  const control = new PindieControlClient(
+    new PiRuntimeAdapter(fakeNativeRuntime(session).runtime),
+    { current: () => ({ snapshot: () => presentationFor(activeState()) }) },
+  );
+  await control.start();
+  try {
+    const startRevision = control.observe().revision;
+    session.emit({ type: "message_start", message: { role: "assistant", content: [{ type: "text", text: "Visible" }] } } as AgentSessionEvent);
+    const streamed = control.readTimeline();
+    assert.equal(streamed.timeline.some((block) => block.type === "message" && block.role === "assistant" && block.text === "Visible" && block.lifecycle === "streaming"), true);
+    const assistantRevision = streamed.revision;
+    assert.ok(assistantRevision > startRevision);
+    session.emit({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: "Visible, still streaming" }] } } as AgentSessionEvent);
+    assert.equal(control.observe().revision, assistantRevision);
+    assert.equal(control.readTimeline().timeline.some((block) => block.type === "message" && block.text === "Visible, still streaming"), true);
+
+    session.emit({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash", args: { command: "echo safe" } } as AgentSessionEvent);
+    assert.equal(control.readTimeline().timeline.some((block) => block.type === "work" && block.id === "tool-1" && block.lifecycle === "running"), true);
+    const workRevision = control.observe().revision;
+    session.emit({ type: "tool_execution_update", toolCallId: "tool-1", toolName: "bash", args: { command: "echo safe" }, partialResult: { content: [{ type: "text", text: "partial" }] } } as AgentSessionEvent);
+    assert.equal(control.observe().revision, workRevision);
+    session.emit({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "bash", result: { content: [{ type: "text", text: "done" }] }, isError: false } as AgentSessionEvent);
+    assert.ok(control.observe().revision > workRevision);
+    assert.equal(control.readTimeline().timeline.some((block) => block.type === "work" && block.id === "tool-1" && block.lifecycle === "complete"), true);
+
+    session.emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Visible, still streaming" }], stopReason: "stop" } as never } as AgentSessionEvent);
+    const completedRevision = control.observe().revision;
+    assert.ok(completedRevision > startRevision);
+    session.settle();
+    assert.equal(control.observe().runtime.automaticWorkSettled, true);
+
+    const latest = control.readTimeline().timeline;
+    assert.equal(latest.some((block) => block.type === "message" && block.text.includes("private reasoning")), false);
+    assert.equal(latest.some((block) => block.type === "message" && block.text.includes("secret runtime metadata")), false);
+    assert.equal(latest.some((block) => block.type === "message" && block.text.includes("continuation probe sentinel")), false);
+    assert.equal(JSON.stringify(latest).includes("/repo/Pindie"), false);
+    assert.equal(control.readTimeline({ limit: 1 }).timeline.length, 1);
+    assert.equal(control.readTimeline({ limit: 1 }).hasMoreBefore, true);
+    assert.throws(() => control.readTimeline({ limit: 0 }), (error: unknown) => error instanceof PindieControlError && error.code === "invalid_request");
+
+    session.emit({ type: "entry_appended", entry: { type: "message", id: "persisted-assistant", parentId: null, timestamp: "2026-09-24T00:00:03Z", message: { role: "assistant", content: [{ type: "text", text: "Visible, still streaming" }], stopReason: "stop" } } } as AgentSessionEvent);
+    const reconciled = control.readTimeline().timeline.filter((block) => block.type === "message" && block.role === "assistant" && block.text === "Visible, still streaming");
+    assert.equal(reconciled.length, 1);
+    assert.equal(reconciled[0]?.source, "session");
+  } finally { control.dispose(); }
+});
+
+test("Control reads persisted branch only once per Session epoch", async () => {
+  const first = fakeSession("branch-count-1", branchEntries());
+  const native = fakeNativeRuntime(first);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const control = new PindieControlClient(runtime, {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    assert.equal(first.branchReads(), 1);
+    const message = { role: "assistant", content: [{ type: "text", text: "branch-free stream" }] };
+    first.emit({ type: "message_start", message } as AgentSessionEvent);
+    first.emit({ type: "message_update", message: { ...message, content: [{ type: "text", text: "branch-free update one" }] } } as AgentSessionEvent);
+    first.emit({ type: "message_update", message: { ...message, content: [{ type: "text", text: "branch-free update two" }] } } as AgentSessionEvent);
+    first.emit({ type: "message_end", message: { ...message, content: [{ type: "text", text: "branch-free complete" }], stopReason: "stop" } as never } as AgentSessionEvent);
+    first.emit({ type: "tool_execution_start", toolCallId: "branch-tool", toolName: "bash", args: { command: "echo test" } } as AgentSessionEvent);
+    first.emit({ type: "tool_execution_update", toolCallId: "branch-tool", toolName: "bash", args: { command: "echo test" }, partialResult: { content: "partial" } } as AgentSessionEvent);
+    first.emit({ type: "tool_execution_end", toolCallId: "branch-tool", toolName: "bash", result: { content: "done" }, isError: false } as AgentSessionEvent);
+    assert.equal(first.branchReads(), 1);
+
+    control.observe();
+    assert.equal(first.branchReads(), 1);
+    control.readTimeline();
+    assert.equal(first.branchReads(), 1);
+
+    const second = fakeSession("branch-count-2", branchEntries());
+    await native.replace(second);
+    assert.equal(first.branchReads(), 1);
+    assert.equal(second.branchReads(), 1);
+    assert.equal(first.branchReads() + second.branchReads(), 2);
+  } finally { control.dispose(); }
+});
+
+test("Control echoes successful prompt, steer and followUp deliveries once and reconciles persisted user entries", async () => {
+  const session = fakeSession("delivery-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const lease = control.observe().lease;
+    await control.input({ lease, text: "prompt echo" });
+    session.start();
+    await control.input({ lease, text: "steer echo" });
+    await control.input({ lease, text: "follow echo", timing: "after_current_run" });
+    const echoes = control.readTimeline().timeline.filter((block) => block.type === "message" && block.role === "user");
+    assert.deepEqual(echoes.map(({ text, source, delivery }) => [text, source, delivery]), [
+      ["prompt echo", "live", "prompt"], ["steer echo", "live", "steer"], ["follow echo", "live", "followUp"],
+    ]);
+    session.emit({ type: "entry_appended", entry: { type: "message", id: "persisted-user", parentId: null, timestamp: "2026-09-24T00:00:03Z", message: { role: "user", content: [{ type: "text", text: "prompt echo" }] } } as never } as AgentSessionEvent);
+    const matches = control.readTimeline().timeline.filter((block) => block.type === "message" && block.role === "user" && block.text === "prompt echo");
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0]?.source, "session");
+
+    (session.session as unknown as { steer: () => Promise<void> }).steer = () => { throw new Error("failed synchronously"); };
+    await assert.rejects(control.input({ lease, text: "must not echo" }), (error: unknown) => error instanceof PindieControlError && error.code === "delivery_failed");
+    assert.equal(control.readTimeline().timeline.some((block) => block.type === "message" && block.text === "must not echo"), false);
+  } finally { control.dispose(); }
+});
+
+test("Control wait handles immediate, event-driven, interrupted, timeout and replacement results", async () => {
+  const session = fakeSession("wait-session", []);
+  const native = fakeNativeRuntime(session);
+  let presentation = presentationFor(activeState());
+  const control = new PindieControlClient(new PiRuntimeAdapter(native.runtime), { current: () => ({ snapshot: () => presentation }) });
+  await control.start();
+  try {
+    const initial = control.observe();
+    assert.equal((await control.wait({ lease: initial.lease, until: "settled" })).reason, "settled");
+    assert.equal((await control.wait({ lease: initial.lease, until: "meaningful_change", afterRevision: Math.max(0, initial.revision - 1) })).reason, "changed");
+    assert.throws(() => control.wait({ lease: initial.lease, until: "meaningful_change" }), (error: unknown) => error instanceof PindieControlError && error.code === "invalid_request");
+    assert.throws(() => control.wait({ lease: initial.lease, until: "settled", timeoutSeconds: 31 }), (error: unknown) => error instanceof PindieControlError && error.code === "invalid_request");
+    assert.throws(() => control.wait({ lease: "stale", until: "settled" }), (error: unknown) => error instanceof PindieControlError && error.code === "stale_control_lease");
+
+    const after = control.observe().revision;
+    const change = control.wait({ lease: initial.lease, until: "meaningful_change", afterRevision: after, timeoutSeconds: 2 });
+    const sharedChange = control.wait({ lease: initial.lease, until: "meaningful_change", afterRevision: after, timeoutSeconds: 2 });
+    session.emit({ type: "message_start", message: { role: "assistant", content: [{ type: "text", text: "started" }] } } as AgentSessionEvent);
+    assert.deepEqual((await Promise.all([change, sharedChange])).map(({ reason }) => reason), ["changed", "changed"]);
+
+    session.start();
+    const settledWait = control.wait({ lease: initial.lease, until: "settled", timeoutSeconds: 2 });
+    session.settle();
+    assert.equal((await settledWait).reason, "settled");
+
+    session.start();
+    await control.input({ lease: initial.lease, text: "queued work" });
+    const queuedWait = control.wait({ lease: initial.lease, until: "settled", timeoutSeconds: 2 });
+    session.settle();
+    let queuedResolved = false;
+    void queuedWait.then(() => { queuedResolved = true; });
+    await Promise.resolve();
+    assert.equal(queuedResolved, false);
+    session.queue.steering.length = 0;
+    session.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
+    assert.equal((await queuedWait).reason, "settled");
+
+    presentation = presentationFor(activeState(), { quotaResumeWaiting: { sessionId: "wait-session", resumeAt: 1234 } });
+    session.start();
+    const quotaWait = control.wait({ lease: initial.lease, until: "settled", timeoutSeconds: 2 });
+    session.settle();
+    let quotaResolved = false;
+    void quotaWait.then(() => { quotaResolved = true; });
+    await Promise.resolve();
+    assert.equal(quotaResolved, false);
+    presentation = presentationFor(activeState());
+    session.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
+    assert.equal((await quotaWait).reason, "settled");
+
+    session.start();
+    const gateWait = control.wait({ lease: initial.lease, until: "settled", timeoutSeconds: 2 });
+    presentation = presentationFor(activeState({ kind: "approval", question: "Approve?", options: ["Yes", "No"] }));
+    session.emit({ type: "agent_end", willRetry: false } as AgentSessionEvent);
+    assert.equal((await gateWait).reason, "human_gate");
+    assert.equal((await control.wait({ lease: initial.lease, until: "human_gate" })).reason, "human_gate");
+
+    presentation = presentationFor(activeState());
+    const pendingTimeout = control.wait({ lease: initial.lease, until: "human_gate", timeoutSeconds: 1 });
+    assert.equal((await pendingTimeout).reason, "timeout");
+
+    const oldLease = control.observe().lease;
+    const changedBinding = control.wait({ lease: oldLease, until: "human_gate", timeoutSeconds: 5 });
+    await native.replace(fakeSession("wait-replacement", []));
+    assert.equal((await changedBinding).reason, "binding_changed");
+    assert.equal(control.observe().session.id, "wait-replacement");
+  } finally { control.dispose(); }
+});
+
+test("Control disposal resolves pending waiters without retaining timers", async () => {
+  const session = fakeSession("dispose-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  const snapshot = control.observe();
+  const pending = control.wait({ lease: snapshot.lease, until: "human_gate", timeoutSeconds: 30 });
+  control.dispose();
+  assert.equal((await pending).reason, "binding_changed");
 });
 
 test("Control configure changes explicit model/thinking only at a safe idle boundary", async () => {

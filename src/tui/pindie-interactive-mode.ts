@@ -12,6 +12,7 @@ import {
   reduceProjectionEvent,
   refreshProjectionFacts,
   type PindieUiProjection,
+  type PindieUiProjectionFactsInput,
   type PindieUiProjectionInput,
   type UiUserDelivery,
 } from "../ui-projection.ts";
@@ -143,20 +144,25 @@ export class PindieInteractiveMode {
     }
   }
 
-  private buildProjectionInput(): PindieUiProjectionInput {
-    const sessionId = this.runtime.activeSessionId;
-    const runtimeFacts = this.runtime.getActiveSessionFacts();
+  private buildProjectionFactsInput(): PindieUiProjectionFactsInput {
     return {
       presentation: this.presentation.current()?.snapshot() ?? null,
       session: {
-        sessionId,
+        sessionId: this.runtime.activeSessionId,
         displayIdentity: this.runtime.getActiveSessionDisplayIdentity(),
         model: this.runtime.getActiveSessionModelIdentity(),
         thinkingLevel: this.runtime.getActiveSessionThinkingLevel(),
-        runtime: runtimeFacts,
+        runtime: this.runtime.getActiveSessionFacts(),
         automaticWorkSettled: this.automaticWorkSettled,
-        branch: this.runtime.getActiveSessionBranch(),
       },
+    };
+  }
+
+  private buildProjectionInput(): PindieUiProjectionInput {
+    const facts = this.buildProjectionFactsInput();
+    return {
+      ...facts,
+      session: { ...facts.session, branch: this.runtime.getActiveSessionBranch() },
     };
   }
 
@@ -260,7 +266,7 @@ export class PindieInteractiveMode {
 
     this.projection = reduceProjectionEvent(this.projection, event);
     if (event.type === "agent_start" || event.type === "agent_settled") {
-      this.projection = refreshProjectionFacts(this.projection, this.buildProjectionInput());
+      this.projection = refreshProjectionFacts(this.projection, this.buildProjectionFactsInput());
     }
     this.view.apply(this.projection);
   }
@@ -269,7 +275,7 @@ export class PindieInteractiveMode {
     const current = this.projection;
     if (current === null || this.sessionBinding === null) return;
     try {
-      const refreshed = refreshProjectionFacts(current, this.buildProjectionInput());
+      const refreshed = refreshProjectionFacts(current, this.buildProjectionFactsInput());
       this.projection = refreshed;
       this.view.apply(refreshed);
     } catch (error) {
