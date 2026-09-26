@@ -281,9 +281,11 @@ export class RemoteCompanion {
     });
   }
   /** Deliver a policy-classified attention edge through the existing serial milestone seam. */
-  humanSignal(signal: HumanSignalDecision, options: Pick<RemoteMilestoneOptions, "isCurrent"> = {}): Promise<void> {
+  humanSignal(signal: HumanSignalDecision, options: Pick<RemoteMilestoneOptions, "isCurrent"> & { completionReport?: string } = {}): Promise<void> {
     if (signal.external !== "attention") return Promise.resolve();
-    const text = [signal.summary, ...signal.detail].join("\n");
+    const text = signal.kind === "completed" && options.completionReport?.startsWith("Current task completed.")
+      ? `${signal.summary}${options.completionReport.slice("Current task completed.".length)}`
+      : [signal.summary, ...signal.detail].join("\n");
     return this.milestone(signal.key, text, { attention: true, ...options });
   }
 
