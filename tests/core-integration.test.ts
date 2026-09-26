@@ -10,6 +10,7 @@ import type {
 import {
   createCoreIntegration,
 } from "../src/core-integration.ts";
+import { renderCurrentPindieActionEligibility } from "../src/context.ts";
 import {
   PindieSemanticMutationPendingError,
   PindieStateMutationUncertainError,
@@ -192,6 +193,75 @@ test("Core-only assembly owns base Task, Gateway, verification/Gate, and Seed Po
     },
   });
   assert.equal(getVerificationStatus(core.runtime.state.task!), "passed");
+});
+
+test("rendered Task eligibility agrees with Core Gateway for the same authoritative snapshot", async () => {
+  const actions = [
+    ["task start", "pindie_task_start"],
+    ["task replace", "pindie_task_replace"],
+    ["task refine", "pindie_task_refine"],
+    ["task progress", "pindie_task_progress"],
+    ["verification record", "pindie_verification_record"],
+    ["task complete", "pindie_task_complete"],
+  ] as const;
+  const baseTask = (): NonNullable<PindieState["task"]> => ({
+    goal: "Audit Task eligibility",
+    constraints: [],
+    successCriteria: [{ id: "c1", description: "Verified" }],
+    openLoops: { blockers: [], questions: [], nextIntent: null },
+    verification: { stale: false, checks: [] },
+    humanGate: null,
+    completed: false,
+  });
+  const readyTask = (): NonNullable<PindieState["task"]> => ({
+    ...baseTask(),
+    verification: { stale: false, checks: [{
+      name: "check", status: "passed", covers: ["c1"], evidence: "Observed result",
+    }] },
+  });
+  const cases: Array<{
+    name: string;
+    state: PindieState;
+    allowed: readonly (typeof actions)[number][0][];
+    duringRun?: "start" | "open_gate" | "complete";
+  }> = [
+    { name: "idle", state: { task: null }, allowed: ["task start"] },
+    { name: "active preexisting", state: { task: baseTask() }, allowed: ["task replace", "task refine", "task progress", "verification record"] },
+    { name: "active introduced", state: { task: null }, duringRun: "start", allowed: ["task refine", "task progress", "verification record"] },
+    { name: "blocked preexisting", state: { task: { ...baseTask(), openLoops: { blockers: ["blocked"], questions: [], nextIntent: null } } }, allowed: ["task replace", "task refine", "task progress", "verification record"] },
+    { name: "waiting_human preexisting", state: { task: { ...baseTask(), humanGate: { kind: "approval", question: "Proceed?" } } }, allowed: ["task replace", "task refine"] },
+    { name: "waiting_human opened during run", state: { task: baseTask() }, duringRun: "open_gate", allowed: [] },
+    { name: "active completion-ready", state: { task: readyTask() }, allowed: ["task replace", "task refine", "task progress", "verification record", "task complete"] },
+    { name: "done before run", state: { task: { ...readyTask(), completed: true } }, allowed: ["task start"] },
+    { name: "done during run", state: { task: readyTask() }, duringRun: "complete", allowed: [] },
+  ];
+
+  for (const entry of cases) {
+    const store = new MemoryStateStore();
+    store.state = entry.state;
+    const core = createCoreIntegration({ store, continuityStore, taskHandoffEnabled: false });
+    await core.runtime.load(`/eligibility-${entry.name}`);
+    core.beginAgentRunFacts(coreContext());
+    if (entry.duringRun === "start") {
+      assert.equal((await core.runtime.dispatch({ type: "start_task", goal: "New work", constraints: [], successCriteria: ["Verified"] })).ok, true);
+      core.run.recordSuccessfulCapability("task.start");
+    } else if (entry.duringRun === "open_gate") {
+      assert.equal((await core.runtime.dispatch({ type: "open_human_gate", gate: { kind: "approval", question: "Proceed?" } })).ok, true);
+    } else if (entry.duringRun === "complete") {
+      assert.equal((await core.runtime.dispatch({ type: "complete_task" })).ok, true);
+    }
+    const derived = core.run.deriveSnapshot();
+    assert.equal(derived.ok, true, entry.name);
+    if (!derived.ok) continue;
+    const rendered = renderCurrentPindieActionEligibility(derived.snapshot);
+    for (const [label, toolName] of actions) {
+      const authorization = core.authorizeTool(toolName);
+      assert.deepEqual(authorization.snapshot, derived.snapshot, `${entry.name}: ${label} snapshot`);
+      const expected = entry.allowed.includes(label);
+      assert.equal(authorization.decision?.allowed, expected, `${entry.name}: ${label} Gateway`);
+      assert.ok(rendered.split("\n").includes(`- ${label}: ${expected ? "allowed" : "not eligible"}`), `${entry.name}: ${label} rendered`);
+    }
+  }
 });
 
 test("Core Task tools fail closed and mark authority unavailable on uncertain mutation", async (t) => {
