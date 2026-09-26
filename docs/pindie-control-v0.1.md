@@ -211,6 +211,8 @@ interface PindieControlSnapshot {
 
 Exact wire shape may be reduced after the spikes. This is a control contract, not a requirement to serialize the complete TUI projection.
 
+The implemented `latestAssistant` report field selects the latest visible assistant message or successful semantic Task completion in projected timeline order. Its `source` distinguishes `assistant` from `task_completion`; a completion uses the bounded semantic summary and completion block ID with `lifecycle: "complete"`, not a fabricated Pi assistant message. Failed completion blocks are not completion reports. Ordinary assistant replies (including errors) retain their own lifecycle and take precedence when later in the timeline.
+
 The snapshot must not expose hidden reasoning, raw tool results, raw tool-call payloads, credentials, arbitrary files, or complete terminal output.
 
 ## 6. Lease and revision

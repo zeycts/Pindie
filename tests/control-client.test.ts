@@ -320,6 +320,7 @@ test("read-only Control client projects existing runtime and semantic truth", as
     assert.equal(initial.semantic.verificationStatus, "pending");
     assert.deepEqual(initial.semantic.verificationProgress, { covered: 1, total: 2 });
     assert.equal(initial.latestAssistant?.text, "Visible result.");
+    assert.equal(initial.latestAssistant?.source, "assistant");
     assert.equal(initial.latestAssistant?.text.includes("private reasoning"), false);
 
     const beforeActivityOnly = initial.revision;
@@ -353,6 +354,97 @@ test("read-only Control client projects existing runtime and semantic truth", as
     assert.equal(gated.semantic.humanGate?.question, "Merge this architectural change?");
     assert.match(gated.semantic.humanGate?.key ?? "", /^human-gate:/);
     assert.ok(gated.revision > beforeGate);
+  } finally {
+    control.dispose();
+  }
+});
+
+test("Control projects terminal semantic completion without inventing an assistant message", async () => {
+  const state = activeState();
+  const completed: PindieState = {
+    task: {
+      ...state.task!,
+      completed: true,
+      openLoops: { blockers: [], questions: [], nextIntent: null },
+      verification: {
+        stale: false,
+        checks: [{ name: "tests", status: "passed", covers: ["c1", "c2"], evidence: "tested" }],
+      },
+    },
+  };
+  const entries: SessionEntry[] = [];
+  const session = fakeSession("terminal-session", entries);
+  const control = new PindieControlClient(
+    new PiRuntimeAdapter(fakeNativeRuntime(session).runtime),
+    { current: () => ({ snapshot: () => presentationFor(completed) }) },
+  );
+  await control.start();
+  try {
+    entries.push({
+      type: "message", id: "completion-call", parentId: null, timestamp: "2026-09-24T00:00:01.000Z",
+      message: {
+        role: "assistant", content: [{ type: "toolCall", id: "complete", name: "pindie_task_complete",
+          arguments: { summary: "Delivered the fix and opened the PR." } }], stopReason: "toolUse",
+      },
+    } as unknown as SessionEntry);
+    entries.push({
+      type: "message", id: "completion-result", parentId: "completion-call", timestamp: "2026-09-24T00:00:02.000Z",
+      message: {
+        role: "toolResult", toolCallId: "complete", toolName: "pindie_task_complete",
+        content: [{ type: "text", text: "Summary: WRONG RESULT PROSE" }],
+        details: { state: completed }, isError: false,
+      },
+    } as unknown as SessionEntry);
+    session.start();
+    session.settle();
+    const terminal = control.observe();
+    assert.equal(terminal.semantic.taskStatus, "done");
+    assert.equal(terminal.runtime.automaticWorkSettled, true);
+    assert.deepEqual(terminal.latestAssistant, {
+      entryId: "semantic:completion:complete",
+      text: "Delivered the fix and opened the PR.",
+      lifecycle: "complete",
+      source: "task_completion",
+    });
+    assert.equal(entries.length, 2);
+
+    entries.push({
+      type: "message", id: "ordinary-reply", parentId: "completion-result", timestamp: "2026-09-24T00:00:03.000Z",
+      message: { role: "assistant", content: [{ type: "text", text: "Here is the follow-up." }], stopReason: "stop" },
+    } as unknown as SessionEntry);
+    assert.deepEqual(control.observe().latestAssistant, {
+      entryId: "ordinary-reply", text: "Here is the follow-up.", lifecycle: "complete", source: "assistant",
+    });
+  } finally {
+    control.dispose();
+  }
+});
+
+test("Control does not present a failed completion as a successful report", async () => {
+  const entries: SessionEntry[] = [{
+    type: "message", id: "failed-call", parentId: null, timestamp: "2026-09-24T00:00:01.000Z",
+    message: { role: "assistant", content: [{ type: "toolCall", id: "failed", name: "pindie_task_complete",
+      arguments: { summary: "Not delivered" } }], stopReason: "toolUse" },
+  } as unknown as SessionEntry, {
+    type: "message", id: "failed-result", parentId: "failed-call", timestamp: "2026-09-24T00:00:02.000Z",
+    message: { role: "toolResult", toolCallId: "failed", toolName: "pindie_task_complete",
+      content: [{ type: "text", text: "Completion denied" }], isError: true },
+  } as unknown as SessionEntry];
+  const session = fakeSession("failed-session", entries);
+  const control = new PindieControlClient(
+    new PiRuntimeAdapter(fakeNativeRuntime(session).runtime),
+    { current: () => ({ snapshot: () => presentationFor(activeState()) }) },
+  );
+  await control.start();
+  try {
+    assert.equal(control.observe().latestAssistant, null);
+    entries.push({
+      type: "message", id: "error-reply", parentId: "failed-result", timestamp: "2026-09-24T00:00:03.000Z",
+      message: { role: "assistant", content: [{ type: "text", text: "Completion failed." }], stopReason: "error" },
+    } as unknown as SessionEntry);
+    assert.deepEqual(control.observe().latestAssistant, {
+      entryId: "error-reply", text: "Completion failed.", lifecycle: "error", source: "assistant",
+    });
   } finally {
     control.dispose();
   }
