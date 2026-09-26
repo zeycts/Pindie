@@ -531,6 +531,8 @@ test("only a promoted Derived entry is transferable and completion remains meani
         : undefined,
     ),
     value.sourceResolver,
+    value.scopeCandidateStore,
+    value.scopeDecisionStore,
   );
   assert.equal(projection.options.length, 1);
   assert.equal(projection.options[0]?.value, "delivery-checkpoints");
@@ -539,6 +541,38 @@ test("only a promoted Derived entry is transferable and completion remains meani
   assert.match(projection.options[0]?.label ?? "", /promoted aaaaaaaa/);
   assert.match(projection.options[0]?.label ?? "", /project-local trusted Derived Strategy/);
   assert.doesNotMatch(projection.options[0]?.label ?? "", new RegExp(CANDIDATE_ID));
+});
+
+test("trust-transfer completion excludes hypotheses that creation would reject as duplicates", async (t) => {
+  const value = await fixture(t);
+  const currentPortfolio = createTrustedStrategyPortfolio(
+    SOURCE_ROOT,
+    createPromotedStrategyRevisionCatalog([]),
+    (await value.sourceResolver.resolve(value.source)).promotedDerivedCatalog,
+  );
+  const options = () => listTransferableDerivedStrategies(
+    SOURCE_ROOT, currentPortfolio, value.sourceResolver,
+    value.scopeCandidateStore, value.scopeDecisionStore,
+  );
+  assert.deepEqual((await options()).options.map((entry) => entry.value), ["delivery-checkpoints"]);
+  const candidate = createStrategyTrustScopeCandidate({
+    sourceStrategy: value.source,
+    candidateId: CANDIDATE_ID,
+  });
+  await value.scopeCandidateStore.save(candidate);
+  assert.deepEqual((await options()).options, []);
+  await value.scopeDecisionStore.save(createStrategyTrustScopeDecision({
+    candidate, decision: "rejected", trialRefs: [],
+  }));
+  assert.deepEqual((await options()).options, []);
+  await assert.rejects(createStrategyTrustScopeCandidateForProject({
+    projectRoot: SOURCE_ROOT, sourceStrategy: value.source,
+  }, {
+    candidateStore: value.scopeCandidateStore,
+    decisionReader: value.scopeDecisionStore,
+    sourceResolver: value.sourceResolver,
+    writerLock: value.writerLock,
+  }), /identical|reopen/i);
 });
 
 test("locked Candidate creation enforces source, duplicates, rejection closure, and no copied semantics", async (t) => {
