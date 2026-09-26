@@ -176,7 +176,7 @@ export function parseScopeTrialCommandValue(value: string): string | null {
   if (!value.startsWith(SCOPE_TRIAL_COMMAND_PREFIX)) return null;
   const candidateId = value.slice(SCOPE_TRIAL_COMMAND_PREFIX.length);
   if (!isCanonicalStrategyTrustScopeCandidateId(candidateId)) {
-    throw new Error("Scope Trial Candidate ID must be a canonical lowercase UUID-v4.");
+    throw new Error("Scope Candidate ID must be a canonical lowercase UUID-v4.");
   }
   return candidateId;
 }

@@ -1172,6 +1172,22 @@ test("Candidate commands reject embedded whitespace consistently before namespac
   }
 });
 
+test("Candidate decisions report canonical ID errors without mislabeling the subject as a Trial or review", async () => {
+  const harness = createHarness([["/repo", activeState("Malformed Candidate decisions")]]);
+  const notices: Array<{ message: string; type: string }> = [];
+  const ctx = {
+    ...context("/repo"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+  for (const commandName of ["promote", "reject"] as const) {
+    for (const namespace of ["scope", "synthesis"] as const) {
+      await harness.api.commands.get(commandName).handler(`${namespace}:not-a-uuid`, ctx);
+      assert.match(notices.at(-1)?.message ?? "", new RegExp(`${namespace === "scope" ? "Scope" : "Synthesis"} Candidate ID must be a canonical lowercase UUID-v4\\.`));
+      assert.doesNotMatch(notices.at(-1)?.message ?? "", /Trial Candidate ID|review Candidate ID/);
+    }
+  }
+});
+
 test("Slice E SI off keeps Core tools and Seed Policy without reading SI stores", async () => {
   const reader = new ExtensionTestExperienceReader();
   const experienceStore = new ExtensionTestExperienceStore();
