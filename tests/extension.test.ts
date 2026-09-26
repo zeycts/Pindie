@@ -3333,11 +3333,13 @@ test("quota preference arbitration shares one forced refresh, orders fallback be
         } },
       });
       await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
-      await nextTurn();
+      await waitFor(() => fetches > 0);
       const before = fetches;
       await harness.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} }, ctx);
       await harness.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
-      await nextTurn();
+      if (expectedRequests || expectedSchedules) {
+        await waitFor(() => calls.length === Number(expectedRequests) + Number(expectedSchedules));
+      } else await nextTurn(); // Allow a forbidden asynchronous request to surface.
       assert.equal(fetches - before, expectedRequests || expectedSchedules ? 1 : 0);
       assert.deepEqual(calls.filter((call) => call === "fallback" || call === "resume"),
         [...(expectedRequests ? ["fallback"] : []), ...(expectedSchedules ? ["resume"] : [])]);
@@ -3530,7 +3532,7 @@ test("model_select during fallback request preserves planning only for superviso
       await h.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
       await h.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} }, ctx);
       await h.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
-      await nextTurn();
+      await waitFor(() => calls.length === (owned ? 2 : 1));
       assert.deepEqual(calls, owned ? ["fallback", "resume"] : ["fallback"]);
     } finally { releaseFallback(); releaseResume.release(); }
   }
@@ -3563,7 +3565,7 @@ test("backup provider settlement restores source through Host and schedules anch
       await h.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
       await h.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} }, ctx);
       await h.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
-      await nextTurn();
+      await waitFor(() => calls.length === (enabled ? 2 : 1));
       assert.deepEqual(calls, enabled ? ["restore", "resume:quota"] : ["restore"]);
     } finally { releaseFallback(); releaseResume.release(); }
   }
@@ -3886,8 +3888,7 @@ test("detached Remote bootstrap cannot hold startup and stale binds cannot claim
   assert.equal(companion.activeSessionId, null);
 
   releaseLoad();
-  await nextTurn();
-  assert.equal(companion.activeSessionId, "new-session");
+  await waitFor(() => companion.activeSessionId === "new-session");
 });
 
 test("stale Discord READY after same-session reload never reads the old ExtensionContext", async () => {
@@ -3933,12 +3934,10 @@ test("stale Discord READY after same-session reload never reads the old Extensio
   const shutdownContext = context("/repo", [], false, "same-session");
 
   await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, staleContext);
-  await nextTurn();
-  assert.equal(starts.length, 1);
+  await waitFor(() => starts.length === 1);
   await harness.api.handler("session_shutdown")({ type: "session_shutdown", reason: "reload" }, shutdownContext);
   await harness.api.handler("session_start")({ type: "session_start", reason: "reload" }, currentContext);
-  await nextTurn();
-  assert.equal(starts.length, 2);
+  await waitFor(() => starts.length === 2);
 
   assert.doesNotThrow(() => starts[0]!.ready());
   await new Promise((resolve) => setImmediate(resolve));
@@ -3948,7 +3947,7 @@ test("stale Discord READY after same-session reload never reads the old Extensio
   assert.equal(stopped, 1);
 
   starts[1]!.ready();
-  await new Promise((resolve) => setImmediate(resolve));
+  await waitFor(() => mirrored.length === 1);
   assert.deepEqual(mirrored, ["YOU\ncurrent prompt"]);
 });
 
@@ -5566,8 +5565,7 @@ async function assertPendingQuotaPlanningCancelledBy(
       },
     };
     await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
-    await nextTurn();
-    assert.equal(fetches, 1);
+    await waitFor(() => fetches === 1);
     await harness.api.handler("before_agent_start")(
       { type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} },
       ctx,
@@ -5656,7 +5654,7 @@ test("the latest quota-resume custom branch message force-refreshes usage", asyn
     { type: "before_agent_start", prompt: "not the marker", systemPrompt: "", systemPromptOptions: {} },
     ctx,
   );
-  await nextTurn();
+  await waitFor(() => statuses.at(-1)?.text?.includes("5h 80%") === true);
 
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
   assert.equal(fetches, 1);
@@ -5752,7 +5750,7 @@ test("failed quota-resume usage refresh is detached, fail-soft, and does not ret
   const statuses: Array<{ id: string; text: string | undefined }> = [];
   const ctx = withBranch(interactiveContext("/repo", statuses), []);
   await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
-  await nextTurn();
+  await waitFor(() => fetches === 1);
   const stateBefore = structuredClone(harness.integration.runtime.state);
 
   await assert.doesNotReject(Promise.resolve(harness.api.handler("before_agent_start")(
@@ -5764,7 +5762,7 @@ test("failed quota-resume usage refresh is detached, fail-soft, and does not ret
     },
     ctx,
   )));
-  await nextTurn();
+  await waitFor(() => statuses.at(-1)?.text?.includes("5h 0%") === true);
 
   assert.equal(fetches, 2);
   assert.deepEqual(harness.integration.runtime.state, stateBefore);
@@ -5790,7 +5788,7 @@ test("subscription usage is runtime-only, cached, and does not affect State on f
     },
   );
   await startSession(harness, "/repo");
-  await new Promise((resolve) => setImmediate(resolve));
+  await waitFor(() => fetches === 1);
   await harness.api.handler("agent_settled")(
     { type: "agent_settled" },
     context("/repo"),
@@ -5828,7 +5826,7 @@ test("failed usage refresh retains the previous runtime-only snapshot", async ()
   const uiContext = interactiveContext("/repo", statuses);
 
   await startSession(harness, "/repo");
-  await new Promise((resolve) => setImmediate(resolve));
+  await waitFor(() => calls === 1);
   await harness.api.handler("before_agent_start")(
     {
       type: "before_agent_start",
@@ -5881,7 +5879,7 @@ test("complete reset-credit observation renders through the single existing stat
     { type: "session_start", reason: "startup" },
     uiContext,
   );
-  await new Promise((resolve) => setImmediate(resolve));
+  await waitFor(() => /wk 68% • ↻ 6d\+ • ⟳ 1$/.test(statuses.at(-1)?.text ?? ""));
 
   assert.match(statuses.at(-1)?.text ?? "", /wk 68% • ↻ 6d\+ • ⟳ 1$/);
   assert.deepEqual([...new Set(statuses.map(({ id }) => id))], ["pindie-status"]);
