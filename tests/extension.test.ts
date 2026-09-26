@@ -2419,9 +2419,14 @@ test("successful ordinary Task completion offers an optional same-Run learning c
   const text = completion.content[0]?.text ?? "";
   assert.match(text, /Primary work is complete/);
   assert.notEqual(completion.terminate, true);
-  assert.match(text, /call pindie_learning_signal once before ending/);
-  assert.match(text, /Harness decides independently/);
-  assert.match(text, /Silence is normal for routine success, one-off facts, temporary fixes, outages and trivial details/);
+  assert.match(text, /Before ending this same ordinary Run, briefly decide/);
+  assert.match(text, /reusable decision rule or pattern that would change how you approach a future similar task/);
+  assert.match(text, /project-local engineering or procedural rule qualifies as Strategy-level if it generalizes across future similar tasks/);
+  assert.match(text, /need not be cross-domain or broadly abstract/);
+  assert.match(text, /If yes, call pindie_learning_signal once; if no, end silently/);
+  assert.match(text, /Do not narrate this judgment to the user/);
+  assert.match(text, /Do not wait to prove recurrence or evidence counts: the Harness independently decides evidence sufficiency/);
+  assert.match(text, /Routine success, one-off facts, temporary fixes, outages and trivial details are not learning opportunities/);
   assert.equal(harness.api.sentUserMessages.length, 0);
   assert.equal(harness.api.sentMessages.length, 0);
   assert.deepEqual(assessments, []);
