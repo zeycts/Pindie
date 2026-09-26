@@ -64,10 +64,12 @@ export interface PindieControlSnapshot {
   readonly recovery: {
     readonly quotaWaiting: PindiePresentationSnapshot["quotaResumeWaiting"];
   };
+  /** Latest visible assistant text or successful semantic Task completion, in timeline order. */
   readonly latestAssistant: {
     readonly entryId: string;
     readonly text: string;
     readonly lifecycle: "streaming" | "complete" | "error";
+    readonly source: "assistant" | "task_completion";
   } | null;
 }
 
@@ -617,9 +619,10 @@ export class PindieControlClient {
           quotaResumeWaiting: presentation.quotaResumeWaiting !== null,
         });
 
-    const latestAssistant = [...projection.timeline]
+    const latestReport = [...projection.timeline]
       .reverse()
-      .find((block) => block.type === "message" && block.role === "assistant");
+      .find((block) => (block.type === "message" && block.role === "assistant") ||
+        (block.type === "semantic" && block.category === "completion" && block.lifecycle === "complete"));
 
     return {
       lease: binding.lease,
@@ -673,13 +676,21 @@ export class PindieControlClient {
           ? null
           : { ...presentation.quotaResumeWaiting },
       },
-      latestAssistant: latestAssistant?.type === "message"
+      latestAssistant: latestReport?.type === "message"
         ? {
-            entryId: latestAssistant.id,
-            text: latestAssistant.text,
-            lifecycle: latestAssistant.lifecycle,
+            entryId: latestReport.id,
+            text: latestReport.text,
+            lifecycle: latestReport.lifecycle,
+            source: "assistant",
           }
-        : null,
+        : latestReport?.type === "semantic" && latestReport.category === "completion"
+          ? {
+              entryId: latestReport.id,
+              text: latestReport.summary,
+              lifecycle: "complete",
+              source: "task_completion",
+            }
+          : null,
     };
   }
 }
