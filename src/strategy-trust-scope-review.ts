@@ -1680,6 +1680,8 @@ export async function buildScopeDecisionCommandProjection(input: {
   readonly sourceResolver: StrategyTrustScopeSourceResolver;
   readonly experienceReader?: RunExperienceProjectReader;
   readonly projectTrustReader?: ScopeProjectTrustReader;
+  readonly synthesisCandidateReader?: StrategySynthesisCandidateReader;
+  readonly synthesisDecisionReader?: StrategySynthesisDecisionReader;
   readonly currentProjectRoot?: string | null;
 }): Promise<ScopeDecisionCommandProjection> {
   if (input.command === "promote" &&
@@ -1721,6 +1723,8 @@ export async function buildScopeDecisionCommandProjection(input: {
       sourceResolver: input.sourceResolver,
       experienceReader: input.experienceReader!,
       projectTrustReader: input.projectTrustReader!,
+      synthesisCandidateReader: input.synthesisCandidateReader,
+      synthesisDecisionReader: input.synthesisDecisionReader,
       currentProjectRoot: input.currentProjectRoot,
     });
     if (!review.promotionEligibility.eligible) continue;

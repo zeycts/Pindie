@@ -632,6 +632,8 @@ export class CrossProjectLearningIntegration {
       sourceResolver: this.trust.scopeSourceResolver,
       experienceReader: this.crossProjectExperienceReader,
       projectTrustReader: this.scopeProjectTrustReader,
+      synthesisCandidateReader: this.trust.synthesisCandidateReader,
+      synthesisDecisionReader: this.trust.synthesisDecisionReader,
       currentProjectRoot: projectRoot,
     });
     return filterScopeDecisionCommandOptions(projection, prefix);
