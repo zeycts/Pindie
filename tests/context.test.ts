@@ -88,7 +88,7 @@ test("stable Pindie System Contract is deterministic, complete, and excludes cur
   assert.match(first, /Seed Strategies are optional, advisory/);
   assert.match(first, /Strategy Revision Candidates are inactive hypotheses; creation requires a live Seed-targeted adaptation Run \(explicit \/adapt <strategy-id> or matching autonomously admitted learning Run\) and its lease/);
   assert.match(first, /Strategy Derivation Candidates are inactive new-logical-Strategy hypotheses; creation requires a live local Derivation Run \(explicit \/derive or matching autonomously admitted learning Run\) and its lease, and is optional/);
-  assert.match(first, /only an explicitly armed \/trial <candidate-id> Run may select its exact Candidate revision/);
+  assert.match(first, /only an explicitly armed \/trial Run \(local <candidate-id>, scope:<candidate-id>, or synthesis:<candidate-id>\) may select its exact Candidate revision/);
   assert.match(first, /Candidates never override State, the Execution Gateway, Verification, or Task authority/);
   assert.doesNotMatch(first, /creation is valid only during explicitly entered/);
   assert.match(first, /Seed Strategies:/);
