@@ -681,13 +681,22 @@ PiRuntimeAdapter.getActiveProjectSessionChoices()
 PiRuntimeAdapter.switchActiveSession(...)
 ```
 
-Do not introduce a second Session registry, copied Session metadata store, or synthetic conversation identity.
+Do not introduce a second Session registry, copied Session metadata store, or synthetic conversation identity. Session lifecycle/control logic belongs to `PindieControlClient` and the existing `PiRuntimeAdapter` seams, not `PindieControlWorkspace`; the Workspace continues to own only project/Host selection and serializes calls through `withClient(...)`.
 
 ### 19.2 pindie_list_sessions
 
 Read-only and project-scoped.
 
 If no project is active, return the existing structured `no_active_project` error.
+
+Accept only `offset` (integer ≥ 0, default 0) and `limit` (integer 1–50, default 20). Return a bounded page sorted by modified time descending and then Session ID ascending:
+
+```text
+total
+offset
+limit
+hasMore
+```
 
 Return a bounded projection of Sessions belonging to the active project's native Pi Session directory:
 
@@ -704,9 +713,9 @@ sessions:
   - current
 ```
 
-The underlying Session file path is internal routing data and must **not** be returned to ChatGPT.
+The underlying Session file path is internal routing data and must **never** appear in a public result, MCP structured content, error details, or user-visible output. Normalize whitespace and bound display names and first-message previews.
 
-Do not expose arbitrary Session directories or caller-provided paths.
+Do not expose arbitrary Session directories or caller-provided paths. Listing is read-only and does not require a Control lease.
 
 ### 19.3 pindie_switch_session
 
@@ -726,9 +735,10 @@ On every call:
 ```text
 validate current Control lease
 → enumerate current project's native Session choices
-→ resolve sessionId to the current-project internal Session path
+→ resolve sessionId only against this fresh current-project choice list
 → reject missing/ambiguous IDs
-→ verify safe Session-replacement boundary
+→ if already current, return the current snapshot without native replacement or lease rotation
+→ otherwise verify safe Session-replacement boundary
 → native switchSession(path)
 → existing beforeSessionInvalidate lifecycle
 → existing headless bindExtensions/session_start lifecycle
@@ -755,7 +765,7 @@ session_switch_unsafe
 
 Do not use semantic Task status as a switch prohibition. A durable project Task may legitimately span multiple Pi Sessions.
 
-Switching to the already-active Session is idempotent:
+Switching to the already-active Session is idempotent and is checked before the safe-replacement conditions, so it remains legal while runtime activity is busy:
 
 - no native replacement;
 - no new lease;
@@ -765,9 +775,7 @@ A real Session replacement must invalidate the old lease and expose a new lease 
 
 ### 19.5 Failure behavior
 
-If the requested Session no longer exists, return a structured `session_not_found` error.
-
-If native switch/bootstrap fails after invalidation, remain fail-closed with no partially authorized binding. Do not silently switch to another Session.
+Use structured Session-specific errors: `session_not_found`, `session_ambiguous`, `session_switch_unsafe`, and `session_switch_failed`. If native Pi `switchSession` reports cancellation, preserve/revalidate the old binding and lease. If native switch/bootstrap fails after invalidation, remain fail-closed with no partially authorized binding or synthetic lease. Do not silently switch to another Session.
 
 Do not add Session delete, rename, fork, or tree-navigation tools in Slice C.
 
