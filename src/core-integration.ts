@@ -106,6 +106,8 @@ export interface CoreToolRegistrationOptions {
   readonly onPolicySet?: (snapshot: PolicySnapshot) => void;
   /** Read-only projection refresh after a Core semantic State transition. */
   readonly onSemanticStateChange?: () => void;
+  /** Successful completion report for runtime presentation; never semantic State. */
+  readonly onCompletionReport?: (report: string) => void;
   /** Optional SI-owned runtime-only completion disposition seam. */
   readonly learningDisposition?: PindieTaskToolOptions["learningDisposition"];
 }
@@ -284,6 +286,7 @@ export class CoreIntegration {
         return result;
       },
       learningDisposition: options.learningDisposition,
+      onCompletionReport: options.onCompletionReport,
       onStateChange: onSemanticStateChange,
       onMutationUncertain,
     };

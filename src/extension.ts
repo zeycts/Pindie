@@ -369,6 +369,7 @@ function registerComposedPindieExtension(
   const quotaResumeStatusObserver = getQuotaResumeStatusObserver();
   let quotaPlanningGeneration = 0;
   let agentRunLifecycleGeneration = 0;
+  let remoteCompletionReport: { generation: number; sessionId: string; text: string } | null = null;
   const taskHandoffEnabled = options.enableTaskHandoff === true || committedRolloverPublisher !== null;
   // Composition supplies Core's production dependencies explicitly. Feature
   // dependencies are validated and assembled only when Self-Improvement is
@@ -756,6 +757,12 @@ function registerComposedPindieExtension(
       presentation.refreshStatus();
       projectRemoteSemantics();
     },
+    onCompletionReport: (text) => {
+      const generation = run.activeAgentRunGeneration;
+      if (generation !== null && liveRemoteSession !== null) {
+        remoteCompletionReport = { generation, sessionId: liveRemoteSession.sessionId, text };
+      }
+    },
     learningDisposition: featureSelection.selfImprovement ? createCompletionLearningDispositionSeam({
       holder: learningSignal,
       getGeneration: () => run.activeAgentRunGeneration,
@@ -964,6 +971,7 @@ function registerComposedPindieExtension(
 
   pi.on("before_agent_start", async (event, ctx) => {
     ++agentRunLifecycleGeneration;
+    remoteCompletionReport = null;
     learningSignal.begin(null);
     let preparationGeneration: number | null = null;
     try {
@@ -1722,7 +1730,11 @@ function registerComposedPindieExtension(
           quotaSuccessorCommitted,
         });
         if (signal === null || !isCurrentSettlement()) return;
-        await remote.humanSignal(signal, { isCurrent: isCurrentSettlement });
+        const completionReport = signal.kind === "completed" &&
+          remoteCompletionReport?.generation === facts.settlementGeneration &&
+          remoteCompletionReport.sessionId === settlementSessionId
+          ? remoteCompletionReport.text : undefined;
+        await remote.humanSignal(signal, { isCurrent: isCurrentSettlement, completionReport });
       };
       void finalizeRemoteSettlement().catch(() => undefined);
     }

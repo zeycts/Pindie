@@ -155,6 +155,7 @@ export interface PindieTaskToolOptions {
   ) => void;
   onTaskRefined?: (state: PindieState) => void;
   onTaskCompleted?: (state: PindieState) => ConsumptionMetrics | null;
+  onCompletionReport?: (report: string) => void;
   learningDisposition?: LearningDispositionSeam;
   onStateChange?: () => void;
   onMutationUncertain?: (reason: string) => void;
@@ -551,7 +552,9 @@ export function createPindieTaskCompleteTool(
         throw error;
       }
       const taskMetrics = options.onTaskCompleted?.(state) ?? null;
-      return result(formatCompletionResult(state, params.summary, taskMetrics), state, null, true);
+      const report = formatCompletionResult(state, params.summary, taskMetrics);
+      options.onCompletionReport?.(report);
+      return result(report, state, null, true);
     },
   });
 }
