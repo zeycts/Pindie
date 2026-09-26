@@ -845,6 +845,26 @@ test("Scope and Synthesis reviews share bidirectional global logical-ID safety",
   assert.equal(scopeReview.promotionEligibility.globalLogicalIdAvailable, false);
   assert.equal(scopeReview.promotionEligibility.eligible, false);
   assert.match(scopeReview.reasons.join(" "), /user-global logical Strategy ID is unavailable/i);
+
+  const scopePromotionOptions = await buildScopeDecisionCommandProjection({
+    command: "promote",
+    candidateReader: openScopeAuthority.candidateReader,
+    decisionReader: openScopeAuthority.decisionReader,
+    sourceResolver: openScopeAuthority.sourceResolver,
+    experienceReader: scope.experienceReader,
+    projectTrustReader: scope.projectTrustReader,
+    synthesisCandidateReader: promotedSynthesisAuthority.candidateReader,
+    synthesisDecisionReader: promotedSynthesisAuthority.decisionReader,
+  });
+  assert.deepEqual(scopePromotionOptions.options, [], "completion must apply the same combined global trust gate as promotion");
+  const scopeRejectionOptions = await buildScopeDecisionCommandProjection({
+    command: "reject",
+    candidateReader: openScopeAuthority.candidateReader,
+    decisionReader: openScopeAuthority.decisionReader,
+    sourceResolver: openScopeAuthority.sourceResolver,
+  });
+  assert.deepEqual(scopeRejectionOptions.options.map((option) => option.value),
+    [`scope:${scope.fixture.scopeCandidate.candidateId}`], "collision does not prevent rejection of an open hypothesis");
 });
 
 test("Scope and Synthesis promotion reviews enforce the combined user-global capacity", async () => {
