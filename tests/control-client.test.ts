@@ -97,8 +97,9 @@ function fakeSession(
         if (listener === next) listener = undefined;
       };
     },
-    prompt: async (text: string) => {
+    prompt: async (text: string, options?: { preflightResult?: (accepted: boolean) => void }) => {
       prompts.push(text);
+      options?.preflightResult?.(true);
     },
     steer: async (text: string) => {
       steers.push(text);
@@ -685,6 +686,44 @@ test("Control rebind projection failure leaves no partially authorized binding",
 });
 
 
+test("Control timeline fingerprint inspects only the fixed recent tail", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState());
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => "lease-1" },
+  );
+
+  await control.start();
+  try {
+    const projection = (control as unknown as { projection: { timeline: unknown[] } }).projection;
+    const history = [...projection.timeline];
+    const historicalBlock = history[0];
+    assert.ok(historicalBlock);
+    const largeTimeline = [...history, ...Array.from({ length: 2000 }, () => historicalBlock)];
+    let observedSlice: unknown[] | undefined;
+    projection.timeline = new Proxy(largeTimeline, {
+      get(target, property, receiver) {
+        if (property === "slice") {
+          return (...args: unknown[]) => {
+            observedSlice = args;
+            return Array.prototype.slice.apply(target, args as [number?]);
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    control.observe();
+    assert.deepEqual(observedSlice, [-32]);
+  } finally {
+    control.dispose();
+  }
+});
+
 test("Control input maps user intent to Pi-native prompt, steer, and followUp", async () => {
   const session = fakeSession("session-1", branchEntries());
   const native = fakeNativeRuntime(session);
@@ -716,6 +755,112 @@ test("Control input maps user intent to Pi-native prompt, steer, and followUp", 
     });
     assert.equal(followUp.delivery, "followUp");
     assert.deepEqual(session.followUps, ["after that, run the full check"]);
+  } finally {
+    control.dispose();
+  }
+});
+
+test("Control prompt input waits for preflight acceptance and cannot settle before the Agent Run", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState());
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => "lease-1" },
+  );
+  let accept!: (accepted: boolean) => void;
+  runtime.prompt = async (text, options) => {
+    session.prompts.push(text);
+    accept = options!.preflightResult!;
+  };
+
+  await control.start();
+  try {
+    const lease = control.observe().lease;
+    let completed = false;
+    const input = control.input({ lease, text: "start work" }).then((result) => {
+      completed = true;
+      return result;
+    });
+    await Promise.resolve();
+    assert.equal(completed, false);
+    assert.equal(control.readTimeline().timeline.some((block) => block.type === "message" && block.role === "user" && block.text === "start work"), false);
+
+    accept(true);
+    session.start();
+    const delivered = await input;
+    assert.equal(delivered.delivery, "prompt");
+    assert.equal(delivered.snapshot.runtime.idle, false);
+    assert.equal(control.readTimeline().timeline.some((block) => block.type === "message" && block.role === "user" && block.text === "start work"), true);
+
+    let settled = false;
+    const waiting = control.wait({ lease, until: "settled" }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await Promise.resolve();
+    assert.equal(settled, false);
+    session.settle();
+    assert.equal((await waiting).reason, "settled");
+  } finally {
+    control.dispose();
+  }
+});
+
+test("Control rejected prompt preflight returns delivery_failed without a timeline echo", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState());
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => "lease-1" },
+  );
+  runtime.prompt = async (_text, options) => {
+    options!.preflightResult!(false);
+    throw new Error("preflight rejected");
+  };
+
+  await control.start();
+  try {
+    const lease = control.observe().lease;
+    await assert.rejects(control.input({ lease, text: "rejected" }), (error: unknown) =>
+      error instanceof PindieControlError && error.code === "delivery_failed");
+    assert.equal(control.readTimeline().timeline.some((block) => block.type === "message" && block.role === "user" && block.text === "rejected"), false);
+  } finally {
+    control.dispose();
+  }
+});
+
+test("Control Human Gate response waits for the same prompt preflight acceptance", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const native = fakeNativeRuntime(session);
+  const runtime = new PiRuntimeAdapter(native.runtime);
+  const presentation = presentationFor(activeState({ kind: "approval", question: "Proceed?" }));
+  const control = new PindieControlClient(
+    runtime,
+    { current: () => ({ snapshot: () => presentation }) },
+    { createLease: () => "lease-1" },
+  );
+  let accept!: (accepted: boolean) => void;
+  runtime.prompt = async (_text, options) => { accept = options!.preflightResult!; };
+
+  await control.start();
+  try {
+    const snapshot = control.observe();
+    const gate = snapshot.semantic.humanGate!;
+    let completed = false;
+    const response = control.respond({ lease: snapshot.lease, gateKey: gate.key, response: "Approve" })
+      .then((result) => { completed = true; return result; });
+    await Promise.resolve();
+    assert.equal(completed, false);
+    accept(true);
+    session.start();
+    assert.equal((await response).delivery, "prompt");
+    assert.equal(control.observe().runtime.idle, false);
   } finally {
     control.dispose();
   }

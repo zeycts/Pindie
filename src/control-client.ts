@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AgentSession,
   AgentSessionEvent,
+  PromptOptions,
 } from "@earendil-works/pi-coding-agent";
 
 import { classifyHumanSignal } from "./human-signal.ts";
@@ -194,6 +195,7 @@ interface ControlWaiter {
 
 const DEFAULT_WAIT_TIMEOUT_SECONDS = 20;
 const MAX_WAIT_TIMEOUT_SECONDS = 30;
+const MEANINGFUL_TIMELINE_FINGERPRINT_BLOCKS = 32;
 const DEFAULT_TIMELINE_LIMIT = 20;
 const MAX_TIMELINE_LIMIT = 50;
 
@@ -347,7 +349,7 @@ export class PindieControlClient {
 
     try {
       if (delivery === "prompt") {
-        this.launchPrompt(text);
+        await this.launchPrompt(text);
         this.requireSameBinding(binding);
       } else if (delivery === "steer") {
         await this.runtime.steer(text);
@@ -399,7 +401,7 @@ export class PindieControlClient {
     this.requireSafeIdle(snapshot);
 
     try {
-      this.launchPrompt(response);
+      await this.launchPrompt(response);
       this.requireSameBinding(binding);
       this.appendDelivery(response, "prompt");
     } catch (error) {
@@ -787,10 +789,20 @@ export class PindieControlClient {
     for (const waiter of [...this.waiters]) this.resolveWaiter(waiter, result);
   }
 
-  private launchPrompt(text: string): void {
+  private async launchPrompt(text: string): Promise<void> {
+    let reportPreflight!: (accepted: boolean) => void;
+    let preflightReported = false;
+    const preflight = new Promise<boolean>((resolve) => {
+      reportPreflight = (accepted) => {
+        if (preflightReported) return;
+        preflightReported = true;
+        resolve(accepted);
+      };
+    });
+
     let pending: Promise<void>;
     try {
-      pending = this.runtime.prompt(text);
+      pending = this.runtime.prompt(text, { preflightResult: reportPreflight } satisfies PromptOptions);
     } catch (error) {
       throw new PindieControlError(
         "delivery_failed",
@@ -798,7 +810,8 @@ export class PindieControlClient {
         this.safeSnapshot(),
       );
     }
-    void pending.catch(() => {
+    void pending.catch((error) => {
+      reportPreflight(false);
       // Pi owns the Agent Run and persists visible failure in Session history.
       // Control must not turn a rejected Run Promise into a second result store.
       try {
@@ -806,7 +819,16 @@ export class PindieControlClient {
       } catch {
         // A later explicit observation can recover current facts.
       }
+      return error;
     });
+
+    if (!await preflight) {
+      throw new PindieControlError(
+        "delivery_failed",
+        "Pindie prompt delivery was rejected during Pi preflight.",
+        this.safeSnapshot(),
+      );
+    }
   }
 
   private safeSnapshot(): PindieControlSnapshot | null {
@@ -1075,7 +1097,7 @@ function controlFingerprint(
 }
 
 function timelineObservationFingerprint(timeline: readonly UiTimelineBlock[]): string {
-  return JSON.stringify(timeline.map((block) => {
+  return JSON.stringify(timeline.slice(-MEANINGFUL_TIMELINE_FINGERPRINT_BLOCKS).map((block) => {
     if (block.type === "message") return [block.type, block.id, block.role, block.lifecycle];
     if (block.type === "work") {
       return block.kind === "observation"
