@@ -4,8 +4,6 @@ import { Type } from "typebox";
 export const MAX_LEARNING_SIGNAL_REASON_LENGTH = 512;
 export const LEARNING_SIGNAL_POLICY = "Learning opportunities are optional. A project-local engineering or procedural rule can be Strategy-level if it generalizes across future similar tasks; it need not be cross-domain or broadly abstract. If current work reveals a plausible reusable decision rule, you may signal it once with pindie_learning_signal; recognize the lesson, not whether the evidence is sufficient. Do not wait to prove recurrence or evidence counts: the Harness independently decides evidence sufficiency. Silence is normal for routine success, one-off facts, temporary fixes, outages and trivial details.";
 
-export const LEARNING_COMPLETION_CHECKPOINT = "Primary work is complete. Before ending this same ordinary Run, briefly decide whether current work revealed a reusable decision rule or pattern that would change how you approach a future similar task. A project-local engineering or procedural rule qualifies as Strategy-level if it generalizes across future similar tasks; it need not be cross-domain or broadly abstract. If yes, call pindie_learning_signal once; if no, end silently. Do not narrate this judgment to the user. Do not wait to prove recurrence or evidence counts: the Harness independently decides evidence sufficiency. Routine success, one-off facts, temporary fixes, outages and trivial details are not learning opportunities.";
-
 export type LearningSignal = Readonly<{
   intent: "revise-existing" | "derive-local" | "derive-global";
   targetStrategyId?: string;
@@ -20,6 +18,10 @@ export class LearningSignalHolder {
   begin(generation: number | null): void {
     this.generation = generation;
     this.accepted = null;
+  }
+
+  has(generation: number | null): boolean {
+    return generation !== null && this.generation === generation && this.accepted !== null;
   }
 
   take(generation: number | null): LearningSignal | null {
@@ -46,6 +48,21 @@ const Parameters = Type.Object({
   reason: Type.String({ minLength: 1, maxLength: MAX_LEARNING_SIGNAL_REASON_LENGTH }),
 }, { additionalProperties: false });
 
+export function isValidLearningSignal(value: unknown): value is LearningSignal {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const signal = value as Record<string, unknown>;
+  const hasTarget = Object.prototype.hasOwnProperty.call(signal, "targetStrategyId");
+  return (signal.intent === "revise-existing"
+    ? hasTarget && typeof signal.targetStrategyId === "string" &&
+      signal.targetStrategyId.length <= 64 && signal.targetStrategyId.trim().length > 0
+    : (signal.intent === "derive-local" || signal.intent === "derive-global") && !hasTarget) &&
+    typeof signal.reason === "string" && signal.reason.length <= MAX_LEARNING_SIGNAL_REASON_LENGTH &&
+    signal.reason.trim().length > 0 &&
+    Object.keys(signal).every((key) => key === "intent" || key === "targetStrategyId" || key === "reason");
+}
+
+export const LearningSignalParameters = Parameters;
+
 export function createPindieLearningSignalTool(options: {
   holder: LearningSignalHolder;
   getGeneration: () => number | null;
@@ -58,11 +75,7 @@ export function createPindieLearningSignalTool(options: {
     parameters: Parameters,
     executionMode: "sequential",
     async execute(_id, params) {
-      const hasTarget = Object.prototype.hasOwnProperty.call(params, "targetStrategyId");
-      const valid = params.intent === "revise-existing"
-        ? hasTarget && typeof params.targetStrategyId === "string" && params.targetStrategyId.trim().length > 0
-        : !hasTarget;
-      if (!valid || params.reason.length > MAX_LEARNING_SIGNAL_REASON_LENGTH || !params.reason.trim() || !options.isOrdinary() ||
+      if (!isValidLearningSignal(params) || !options.isOrdinary() ||
           !options.holder.accept(options.getGeneration(), params)) {
         return { content: [{ type: "text" as const, text: "Learning signal rejected: invalid intent/target, no ordinary Run, or a signal already exists." }], isError: true, details: undefined };
       }

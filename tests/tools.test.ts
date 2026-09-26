@@ -429,14 +429,11 @@ test("complete dispatches complete_task, preserves result semantics, and require
   assert.match(textOf(result), /Verification:\s*\n- tests: passed/);
 });
 
-test("completion with a learning checkpoint leaves Pi's same-Run tool-result continuation available", async () => {
+test("Core-only completion stays terminal without SI disposition", async () => {
   const h = await harness(verifiedState());
-  const completion = createPindieTaskCompleteTool(h.runtime, {
-    completionLearningCheckpoint: () => "Optional same-Run learning judgment.",
-  });
-  const result = await completion.execute("complete", { summary: "Finished." });
-  assert.equal(result.terminate, undefined);
-  assert.match(textOf(result), /Optional same-Run learning judgment/);
+  const result = await h.tools.complete.execute("complete", { summary: "Finished." });
+  assert.equal(result.terminate, true);
+  assert.doesNotMatch(textOf(result), /learning checkpoint/i);
   assert.equal(h.runtime.state.task?.completed, true);
 });
 

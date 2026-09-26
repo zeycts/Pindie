@@ -61,6 +61,7 @@ import {
   createPindieTaskRefineTool,
   createPindieTaskReplaceTool,
   createPindieTaskStartTool,
+  type PindieTaskToolOptions,
   createPindieVerificationRecordTool,
 } from "./tools/task.ts";
 import type {
@@ -105,8 +106,8 @@ export interface CoreToolRegistrationOptions {
   readonly onPolicySet?: (snapshot: PolicySnapshot) => void;
   /** Read-only projection refresh after a Core semantic State transition. */
   readonly onSemanticStateChange?: () => void;
-  /** Optional model-facing suffix for successful in-Run Task completion. */
-  readonly completionLearningCheckpoint?: () => string | null;
+  /** Optional SI-owned runtime-only completion disposition seam. */
+  readonly learningDisposition?: PindieTaskToolOptions["learningDisposition"];
 }
 
 export interface CoreSettlementFacts {
@@ -282,7 +283,7 @@ export class CoreIntegration {
         options.onSemanticStateChange?.();
         return result;
       },
-      completionLearningCheckpoint: options.completionLearningCheckpoint,
+      learningDisposition: options.learningDisposition,
       onStateChange: onSemanticStateChange,
       onMutationUncertain,
     };

@@ -2402,7 +2402,7 @@ test("Slice C signal remains optional and Gate runs only after source Experience
   assert.equal(assessments.length, 1, "a normal Run without a signal does not assess learning");
 });
 
-test("successful ordinary Task completion offers an optional same-Run learning checkpoint without learning side effects", async () => {
+test("ordinary SI completion requires a disposition; none completes terminally without assessment or extra Run", async () => {
   const assessments: unknown[] = [];
   const receipts: string[] = [];
   const candidates: unknown[] = [];
@@ -2415,18 +2415,13 @@ test("successful ordinary Task completion offers an optional same-Run learning c
   const prompt = await harnessBeforeAgentStart(harness);
   assert.match(prompt.systemPrompt, /Do not wait to prove recurrence or evidence counts/);
   assert.doesNotMatch(prompt.message.content, /Primary work is complete/);
-  const completion = await harness.api.tool("pindie_task_complete").execute("complete", { summary: "Finished work" });
+  await assert.rejects(harness.api.tool("pindie_task_complete").execute("missing", { summary: "Finished work" }), /learningDisposition is required/);
+  assert.equal(harness.integration.runtime.state.task?.completed, false);
+  const completion = await harness.api.tool("pindie_task_complete").execute("complete", { summary: "Finished work", learningDisposition: { kind: "none" } });
   const text = completion.content[0]?.text ?? "";
-  assert.match(text, /Primary work is complete/);
-  assert.notEqual(completion.terminate, true);
-  assert.match(text, /Before ending this same ordinary Run, briefly decide/);
-  assert.match(text, /reusable decision rule or pattern that would change how you approach a future similar task/);
-  assert.match(text, /project-local engineering or procedural rule qualifies as Strategy-level if it generalizes across future similar tasks/);
-  assert.match(text, /need not be cross-domain or broadly abstract/);
-  assert.match(text, /If yes, call pindie_learning_signal once; if no, end silently/);
-  assert.match(text, /Do not narrate this judgment to the user/);
-  assert.match(text, /Do not wait to prove recurrence or evidence counts: the Harness independently decides evidence sufficiency/);
-  assert.match(text, /Routine success, one-off facts, temporary fixes, outages and trivial details are not learning opportunities/);
+  assert.match(text, /Finished work/);
+  assert.doesNotMatch(text, /Primary work is complete|learningDisposition|learning checkpoint/i);
+  assert.equal(completion.terminate, true);
   assert.equal(harness.api.sentUserMessages.length, 0);
   assert.equal(harness.api.sentMessages.length, 0);
   assert.deepEqual(assessments, []);
@@ -2436,6 +2431,7 @@ test("successful ordinary Task completion offers an optional same-Run learning c
   assert.deepEqual(assessments, [], "no signal means no learning assessment");
   assert.deepEqual(receipts, []);
   assert.equal(harness.api.sentUserMessages.length, 0);
+  assert.equal(harness.api.sentMessages.length, 0, "completion schedules no learning judgment turn");
 
   const discussion = createHarness([["/repo", harness.integration.runtime.state]]);
   await startSession(discussion, "/repo");
@@ -2445,7 +2441,7 @@ test("successful ordinary Task completion offers an optional same-Run learning c
   assert.equal(discussion.api.sentUserMessages.length, 0);
 });
 
-test("learning checkpoint is absent from adaptation, derivation, global derivation and Trial Runs", async () => {
+test("adaptation, derivation, global derivation and Trial completions stay terminal without disposition", async () => {
   const reader = new ExtensionTestExperienceReader();
   reader.result = { records: [
     { recordId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.json", experience: commandExperience("goal one", createPolicySnapshot({ approach: "direct-action" })) },
@@ -2479,7 +2475,65 @@ test("learning checkpoint is absent from adaptation, derivation, global derivati
   }
 });
 
-test("same-Run signal after checkpointed completion is accepted but assessed only at settlement", async () => {
+test("completion disposition shares signal validation, preserves earlier signal, and rolls back failed dispatch", async () => {
+  const assessments: Array<{ status: string; intent?: string }> = [];
+  const harness = createHarness([["/repo", verifiedState()]], {}, {
+    onLearningOpportunityAssessment: (assessment) => assessments.push(assessment as { status: string; intent?: string }),
+    learningAssessmentReceipts: { hasTerminal: async () => false },
+  });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  const complete = (learningDisposition: unknown) => harness.api.tool("pindie_task_complete").execute(
+    "complete", { summary: "Done", learningDisposition } as never,
+  );
+  for (const signal of [
+    { intent: "revise-existing", reason: "valid" },
+    { intent: "derive-local", targetStrategyId: "direct-action", reason: "valid" },
+    { intent: "derive-global", reason: " " },
+    { intent: "derive-local", reason: "x".repeat(513) },
+    { intent: "revise-existing", targetStrategyId: " ", reason: "valid" },
+    { intent: "revise-existing", targetStrategyId: "x".repeat(65), reason: "valid" },
+  ]) {
+    await assert.rejects(complete({ kind: "signal", signal }), /learningDisposition/);
+    assert.equal(harness.integration.runtime.state.task?.completed, false);
+  }
+  await assert.rejects(complete({ kind: "already-signaled" }), /learningDisposition/);
+  await assert.rejects(complete({ kind: "none", extra: true }), /learningDisposition/);
+  await assert.rejects(complete({ kind: "signal", signal: { intent: "derive-local", reason: "valid", extra: true } }), /learningDisposition/);
+  const prior = { intent: "revise-existing" as const, targetStrategyId: "direct-action", reason: "Earlier lesson" };
+  const accepted = await harness.api.tool("pindie_learning_signal").execute("signal", prior);
+  assert.notEqual(accepted.isError, true);
+  await assert.rejects(complete({ kind: "none" }), /learningDisposition/);
+  await assert.rejects(complete({ kind: "signal", signal: prior }), /learningDisposition/);
+  assert.equal((await complete({ kind: "already-signaled" })).terminate, true);
+  const duplicate = await harness.api.tool("pindie_learning_signal").execute("duplicate", prior);
+  assert.equal(duplicate.isError, true);
+  assert.deepEqual(assessments, []);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(assessments.length, 1, "the earlier signal survives completion until settlement");
+
+  const failed = createHarness([["/repo", activeState("Not verified")]]);
+  await startSession(failed, "/repo");
+  await beginAgentRun(failed);
+  await assert.rejects(failed.api.tool("pindie_task_complete").execute("failed", {
+    summary: "No", learningDisposition: { kind: "signal", signal: { intent: "derive-local", reason: "Reusable" } },
+  }), /completion|verification|eligible/i);
+  assert.equal(failed.integration.runtime.state.task?.completed, false);
+  assert.notEqual((await failed.api.tool("pindie_learning_signal").execute("after-failure", {
+    intent: "derive-local", reason: "Reusable",
+  })).isError, true);
+});
+
+test("SI-off completion requires no learning disposition and remains terminal", async () => {
+  const harness = createHarness([["/repo", verifiedState()]], {}, { featureSelection: { selfImprovement: false } });
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  const result = await harness.api.tool("pindie_task_complete").execute("complete", { summary: "Done" });
+  assert.equal(result.terminate, true);
+  assert.equal(harness.api.tools.has("pindie_learning_signal"), false);
+});
+
+test("completion-origin signal is assessed only after Experience settlement", async () => {
   const order: string[] = [];
   const receipts: string[] = [];
   const harness = createHarness([["/repo", verifiedState()]], {}, {
@@ -2493,18 +2547,21 @@ test("same-Run signal after checkpointed completion is accepted but assessed onl
   await harness.api.handler("tool_result")(
     toolResult("read", false, "source-read", [{ type: "text", text: "source" }]), context("/repo"),
   );
-  const complete = await harness.api.tool("pindie_task_complete").execute("complete", { summary: "Finished." });
-  assert.notEqual(complete.terminate, true);
+  const input = { intent: "derive-local" as const, reason: "Potential reusable pattern" };
+  const complete = await harness.api.tool("pindie_task_complete").execute("complete", {
+    summary: "Finished.", learningDisposition: { kind: "signal", signal: input },
+  });
+  assert.equal(complete.terminate, true);
+  assert.doesNotMatch(complete.content[0]?.text ?? "", /Potential reusable pattern|checkpoint/);
   assertBlocked(await callGuard(harness, toolCall("edit")), /project\.mutate.*Task status: done/i);
   assert.deepEqual(order, []);
   assert.deepEqual(receipts, []);
   assert.equal(harness.api.sentUserMessages.length, 0);
 
-  const input = { intent: "derive-local" as const, reason: "Potential reusable pattern" };
   assert.equal((await callGuard(harness, toolCall("pindie_learning_signal", input, "signal")))?.block, undefined);
-  const signal = await harness.api.tool("pindie_learning_signal").execute("signal", input);
-  assert.notEqual(signal.isError, true);
-  assert.deepEqual(order, [], "completion and signal do not perform assessment");
+  const duplicate = await harness.api.tool("pindie_learning_signal").execute("signal", input);
+  assert.equal(duplicate.isError, true, "the completion signal consumes the one-per-Run slot");
+  assert.deepEqual(order, [], "completion does not perform assessment");
   assert.deepEqual(receipts, []);
   assert.equal(harness.api.sentUserMessages.length, 0);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
@@ -2966,9 +3023,9 @@ test("Remote completion attention waits for settled catch-up and execution summa
   await beginAgentRun(harness, "/repo", entries);
 
   const completion = await harness.api.tool("pindie_task_complete").execute("complete", {
-    summary: "The finished result is ready.",
+    summary: "The finished result is ready.", learningDisposition: { kind: "none" },
   });
-  assert.notEqual(completion.terminate, true);
+  assert.equal(completion.terminate, true);
   await waitFor(() => events.some((event) => event.text.startsWith("VERIFICATION")));
   assert.equal(events.some((event) => event.text === "TASK COMPLETED"), false);
 
@@ -6024,7 +6081,7 @@ test("Task refinement preserves metrics and completion output freezes cumulative
   clock.now = 8_000;
   entries.push({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.06 } } } });
   const result = await harness.api.tool("pindie_task_complete").execute("complete", {
-    summary: "Finished the Task.",
+    summary: "Finished the Task.", learningDisposition: { kind: "none" },
   });
 
   assert.match(textOf(result), /Duration: 8s/);
@@ -6106,7 +6163,7 @@ test("shared Host Task metrics survive automatic replacement while Run trackers 
   });
   const completion = await second.api.tool("pindie_task_complete").execute(
     "complete-long-task",
-    { summary: "Completed across automatic Session rollover." },
+    { summary: "Completed across automatic Session rollover.", learningDisposition: { kind: "none" } },
   );
   assert.match(textOf(completion), /Duration: 29s/);
   assert.match(textOf(completion), /Cost: \$0\.32/);
@@ -6239,7 +6296,7 @@ test("automatic rollover keeps one independent schema-v4 Experience per Run", as
     },
   });
   const completion = await executeSemanticTool(second, "pindie_task_complete", "run-b-complete", {
-    summary: "Completed in the continuation Run.",
+    summary: "Completed in the continuation Run.", learningDisposition: { kind: "none" },
   });
   assert.match(textOf(completion.executionResult), /Duration: 29s/);
   assert.match(textOf(completion.executionResult), /Cost: \$0\.32/);
@@ -6729,7 +6786,7 @@ test("SIR-E01 through SIR-E06 status follows the real idle-to-done lifecycle", a
   assert.doesNotMatch(status(), /done/);
 
   await harness.api.tool("pindie_task_complete").execute("complete", {
-    summary: "Status lifecycle covered.",
+    summary: "Status lifecycle covered.", learningDisposition: { kind: "none" },
   });
   assert.match(status(), /done • ✓ 1\/1/);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, uiContext);
@@ -6794,16 +6851,16 @@ test("T49 agent_settled never auto-completes a verified task", async () => {
   assert.deepEqual(harness.store.saves, []);
 });
 
-test("T50 checkpointed completion continues while terminal guard blocks mutation", async () => {
+test("T50 terminal completion blocks mutation", async () => {
   const harness = createHarness([["/repo", verifiedState()]]);
   await startSession(harness, "/repo");
   await beginAgentRun(harness);
 
   const result = await harness.api.tool("pindie_task_complete").execute("complete", {
-    summary: "Completed the verified task.",
+    summary: "Completed the verified task.", learningDisposition: { kind: "none" },
   });
 
-  assert.notEqual(result.terminate, true);
+  assert.equal(result.terminate, true);
   assert.match(textOf(result), /Duration: 0s/);
   assert.match(textOf(result), /Cost: \$0\.000/);
   assert.equal(harness.integration.runTimer.active, true);
@@ -7070,7 +7127,7 @@ test("RC01 a task completed during the run blocks same-run replacement", async (
   await beginAgentRun(harness);
 
   await harness.api.tool("pindie_task_complete").execute("complete", {
-    summary: "Completed the verified task.",
+    summary: "Completed the verified task.", learningDisposition: { kind: "none" },
   });
 
   assertBlocked(
@@ -7088,7 +7145,7 @@ test("RC02 a task completed during the run blocks same-run mutation", async () =
   await beginAgentRun(harness);
 
   await harness.api.tool("pindie_task_complete").execute("complete", {
-    summary: "Completed the verified task.",
+    summary: "Completed the verified task.", learningDisposition: { kind: "none" },
   });
 
   for (const name of ["edit", "write", "bash"]) {
@@ -7262,7 +7319,7 @@ test("RC04 replacing Task A then completing Task B does not permit Task C in the
     },
   });
   await harness.api.tool("pindie_task_complete").execute("complete-b", {
-    summary: "Completed Task B.",
+    summary: "Completed Task B.", learningDisposition: { kind: "none" },
   });
 
   assertBlocked(
@@ -7417,7 +7474,7 @@ test("G12-G15 completion is authorized only when the M0 Snapshot is completion-r
   const ready = createHarness([["/repo", verifiedState()]]);
   await startSession(ready, "/repo");
   await beginAgentRun(ready);
-  const input = { summary: "Verified and complete." };
+  const input = { summary: "Verified and complete.", learningDisposition: { kind: "none" } };
   assert.equal(await callGuard(ready, toolCall("pindie_task_complete", input, "complete-ready")), undefined);
   await ready.api.tool("pindie_task_complete").execute("complete-ready", input);
   assert.equal(ready.integration.runtime.state.task?.completed, true);

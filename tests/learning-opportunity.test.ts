@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, readFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyToolEffect } from "../src/execution-semantics.ts";
-import { LearningSignalHolder, createPindieLearningSignalTool } from "../src/learning-signal.ts";
+import { LearningSignalHolder, createPindieLearningSignalTool, isValidLearningSignal } from "../src/learning-signal.ts";
 import {
   assessLearningOpportunity,
   FileLearningAssessmentReceiptReader,
@@ -41,6 +41,18 @@ test("learning signal description admits reusable project-local procedures witho
   assert.match(tool.description, /Silence is normal/);
   assert.match(tool.description, /do not wait for recurrence proof or evidence counts/);
   assert.match(tool.description, /Harness independently assesses evidence after the Run settles/);
+});
+
+test("shared signal validation accepts exact bounds and rejects invalid target/reason", () => {
+  for (const intent of ["derive-local", "derive-global"] as const) {
+    assert.equal(isValidLearningSignal({ intent, reason: "x".repeat(512) }), true);
+    assert.equal(isValidLearningSignal({ intent, targetStrategyId: "seed", reason: "x" }), false);
+  }
+  assert.equal(isValidLearningSignal({ intent: "revise-existing", targetStrategyId: "x".repeat(64), reason: "x" }), true);
+  assert.equal(isValidLearningSignal({ intent: "revise-existing", reason: "x" }), false);
+  assert.equal(isValidLearningSignal({ intent: "revise-existing", targetStrategyId: "x".repeat(65), reason: "x" }), false);
+  assert.equal(isValidLearningSignal({ intent: "derive-local", reason: "x".repeat(513) }), false);
+  assert.equal(isValidLearningSignal({ intent: "derive-local", reason: " " }), false);
 });
 
 test("strict target semantics, one successful signal and lifecycle replacement", async () => {
