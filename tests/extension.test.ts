@@ -1153,6 +1153,25 @@ test("shared Candidate decision descriptions and usage cover local, scope, and s
   });
 });
 
+test("Candidate commands reject embedded whitespace consistently before namespace dispatch", async () => {
+  const harness = createHarness([["/repo", activeState("Malformed Candidate subjects")]]);
+  const notices: Array<{ message: string; type: string }> = [];
+  const ctx = {
+    ...context("/repo"),
+    ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+  };
+  const id = "11111111-1111-4111-8111-111111111111";
+  for (const commandName of ["trial", "trial-review", "promote", "reject"] as const) {
+    for (const subject of [`${id} extra`, `scope:${id} extra`, `synthesis:${id} extra`, "scope:  value", "synthesis:\tvalue"]) {
+      await harness.api.commands.get(commandName).handler(subject, ctx);
+      assert.deepEqual(notices.at(-1), {
+        message: `Usage: /${commandName} <candidate-id> | /${commandName} scope:<candidate-id> | /${commandName} synthesis:<candidate-id>`,
+        type: "warning",
+      }, `${commandName} ${JSON.stringify(subject)}`);
+    }
+  }
+});
+
 test("Slice E SI off keeps Core tools and Seed Policy without reading SI stores", async () => {
   const reader = new ExtensionTestExperienceReader();
   const experienceStore = new ExtensionTestExperienceStore();
