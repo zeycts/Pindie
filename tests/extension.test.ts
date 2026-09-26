@@ -2402,6 +2402,7 @@ test("successful ordinary Task completion offers an optional same-Run learning c
   const completion = await harness.api.tool("pindie_task_complete").execute("complete", { summary: "Finished work" });
   const text = completion.content[0]?.text ?? "";
   assert.match(text, /Primary work is complete/);
+  assert.notEqual(completion.terminate, true);
   assert.match(text, /call pindie_learning_signal once before ending/);
   assert.match(text, /Harness decides independently/);
   assert.match(text, /Silence is normal for routine success, one-off facts, temporary fixes, outages and trivial details/);
@@ -2453,7 +2454,42 @@ test("learning checkpoint is absent from adaptation, derivation, global derivati
     assert.doesNotMatch(prompt.message.content, /Primary work is complete/);
     const completion = await harness.api.tool("pindie_task_complete").execute(`complete-${kind}`, { summary: "Finished work" });
     assert.doesNotMatch(completion.content[0]?.text ?? "", /Primary work is complete/, kind);
+    assert.equal(completion.terminate, true, `${kind} completion remains terminal`);
   }
+});
+
+test("same-Run signal after checkpointed completion is accepted but assessed only at settlement", async () => {
+  const order: string[] = [];
+  const receipts: string[] = [];
+  const harness = createHarness([["/repo", verifiedState()]], {}, {
+    onLearningOpportunityAssessment: (assessment) => order.push(`gate:${assessment.status}`),
+    learningAssessmentReceipts: { hasTerminal: async () => false, writeTerminal: async (id) => { receipts.push(id); } },
+  });
+  (harness.experienceStore as ExtensionTestExperienceStore).events = order;
+  await startSession(harness, "/repo");
+  await beginAgentRun(harness);
+  assert.equal((await callGuard(harness, toolCall("read", { path: "/repo/file" }, "source-read")))?.block, undefined);
+  await harness.api.handler("tool_result")(
+    toolResult("read", false, "source-read", [{ type: "text", text: "source" }]), context("/repo"),
+  );
+  const complete = await harness.api.tool("pindie_task_complete").execute("complete", { summary: "Finished." });
+  assert.notEqual(complete.terminate, true);
+  assertBlocked(await callGuard(harness, toolCall("edit")), /project\.mutate.*Task status: done/i);
+  assert.deepEqual(order, []);
+  assert.deepEqual(receipts, []);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+
+  const input = { intent: "derive-local" as const, reason: "Potential reusable pattern" };
+  assert.equal((await callGuard(harness, toolCall("pindie_learning_signal", input, "signal")))?.block, undefined);
+  const signal = await harness.api.tool("pindie_learning_signal").execute("signal", input);
+  assert.notEqual(signal.isError, true);
+  assert.deepEqual(order, [], "completion and signal do not perform assessment");
+  assert.deepEqual(receipts, []);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.deepEqual(order, ["experience", "gate:rejected"]);
+  assert.deepEqual(receipts, []);
+  assert.equal(harness.api.sentUserMessages.length, 0);
 });
 
 test("Slice D admitted local learning reuses exact command packets, stays optional, and writes terminal receipts", async () => {
@@ -2911,7 +2947,7 @@ test("Remote completion attention waits for settled catch-up and execution summa
   const completion = await harness.api.tool("pindie_task_complete").execute("complete", {
     summary: "The finished result is ready.",
   });
-  assert.equal(completion.terminate, true);
+  assert.notEqual(completion.terminate, true);
   await waitFor(() => events.some((event) => event.text.startsWith("VERIFICATION")));
   assert.equal(events.some((event) => event.text === "TASK COMPLETED"), false);
 
@@ -6737,7 +6773,7 @@ test("T49 agent_settled never auto-completes a verified task", async () => {
   assert.deepEqual(harness.store.saves, []);
 });
 
-test("T50 integrated completion terminates and terminal guard blocks mutation", async () => {
+test("T50 checkpointed completion continues while terminal guard blocks mutation", async () => {
   const harness = createHarness([["/repo", verifiedState()]]);
   await startSession(harness, "/repo");
   await beginAgentRun(harness);
@@ -6746,7 +6782,7 @@ test("T50 integrated completion terminates and terminal guard blocks mutation", 
     summary: "Completed the verified task.",
   });
 
-  assert.equal(result.terminate, true);
+  assert.notEqual(result.terminate, true);
   assert.match(textOf(result), /Duration: 0s/);
   assert.match(textOf(result), /Cost: \$0\.000/);
   assert.equal(harness.integration.runTimer.active, true);

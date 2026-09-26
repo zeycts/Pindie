@@ -543,7 +543,7 @@ export function createPindieTaskCompleteTool(
           .filter((part) => part !== null).join("\n\n"),
         state,
         null,
-        true,
+        checkpoint === null,
       );
     },
   });
