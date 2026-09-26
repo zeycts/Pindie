@@ -2,7 +2,9 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 export const MAX_LEARNING_SIGNAL_REASON_LENGTH = 512;
-export const LEARNING_SIGNAL_POLICY = "Learning opportunities are optional. Signal at most one reusable Strategy-level lesson from current real work using pindie_learning_signal. Silence is normal; ordinary errors, temporary workarounds, one-off repo facts, outages, trivial details and routine successful execution are not learning opportunities. A signal proposes semantic intent only; the Harness independently decides whether evidence suffices.";
+export const LEARNING_SIGNAL_POLICY = "Learning opportunities are optional. If current real work reveals a plausible reusable Strategy-level pattern, you may signal it once with pindie_learning_signal; recognize the lesson, not whether the evidence is sufficient. Do not wait to prove recurrence or evidence counts: the Harness independently decides evidence sufficiency. Silence is normal for routine success, one-off facts, temporary fixes, outages and trivial details.";
+
+export const LEARNING_COMPLETION_CHECKPOINT = "Primary work is complete. If this Run revealed a reusable Strategy-level lesson, now is the moment to call pindie_learning_signal once before ending. You need not prove recurrence or evidence sufficiency from this Run alone; the Harness decides independently. Silence is normal for routine success, one-off facts, temporary fixes, outages and trivial details.";
 
 export type LearningSignal = Readonly<{
   intent: "revise-existing" | "derive-local" | "derive-global";

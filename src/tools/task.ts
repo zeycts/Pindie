@@ -153,6 +153,7 @@ export interface PindieTaskToolOptions {
   ) => void;
   onTaskRefined?: (state: PindieState) => void;
   onTaskCompleted?: (state: PindieState) => ConsumptionMetrics | null;
+  completionLearningCheckpoint?: () => string | null;
   onStateChange?: () => void;
   onMutationUncertain?: (reason: string) => void;
 }
@@ -536,12 +537,10 @@ export function createPindieTaskCompleteTool(
         options,
       );
       const taskMetrics = options.onTaskCompleted?.(state) ?? null;
+      const checkpoint = options.completionLearningCheckpoint?.() ?? null;
       return result(
-        formatCompletionResult(
-          state,
-          params.summary,
-          taskMetrics,
-        ),
+        [formatCompletionResult(state, params.summary, taskMetrics), checkpoint]
+          .filter((part) => part !== null).join("\n\n"),
         state,
         null,
         true,

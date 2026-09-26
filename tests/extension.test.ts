@@ -2367,6 +2367,76 @@ test("Slice C signal remains optional and Gate runs only after source Experience
   assert.equal(assessments.length, 1, "a normal Run without a signal does not assess learning");
 });
 
+test("successful ordinary Task completion offers an optional same-Run learning checkpoint without learning side effects", async () => {
+  const assessments: unknown[] = [];
+  const receipts: string[] = [];
+  const candidates: unknown[] = [];
+  const harness = createHarness([["/repo", verifiedState()]], {}, {
+    onLearningOpportunityAssessment: (assessment) => assessments.push(assessment),
+    learningAssessmentReceipts: { hasTerminal: async () => false, writeTerminal: async (id) => { receipts.push(id); } },
+    strategyDerivationCandidateStore: { save: async (_root, candidate) => { candidates.push(candidate); } },
+  });
+  await startSession(harness, "/repo");
+  const prompt = await harnessBeforeAgentStart(harness);
+  assert.match(prompt.systemPrompt, /Do not wait to prove recurrence or evidence counts/);
+  assert.doesNotMatch(prompt.message.content, /Primary work is complete/);
+  const completion = await harness.api.tool("pindie_task_complete").execute("complete", { summary: "Finished work" });
+  const text = completion.content[0]?.text ?? "";
+  assert.match(text, /Primary work is complete/);
+  assert.match(text, /call pindie_learning_signal once before ending/);
+  assert.match(text, /Harness decides independently/);
+  assert.match(text, /Silence is normal for routine success, one-off facts, temporary fixes, outages and trivial details/);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+  assert.equal(harness.api.sentMessages.length, 0);
+  assert.deepEqual(assessments, []);
+  assert.deepEqual(receipts, []);
+  assert.deepEqual(candidates, []);
+  await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.deepEqual(assessments, [], "no signal means no learning assessment");
+  assert.deepEqual(receipts, []);
+  assert.equal(harness.api.sentUserMessages.length, 0);
+
+  const discussion = createHarness([["/repo", harness.integration.runtime.state]]);
+  await startSession(discussion, "/repo");
+  const followUp = await harnessBeforeAgentStart(discussion);
+  assert.doesNotMatch(followUp.message.content, /Primary work is complete/);
+  await discussion.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
+  assert.equal(discussion.api.sentUserMessages.length, 0);
+});
+
+test("learning checkpoint is absent from adaptation, derivation, global derivation and Trial Runs", async () => {
+  const reader = new ExtensionTestExperienceReader();
+  reader.result = { records: [
+    { recordId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.json", experience: commandExperience("goal one", createPolicySnapshot({ approach: "direct-action" })) },
+    { recordId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.json", experience: commandExperience("goal two", createPolicySnapshot({ approach: "explore-first" })) },
+    { recordId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc.json", experience: commandExperience("goal three", createPolicySnapshot({ approach: "direct-action" })) },
+  ], loadedRecords: 3, unsupportedSchema: 0, invalid: 0 };
+  const projectA = getProjectId("/global-source-a");
+  const projectB = getProjectId("/global-source-b");
+  for (const kind of ["adapt", "derive", "derive-global", "trial"] as const) {
+    const candidate = trialCandidate();
+    const harness = createHarness([["/repo", verifiedState()]], {}, {
+      experienceReader: reader,
+      strategyCandidateReader: { read: async () => candidate },
+      crossProjectExperienceReader: {
+        listProjectIds: async () => [projectA, projectB],
+        readProjectId: async (id) => ({ records: id === projectA ? reader.result.records.slice(0, 2) : reader.result.records.slice(2), loadedRecords: id === projectA ? 2 : 1, unsupportedSchema: 0, invalid: 0 }),
+      },
+      crossProjectTrustReader: { readProjectId: async (id) => createTrustedStrategyPortfolioForProjectId(id, createPromotedStrategyRevisionCatalog([])) },
+    });
+    await startSession(harness, "/repo");
+    await harness.api.commands.get(kind).handler(kind === "adapt" ? "direct-action" : kind === "trial" ? candidate.candidateId : "", {
+      ...context("/repo"), isIdle: () => true, ui: { notify: () => undefined },
+    });
+    assert.equal(harness.api.sentUserMessages.length, kind === "trial" ? 0 : 1, `${kind} armed`);
+    const prompt = await harnessBeforeAgentStart(harness);
+    assert.doesNotMatch(prompt.systemPrompt, /Learning opportunities are optional/);
+    assert.doesNotMatch(prompt.message.content, /Primary work is complete/);
+    const completion = await harness.api.tool("pindie_task_complete").execute(`complete-${kind}`, { summary: "Finished work" });
+    assert.doesNotMatch(completion.content[0]?.text ?? "", /Primary work is complete/, kind);
+  }
+});
+
 test("Slice D admitted local learning reuses exact command packets, stays optional, and writes terminal receipts", async () => {
   for (const intent of ["revise-existing", "derive-local"] as const) {
     const reader = new ExtensionTestExperienceReader();
