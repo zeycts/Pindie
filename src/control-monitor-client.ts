@@ -94,6 +94,25 @@ const verificationStatus = (value: unknown, allowNone = false): boolean => value
 function integer(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 0; }
 function fail(): never { throw new Error("Incompatible Pindie Control service."); }
 
+export class MonitorControlError extends Error {
+  readonly code: "stale_control_lease" | "no_active_project";
+  constructor(code: "stale_control_lease" | "no_active_project", message: string) {
+    super(message);
+    this.name = "MonitorControlError";
+    this.code = code;
+  }
+}
+
+function controlError(value: unknown): never {
+  const error = record(value);
+  if (!error || !string(error.code) || error.code.length < 1 || error.code.length > 128 ||
+    !string(error.message) || error.message.length < 1 || error.message.length > 2_048) fail();
+  if (error.code === "stale_control_lease" || error.code === "no_active_project") {
+    throw new MonitorControlError(error.code, error.message);
+  }
+  return fail();
+}
+
 function snapshot(value: unknown): MonitorSnapshot {
   const o = record(value), session = record(o?.session), runtime = record(o?.runtime), semantic = record(o?.semantic);
   const config = record(o?.executionConfig), model = config?.model === null ? null : record(config?.model);
@@ -273,7 +292,8 @@ export class PindieControlMonitorClient implements PindieControlMonitorPort {
   async #invoke(name: "pindie_observe" | "pindie_read_timeline" | "pindie_wait", args: Record<string, unknown>): Promise<unknown> {
     if (this.#closed) throw new Error("Monitor client is closed.");
     const result = await this.#client.callTool({ name, arguments: args });
-    if (result.isError || result.structuredContent === undefined) fail();
+    if (result.isError === true) controlError(result.structuredContent);
+    if (result.structuredContent === undefined) fail();
     return result.structuredContent;
   }
   async observe(): Promise<WorkspaceObservationLike> { return observation(await this.#invoke("pindie_observe", {})); }

@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/client";
-import { PindieControlMonitorClient, resolvePindieControlMonitorEndpoint, verifyMonitorToolSurface, type MonitorAdvertisedTool, type MonitorSnapshot } from "../src/control-monitor-client.ts";
+import { MonitorControlError, PindieControlMonitorClient, resolvePindieControlMonitorEndpoint, verifyMonitorToolSurface, type MonitorAdvertisedTool, type MonitorSnapshot } from "../src/control-monitor-client.ts";
 import { startControlMcpProcess } from "../src/control-mcp-process.ts";
-import type { PindieControlClient } from "../src/control-client.ts";
+import { PindieControlError, type PindieControlClient, type PindieControlErrorCode } from "../src/control-client.ts";
+import { PindieWorkspaceError } from "../src/control-workspace.ts";
 import type { PindieHost } from "../src/host.ts";
 
 const annotations = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
@@ -44,13 +45,14 @@ test("pinned Streamable HTTP monitor adapter verifies 13-tool service and decode
   };
   let current: unknown = snapshot;
   let badTimeline = false;
+  let toolError: Error | null = null;
   const fakeControl = {
     start: async () => {}, dispose: () => {}, observe: () => current,
-    readTimeline: () => badTimeline ? { sessionId: 7, revision: "bad", hasMoreBefore: false, timeline: [] } : {
+    readTimeline: () => { if (toolError) throw toolError; return badTimeline ? { sessionId: 7, revision: "bad", hasMoreBefore: false, timeline: [] } : {
       sessionId: "session-1", revision: 4, hasMoreBefore: false,
       timeline: [{ type: "runtime", id: "r1", category: "generic", title: "Observed", detail: "safe value", defaultDisplayMode: "preview" }],
-    },
-    wait: async () => ({ reason: "changed", snapshot }),
+    }; },
+    wait: async () => { if (toolError) throw toolError; return { reason: "changed", snapshot }; },
   } as unknown as PindieControlClient;
   const processHandle = await startControlMcpProcess({ workspaceRoot: root, port: 0,
     createHost: async () => ({ dispose: async () => {} }) as PindieHost,
@@ -74,7 +76,19 @@ test("pinned Streamable HTTP monitor adapter verifies 13-tool service and decode
     const timeline = await monitor.readTimeline(50);
     assert.equal(timeline.timeline.length, 1);
     assert.equal(timeline.timeline[0]?.type, "runtime");
-    assert.equal((await monitor.wait({ lease: "lease-1", until: "meaningful_change", afterRevision: 4, timeoutSeconds: 2 })).reason, "changed");
+    const waitRequest = { lease: "lease-1", until: "meaningful_change" as const, afterRevision: 4, timeoutSeconds: 2 };
+    assert.equal((await monitor.wait(waitRequest)).reason, "changed");
+    toolError = new PindieControlError("stale_control_lease", "Observe again");
+    await assert.rejects(monitor.wait(waitRequest), (error: unknown) => error instanceof MonitorControlError && error.code === "stale_control_lease");
+    toolError = new PindieWorkspaceError("no_active_project", "No project");
+    await assert.rejects(monitor.readTimeline(), (error: unknown) => error instanceof MonitorControlError && error.code === "no_active_project");
+    toolError = new PindieControlError("unexpected_code" as PindieControlErrorCode, "Unknown");
+    await assert.rejects(monitor.wait(waitRequest), /Incompatible Pindie Control service/);
+    toolError = new PindieControlError("stale_control_lease", "");
+    await assert.rejects(monitor.wait(waitRequest), /Incompatible Pindie Control service/);
+    toolError = new Error("unstructured failure");
+    await assert.rejects(monitor.wait(waitRequest), /Incompatible Pindie Control service/);
+    toolError = null;
     assert.deepEqual(Object.getOwnPropertyNames(Object.getPrototypeOf(monitor)).sort(), ["close", "constructor", "observe", "readTimeline", "wait"]);
     current = { lease: "x" };
     await assert.rejects(monitor.observe(), /Incompatible Pindie Control service/);

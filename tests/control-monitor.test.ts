@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Terminal } from "@earendil-works/pi-tui";
-import type { PindieControlMonitorPort, MonitorSnapshot, TimelineResult } from "../src/control-monitor-client.ts";
+import { MonitorControlError, type PindieControlMonitorPort, type MonitorSnapshot, type TimelineResult } from "../src/control-monitor-client.ts";
 import { PindieControlMonitor, type PindieControlMonitorState, type PindieControlMonitorViewPort } from "../src/control-monitor.ts";
 import { PindieControlMonitorView } from "../src/control-monitor-view.ts";
 
@@ -23,13 +23,15 @@ class TestView implements PindieControlMonitorViewPort {
 class FakeClient implements PindieControlMonitorPort {
   observations: Array<Awaited<ReturnType<PindieControlMonitorPort["observe"]>>> = [];
   timelineResults: TimelineResult[] = [];
-  waits: Array<Awaited<ReturnType<PindieControlMonitorPort["wait"]>>> = [];
+  waits: Array<Awaited<ReturnType<PindieControlMonitorPort["wait"]>> | Error> = [];
+  timelineError: Error | null = null; observeError: Error | null = null;
   waitRequests: unknown[] = []; timelineReads: number[] = []; closed = false; private pendingReject?: (error: Error) => void;
-  async observe() { return this.observations.shift()!; }
-  async readTimeline(limit = 50) { this.timelineReads.push(limit); return this.timelineResults.shift() ?? timeline; }
+  async observe() { if (this.observeError) throw this.observeError; return this.observations.shift()!; }
+  async readTimeline(limit = 50) { this.timelineReads.push(limit); if (this.timelineError) throw this.timelineError; return this.timelineResults.shift() ?? timeline; }
   async wait(request: Parameters<PindieControlMonitorPort["wait"]>[0]) {
     this.waitRequests.push(request);
     const next = this.waits.shift();
+    if (next instanceof Error) throw next;
     if (next) return next;
     return new Promise<Awaited<ReturnType<PindieControlMonitorPort["wait"]>>>((_, reject) => { this.pendingReject = reject; });
   }
@@ -102,6 +104,55 @@ test("binding_changed reattaches a replacement project/session with a fresh leas
   assert.equal(view.states.at(-1)?.snapshot?.session.id, "session-2");
 });
 
+for (const replacement of ["project", "session"] as const) {
+  test(`stale wait before registration reattaches replacement ${replacement} without reconnect`, async () => {
+    const client = new FakeClient();
+    const old = { ...snap(2, true), lease: "lease-A" };
+    const next = { ...snap(1, true), lease: "lease-B", session: { id: "session-B", displayIdentity: "New" } };
+    client.observations.push(active(old), replacement === "project" ? { ...active(next), activeProject: "Other" } : active(next));
+    client.timelineResults.push(timeline, { ...timeline, sessionId: "session-B" });
+    client.waits.push(new MonitorControlError("stale_control_lease", "Observe again"));
+    const view = new TestView(); let connections = 0;
+    const monitor = new PindieControlMonitor(view, { createClient: async () => { connections++; return client; } });
+    void monitor.start();
+    for (let i = 0; i < 30 && client.waitRequests.length < 2; i++) await turn();
+    await monitor.stop();
+    assert.equal(connections, 1);
+    assert.deepEqual(client.waitRequests.slice(0, 2).map((r) => (r as { lease: string }).lease), ["lease-A", "lease-B"]);
+    assert.equal(view.states.at(-1)?.snapshot?.session.id, "session-B");
+    assert.equal(view.states.some((s) => s.connection === "incompatible"), false);
+    assert.ok((view.states.at(-1)?.epoch ?? 0) > (view.states.find((s) => s.snapshot?.lease === "lease-A")?.epoch ?? 0));
+  });
+}
+
+test("no_active_project from wait clears binding and enters bounded no-active observation", async () => {
+  const client = new FakeClient(); client.observations.push(active(snap(1, true)), { state: "no_active_project", activeProject: null });
+  client.waits.push(new MonitorControlError("no_active_project", "No project"));
+  const view = new TestView(); const sleeps: number[] = []; let connections = 0;
+  const monitor = new PindieControlMonitor(view, { createClient: async () => { connections++; return client; }, sleep: cancellableSleep(sleeps) });
+  void monitor.start();
+  for (let i = 0; i < 30 && view.states.filter((s) => s.connection === "waiting").length < 2; i++) await turn();
+  await monitor.stop();
+  assert.equal(connections, 1);
+  assert.equal(view.states.filter((s) => s.connection === "waiting" && s.snapshot === null && s.timeline === null).length, 2);
+  assert.equal(view.states.some((s) => s.connection === "incompatible"), false);
+  assert.ok(sleeps.includes(1_000));
+});
+
+test("no_active_project during timeline read discards active epoch and waits for fresh observation", async () => {
+  const client = new FakeClient(); client.observations.push(active(snap(1, true)), { state: "no_active_project", activeProject: null });
+  client.timelineError = new MonitorControlError("no_active_project", "No project");
+  const view = new TestView(); const sleeps: number[] = []; let connections = 0;
+  const monitor = new PindieControlMonitor(view, { createClient: async () => { connections++; return client; }, sleep: cancellableSleep(sleeps) });
+  void monitor.start();
+  for (let i = 0; i < 30 && !view.states.some((s) => s.connection === "waiting" && s.project === null); i++) await turn();
+  await monitor.stop();
+  assert.equal(connections, 1);
+  assert.ok(view.states.some((s) => s.connection === "waiting" && s.snapshot === null && s.timeline === null));
+  assert.equal(view.states.some((s) => s.connection === "incompatible"), false);
+  assert.ok(sleeps.includes(1_000));
+});
+
 test("monitor reconnects with bounded exponential backoff and fresh attach", async () => {
   const client = new FakeClient(); client.observations.push(active(snap(1, true)));
   const view = new TestView(); const sleeps: number[] = []; let attempts = 0;
@@ -117,6 +168,29 @@ test("monitor reconnects with bounded exponential backoff and fresh attach", asy
   assert.ok(view.states.some((state) => state.connection === "disconnected"));
   assert.equal(client.timelineReads[0], 50);
   assert.equal(client.closed, true);
+});
+
+test("reconnect backoff resets only after stable Control attach", async () => {
+  const view = new TestView(); const sleeps: number[] = []; const clients: FakeClient[] = [];
+  const monitor = new PindieControlMonitor(view, {
+    createClient: async () => {
+      const client = new FakeClient(); clients.push(client);
+      client.observations.push(active(snap(1, true)));
+      if (clients.length <= 5) {
+        if (clients.length % 2) client.observeError = new Error("observe unavailable");
+        else client.timelineError = new Error("timeline unavailable");
+      } else if (clients.length === 6) client.waits.push(new Error("transport disconnected"));
+      return client;
+    },
+    sleep: cancellableSleep(sleeps),
+  });
+  void monitor.start();
+  for (let i = 0; i < 100 && clients.length < 7; i++) await turn();
+  await monitor.stop();
+  assert.equal(clients.length, 7);
+  assert.deepEqual(sleeps.slice(0, 6), [250, 500, 1_000, 2_000, 5_000, 250]);
+  assert.equal(clients[6]!.waitRequests.length, 1);
+  assert.equal(view.states.some((s) => s.connection === "incompatible"), false);
 });
 
 test("monitor polls no-active workspace at one-second cadence and attaches when activated", async () => {

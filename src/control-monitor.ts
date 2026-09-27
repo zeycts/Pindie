@@ -1,5 +1,5 @@
 import type { PindieControlMonitorPort, MonitorSnapshot, TimelineResult, WaitResult } from "./control-monitor-client.ts";
-import { PindieControlMonitorClient } from "./control-monitor-client.ts";
+import { MonitorControlError, PindieControlMonitorClient } from "./control-monitor-client.ts";
 
 export type MonitorConnection = "connecting" | "connected" | "waiting" | "disconnected" | "incompatible";
 export interface PindieControlMonitorState {
@@ -81,8 +81,7 @@ export class PindieControlMonitor {
       try {
         this.publish({ ...this.state, connection: "connecting", message: null });
         this.client = await this.createClient(this.abort.signal);
-        failures = 0;
-        await this.attachLoop();
+        await this.attachLoop(() => { failures = 0; });
       } catch (error) {
         if (this.stopped) break;
         await this.closeClient();
@@ -99,18 +98,20 @@ export class PindieControlMonitor {
     }
     await this.closeClient();
   }
-  private async attachLoop(): Promise<void> {
+  private async attachLoop(onAttached: () => void): Promise<void> {
     let project: string | null = null;
     let current: MonitorSnapshot | null = null;
     let timeline: TimelineResult | null = null;
     let inGate = false;
     while (!this.stopped && this.client) {
+      try {
       if (current === null || inGate) {
         const observed = await this.client.observe();
         if (observed.state === "no_active_project") {
           if (this.state.project !== null) this.epoch++;
           project = null; current = null; timeline = null; inGate = false;
           this.publish({ connection: "waiting", project: null, snapshot: null, timeline: null, message: "No active project.\nWaiting for ChatGPT / Pindie Control to open one..." });
+          onAttached();
           await this.sleep(1_000, this.abort.signal);
           continue;
         }
@@ -132,6 +133,7 @@ export class PindieControlMonitor {
         }
         inGate = gateOpen;
         this.publish({ connection: "connected", project, snapshot: current, timeline, message: gateOpen ? "HUMAN GATE · Respond from ChatGPT / Pindie Control. This monitor is read-only." : null });
+        onAttached();
         if (inGate) {
           await this.sleep(1_000, this.abort.signal);
           continue;
@@ -156,6 +158,18 @@ export class PindieControlMonitor {
         this.publish({ connection: "connected", project, snapshot: current, timeline, message: null });
       } else if (result.reason === "timeout") {
         this.publish({ connection: "connected", project, snapshot: current, timeline, message: null });
+      }
+      } catch (error) {
+        if (!(error instanceof MonitorControlError)) throw error;
+        current = null; timeline = null; inGate = false; project = null;
+        if (error.code === "no_active_project") {
+          if (this.state.project !== null) this.epoch++;
+          this.publish({ connection: "waiting", project: null, snapshot: null, timeline: null, message: "No active project.\nWaiting for ChatGPT / Pindie Control to open one..." });
+          await this.sleep(1_000, this.abort.signal);
+        } else {
+          this.epoch++;
+          this.publish({ connection: "connecting", project: null, snapshot: null, timeline: null, message: null });
+        }
       }
     }
   }
