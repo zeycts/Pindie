@@ -22,7 +22,7 @@
     "control:watch": "node --experimental-strip-types src/control-watch.ts",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "check": "tsc --noEmit && node --experimental-strip-types --test tests/*.test.ts",
+    "check": "node scripts/check.mjs",
     "smoke": "node --experimental-strip-types scripts/pi-smoke.ts"
   },
   "devDependencies": {
