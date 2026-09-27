@@ -49,7 +49,7 @@ Do not rewrite remote history by default.
 
 ### 7. Pull request
 
-Open or update one focused PR against the intended base branch.
+Open or update one focused PR against the intended base branch. When repository policy permits and reliable remote CI exists, appropriate targeted local verification may be enough to open the PR; do not require habitual duplicate full-suite validation.
 
 Use the repository PR template when present. Otherwise keep the description compact, typically:
 
@@ -62,6 +62,8 @@ Use the repository PR template when present. Otherwise keep the description comp
 ```
 
 A PR is a review boundary. Do not merge it unless the current user request explicitly authorizes merging.
+
+After push/PR, remote CI and independent final-diff/self-review should proceed concurrently when possible. Merge only with user authority and required CI/review evidence.
 
 ### 8. Review cycle
 
