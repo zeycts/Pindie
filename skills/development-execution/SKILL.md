@@ -29,7 +29,7 @@ Inspect repository rules and available CI; there is no universal local-versus-re
 
 ### 5. Overlap PR review and CI
 
-After push, when a PR and remote CI are running, do not idle solely waiting for CI if useful independent review work exists. In parallel with remote CI, inspect the final diff and perform appropriate self-review of risk, regressions, and architecture. If review finds a problem, fix and push, accepting that CI may restart. Converge at the merge/delivery gate with required CI evidence, review evidence, and repository/user merge authority. Prefer event-driven or status-aware waiting when available; do not busy-poll rapidly.
+Remote CI starts independently after push/PR. While it runs, first exhaust useful independent work: inspect the final diff, self-review regressions, risk, and architecture, clean up the PR description, and gather any other evidence that does not depend on CI. Do not start a blocking CI wait/watch while such independent work remains. Only after that work is exhausted should you query, watch, or wait for remaining CI. If review finds a problem, fix and push, accepting that CI may restart. Converge at the merge/delivery gate with required CI and review evidence, plus repository/user merge authority. Prefer event-driven or status-aware waiting when available; do not busy-poll rapidly. This is pipeline overlap, not a background-worker system.
 
 ### 6. Optimize the critical path
 

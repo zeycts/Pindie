@@ -63,7 +63,7 @@ Use the repository PR template when present. Otherwise keep the description comp
 
 A PR is a review boundary. Do not merge it unless the current user request explicitly authorizes merging.
 
-After push/PR, remote CI and independent final-diff/self-review should proceed concurrently when possible. Merge only with user authority and required CI/review evidence.
+Remote CI starts independently after push/PR. While it runs, exhaust useful independent review work before starting a blocking CI wait/watch; only then query, watch, or wait for remaining CI. This is pipeline overlap, not a background-worker system. Merge only with user authority and required CI/review evidence.
 
 ### 8. Review cycle
 

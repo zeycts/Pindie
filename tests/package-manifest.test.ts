@@ -27,7 +27,10 @@ test("GS01 bundled git-workflow Skill is exposed through Pi as procedure-only Gi
   assert.match(skill, /Tool Surface and Gateway remain authoritative/i);
   assert.match(skill, /Do not merge it unless the current user request explicitly authorizes merging/i);
   assert.match(skill, /When repository policy permits and reliable remote CI exists.*targeted local verification may be enough/s);
-  assert.match(skill, /remote CI and independent final-diff\/self-review should proceed concurrently/i);
+  assert.match(skill, /remote CI starts independently after push\/PR/i);
+  assert.match(skill, /exhaust useful independent review work before starting a blocking CI wait\/watch/i);
+  assert.match(skill, /only then query, watch, or wait for remaining CI/i);
+  assert.match(skill, /pipeline overlap, not a background-worker system/i);
   assert.match(skill, /Merge only with user authority and required CI\/review evidence/i);
   assert.doesNotMatch(skill, /Pindie Core/i);
 });
@@ -50,7 +53,11 @@ test("GS02 development-execution is a bundled procedural Pi Skill for efficient 
   assert.match(skill, /read-only observations are independent.*same model turn/s);
   assert.match(skill, /smallest relevant targeted verification/i);
   assert.match(skill, /contention or shared resources.*flaky/s);
-  assert.match(skill, /remote CI.*independent review work exists/s);
+  assert.match(skill, /remote CI starts independently after push\/PR/i);
+  assert.match(skill, /first exhaust useful independent work.*final diff.*self-review.*regressions.*risk.*architecture.*PR description/s);
+  assert.match(skill, /Do not start a blocking CI wait\/watch while such independent work remains/i);
+  assert.match(skill, /Only after that work is exhausted should you query, watch, or wait for remaining CI/i);
+  assert.match(skill, /pipeline overlap, not a background-worker system/i);
   assert.match(skill, /scheduler, second Agent Loop/i);
   assert.match(skill, /Task semantics, verification meaning, Human Gates, capability legality, or completion/i);
 });
