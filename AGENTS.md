@@ -94,10 +94,10 @@ For an approved task:
 
 1. Read only the relevant architecture/behavior sections, source, and tests. For workspace-aware Pindie Control work, read `docs/pindie-control-v0.2.md` first, then `docs/pindie-control-v0.1.md`, and keep project selection above rather than inside the existing Host/runtime truth. For CPL v0.2 work, read `docs/cross-project-learning-v0.2.md` first and preserve the implemented v0.1 transfer contract. For Composable Pindie work, read the relevant Slice and invariants in `docs/composable-pindie-architecture-v0.1.md`; for Remote Companion work, read `docs/remote-companion.md` before implementation.
 2. Preserve the requested scope; do not implement adjacent cleanup speculatively.
-3. Add focused tests for changed contracts.
+3. Add focused tests for changed contracts; during implementation, run the smallest relevant test file(s) for rapid feedback. When independent and useful, targeted tests and typecheck may run concurrently; avoid repeating the full suite after every small edit. Broader or brittle changes may justify an earlier full check when evidence requires it.
 4. Implement the smallest change that satisfies them.
 5. Preserve unrelated runtime behavior and user work.
-6. Run `pnpm run check` before declaring completion.
+6. Run `pnpm run check` once at the final completion boundary before declaring completion or delivery.
 
 Composable Pindie Architecture v0.1 is complete through final Slice F. Preserve its final feature-selection, trust-safety, lifecycle, and dependency-direction invariants.
 
