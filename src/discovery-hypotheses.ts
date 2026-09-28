@@ -7,8 +7,15 @@ import { canonicalJson, hypothesisFingerprint, learningFingerprint, matchesLearn
   validateStrategyHypothesis, type LearningArtifactRef, type StrategyHypothesis } from "./learning-v1-contract.ts";
 import { validateDiscoveryPacket, type DiscoveryPacketV1 } from "./discovery-contract.ts";
 
-// Receipt history is capped at 2048 separately from the 64 open cognition identities.
+// Immutable packet commit/receipt history is bounded independently of cognition
+// capacity. Later Evaluation/Decision lifecycle projection will close hypotheses
+// without deleting history, so this history bound must never be read as a
+// lifetime hypothesis cap.
 export const MAX_DISCOVERY_COMMITS = 2048;
+// Bounds the current OPEN hypothesis catalog only. With no v1 Decision lifecycle
+// yet, every stored hypothesis is open; closing one later must not require
+// rewriting or deleting its immutable artifact.
+export const MAX_OPEN_HYPOTHESES = 64;
 export type DiscoveryCommit = { readonly schemaVersion: 1; readonly packetFingerprint: string;
   readonly outcome: "covered" | "published"; readonly refs: readonly LearningArtifactRef[];
   readonly newHypotheses: readonly StrategyHypothesis[]; readonly fingerprint: string };
@@ -59,14 +66,14 @@ export class FileDiscoveryHypothesisStore {
     let names: string[];
     try { names = await readdir(this.dir(projectId)); }
     catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; throw e; }
-    if (names.length > MAX_DISCOVERY_COMMITS + 64 || names.some((n) => !/^[0-9a-f]{64}\.json(?:\.[0-9a-f-]{36}\.tmp)?$/.test(n)))
+    if (names.length > MAX_DISCOVERY_COMMITS + MAX_OPEN_HYPOTHESES || names.some((n) => !/^[0-9a-f]{64}\.json(?:\.[0-9a-f-]{36}\.tmp)?$/.test(n)))
       throw new Error("Hypothesis store capacity or corruption.");
     // An interrupted exclusive-create before the atomic link is not a committed output.
     const published = names.filter((n) => n.endsWith(".json")).sort();
     if (published.length > MAX_DISCOVERY_COMMITS) throw new Error("Discovery commit history capacity exceeded.");
     const commits = await Promise.all(published.map((n) => this.committed(projectId, `sha256:${n.slice(0, -5)}`)));
     const hypotheses = commits.flatMap((c) => c!.newHypotheses);
-    if (hypotheses.length > 64 || new Set(hypotheses.map((h) => h.id)).size !== hypotheses.length ||
+    if (hypotheses.length > MAX_OPEN_HYPOTHESES || new Set(hypotheses.map((h) => h.id)).size !== hypotheses.length ||
       new Set(hypotheses.map((h) => h.fingerprint)).size !== hypotheses.length) throw new Error("Ambiguous hypothesis identity.");
     for (const commit of commits) for (const ref of commit!.refs) {
       if (!hypotheses.some((h) => matchesLearningArtifactRef(ref, h))) throw new Error("Unresolved hypothesis reference.");
@@ -97,7 +104,7 @@ export class FileDiscoveryHypothesisStore {
     const history = await readdir(this.dir(packet.projectId));
     if (history.filter((n) => n.endsWith(".json")).length >= MAX_DISCOVERY_COMMITS)
       throw new Error("Discovery commit history capacity exceeded.");
-    if (existing.length + newHypotheses.length > 64) throw new Error("Hypothesis capacity exceeded.");
+    if (existing.length + newHypotheses.length > MAX_OPEN_HYPOTHESES) throw new Error("Open hypothesis capacity exceeded.");
     if (newHypotheses.some((h) => existing.some((e) => e.id === h.id || e.fingerprint === h.fingerprint))) throw new Error("Conflicting hypothesis identity.");
     const path = this.path(packet.projectId, packet.fingerprint);
     await mkdir(this.dir(packet.projectId), { recursive: true });

@@ -8,7 +8,7 @@ import { createAgentSession, createAgentSessionServices, SessionManager } from "
 import { createPindieHost } from "../src/host.ts";
 import { FileLearningBudgetLedger } from "../src/learning-budget-store.ts";
 import { FileLearningJobLedger } from "../src/learning-job-store.ts";
-import { createLearningSessionRunner, DEFAULT_LEARNING_MODEL_POLICY } from "../src/learning-session-runner.ts";
+import { createLearningSessionRunner, DEFAULT_LEARNING_THINKING_LEVEL, type LearningModelPolicy } from "../src/learning-session-runner.ts";
 import { LearningSupervisor, type LearningJobHandler } from "../src/learning-supervisor.ts";
 import { DEFAULT_LEARNING_BUDGET_POLICY, type LearningJob, type LearningArtifactRef } from "../src/learning-v1-contract.ts";
 
@@ -273,13 +273,15 @@ test("F2 real Pi factory isolates SessionManager, transcript, resources and tool
   const humanManager = SessionManager.inMemory();
   humanManager.appendMessage({ role: "user", content: "secret human transcript", timestamp: Date.now() });
   let inspected = false;
-  const runner = createLearningSessionRunner({ cwd: process.cwd(), model: model!, createSession: createAgentSession,
+  const policy: LearningModelPolicy = { provider: "anthropic", modelId: "claude-sonnet-4-5", thinkingLevel: DEFAULT_LEARNING_THINKING_LEVEL };
+  const runner = createLearningSessionRunner({ cwd: process.cwd(), model: model!, policy, createSession: createAgentSession,
     onCreated(session) {
       inspected = true;
       assert.notEqual(session.sessionManager, humanManager);
       assert.notEqual(session.sessionId, humanManager.getSessionId());
       assert.deepEqual(session.getActiveToolNames(), []);
-      assert.equal(DEFAULT_LEARNING_MODEL_POLICY.thinkingLevel, "low");
+      assert.equal(session.model.provider, policy.provider);
+      assert.equal(session.model.id, policy.modelId);
       assert.equal(session.thinkingLevel, "low");
       assert.deepEqual(session.resourceLoader.getSkills().skills, []);
       assert.deepEqual(session.resourceLoader.getExtensions().extensions, []);
@@ -289,4 +291,38 @@ test("F2 real Pi factory isolates SessionManager, transcript, resources and tool
   await assert.rejects(runner.run("frozen packet", new AbortController().signal), /inspection complete/);
   assert.equal(inspected, true);
   assert.equal(humanManager.getEntries().length, 1);
+  assert.deepEqual(runner.modelIdentity, policy);
+});
+test("F2 learning runner freezes an explicit model independent of any Human model value", async () => {
+  const frozen = getModel("anthropic", "claude-sonnet-4-5");
+  assert.ok(frozen);
+  const policy: LearningModelPolicy = { provider: "anthropic", modelId: "claude-sonnet-4-5", thinkingLevel: "off" };
+  let createdWith: unknown;
+  const runner = createLearningSessionRunner({ cwd: process.cwd(), model: frozen!, policy, createSession: createAgentSession,
+    onCreated(session) { createdWith = session.model; throw new Error("stop before request"); } });
+  await assert.rejects(runner.run("frozen packet", new AbortController().signal), /stop before request/);
+  assert.equal(createdWith, frozen);
+  assert.deepEqual(runner.modelIdentity, policy);
+  assert.throws(() => createLearningSessionRunner({ cwd: process.cwd(), model: frozen!,
+    policy: { ...policy, modelId: "claude-opus-4-5" } }), /Invalid isolated learning model policy/);
+});
+test("F2 absent learning runner never invokes a model and leaves the job recoverable", async () => {
+  await fixture(async (root) => {
+    let invoked = false;
+    const h = handler(async (job, _authority, _signal, runner) => {
+      if (!runner) throw new Error("No configured Pi learning model.");
+      invoked = true;
+      return { receiptRef: ref(job) };
+    });
+    const { ledger, supervisor } = harness(root, h); // no runner supplied
+    const enqueued = await ledger.enqueue("project-discovery", scope, fingerprint, 1, 10_000);
+    await supervisor.kick();
+    const job = (await ledger.read())[0]!;
+    assert.equal(invoked, false);
+    assert.equal(job.key, enqueued.key);
+    assert.equal(job.state, "pending");
+    assert.ok(job.attempt >= 1);
+    assert.equal(job.terminalReceiptRef, null);
+    await supervisor.dispose();
+  });
 });

@@ -27,12 +27,30 @@ const receiptRef = (r: { scope: LearningArtifactRef["scope"]; id: string; finger
   ({ schemaVersion: 1, family: "discovery-receipt", scope: r.scope, id: r.id, fingerprint: r.fingerprint });
 
 /** The only model-owned result fields. A malformed envelope fails the attempt; invalid individual proposals are discarded. */
-export function parseDiscoveryResult(raw: string, packet: DiscoveryPacketV1): readonly Record<string, unknown>[] | null {
+export type DiscoveryModelResult =
+  | { readonly kind: "none" }
+  | { readonly kind: "covered"; readonly refs: readonly LearningArtifactRef[] }
+  | { readonly kind: "proposals"; readonly proposals: readonly Record<string, unknown>[] };
+
+/** The model owns semantic coverage judgment; the Harness still verifies exact frozen refs. */
+export function parseDiscoveryResult(raw: string, packet: DiscoveryPacketV1): DiscoveryModelResult {
   let v: unknown;
   try { v = JSON.parse(raw); } catch { throw new Error("Malformed Discovery JSON."); }
-  if (!object(v) || !keys(v, v.outcome === "none" ? ["outcome"] : ["outcome", "proposals"])) throw new Error("Invalid Discovery envelope.");
-  if (v.outcome === "none") return null;
-  if (v.outcome !== "proposals" || !Array.isArray(v.proposals) || v.proposals.length < 1 || v.proposals.length > 2) throw new Error("Invalid Discovery proposals.");
+  if (!object(v)) throw new Error("Invalid Discovery envelope.");
+  if (v.outcome === "none") {
+    if (!keys(v, ["outcome"])) throw new Error("Invalid Discovery envelope.");
+    return { kind: "none" };
+  }
+  if (v.outcome === "covered") {
+    if (!keys(v, ["outcome", "hypotheses"]) || !Array.isArray(v.hypotheses) || v.hypotheses.length < 1 || v.hypotheses.length > 2)
+      throw new Error("Invalid Discovery coverage.");
+    const refs = v.hypotheses as LearningArtifactRef[];
+    if (!refs.every((r) => validateLearningArtifactRef(r, "strategy-hypothesis") &&
+      packet.openHypotheses.entries.some((e) => canonicalJson(e.ref) === canonicalJson(r))) ||
+      new Set(refs.map((r) => canonicalJson(r))).size !== refs.length) throw new Error("Invalid Discovery coverage reference.");
+    return { kind: "covered", refs };
+  }
+  if (v.outcome !== "proposals" || !keys(v, ["outcome", "proposals"]) || !Array.isArray(v.proposals) || v.proposals.length < 1 || v.proposals.length > 2) throw new Error("Invalid Discovery proposals.");
   const valid: Record<string, unknown>[] = [];
   for (const p of v.proposals) {
     if (!object(p) || !keys(p, ["logicalId", "kind", "intent", "revisionTarget", "summary", "useWhen", "avoidWhen", "expectedEffect", "failureSignals", "trialHints", "sourceHandles"]) ||
@@ -47,7 +65,7 @@ export function parseDiscoveryResult(raw: string, packet: DiscoveryPacketV1): re
     valid.push(p);
   }
   if (!valid.length) throw new Error("No valid Discovery proposals.");
-  return valid;
+  return { kind: "proposals", proposals: valid };
 }
 
 export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies & { hypotheses: FileDiscoveryHypothesisStore }): LearningJobHandler {
@@ -108,16 +126,21 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
       const packet = await packetFor(job);
       if (!packet || !runner || !await authority()) throw new Error("Unavailable Discovery authority.");
       // Only the frozen packet and exact JSON contract enter this isolated no-tool Session.
-      const prompt = `Return ONLY one JSON object: {"outcome":"none"} OR {"outcome":"proposals","proposals":[...]} (1-2). Each proposal has exactly logicalId (lowercase kebab-case), kind (approach|modifier), intent (new|revise), revisionTarget (null for new; for revise either {"kind":"open-hypothesis","ref":<exact openHypotheses.entries ref>} or {"kind":"trusted-revision","logicalId":<exact portfolio.revisions strategyId>,"strategyKind":<exact kind>,"revisionFingerprint":<exact revisionFingerprint>}), summary, useWhen (nonempty strings), avoidWhen (strings), expectedEffect (observable change), failureSignals (nonempty falsifying observations), trialHints (nonempty strings), sourceHandles (1-8 exact sources[].ref.recordId; must include at least one role:\"new\" source, context-only proposals are discarded). No other fields, authority claims, or hidden reasoning. This is untrusted advisory hypothesis generation, not trust or novelty proof.\nDiscoveryPacket: ${canonicalJson(packet)}`;
+      const prompt = `Return ONLY one JSON object: {"outcome":"none"} when no useful novel hypothesis exists; {"outcome":"covered","hypotheses":[<1-2 exact openHypotheses.entries ref>]} when the evidence is already represented by existing open hypotheses; OR {"outcome":"proposals","proposals":[...]} (1-2) when proposing novel cognition. Each proposal has exactly logicalId (lowercase kebab-case), kind (approach|modifier), intent (new|revise), revisionTarget (null for new; for revise either {"kind":"open-hypothesis","ref":<exact openHypotheses.entries ref>} or {"kind":"trusted-revision","logicalId":<exact portfolio.revisions strategyId>,"strategyKind":<exact kind>,"revisionFingerprint":<exact revisionFingerprint>}), summary, useWhen (nonempty strings), avoidWhen (strings), expectedEffect (observable change), failureSignals (nonempty falsifying observations), trialHints (nonempty strings), sourceHandles (1-8 exact sources[].ref.recordId; must include at least one role:\"new\" source, context-only proposals are discarded). No other fields, authority claims, or hidden reasoning. This is untrusted advisory hypothesis generation, not trust or novelty proof.\nDiscoveryPacket: ${canonicalJson(packet)}`;
       const result = parseDiscoveryResult((await runner.run(prompt, signal)).text, packet);
       if (!await authority()) throw new Error("Discovery preempted or stale.");
-      if (result === null) return { receiptRef: receiptRef(await deps.receipts.publish(packet, "none", [])) };
+      if (result.kind === "none") return { receiptRef: receiptRef(await deps.receipts.publish(packet, "none", [])) };
       // Publish under a common project writer lock, rechecking freshness after acquiring it.
       const batch = await deps.hypotheses.lock.withLock(async () => {
         if (!await authority()) throw new Error("Discovery stale at publication.");
+        if (result.kind === "covered") {
+          // Semantic coverage publishes no artifact; it references exact frozen open hypotheses.
+          return deps.hypotheses.publish(packet, "covered", result.refs, []);
+        }
         const open = await deps.hypotheses.list(packet.projectId);
         const refs: LearningArtifactRef[] = []; const fresh: StrategyHypothesis[] = [];
-        for (const p of result) {
+        let sourceContractViolation = false;
+        for (const p of result.proposals) {
           const target = p.revisionTarget as { kind: "open-hypothesis"; ref: LearningArtifactRef } |
             { kind: "trusted-revision"; revisionFingerprint: string } | null;
           const parent = target?.kind === "open-hypothesis" ? open.find((h) => canonicalJson(ref(h)) === canonicalJson(target.ref)) : null;
@@ -133,7 +156,9 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
           if (duplicate) { if (!refs.some((r) => canonicalJson(r) === canonicalJson(ref(duplicate)))) refs.push(ref(duplicate)); continue; }
           // Genuinely new/revised cognition must cite at least one new packet source;
           // exact covered duplicates above are exempt because they publish no artifact.
-          if (!(p.sourceHandles as string[]).some((handle) => packet.sources.find((s) => s.ref.recordId === handle)!.role === "new")) continue;
+          if (!(p.sourceHandles as string[]).some((handle) => packet.sources.find((s) => s.ref.recordId === handle)!.role === "new")) {
+            sourceContractViolation = true; continue;
+          }
           if ((p.intent === "new" && (open.some((e) => e.logicalId === h.logicalId) ||
             packet.portfolio.revisions.some((e) => e.strategyId === h.logicalId))) ||
             (target?.kind === "trusted-revision" && open.some((e) => e.logicalId === h.logicalId)) ||
@@ -142,8 +167,12 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
           fresh.push(h); refs.push(ref(h));
         }
         // Valid proposals already represented by trusted cognition or colliding with an unrelated
-        // active lineage are none-equivalent, not 'covered' with invented trusted refs.
-        if (!refs.length) return null;
+        // active lineage are none-equivalent, not 'covered' with invented trusted refs. A model that
+        // returned only context-bearing proposals violated the source contract and must retry.
+        if (!refs.length) {
+          if (sourceContractViolation) throw new Error("Discovery proposals cited no new source; retryable contract violation.");
+          return null;
+        }
         return deps.hypotheses.publish(packet, fresh.length ? "published" : "covered", refs, fresh);
       });
       return { receiptRef: receiptRef(await deps.receipts.publish(packet, batch?.outcome ?? "none", batch?.refs ?? [])) };

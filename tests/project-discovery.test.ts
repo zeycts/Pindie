@@ -14,7 +14,7 @@ import { FileRunExperienceMaintenance, MAX_LIVE_ORDINARY_EXPERIENCE_PER_PROJECT 
 import { FileProjectTrustedStrategyPortfolioReader } from "../src/strategy-trust-safety.ts";
 import { FileDiscoveryReceiptStore } from "../src/discovery-receipts.ts";
 import { FileDiscoveryPacketStore } from "../src/discovery-packets.ts";
-import { FileDiscoveryHypothesisStore, hypothesisRef, mintHypothesis } from "../src/discovery-hypotheses.ts";
+import { FileDiscoveryHypothesisStore, hypothesisRef, mintHypothesis, MAX_OPEN_HYPOTHESES } from "../src/discovery-hypotheses.ts";
 import { createProjectDiscoveryHandler, parseDiscoveryResult } from "../src/project-discovery-handler.ts";
 import { LearningSupervisor } from "../src/learning-supervisor.ts";
 import { FileLearningBudgetLedger } from "../src/learning-budget-store.ts";
@@ -192,6 +192,36 @@ test("D1 Host startup enqueue does not start a model or change the Human Session
     assert.deepEqual(host.runtime.activeSession.messages, []);
     assert.equal((await f.deps.jobs.read()).length, 1);
     assert.equal((await f.deps.jobs.read())[0]?.state, "pending");
+  } finally { await host.dispose(); }
+});
+test("D2 Host freezes the explicit learning model identity, independent of the Human Session model", async (t) => {
+  const f = await setup(t);
+  const cwd = join(f.dir, "project"), agentDir = join(f.dir, "agent");
+  await mkdir(cwd); await mkdir(agentDir);
+  const host = await createPindieHost({ cwd, agentDir, sessionManager: SessionManager.inMemory(cwd),
+    storageRoots: { projectsBaseDir: f.projects, globalBaseDir: f.global },
+    learningHandlers: [], // no model invocation; identity resolution is independent of handlers.
+    learningModel: { provider: "anthropic", modelId: "claude-sonnet-4-5", thinkingLevel: "off" },
+    env: { PINDIE_BROWSER_ENABLED: "false" },
+    dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
+  });
+  try {
+    assert.deepEqual(host.learningModelIdentity, { provider: "anthropic", modelId: "claude-sonnet-4-5", thinkingLevel: "off" });
+  } finally { await host.dispose(); }
+});
+test("D2 Host leaves learning unavailable when the requested learning model cannot be resolved", async (t) => {
+  const f = await setup(t);
+  const cwd = join(f.dir, "project"), agentDir = join(f.dir, "agent");
+  await mkdir(cwd); await mkdir(agentDir);
+  const host = await createPindieHost({ cwd, agentDir, sessionManager: SessionManager.inMemory(cwd),
+    storageRoots: { projectsBaseDir: f.projects, globalBaseDir: f.global },
+    learningHandlers: [],
+    learningModel: { provider: "pindie-nonexistent", modelId: "no-such-model" },
+    env: { PINDIE_BROWSER_ENABLED: "false" },
+    dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
+  });
+  try {
+    assert.equal(host.learningModelIdentity, null);
   } finally { await host.dispose(); }
 });
 test("D1 bounds and corrupted evidence/portfolio/receipt fail closed without blocking save",  async (t) => {
@@ -611,9 +641,9 @@ test("D2 model proposal needs a new source; context-only is discarded", async (t
   const newHandle = packet.sources.find((s) => s.role === "new")!.ref.recordId;
   const contextJob = await f.deps.jobs.enqueue("project-discovery", { kind: "project", projectId: id }, packetAlt.fingerprint, packetAlt.policy.selectionVersion, Date.now());
   const contextOnly = proposal(packetAlt, { logicalId: "context-only-focus", sourceHandles: [contextHandle], expectedEffect: "Context-only effect" });
-  const none = await f.handler.execute(contextJob, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [contextOnly] }) }) });
-  assert.equal((await f.deps.receipts.resolve(none.receiptRef, contextJob.key, packetAlt.fingerprint))?.outcome, "none");
+  await assert.rejects(f.handler.execute(contextJob, async () => true, new AbortController().signal,
+    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [contextOnly] }) }) }), /new source/);
+  assert.equal(await f.deps.receipts.find(id, contextJob.key, packetAlt.fingerprint), null);
   assert.equal((await f.deps.hypotheses.list(id)).length, 1);
   const newJob = await f.deps.jobs.enqueue("project-discovery", { kind: "project", projectId: id }, packet.fingerprint, packet.policy.selectionVersion, Date.now() + 1);
   const withNew = proposal(packet, { logicalId: "new-plus-context", sourceHandles: [newHandle, contextHandle], expectedEffect: "New plus context effect" });
@@ -625,4 +655,86 @@ test("D2 model proposal needs a new source; context-only is discarded", async (t
   const added = refreshed.find((x) => x.logicalId === "new-plus-context")!;
   assert.equal(added.sources.length, 2);
   assert.ok(added.sources.some((s) => s.recordId === newHandle) && added.sources.some((s) => s.recordId === contextHandle));
+});
+async function coveredPacket(t: import("node:test").TestContext) {
+  const f = await prepared(t);
+  await f.handler.execute(f.job, async () => true, new AbortController().signal,
+    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
+  const [h] = await f.deps.hypotheses.list(id);
+  for (let i = 6; i < 12; i++) await f.add(i);
+  const key = (await enqueueProjectDiscovery(id, f.deps))!;
+  const job = (await f.deps.jobs.read()).find((j) => j.key === key)!;
+  const packet = (await f.deps.packets.read(id, job.inputFingerprint))!;
+  assert.ok(packet.sources.some((s) => s.role === "new"));
+  return { ...f, h, job, packet, coveredJson: JSON.stringify({ outcome: "covered", hypotheses: [packet.openHypotheses.entries[0]!.ref] }) };
+}
+test("D2 semantic covered references exact open hypothesis with new sources, no artifact", async (t) => {
+  const f = await coveredPacket(t);
+  assert.equal((await f.deps.hypotheses.list(id)).length, 1);
+  const output = await f.handler.execute(f.job, async () => true, new AbortController().signal, { run: async () => ({ text: f.coveredJson }) });
+  const receipt = await f.deps.receipts.resolve(output.receiptRef, f.job.key, f.packet.fingerprint);
+  assert.equal(receipt?.outcome, "covered");
+  assert.deepEqual(receipt?.hypotheses, [hypothesisRef(f.h)]);
+  assert.ok((receipt?.sources ?? []).some((s) => s.role === "new"));
+  assert.equal((await f.deps.hypotheses.list(id)).length, 1); // no new artifact
+  assert.equal(await f.handler.matchesOutput(f.job, output.receiptRef), true);
+  assert.deepEqual(await f.handler.resolveCommitted(f.job), output.receiptRef);
+  // Invented or non-frozen coverage refs fail the strict parser.
+  assert.throws(() => parseDiscoveryResult(JSON.stringify({ outcome: "covered", hypotheses: [{ ...hypothesisRef(f.h), fingerprint: learningFingerprint("invented") }] }), f.packet));
+  // Its new sources are assessed, so the same corpus yields no further discovery.
+  assert.equal(await buildProjectDiscoveryPacket(id, f.deps), null);
+});
+test("D2 none and covered are distinct outcomes; covered commit recovers without rerun", async (t) => {
+  const f = await coveredPacket(t);
+  const { fingerprint: _alt, ...altUnsigned } = { ...f.packet, eligibleCounts: { ...f.packet.eligibleCounts, new: f.packet.eligibleCounts.new + 1 } };
+  const packetAlt = { ...altUnsigned, fingerprint: learningFingerprint(altUnsigned) };
+  await f.deps.packets.publish(packetAlt);
+  const noneJob = await f.deps.jobs.enqueue("project-discovery", { kind: "project", projectId: id }, packetAlt.fingerprint, packetAlt.policy.selectionVersion, Date.now());
+  const noneOut = await f.handler.execute(noneJob, async () => true, new AbortController().signal, { run: async () => ({ text: '{"outcome":"none"}' }) });
+  const noneReceipt = await f.deps.receipts.resolve(noneOut.receiptRef, noneJob.key, packetAlt.fingerprint);
+  assert.equal(noneReceipt?.outcome, "none");
+  assert.deepEqual(noneReceipt?.hypotheses, []);
+  // Covered commit then crash before the receipt.
+  const original = f.deps.receipts.publish.bind(f.deps.receipts);
+  f.deps.receipts.publish = async () => { throw new Error("crash"); };
+  try {
+    await assert.rejects(f.handler.execute(f.job, async () => true, new AbortController().signal, { run: async () => ({ text: f.coveredJson }) }));
+  } finally { f.deps.receipts.publish = original; }
+  const commit = await f.deps.hypotheses.committed(id, f.packet.fingerprint);
+  assert.equal(commit?.outcome, "covered");
+  assert.deepEqual(commit?.refs, [hypothesisRef(f.h)]);
+  assert.deepEqual(commit?.newHypotheses, []);
+  const recovered = await createProjectDiscoveryHandler(f.deps).resolveCommitted(f.job);
+  assert.ok(recovered);
+  assert.equal((await f.deps.receipts.resolve(recovered, f.job.key, f.packet.fingerprint))?.outcome, "covered");
+  assert.equal(await f.handler.matchesOutput(f.job, recovered), true);
+  assert.equal((await f.deps.hypotheses.list(id)).length, 1);
+});
+test("D2 open catalog capacity is separate from immutable commit history", async (t) => {
+  const f = await prepared(t);
+  let packet = f.packet;
+  const source = packet.sources[0]!.ref;
+  for (let i = 0; i < MAX_OPEN_HYPOTHESES / 2; i++) {
+    const a = mintHypothesis(packet, { logicalId: `open-${i}-a`, kind: "approach", lineage: "new", parent: null, baseRevisionFingerprint: null,
+      summary: `Open ${i} a`, useWhen: ["u"], avoidWhen: [], expectedEffect: "e", failureSignals: ["f"], trialHints: [], sources: [source] });
+    const b = mintHypothesis(packet, { logicalId: `open-${i}-b`, kind: "modifier", lineage: "new", parent: null, baseRevisionFingerprint: null,
+      summary: `Open ${i} b`, useWhen: ["u"], avoidWhen: [], expectedEffect: "e", failureSignals: ["f"], trialHints: [], sources: [source] });
+    await f.deps.hypotheses.publish(packet, "published", [hypothesisRef(a), hypothesisRef(b)], [a, b]);
+    const { fingerprint: _p, ...next } = { ...packet, eligibleCounts: { ...packet.eligibleCounts, new: packet.eligibleCounts.new + 1 } };
+    packet = { ...next, fingerprint: learningFingerprint(next) };
+  }
+  assert.equal((await f.deps.hypotheses.list(id)).length, MAX_OPEN_HYPOTHESES);
+  const last = (await f.deps.hypotheses.list(id)).at(-1)!;
+  const historyBefore = (await readdir(join(f.projects, id, "learning-v1", "hypotheses"))).filter((n) => n.endsWith(".json")).length;
+  assert.equal(historyBefore, MAX_OPEN_HYPOTHESES / 2); // one immutable commit file per two-hypothesis batch
+  // At open capacity, a covered receipt may still append history without new cognition.
+  const entry = { ref: hypothesisRef(last), logicalId: last.logicalId, kind: last.kind, baseRevisionFingerprint: null,
+    summary: last.summary, expectedEffect: last.expectedEffect, useWhen: last.useWhen, avoidWhen: last.avoidWhen, failureSignals: last.failureSignals };
+  const { fingerprint: _cov, ...cov } = { ...packet, openHypotheses: { fingerprint: learningFingerprint([entry]), entries: [entry] } };
+  await f.deps.hypotheses.publish({ ...cov, fingerprint: learningFingerprint(cov) }, "covered", [hypothesisRef(last)], []);
+  assert.equal((await readdir(join(f.projects, id, "learning-v1", "hypotheses"))).filter((n) => n.endsWith(".json")).length, historyBefore + 1);
+  const overflow = mintHypothesis(packet, { logicalId: "open-overflow", kind: "approach", lineage: "new", parent: null, baseRevisionFingerprint: null,
+    summary: "Overflow", useWhen: ["u"], avoidWhen: [], expectedEffect: "e", failureSignals: ["f"], trialHints: [], sources: [source] });
+  await assert.rejects(f.deps.hypotheses.publish(packet, "published", [hypothesisRef(overflow)], [overflow]), /Open hypothesis capacity/);
+  assert.equal((await f.deps.hypotheses.list(id)).length, MAX_OPEN_HYPOTHESES);
 });

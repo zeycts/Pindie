@@ -22,25 +22,42 @@ export function learningResourceLoader(): ResourceLoader {
 }
 export interface LearningSessionResult { readonly text: string; readonly usage?: { readonly tokens: number; readonly timeMs: number } }
 export interface LearningSessionRunner {
+  /** Frozen identity actually used for every attempt in this runner; operational audit only. */
+  readonly modelIdentity: LearningModelPolicy;
   run(prompt: string, signal: AbortSignal): Promise<LearningSessionResult>;
 }
-export interface LearningModelPolicy { readonly thinkingLevel: "off" | "low" | "medium" }
-/** Dedicated learning quality setting, independent of the Human Session's choice. */
-export const DEFAULT_LEARNING_MODEL_POLICY: LearningModelPolicy = Object.freeze({ thinkingLevel: "low" });
+export const LEARNING_THINKING_LEVELS = ["off", "low", "medium"] as const;
+export const DEFAULT_LEARNING_THINKING_LEVEL = "low" as const;
+/** Explicit isolated learning model identity, independent of the Human Session's mutable model/fallback. */
+export interface LearningModelPolicy {
+  readonly provider: string;
+  readonly modelId: string;
+  readonly thinkingLevel: "off" | "low" | "medium";
+}
+export function validateLearningModelPolicy(v: unknown): v is LearningModelPolicy {
+  return !!v && typeof v === "object" && !Array.isArray(v) &&
+    Object.keys(v).sort().join() === "modelId,provider,thinkingLevel" &&
+    typeof (v as LearningModelPolicy).provider === "string" && (v as LearningModelPolicy).provider.trim().length > 0 &&
+    typeof (v as LearningModelPolicy).modelId === "string" && (v as LearningModelPolicy).modelId.trim().length > 0 &&
+    (LEARNING_THINKING_LEVELS as readonly string[]).includes((v as LearningModelPolicy).thinkingLevel);
+}
 export interface LearningSessionFactoryOptions {
   readonly cwd: string;
-  /** Model identity/value only; never a Human SessionManager or transcript. */
+  /** Exact frozen model value; never a Human SessionManager or transcript. */
   readonly model: Model<any>;
+  /** Explicit model identity that must match the supplied model value. */
+  readonly policy: LearningModelPolicy;
   readonly createSession?: typeof createAgentSession;
-  readonly policy?: LearningModelPolicy;
   readonly onCreated?: (session: AgentSession) => void;
 }
 /** A fresh Pi Session per invocation. There are deliberately zero model-callable tools in F2. */
 export function createLearningSessionRunner(options: LearningSessionFactoryOptions): LearningSessionRunner {
-  const policy = options.policy ?? DEFAULT_LEARNING_MODEL_POLICY;
-  if (!["off", "low", "medium"].includes(policy.thinkingLevel) || Object.keys(policy).sort().join() !== "thinkingLevel")
+  const policy = options.policy;
+  if (!validateLearningModelPolicy(policy) || options.model.provider !== policy.provider || options.model.id !== policy.modelId)
     throw new Error("Invalid isolated learning model policy.");
+  const modelIdentity: LearningModelPolicy = Object.freeze({ provider: policy.provider, modelId: policy.modelId, thinkingLevel: policy.thinkingLevel });
   return {
+    modelIdentity,
     async run(prompt, signal) {
       if (signal.aborted) throw new Error("Learning invocation aborted.");
       if (!prompt.trim() || prompt.length > 48_000) throw new Error("Invalid bounded learning packet.");
@@ -48,7 +65,7 @@ export function createLearningSessionRunner(options: LearningSessionFactoryOptio
       const { session } = await (options.createSession ?? createAgentSession)({
         cwd: options.cwd,
         model: options.model,
-        thinkingLevel: policy.thinkingLevel,
+        thinkingLevel: modelIdentity.thinkingLevel,
         tools: [],
         noTools: "all",
         customTools: [],
