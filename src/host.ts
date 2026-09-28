@@ -7,6 +7,7 @@ import {
   getAgentDir,
   InteractiveMode,
   SessionManager,
+  type AgentSession,
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
   type ExtensionAPI,
@@ -57,6 +58,11 @@ import {
 } from "./quota-fallback-supervisor.ts";
 
 import { installQuotaFallbackReceiver } from "./quota-fallback-control.ts";
+import { FileLearningBudgetLedger } from "./learning-budget-store.ts";
+import { FileLearningJobLedger } from "./learning-job-store.ts";
+import { LearningSupervisor, type LearningJobHandler } from "./learning-supervisor.ts";
+import { createLearningSessionRunner } from "./learning-session-runner.ts";
+import { resolvePindieStorageRoots } from "./composition.ts";
 
 export interface PindieResourcePaths {
   extensionPath: string;
@@ -94,6 +100,8 @@ export interface PindieHostOptions {
   longTaskRollover?: LongTaskRolloverSupervisorOptions;
   quotaResume?: QuotaResumeSupervisorOptions;
   quotaFallback?: QuotaFallbackSupervisorOptions;
+  /** F2 has no production handlers; injection is for focused runtime/idle tests and later slices. */
+  learningHandlers?: readonly LearningJobHandler[];
   env?: Record<string, string | undefined>;
   dependencies?: PindieHostDependencies;
 }
@@ -133,6 +141,10 @@ export function createPindieRuntimeFactory(
     readonly storageRoots?: PindieStorageRootOverrides;
     readonly browserExtensionFactory?: (pi: ExtensionAPI) => void;
     readonly onPresentationReaderChange?: (reader: PindiePresentationReader | null) => void;
+    readonly onHumanRunStart?: () => void;
+    readonly onHumanRunSettled?: () => void;
+    readonly onSessionChange?: () => void;
+    readonly onSessionReady?: (session: AgentSession) => void;
   } = {},
 ): CreateAgentSessionRuntimeFactory {
   const createServices = dependencies.createAgentSessionServices ?? createAgentSessionServices;
@@ -145,6 +157,7 @@ export function createPindieRuntimeFactory(
   return async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
     // Replacement construction is fail-closed: the outgoing reader is no
     // longer current before any new Session-bound runtime work begins.
+    compositionOptions.onSessionChange?.();
     compositionOptions.onPresentationReaderChange?.(null);
     let pendingPresentationReader: PindiePresentationReader | null = null;
     const services = await createServices({
@@ -165,7 +178,14 @@ export function createPindieRuntimeFactory(
             pendingPresentationReader = integration.presentation;
             return integration;
           },
-        }, ...(compositionOptions.browserExtensionFactory
+        }, ...(compositionOptions.onHumanRunStart ? [{
+          name: "pindie-learning-host-lifecycle",
+          factory: (pi: ExtensionAPI) => {
+            pi.on("before_agent_start", () => { compositionOptions.onHumanRunStart?.(); });
+            pi.on("agent_settled", () => { compositionOptions.onHumanRunSettled?.(); });
+            pi.on("session_shutdown", () => { compositionOptions.onSessionChange?.(); });
+          },
+        }] : []), ...(compositionOptions.browserExtensionFactory
           ? [{
               name: "pindie-browser-reality",
               factory: compositionOptions.browserExtensionFactory,
@@ -182,6 +202,7 @@ export function createPindieRuntimeFactory(
     // or Session construction fails, the lease remains null rather than
     // claiming a partially constructed Session is current.
     compositionOptions.onPresentationReaderChange?.(pendingPresentationReader);
+    compositionOptions.onSessionReady?.(created.session);
 
     return {
       ...created,
@@ -217,6 +238,19 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   let releaseControlBridge: (() => void) | undefined;
   let releaseFallbackBridge: (() => void) | undefined;
   let currentPresentationReader: PindiePresentationReader | null = null;
+  let learningSupervisor: LearningSupervisor | undefined;
+  let learningGeneration = 0;
+  let learningHumanActive = false;
+  let learningBoundSession: AgentSession | null = null;
+  const preemptLearning = (reason: "human-work" | "session-change") => {
+    ++learningGeneration;
+    learningSupervisor?.preempt(reason);
+  };
+  const kickLearning = () => {
+    void learningSupervisor?.kick().catch((error: unknown) => {
+      console.warn("[Pindie] Learning scheduler unavailable:", error);
+    });
+  };
   const presentation: PindiePresentationReaderLease = {
     current: () => currentPresentationReader,
   };
@@ -291,12 +325,59 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       onPresentationReaderChange: (reader) => {
         currentPresentationReader = reader;
       },
+      onHumanRunStart: () => {
+        learningHumanActive = true;
+        preemptLearning("human-work");
+      },
+      onHumanRunSettled: () => {
+        learningHumanActive = false;
+        queueMicrotask(kickLearning);
+      },
+      onSessionChange: () => {
+        learningHumanActive = true;
+        learningBoundSession = null;
+        preemptLearning("session-change");
+      },
+      onSessionReady: (session) => {
+        // Pi's apply(await createRuntime(...)) publishes the new Session in
+        // the await continuation, before the next event-loop turn. A one-shot
+        // macrotask therefore observes binding (even if later setup awaits),
+        // without kicking against the outgoing Session or polling on failure.
+        setTimeout(() => {
+          if (!runtime || runtime.activeSession !== session) return;
+          learningBoundSession = session;
+          // Do not clear a Human Run that began on the newly bound Session.
+          if (runtime.getActiveSessionFacts().isIdle) learningHumanActive = false;
+          kickLearning();
+        }, 0).unref();
+      },
     }), {
       cwd,
       agentDir,
       sessionManager,
     });
     runtime = new PiRuntimeAdapter(nativeRuntime);
+    const learningRoot = resolvePindieStorageRoots(options.storageRoots).globalBaseDir;
+    learningSupervisor = new LearningSupervisor({
+      ledger: new FileLearningJobLedger({ globalBaseDir: learningRoot }),
+      budget: new FileLearningBudgetLedger({ globalBaseDir: learningRoot }),
+      handlers: options.learningHandlers ?? [],
+      runner: {
+        run: (prompt, signal) => {
+          const model = runtime!.activeSession.model;
+          if (!model) throw new Error("No configured Pi learning model.");
+          return createLearningSessionRunner({ cwd, model }).run(prompt, signal);
+        },
+      },
+      authority: {
+        generation: () => learningGeneration,
+        idle: () => {
+          if (learningHumanActive || !runtime || runtime.activeSession !== learningBoundSession) return false;
+          const facts = runtime.getActiveSessionFacts();
+          return facts.isIdle && !facts.isStreaming && !facts.isCompacting && facts.pendingMessageCount === 0;
+        },
+      },
+    });
     quotaFallbackSupervisor = new QuotaFallbackSupervisor(runtime, options.quotaFallback);
     const testWaitingChange = options.quotaResume?.onWaitingChange;
     quotaResumeSupervisor = new QuotaResumeSupervisor(runtime, {
@@ -336,6 +417,8 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
         // releasing the native runtime. The second assignment covers any
         // cleanup path that publishes during asynchronous teardown.
         currentPresentationReader = null;
+        preemptLearning("session-change");
+        await learningSupervisor?.dispose();
         await releaseHostControl();
         try {
           await runtime!.dispose();
@@ -347,6 +430,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       return disposePromise;
     };
 
+    queueMicrotask(kickLearning);
     return {
       runtime,
       interactiveMode,
@@ -362,6 +446,8 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     };
   } catch (error) {
     currentPresentationReader = null;
+    preemptLearning("session-change");
+    await learningSupervisor?.dispose();
     await releaseHostControl();
     if (runtime ?? nativeRuntime) {
       try {

@@ -190,7 +190,7 @@ Denied calls create no mutation window. Failed ambiguous tools are still observe
 
 When mutation is detected or cannot be determined safely, verification is invalidated and recent verification evidence is made stale.
 
-**Migration note:** Autonomous Learning v1 Slice 1 removed single-Run admission; Foundation F1 now keeps WorkEpisode identity outside State and stores factual schema-v5 Experience when coherently bound (v4 remains readable). A separate durable LearningJob ledger exists but does not enqueue or execute learning Runs. Ordinary completion has no learning judgment; explicit SI/CPL commands remain. Isolated learning execution and the rest of the Learning Plane in `docs/autonomous-learning-v1.md` are pending.
+**Migration note:** Autonomous Learning v1 Slice 1 removed single-Run admission; Foundation F1 now keeps WorkEpisode identity outside State and stores factual schema-v5 Experience when coherently bound (v4 remains readable). A separate durable LearningJob ledger and F2 Host-owned idle/preemptible isolated Pi execution foundation exist, but no production handler or enqueue hook exists, so no learning model Run is launched. Ordinary completion has no learning judgment or added learning context; explicit SI/CPL commands remain. Discovery and the rest of the Learning Plane in `docs/autonomous-learning-v1.md` are pending.
 
 ## 7. Model-facing semantic tools and Tool Surface
 

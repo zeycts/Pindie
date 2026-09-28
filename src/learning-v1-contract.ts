@@ -8,7 +8,7 @@ export const LEARNING_V1_SCHEMA = 1 as const;
 export const LEARNING_JOB_KINDS = ["project-discovery", "revision-discovery", "evaluation", "portfolio-maintenance", "global-discovery"] as const;
 export type LearningJobKind = typeof LEARNING_JOB_KINDS[number];
 export type LearningJobState = "pending" | "running" | "completed" | "cancelled";
-export const LEARNING_STOP_REASONS = ["human-work", "project-change", "session-change", "timeout", "budget", "stale-input", "explicit-cancel"] as const;
+export const LEARNING_STOP_REASONS = ["human-work", "project-change", "session-change", "timeout", "budget", "transient", "retry-exhausted", "stale-input", "explicit-cancel"] as const;
 export type LearningStopReason = typeof LEARNING_STOP_REASONS[number];
 export type LearningScope = { readonly kind: "project"; readonly projectId: string } | { readonly kind: "user-global" };
 const object = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
