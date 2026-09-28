@@ -102,7 +102,7 @@ GateRunRelation       none | existed_before_run | opened_during_run
 
 Run-start object identity is only a coherent-Run immutable-State change detector. It is never persistent Task identity.
 
-**Migration note:** Autonomous Learning v1 Slice 1 removed the rejected single-Run admission path. Ordinary completion is learning-free; factual Experience and explicit SI/CPL commands remain. The separate Learning Plane in `docs/autonomous-learning-v1.md` is not implemented yet.
+**Migration note:** Autonomous Learning v1 Slice 1 removed single-Run admission. Foundation F1 adds a project-local operational WorkEpisode binding outside State, schema-v5 Experience attribution (v4 remains readable), and a separate bounded user-global LearningJob ledger with no enqueue or model execution. Ordinary completion remains learning-free; explicit SI/CPL commands remain. Isolated learning execution and the remaining Learning Plane in `docs/autonomous-learning-v1.md` are pending.
 
 ## 4. Capabilities and execution authority
 

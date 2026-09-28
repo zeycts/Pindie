@@ -1,4 +1,5 @@
 import type { ToolEffect } from "./execution-semantics.ts";
+import { WORK_EPISODE_ID } from "./learning-v1-contract.ts";
 import {
   createStrategyRevisionSelection,
   policySnapshotIdentity,
@@ -17,7 +18,8 @@ import {
   type VerificationStatus,
 } from "./state.ts";
 
-export const RUN_EXPERIENCE_SCHEMA_VERSION = 4 as const;
+export const RUN_EXPERIENCE_SCHEMA_VERSION = 5 as const;
+export const LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION = 4 as const;
 
 /** Bounded execution facts collected for one Agent Run. */
 export interface RunExperienceExecution {
@@ -68,10 +70,15 @@ interface RunExperienceFields {
   };
 }
 
-/** Immutable schema-v4 Run Experience written by current Runs. */
-export interface RunExperience extends RunExperienceFields {
-  readonly schemaVersion: typeof RUN_EXPERIENCE_SCHEMA_VERSION;
+export interface LegacyRunExperience extends RunExperienceFields {
+  readonly schemaVersion: typeof LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION;
 }
+/** v5 records carry exact operational identity when coherently bound. */
+export interface EpisodeRunExperience extends RunExperienceFields {
+  readonly schemaVersion: typeof RUN_EXPERIENCE_SCHEMA_VERSION;
+  readonly workEpisodeId: string;
+}
+export type RunExperience = LegacyRunExperience | EpisodeRunExperience;
 
 const ZERO_EXECUTION: RunExperienceExecution = Object.freeze({
   toolCalls: 0,
@@ -274,6 +281,7 @@ export interface AssembleRunExperienceInput {
   readonly durationMs: number | null;
   readonly cost: number | null;
   readonly recordedAt?: string;
+  readonly workEpisodeId?: string | null;
 }
 
 function metric(value: number | null): number | null {
@@ -284,8 +292,11 @@ function metric(value: number | null): number | null {
 export function assembleRunExperience(
   input: AssembleRunExperienceInput,
 ): RunExperience {
+  if (input.workEpisodeId != null && !WORK_EPISODE_ID.test(input.workEpisodeId)) throw new Error("Invalid WorkEpisodeId.");
   const record: RunExperience = {
-    schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION,
+    ...(input.workEpisodeId == null
+      ? { schemaVersion: LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION }
+      : { schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION, workEpisodeId: input.workEpisodeId }),
     recordedAt: input.recordedAt ?? new Date().toISOString(),
     runStart: Object.freeze({
       taskStatus: input.runStart.taskStatus,
@@ -537,11 +548,13 @@ function countersEqual(
   return EXECUTION_COUNTERS.every((counter) => left[counter] === right[counter]);
 }
 
-/** Validate and defensively copy one immutable schema-v4 Experience record. */
+/** Validate and defensively copy one immutable schema-v4 or schema-v5 Experience record. */
 export function parseRunExperience(value: unknown): RunExperience | null {
-  if (!isRecord(value) || value.schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION ||
+  if (!isRecord(value) ||
+    (value.schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION && value.schemaVersion !== LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION) ||
     typeof value.recordedAt !== "string" || value.recordedAt.length === 0 ||
-    !hasExactFields(value, V4_ROOT_FIELDS)) {
+    !hasExactFields(value, value.schemaVersion === 5 ? [...V4_ROOT_FIELDS, "workEpisodeId"] : V4_ROOT_FIELDS) ||
+    (value.schemaVersion === 5 && (typeof value.workEpisodeId !== "string" || !WORK_EPISODE_ID.test(value.workEpisodeId)))) {
     return null;
   }
 
@@ -663,7 +676,9 @@ export function parseRunExperience(value: unknown): RunExperience | null {
   }
 
   return Object.freeze({
-    schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION,
+    ...(value.schemaVersion === 5
+      ? { schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION, workEpisodeId: value.workEpisodeId as string }
+      : { schemaVersion: LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION }),
     recordedAt: value.recordedAt,
     runStart: Object.freeze({
       taskStatus: runStart.taskStatus,

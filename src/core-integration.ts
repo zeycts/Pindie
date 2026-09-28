@@ -82,6 +82,7 @@ export interface CorePromptContribution {
 
 export interface CoreIntegrationOptions {
   readonly store: PindieStateStore;
+  readonly workEpisodes?: import("./work-episode.ts").WorkEpisodeLedger;
   readonly continuityStore: TaskContinuityStore;
   readonly committedRolloverPublisher?: CommittedRolloverPublisher | null;
   readonly taskHandoffEnabled?: boolean;
@@ -227,7 +228,7 @@ export class CoreIntegration {
   private measurementContext: ExtensionContext | null = null;
 
   constructor(options: CoreIntegrationOptions) {
-    this.runtime = new PindieRuntime(options.store);
+    this.runtime = new PindieRuntime(options.store, options.workEpisodes);
     this.run = new RunIntegration(this.runtime);
     this.execution = new ExecutionIntegration({
       captureProjectFingerprint: options.captureProjectFingerprint,

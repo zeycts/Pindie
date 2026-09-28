@@ -88,7 +88,7 @@ test("FileRunExperienceStore writes separate immutable records per project witho
   );
 });
 
-test("FileRunExperienceStore only writes current schema-v4 records", async (t) => {
+test("FileRunExperienceStore rejects unsupported schemas while retaining v4 compatibility", async (t) => {
   const baseDir = await mkdtemp(join(tmpdir(), "pindie-experience-schema-"));
   t.after(() => rm(baseDir, { recursive: true, force: true }));
   const store = new FileRunExperienceStore({ baseDir });
@@ -96,7 +96,7 @@ test("FileRunExperienceStore only writes current schema-v4 records", async (t) =
 
   await assert.rejects(
     store.save("/workspace/project", unsupported),
-    /new records must use schema-v4/i,
+    /invalid record/i,
   );
   await assert.rejects(
     readdir(store.experienceDirectory("/workspace/project")),

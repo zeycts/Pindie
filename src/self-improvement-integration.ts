@@ -293,6 +293,7 @@ export interface SelfImprovementIntegrationOptions {
   readonly core: SelfImprovementCorePort;
   readonly experienceStore: RunExperienceStore;
   readonly experienceReader: RunExperienceReader;
+  readonly workEpisodes?: import("./work-episode.ts").WorkEpisodeLedger;
   readonly strategyCandidateStore: StrategyCandidateStore;
   readonly strategyCandidateReader: StrategyCandidateReader;
   readonly strategyDerivationCandidateStore: StrategyDerivationCandidateStore;
@@ -345,6 +346,7 @@ export class SelfImprovementIntegration {
   private readonly core: SelfImprovementCorePort;
   private readonly experienceStore: RunExperienceStore;
   private readonly experienceReader: RunExperienceReader;
+  private readonly workEpisodes?: import("./work-episode.ts").WorkEpisodeLedger;
   private readonly strategyCandidateStore: StrategyCandidateStore;
   private readonly strategyCandidateReader: StrategyCandidateReader;
   private readonly strategyDerivationCandidateStore: StrategyDerivationCandidateStore;
@@ -372,6 +374,7 @@ export class SelfImprovementIntegration {
     this.core = options.core;
     this.experienceStore = options.experienceStore;
     this.experienceReader = options.experienceReader;
+    this.workEpisodes = options.workEpisodes;
     this.strategyCandidateStore = options.strategyCandidateStore;
     this.strategyCandidateReader = options.strategyCandidateReader;
     this.strategyDerivationCandidateStore = options.strategyDerivationCandidateStore;
@@ -1278,8 +1281,14 @@ export class SelfImprovementIntegration {
           facts.runStartTaskStatus !== null
         ) {
           try {
+            let workEpisodeId: string | null = null;
+            if (facts.state && this.workEpisodes) {
+              try { workEpisodeId = await this.workEpisodes.current(facts.projectRoot!, facts.state); }
+              catch (error) { console.warn(`[Pindie] WorkEpisode attribution unavailable: ${errorMessage(error)}`); }
+            }
             const experience = assembleRunExperience({
               task: facts.task!,
+              workEpisodeId,
               runStart: {
                 taskStatus: facts.runStartTaskStatus,
                 taskGoal: facts.runStartTaskGoal,
