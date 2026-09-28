@@ -296,6 +296,7 @@ test("F1 all frozen artifact shells reject extra fields, malformed IDs and incon
   assert.equal(validateTrialAssignment(assignment), true);
   assert.equal(validateTrialAssignment(seal({ ...assignment, comparison: [{ ...ref, projectId: "b".repeat(64) }] })), false);
   assert.equal(validateLearningArtifactRef(assignmentRef), true);
+  assert.equal(validateLearningArtifactRef({ ...assignmentRef, scope: { kind: "user-global" } }), false);
   assert.equal(matchesLearningArtifactRef(assignmentRef, assignment), true);
   assert.equal(matchesLearningArtifactRef({ ...assignmentRef, fingerprint: fp }, assignment), false);
   assert.equal(validateTrialAssignment({ ...assignment, permission: "task.complete" }), false);
@@ -306,6 +307,8 @@ test("F1 all frozen artifact shells reject extra fields, malformed IDs and incon
     outcome: "passed", regressions: [], comparison: [] });
   const evidenceRef = { schemaVersion: 1 as const, family: "trial-evidence" as const, scope, id, fingerprint: evidence.fingerprint };
   assert.equal(validateTrialEvidence(evidence), true);
+  assert.equal(validateLearningArtifactRef({ ...evidenceRef, scope: { kind: "user-global" } }), false);
+  assert.equal(validateTrialEvidence(seal({ ...evidence, assignment: { ...assignmentRef, scope: { kind: "user-global" } } })), false);
   assert.equal(validateTrialEvidence(seal({ ...evidence, comparison: [{ ...ref, projectId: "b".repeat(64) }] })), false);
   assert.equal(matchesTrialEvidenceAssignment(evidence, assignment), true);
   assert.equal(matchesTrialEvidenceAssignment(seal({ ...evidence, hypothesis: { ...hyp, fingerprint: `sha256:${"b".repeat(64)}` } }), assignment), false);
@@ -316,6 +319,12 @@ test("F1 all frozen artifact shells reject extra fields, malformed IDs and incon
   const evaluationRef = { schemaVersion: 1 as const, family: "strategy-evaluation" as const, scope, id, fingerprint: evaluation.fingerprint };
   assert.equal(validateStrategyEvaluation(evaluation), true);
   assert.equal(validateStrategyEvaluation(seal({ ...evaluation, trialEvidence: [{ ...evidenceRef, scope: { kind: "user-global" } }] })), false);
+  assert.equal(validateStrategyEvaluation(seal({ ...evaluation, trialEvidence: [{ ...evidenceRef, scope: { kind: "project", projectId: "b".repeat(64) } }] })), false);
+  const globalHyp = { ...hyp, scope: { kind: "user-global" as const } };
+  assert.equal(validateStrategyEvaluation(seal({ ...evaluation, hypothesis: globalHyp,
+    trialEvidence: [evidenceRef, { ...evidenceRef, scope: { kind: "project", projectId: "b".repeat(64) } }] })), true);
+  assert.equal(validateStrategyEvaluation(seal({ ...evaluation, hypothesis: globalHyp,
+    trialEvidence: [{ ...evidenceRef, scope: { kind: "user-global" } }] })), false);
   assert.equal(matchesEvaluationTrial(evaluation, evidence), true);
   assert.equal(matchesEvaluationTrial(seal({ ...evaluation, hypothesis: { ...hyp, fingerprint: `sha256:${"b".repeat(64)}` } }), evidence), false);
   assert.equal(validateStrategyEvaluation(seal({ ...evaluation, verdict: "suspend" })), false);
@@ -323,6 +332,8 @@ test("F1 all frozen artifact shells reject extra fields, malformed IDs and incon
   const decision = seal({ schemaVersion: 1, id, scope, action: "promote", actor: "autonomous", hypothesis: hyp,
     evaluation: evaluationRef, evidence: [evidenceRef], supersedes: null, decidedAt: "2026-01-01T00:00:00.000Z" });
   assert.equal(validateStrategyDecision(decision), true);
+  assert.equal(validateStrategyDecision(seal({ ...decision, evaluation: { ...evaluationRef, scope: { kind: "user-global" } } })), false);
+  assert.equal(validateStrategyDecision(seal({ ...decision, scope: globalHyp.scope, hypothesis: globalHyp })), false);
   assert.equal(validateStrategyDecision(seal({ ...decision, evidence: [{ ...evidenceRef, scope: { kind: "user-global" } }] })), false);
   assert.equal(matchesDecisionEvaluation(decision, evaluation), false); // continue-testing cannot promote
   const promoting = seal({ ...evaluation, verdict: "promote" });

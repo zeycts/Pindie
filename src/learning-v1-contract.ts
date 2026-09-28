@@ -91,7 +91,9 @@ export interface LearningArtifactRef {
 export function validateLearningArtifactRef(v: unknown, family?: LearningArtifactFamily): v is LearningArtifactRef {
   return object(v) && exact(v, ["schemaVersion", "family", "scope", "id", "fingerprint"]) &&
     v.schemaVersion === 1 && LEARNING_ARTIFACT_FAMILIES.includes(v.family as LearningArtifactFamily) &&
-    (family === undefined || v.family === family) && validateLearningScope(v.scope) && uuid(v.id) && hash(v.fingerprint);
+    (family === undefined || v.family === family) && validateLearningScope(v.scope) &&
+    ((v.family !== "trial-assignment" && v.family !== "trial-evidence") || v.scope.kind === "project") &&
+    uuid(v.id) && hash(v.fingerprint);
 }
 /** Exact persisted-content digest: includes schema and ID; excludes only its own fingerprint field. */
 export function learningArtifactFingerprint(value: Record<string, unknown>): string {
@@ -290,7 +292,8 @@ export function validateStrategyDecision(v: unknown): v is StrategyDecision {
       v.action !== "promote"))) return false;
   if (v.action === "promote" || v.action === "reject") {
     if (v.evaluation === null) return v.actor === "human" && authentic(v);
-    return validateLearningArtifactRef(v.evaluation, "strategy-evaluation") && authentic(v);
+    return validateLearningArtifactRef(v.evaluation, "strategy-evaluation") &&
+      canonicalJson((v.evaluation as LearningArtifactRef).scope) === canonicalJson(v.scope) && authentic(v);
   }
   return v.evaluation === null && v.supersedes === null && authentic(v);
 }
