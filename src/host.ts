@@ -110,7 +110,7 @@ export interface PindieHostOptions {
   longTaskRollover?: LongTaskRolloverSupervisorOptions;
   quotaResume?: QuotaResumeSupervisorOptions;
   quotaFallback?: QuotaFallbackSupervisorOptions;
-  /** F2 has no production handlers; injection is for focused runtime/idle tests and later slices. */
+  /** D2 registers project-discovery by default; override for isolated Host/runtime tests. */
   learningHandlers?: readonly LearningJobHandler[];
   /** Human-controlled v1 local discovery threshold/corpus configuration. */
   discoveryPolicy?: ProjectDiscoveryPolicy;

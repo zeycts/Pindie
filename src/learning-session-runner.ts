@@ -24,15 +24,22 @@ export interface LearningSessionResult { readonly text: string; readonly usage?:
 export interface LearningSessionRunner {
   run(prompt: string, signal: AbortSignal): Promise<LearningSessionResult>;
 }
+export interface LearningModelPolicy { readonly thinkingLevel: "off" | "low" | "medium" }
+/** Dedicated learning quality setting, independent of the Human Session's choice. */
+export const DEFAULT_LEARNING_MODEL_POLICY: LearningModelPolicy = Object.freeze({ thinkingLevel: "low" });
 export interface LearningSessionFactoryOptions {
   readonly cwd: string;
   /** Model identity/value only; never a Human SessionManager or transcript. */
   readonly model: Model<any>;
   readonly createSession?: typeof createAgentSession;
+  readonly policy?: LearningModelPolicy;
   readonly onCreated?: (session: AgentSession) => void;
 }
 /** A fresh Pi Session per invocation. There are deliberately zero model-callable tools in F2. */
 export function createLearningSessionRunner(options: LearningSessionFactoryOptions): LearningSessionRunner {
+  const policy = options.policy ?? DEFAULT_LEARNING_MODEL_POLICY;
+  if (!["off", "low", "medium"].includes(policy.thinkingLevel) || Object.keys(policy).sort().join() !== "thinkingLevel")
+    throw new Error("Invalid isolated learning model policy.");
   return {
     async run(prompt, signal) {
       if (signal.aborted) throw new Error("Learning invocation aborted.");
@@ -41,7 +48,7 @@ export function createLearningSessionRunner(options: LearningSessionFactoryOptio
       const { session } = await (options.createSession ?? createAgentSession)({
         cwd: options.cwd,
         model: options.model,
-        thinkingLevel: "off",
+        thinkingLevel: policy.thinkingLevel,
         tools: [],
         noTools: "all",
         customTools: [],
@@ -62,7 +69,8 @@ export function createLearningSessionRunner(options: LearningSessionFactoryOptio
           if (signal.aborted) throw new Error("Learning invocation aborted.");
           const text = session.getLastAssistantText();
           if (text === undefined || text.length > 32_000) throw new Error("Unbounded or absent learning response.");
-          // No inferred Pi token accounting: caller charges the full durable reservation.
+          // Pi's Session.prompt has no per-request maxTokens or full input+output cap.
+          // No inferred token accounting: supervisor charges the full reservation.
           return { text };
         } finally { signal.removeEventListener("abort", abort); }
       } finally { session.dispose(); }

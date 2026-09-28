@@ -8,7 +8,7 @@ import { createAgentSession, createAgentSessionServices, SessionManager } from "
 import { createPindieHost } from "../src/host.ts";
 import { FileLearningBudgetLedger } from "../src/learning-budget-store.ts";
 import { FileLearningJobLedger } from "../src/learning-job-store.ts";
-import { createLearningSessionRunner } from "../src/learning-session-runner.ts";
+import { createLearningSessionRunner, DEFAULT_LEARNING_MODEL_POLICY } from "../src/learning-session-runner.ts";
 import { LearningSupervisor, type LearningJobHandler } from "../src/learning-supervisor.ts";
 import { DEFAULT_LEARNING_BUDGET_POLICY, type LearningJob, type LearningArtifactRef } from "../src/learning-v1-contract.ts";
 
@@ -279,6 +279,8 @@ test("F2 real Pi factory isolates SessionManager, transcript, resources and tool
       assert.notEqual(session.sessionManager, humanManager);
       assert.notEqual(session.sessionId, humanManager.getSessionId());
       assert.deepEqual(session.getActiveToolNames(), []);
+      assert.equal(DEFAULT_LEARNING_MODEL_POLICY.thinkingLevel, "low");
+      assert.equal(session.thinkingLevel, "low");
       assert.deepEqual(session.resourceLoader.getSkills().skills, []);
       assert.deepEqual(session.resourceLoader.getExtensions().extensions, []);
       assert.ok(!JSON.stringify(session.messages).includes("secret human transcript"));

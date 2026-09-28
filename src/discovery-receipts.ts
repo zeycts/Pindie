@@ -39,15 +39,15 @@ export class FileDiscoveryReceiptStore {
     const receipt = await this.find(ref.scope.projectId, jobKey, packetFingerprint);
     return receipt?.id === ref.id && receipt.fingerprint === ref.fingerprint ? receipt : null;
   }
-  /** D1 exposes persistence for exact fixtures/future D2 publication; no production publisher. */
+  /** Terminal outcomes assess only new sources; the full packet source list remains exact provenance. */
   async publish(packet: DiscoveryPacketV1, outcome: DiscoveryReceipt["outcome"], hypotheses: readonly LearningArtifactRef[]): Promise<DiscoveryReceipt> {
     if (!validateDiscoveryPacket(packet)) throw new Error("Invalid DiscoveryPacket.");
     const scope = { kind: "project" as const, projectId: packet.projectId };
     const jobKey = learningJobKey("project-discovery", scope, packet.fingerprint, packet.policy.selectionVersion);
-    const sources = packet.sources.map((s) => ({ ...s.ref, recordedAt: s.recordedAt }));
+    const sources = packet.sources.map((s) => ({ ...s.ref, recordedAt: s.recordedAt, role: s.role }));
     return this.lock.withLock(async () => {
       const previous = await this.find(packet.projectId, jobKey, packet.fingerprint);
-      const content = { schemaVersion: 1 as const, jobKey, packetFingerprint: packet.fingerprint, scope, outcome, hypotheses, sources };
+      const content = { schemaVersion: 2 as const, jobKey, packetFingerprint: packet.fingerprint, scope, outcome, hypotheses, sources };
       if (previous) {
         if (JSON.stringify({ ...previous, id: null, fingerprint: null }) !== JSON.stringify({ ...content, id: null, fingerprint: null })) throw new Error("Conflicting DiscoveryReceipt publication.");
         return previous;

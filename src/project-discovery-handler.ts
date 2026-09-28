@@ -77,7 +77,7 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
     const packet = await packetFor(job);
     if (!packet || output.family !== "discovery-receipt" || canonicalJson(output.scope) !== canonicalJson(job.scope)) return false;
     const receipt = await deps.receipts.resolve(output, job.key, packet.fingerprint);
-    if (!receipt || canonicalJson(receipt.sources) !== canonicalJson(packet.sources.map((s) => ({ ...s.ref, recordedAt: s.recordedAt })))) return false;
+    if (!receipt || canonicalJson(receipt.sources) !== canonicalJson(packet.sources.map((s) => ({ ...s.ref, recordedAt: s.recordedAt, role: s.role })))) return false;
     if (receipt.outcome === "none") return !(await deps.hypotheses.committed(packet.projectId, packet.fingerprint));
     const batch = await deps.hypotheses.committed(packet.projectId, packet.fingerprint);
     if (!batch || batch.outcome !== receipt.outcome || canonicalJson(batch.refs) !== canonicalJson(receipt.hypotheses)) return false;

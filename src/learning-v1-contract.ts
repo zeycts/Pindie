@@ -163,22 +163,26 @@ export function validateExactEvidenceRef(v: unknown): v is ExactEvidenceRef {
     typeof v.recordId === "string" && EXPERIENCE_RECORD_ID.test(v.recordId) && hash(v.fingerprint);
 }
 export interface DiscoveryReceipt {
-  readonly schemaVersion: 1; readonly id: string; readonly fingerprint: string;
+  /** v1 receipts assess every source; v2 marks contextual sources without assessing them. */
+  readonly schemaVersion: 1 | 2; readonly id: string; readonly fingerprint: string;
   readonly jobKey: string; readonly packetFingerprint: string; readonly scope: LearningScope;
   readonly outcome: "none" | "covered" | "published";
   /** Covered means exact refs to preexisting hypotheses; none has no refs. */
   readonly hypotheses: readonly LearningArtifactRef[];
   /** Only these exact packet-source fingerprints become assessed at terminal publication. */
-  readonly sources: readonly (ExactEvidenceRef & { readonly recordedAt: string })[];
+  readonly sources: readonly (ExactEvidenceRef & { readonly recordedAt: string; readonly role?: "new" | "context" })[];
 }
 export function validateDiscoveryReceipt(v: unknown): v is DiscoveryReceipt {
   return object(v) && exact(v, ["schemaVersion", "id", "fingerprint", "jobKey", "packetFingerprint", "scope", "outcome", "hypotheses", "sources"]) &&
-    v.schemaVersion === 1 && uuid(v.id) && hash(v.jobKey) && hash(v.packetFingerprint) && validateLearningScope(v.scope) &&
+    (v.schemaVersion === 1 || v.schemaVersion === 2) && uuid(v.id) && hash(v.jobKey) && hash(v.packetFingerprint) && validateLearningScope(v.scope) &&
     (v.outcome === "none" || v.outcome === "covered" || v.outcome === "published") &&
     refs(v.hypotheses, "strategy-hypothesis", 8) &&
     (v.hypotheses as LearningArtifactRef[]).every((ref) => canonicalJson(ref.scope) === canonicalJson(v.scope)) &&
-    list(v.sources, 32, (source) => object(source) && exact(source, ["projectId", "recordId", "fingerprint", "recordedAt"]) &&
+    list(v.sources, 32, (source) => object(source) && exact(source, v.schemaVersion === 1
+      ? ["projectId", "recordId", "fingerprint", "recordedAt"] : ["projectId", "recordId", "fingerprint", "recordedAt", "role"]) &&
+      (v.schemaVersion === 1 || source.role === "new" || source.role === "context") &&
       validateExactEvidenceRef({ projectId: source.projectId, recordId: source.recordId, fingerprint: source.fingerprint }) && instant(source.recordedAt), 1) &&
+    (v.schemaVersion === 1 || (v.sources as DiscoveryReceipt["sources"]).some((source) => source.role === "new")) &&
     unique(v.sources) && (v.scope.kind !== "project" || (v.sources as DiscoveryReceipt["sources"]).every((source) => source.projectId === (v.scope as { projectId: string }).projectId)) &&
     (v.outcome === "none" ? v.hypotheses.length === 0 : v.hypotheses.length > 0) && authentic(v);
 }

@@ -1,14 +1,16 @@
 import { PROJECT_ID, UUID_V4, FINGERPRINT } from "./exact-identity.ts";
-import { learningFingerprint, validateExactEvidenceRef, validateLearningArtifactRef, type ExactEvidenceRef, type LearningArtifactRef } from "./learning-v1-contract.ts";
+import { canonicalJson, learningFingerprint, validateExactEvidenceRef, validateLearningArtifactRef, type ExactEvidenceRef, type LearningArtifactRef } from "./learning-v1-contract.ts";
 
-export const DISCOVERY_SELECTION_VERSION = 2 as const;
+export const DISCOVERY_SELECTION_VERSION = 3 as const;
+/** Version 3 hard bound; reserves >12k characters for the isolated runner's 48k prompt ceiling. */
+export const MAX_DISCOVERY_PACKET_CHARS_V3 = 35_000;
 export interface ProjectDiscoveryPolicy {
-  readonly schemaVersion: 1; readonly selectionVersion: 2;
+  readonly schemaVersion: 1; readonly selectionVersion: 3;
   readonly minNewExperiences: number; readonly minWorkEpisodes: number;
   readonly minOutcomes: number; readonly maxCorpus: number;
 }
 export const DEFAULT_PROJECT_DISCOVERY_POLICY: ProjectDiscoveryPolicy = Object.freeze({
-  schemaVersion: 1, selectionVersion: 2, minNewExperiences: 6, minWorkEpisodes: 3, minOutcomes: 1, maxCorpus: 24,
+  schemaVersion: 1, selectionVersion: 3, minNewExperiences: 6, minWorkEpisodes: 3, minOutcomes: 1, maxCorpus: 24,
 });
 const obj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const exact = (v: Record<string, unknown>, keys: string[]) => Object.keys(v).sort().join() === keys.sort().join();
@@ -21,7 +23,7 @@ export function validateProjectDiscoveryPolicy(v: unknown): v is ProjectDiscover
     v.minWorkEpisodes <= v.minNewExperiences && v.minNewExperiences <= v.maxCorpus;
 }
 export interface DiscoverySourceSummary {
-  readonly ref: ExactEvidenceRef; readonly recordedAt: string; readonly workEpisodeId: string;
+  readonly ref: ExactEvidenceRef; readonly role: "new" | "context"; readonly recordedAt: string; readonly workEpisodeId: string;
   readonly goal: string; readonly taskRelation: string;
   readonly outcome: { readonly taskStatus: string; readonly verificationStatus: string; readonly completionRelation: string };
   readonly policy: readonly { readonly strategyId: string; readonly revisionIdentity: string; readonly revisionFingerprint: string; readonly exposure: string }[];
@@ -29,7 +31,7 @@ export interface DiscoverySourceSummary {
   readonly metrics: { readonly durationMs: number | null; readonly cost: number | null };
 }
 export interface DiscoveryPacketV1 {
-  readonly schemaVersion: 2; readonly selectionVersion: 2; readonly projectId: string;
+  readonly schemaVersion: 3; readonly selectionVersion: 3; readonly projectId: string;
   readonly policy: ProjectDiscoveryPolicy; readonly eligibleCounts: { readonly new: number; readonly episodes: number; readonly outcomes: number };
   readonly portfolio: { readonly fingerprint: string; readonly revisions: readonly { readonly strategyId: string; readonly kind: "approach" | "modifier"; readonly revisionIdentity: string; readonly revisionFingerprint: string; readonly summary: string; readonly useWhen: readonly string[]; readonly avoidWhen: readonly string[]; readonly principles: readonly string[] }[] };
   readonly openHypotheses: { readonly fingerprint: string; readonly entries: readonly { readonly ref: LearningArtifactRef; readonly logicalId: string; readonly kind: "approach" | "modifier"; readonly baseRevisionFingerprint: string | null; readonly summary: string; readonly expectedEffect: string; readonly useWhen: readonly string[]; readonly avoidWhen: readonly string[]; readonly failureSignals: readonly string[] }[] };
@@ -38,7 +40,7 @@ export interface DiscoveryPacketV1 {
 export function discoveryPacketFingerprint(packet: Omit<DiscoveryPacketV1, "fingerprint">): string { return learningFingerprint(packet); }
 export function validateDiscoveryPacket(v: unknown): v is DiscoveryPacketV1 {
   if (!obj(v) || !exact(v, ["schemaVersion", "selectionVersion", "projectId", "policy", "eligibleCounts", "portfolio", "openHypotheses", "sources", "fingerprint"]) ||
-    v.schemaVersion !== 2 || v.selectionVersion !== 2 || !string(v.projectId, 64) || !PROJECT_ID.test(v.projectId as string) ||
+    v.schemaVersion !== 3 || v.selectionVersion !== 3 || !string(v.projectId, 64) || !PROJECT_ID.test(v.projectId as string) ||
     !validateProjectDiscoveryPolicy(v.policy) || !obj(v.eligibleCounts) || !exact(v.eligibleCounts, ["new", "episodes", "outcomes"]) ||
     !integer(v.eligibleCounts.new, 2, 100000) || !integer(v.eligibleCounts.episodes, 2, 100000) || !integer(v.eligibleCounts.outcomes, 1, 4) ||
     !obj(v.portfolio) || !exact(v.portfolio, ["fingerprint", "revisions"]) || !FINGERPRINT.test(v.portfolio.fingerprint as string) ||
@@ -54,8 +56,8 @@ export function validateDiscoveryPacket(v: unknown): v is DiscoveryPacketV1 {
     !Array.isArray(v.sources) || v.sources.length < (v.policy as ProjectDiscoveryPolicy).minNewExperiences || v.sources.length > (v.policy as ProjectDiscoveryPolicy).maxCorpus) return false;
   const ids = new Set<string>(); const fingerprints = new Set<string>();
   for (const s of v.sources) {
-    if (!obj(s) || !exact(s, ["ref", "recordedAt", "workEpisodeId", "goal", "taskRelation", "outcome", "policy", "execution", "metrics"]) ||
-      !validateExactEvidenceRef(s.ref) || s.ref.projectId !== v.projectId || ids.has(s.ref.recordId) || fingerprints.has(s.ref.fingerprint) ||
+    if (!obj(s) || !exact(s, ["ref", "role", "recordedAt", "workEpisodeId", "goal", "taskRelation", "outcome", "policy", "execution", "metrics"]) ||
+      !validateExactEvidenceRef(s.ref) || (s.role !== "new" && s.role !== "context") || s.ref.projectId !== v.projectId || ids.has(s.ref.recordId) || fingerprints.has(s.ref.fingerprint) ||
       !string(s.recordedAt, 32) || Number.isNaN(Date.parse(s.recordedAt as string)) || new Date(s.recordedAt as string).toISOString() !== s.recordedAt ||
       !string(s.workEpisodeId, 64) || !UUID_V4.test(s.workEpisodeId as string) || !string(s.goal, 512) || !string(s.taskRelation, 64) ||
       !obj(s.outcome) || !exact(s.outcome, ["taskStatus", "verificationStatus", "completionRelation"]) ||
@@ -67,10 +69,14 @@ export function validateDiscoveryPacket(v: unknown): v is DiscoveryPacketV1 {
       (s.metrics.cost !== null && (typeof s.metrics.cost !== "number" || !Number.isFinite(s.metrics.cost) || s.metrics.cost < 0))) return false;
     ids.add(s.ref.recordId); fingerprints.add(s.ref.fingerprint);
   }
-  if (ids.size < (v.policy as ProjectDiscoveryPolicy).minNewExperiences ||
-    (v.eligibleCounts as DiscoveryPacketV1["eligibleCounts"]).new < ids.size ||
-    (v.eligibleCounts as DiscoveryPacketV1["eligibleCounts"]).episodes < new Set((v.sources as DiscoverySourceSummary[]).map((s) => s.workEpisodeId)).size ||
-    (v.eligibleCounts as DiscoveryPacketV1["eligibleCounts"]).outcomes < new Set((v.sources as DiscoverySourceSummary[]).map((s) => `${s.outcome.taskStatus}/${s.outcome.verificationStatus}`)).size) return false;
-  try { const { fingerprint, ...content } = v; return FINGERPRINT.test(fingerprint as string) && fingerprint === learningFingerprint(content); }
+  const fresh = (v.sources as DiscoverySourceSummary[]).filter((s) => s.role === "new");
+  if (fresh.length < (v.policy as ProjectDiscoveryPolicy).minNewExperiences ||
+    (v.eligibleCounts as DiscoveryPacketV1["eligibleCounts"]).new < fresh.length ||
+    (v.eligibleCounts as DiscoveryPacketV1["eligibleCounts"]).episodes < new Set(fresh.map((s) => s.workEpisodeId)).size ||
+    (v.eligibleCounts as DiscoveryPacketV1["eligibleCounts"]).outcomes < new Set(fresh.map((s) => `${s.outcome.taskStatus}/${s.outcome.verificationStatus}`)).size ||
+    new Set(fresh.map((s) => s.workEpisodeId)).size < (v.policy as ProjectDiscoveryPolicy).minWorkEpisodes ||
+    new Set(fresh.map((s) => `${s.outcome.taskStatus}/${s.outcome.verificationStatus}`)).size < (v.policy as ProjectDiscoveryPolicy).minOutcomes) return false;
+  try { const { fingerprint, ...content } = v; return canonicalJson(content).length <= MAX_DISCOVERY_PACKET_CHARS_V3 &&
+    FINGERPRINT.test(fingerprint as string) && fingerprint === learningFingerprint(content); }
   catch { return false; }
 }
