@@ -108,7 +108,6 @@ export interface CoreToolRegistrationOptions {
   readonly onSemanticStateChange?: () => void;
   /** Successful completion report for runtime presentation; never semantic State. */
   readonly onCompletionReport?: (report: string) => void;
-  /** Optional SI-owned runtime-only completion disposition seam. */
 }
 
 export interface CoreSettlementFacts {

@@ -1738,11 +1738,7 @@ export class SelfImprovementIntegration {
     ctx.ui.notify("No Candidate selected. Use command completion to choose one.", "warning");
   }
 
-  async prepareTrustedLearningPortfolio(projectRoot: string): Promise<TrustedStrategyPortfolio> {
-    return this.loadTrustedPortfolio(projectRoot);
-  }
-
-  /** Read-only eligibility shared by explicit adaptation and the post-Run Gate. */
+  /** Read-only evidence preparation for the explicit legacy /adapt command. */
   async prepareAdaptationEvidence(projectRoot: string, targetId: string) {
     const target = getSeedStrategy(targetId);
     if (target === null) throw new Error("Target is not an immutable Seed Strategy.");
@@ -1754,7 +1750,7 @@ export class SelfImprovementIntegration {
     return { target, packet };
   }
 
-  /** Read-only eligibility shared by explicit derivation and the post-Run Gate. */
+  /** Read-only evidence preparation for the explicit legacy /derive command. */
   async prepareDerivationEvidence(projectRoot: string) {
     const portfolio = await this.loadProjectTrustedPortfolio(projectRoot);
     const read = await this.experienceReader.read(projectRoot);
