@@ -102,6 +102,7 @@ import {
   loadTrustedStrategyPortfolio,
 } from "./strategy-trust-safety.ts";
 import { getSeedStrategy, SEED_STRATEGIES } from "./strategies.ts";
+import { exactRunWorkEpisodeId } from "./work-episode-attribution.ts";
 import {
   assembleRunExperience,
   isEligibleRunExperience,
@@ -1283,8 +1284,14 @@ export class SelfImprovementIntegration {
           try {
             let workEpisodeId: string | null = null;
             if (facts.state && this.workEpisodes) {
-              try { workEpisodeId = await this.workEpisodes.current(facts.projectRoot!, facts.state); }
-              catch (error) { console.warn(`[Pindie] WorkEpisode attribution unavailable: ${errorMessage(error)}`); }
+              try {
+                const settledId = await this.workEpisodes.current(facts.projectRoot!, facts.state);
+                workEpisodeId = exactRunWorkEpisodeId(facts.runStartEpisode, {
+                  projectRoot: facts.projectRoot!, state: facts.state, episodeId: settledId,
+                  occurrenceEpoch: facts.settlementOccurrenceEpoch,
+                  externalStateEpoch: facts.settlementExternalStateEpoch,
+                });
+              } catch (error) { console.warn(`[Pindie] WorkEpisode attribution unavailable: ${errorMessage(error)}`); }
             }
             const experience = assembleRunExperience({
               task: facts.task!,

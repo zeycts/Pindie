@@ -1,18 +1,15 @@
-import { createHash } from "node:crypto";
-
-import {
-  parseRunExperience,
-  type RunExperience,
-} from "./run-experience.ts";
+import { runExperienceRecordFingerprint } from "./run-experience-fingerprint.ts";
+import { parseRunExperience, type RunExperience } from "./run-experience.ts";
+import { EXPERIENCE_RECORD_ID, FINGERPRINT, PROJECT_ID } from "./exact-identity.ts";
 import type { RunExperienceProjectReader } from "./experience-store.ts";
 
 export const CROSS_PROJECT_EXPERIENCE_REF_SCHEMA_VERSION = 1 as const;
 export const MAX_CROSS_PROJECT_EXPERIENCE_REFS = 1024;
 export const MAX_CROSS_PROJECT_EXPERIENCE_RECORD_ID_LENGTH = 41;
 
-const CANONICAL_PROJECT_ID = /^[0-9a-f]{64}$/;
-const CANONICAL_RECORD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/;
-const CANONICAL_FINGERPRINT = /^sha256:[0-9a-f]{64}$/;
+const CANONICAL_PROJECT_ID = PROJECT_ID;
+const CANONICAL_RECORD_ID = EXPERIENCE_RECORD_ID;
+const CANONICAL_FINGERPRINT = FINGERPRINT;
 const REF_FIELDS = ["projectId", "recordId", "recordFingerprint"] as const;
 
 export interface CrossProjectExperienceRefV1 {
@@ -70,94 +67,13 @@ function validateFingerprint(value: unknown): string {
   return value;
 }
 
-function canonicalSelection(selection: RunExperience["policy"]["finalSnapshot"] extends infer T
-  ? T extends null ? never : T extends { approach: infer A; modifiers: infer M }
-    ? { approach: A; modifiers: M }
-    : never
-  : never): Record<string, unknown> {
-  const canonical = (value: any): Record<string, unknown> => ({
-    strategyId: value.strategyId,
-    kind: value.kind,
-    revisionIdentity: value.revisionIdentity,
-    revisionFingerprint: value.revisionFingerprint,
-    revisionStatusAtRun: value.revisionStatusAtRun,
-    semantics: {
-      summary: value.semantics.summary,
-      useWhen: [...value.semantics.useWhen],
-      avoidWhen: [...value.semantics.avoidWhen],
-      principles: [...value.semantics.principles],
-    },
-  });
-  return {
-    approach: canonical(selection.approach),
-    modifiers: selection.modifiers.map(canonical),
-  };
-}
-
-function canonicalRunExperience(record: RunExperience): Record<string, unknown> {
-  return {
-    schemaVersion: record.schemaVersion,
-    recordedAt: record.recordedAt,
-    runStart: {
-      taskStatus: record.runStart.taskStatus,
-      taskGoal: record.runStart.taskGoal,
-    },
-    task: {
-      goal: record.task.goal,
-      taskRelation: record.task.taskRelation,
-    },
-    policy: {
-      finalSnapshot: record.policy.finalSnapshot === null
-        ? null
-        : canonicalSelection(record.policy.finalSnapshot),
-      declarationCount: record.policy.declarationCount,
-      finalPolicyDeclarationCount: record.policy.finalPolicyDeclarationCount,
-      finalPolicyFirstDeclaredAfter: record.policy.finalPolicyFirstDeclaredAfter === null
-        ? null
-        : { ...record.policy.finalPolicyFirstDeclaredAfter },
-      finalPolicyLastDeclaredAfter: record.policy.finalPolicyLastDeclaredAfter === null
-        ? null
-        : { ...record.policy.finalPolicyLastDeclaredAfter },
-    },
-    execution: {
-      toolCalls: record.execution.toolCalls,
-      observations: record.execution.observations,
-      consequentialCalls: record.execution.consequentialCalls,
-      projectMutationEffectCalls: record.execution.projectMutationEffectCalls,
-      verificationCalls: record.execution.verificationCalls,
-      toolErrors: record.execution.toolErrors,
-      deniedCalls: record.execution.deniedCalls,
-    },
-    outcome: {
-      taskStatus: record.outcome.taskStatus,
-      verificationStatus: record.outcome.verificationStatus,
-      completionRelation: record.outcome.completionRelation,
-      hasBlockers: record.outcome.hasBlockers,
-      hasQuestions: record.outcome.hasQuestions,
-      humanGateOpen: record.outcome.humanGateOpen,
-    },
-    metrics: {
-      durationMs: record.metrics.durationMs,
-      cost: record.metrics.cost,
-    },
-  };
-}
-
-/**
- * Fingerprint the strict, fully materialized schema-v4 record. The explicit
- * projection fixes field order so source-file whitespace or object-key order
- * cannot alter the reference binding.
- */
 export function crossProjectExperienceRecordFingerprint(value: unknown): string {
-  const record = parseRunExperience(value);
-  if (record === null) return invalid("record must be a valid schema-v4 Experience artifact.");
-  return `sha256:${createHash("sha256")
-    .update(JSON.stringify(canonicalRunExperience(record)))
-    .digest("hex")}`;
+  try { return runExperienceRecordFingerprint(value); }
+  catch { return invalid("record must be a valid schema-v4/v5 Experience artifact."); }
 }
 
 export const crossProjectExperienceFingerprint = crossProjectExperienceRecordFingerprint;
-export const runExperienceRecordFingerprint = crossProjectExperienceRecordFingerprint;
+export { runExperienceRecordFingerprint };
 
 /** Validate one strict qualified reference without resolving its source file. */
 export function validateCrossProjectExperienceRefArtifact(

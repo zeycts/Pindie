@@ -951,6 +951,16 @@ function registerComposedPindieExtension(
       // authoritative project State rather than a previous session snapshot.
       core.beginAgentRunFacts(ctx);
       preparationGeneration = run.activeAgentRunGeneration;
+      // Operational provenance only; failed/ambiguous reads never change Task authority or prompt.
+      try {
+        await runBoundedOperation({
+          label: "Pindie WorkEpisode Run-start observation",
+          timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+          run: (signal) => core.captureRunStartEpisode(signal),
+        });
+      } catch (error) {
+        console.warn(`[Pindie] WorkEpisode Run-start attribution unavailable: ${errorMessage(error)}`);
+      }
       const selfImprovementRun = selfImprovement === null
         ? {
             adaptationLease: null,

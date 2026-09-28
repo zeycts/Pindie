@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { FINGERPRINT, PROJECT_ID, WORK_EPISODE_ID, learningFingerprint, newWorkEpisodeId, type WorkEpisodeBinding } from "./learning-v1-contract.ts";
+import { PROJECT_ID, learningFingerprint, newWorkEpisodeId, validateWorkEpisodeBinding, type WorkEpisodeBinding } from "./learning-v1-contract.ts";
 import { getProjectId, type PindieStateStore } from "./store.ts";
 import type { PindieState } from "./state.ts";
 import type { PindieEvent } from "./transitions.ts";
@@ -16,14 +16,7 @@ export interface WorkEpisodeLedger {
   current(projectRoot: string, state: PindieState): Promise<string | null>;
 }
 const fingerprint = (state: PindieState): string => learningFingerprint(state.task);
-const valid = (v: unknown, id: string): v is WorkEpisodeBinding => {
-  if (typeof v !== "object" || v === null) return false;
-  const b = v as WorkEpisodeBinding;
-  return b.schemaVersion === 1 && b.projectId === id && WORK_EPISODE_ID.test(b.episodeId) &&
-    FINGERPRINT.test(b.observedStateFingerprint) && !Number.isNaN(Date.parse(b.openedAt)) &&
-    (b.closedAt === null || !Number.isNaN(Date.parse(b.closedAt))) &&
-    Object.keys(b).sort().join() === ["schemaVersion", "projectId", "episodeId", "observedStateFingerprint", "openedAt", "closedAt"].sort().join();
-};
+
 /** Latest binding only: no Task truth, and no automatic deletion of historical Experience. */
 export class FileWorkEpisodeLedger implements WorkEpisodeLedger {
   private readonly baseDir: string;
@@ -49,8 +42,8 @@ export class FileWorkEpisodeLedger implements WorkEpisodeLedger {
     if (l.schemaVersion !== 1 || l.projectId !== id ||
       Object.keys(l).sort().join() !== ["schemaVersion", "projectId", "current", "lastClosed", "transitionPending"].sort().join() ||
       typeof l.transitionPending !== "boolean" ||
-      (l.current !== null && (!valid(l.current, id) || l.current.closedAt !== null)) ||
-      (l.lastClosed !== null && (!valid(l.lastClosed, id) || l.lastClosed.closedAt === null)) ||
+      (l.current !== null && (!validateWorkEpisodeBinding(l.current, id) || l.current.closedAt !== null)) ||
+      (l.lastClosed !== null && (!validateWorkEpisodeBinding(l.lastClosed, id) || l.lastClosed.closedAt === null)) ||
       (l.current !== null && l.lastClosed !== null && l.current.episodeId === l.lastClosed.episodeId))
       throw new Error("Corrupt WorkEpisode ledger.");
     return l;

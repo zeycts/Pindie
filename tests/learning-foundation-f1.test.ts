@@ -5,12 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileStateStore, getProjectId } from "../src/store.ts";
 import { PindieRuntime } from "../src/runtime.ts";
+import { reduceState } from "../src/transitions.ts";
 import { FileWorkEpisodeLedger } from "../src/work-episode.ts";
 import { FileRunExperienceReader, FileRunExperienceStore } from "../src/experience-store.ts";
 import { assembleRunExperience, parseRunExperience } from "../src/run-experience.ts";
+import { runExperienceRecordFingerprint } from "../src/run-experience-fingerprint.ts";
+import { crossProjectExperienceRecordFingerprint } from "../src/cross-project-experience.ts";
 import { FileRunExperienceMaintenance } from "../src/experience-lifecycle.ts";
 import { FileLearningJobLedger } from "../src/learning-job-store.ts";
-import { DEFAULT_LEARNING_BUDGET_POLICY, FINGERPRINT, validateLearningBudgetPolicy, learningJobKey, learningFingerprint, validateStrategyHypothesis } from "../src/learning-v1-contract.ts";
+import { DEFAULT_LEARNING_BUDGET_POLICY, FINGERPRINT, validateLearningBudgetPolicy, learningJobKey, learningFingerprint, validateStrategyHypothesis, validateWorkEpisodeBinding, validateLearningJob, validateExactEvidenceRef, validateDiscoveryReceipt, validateTrialAssignment, validateTrialEvidence, validateStrategyEvaluation, validateStrategyDecision } from "../src/learning-v1-contract.ts";
+import { exactRunWorkEpisodeId } from "../src/work-episode-attribution.ts";
 
 const ROOT = "/repo/f1";
 const start = { type: "start_task" as const, goal: "goal", constraints: [], successCriteria: ["done"] };
@@ -90,12 +94,50 @@ test("F1 crash mismatch and corrupt binding fail closed without blocking semanti
   assert.equal((await corrupt.dispatch({ type: "refine_task", goal: "human continues" })).ok, true);
   await assert.rejects(f.episodes.current(ROOT, corrupt.state), /Corrupt/);
 });
+test("F1 same-contract replacement crash marker prevents old identity reuse on both sides of State commit", async (t) => {
+  const f = await setup(t);
+  await f.runtime.load(ROOT);
+  await f.runtime.dispatch(start);
+  const old = await f.episodes.current(ROOT, f.runtime.state);
+  const replace = { ...start, type: "replace_task" as const };
+  await f.store.withProjectLock(ROOT, async () => { await f.episodes.prepared(ROOT, f.runtime.state, replace); });
+  const beforeCommit = new PindieRuntime(f.store, f.episodes);
+  await beforeCommit.load(ROOT);
+  assert.equal(await f.episodes.current(ROOT, beforeCommit.state), null);
+  const result = reduceState(beforeCommit.state, replace);
+  assert.equal(result.ok, true);
+  if (result.ok) await f.store.withProjectLock(ROOT, () => f.store.save(ROOT, result.state));
+  const afterCommit = new PindieRuntime(f.store, f.episodes);
+  await afterCommit.load(ROOT);
+  assert.equal(await f.episodes.current(ROOT, afterCommit.state), null);
+  assert.equal((await afterCommit.dispatch(replace)).ok, true);
+  const fresh = await f.episodes.current(ROOT, afterCommit.state);
+  assert.ok(fresh);
+  assert.notEqual(fresh, old);
+});
+test("F1 run attribution never assigns one Run crossing episodes to its final Task", async (t) => {
+  const f = await setup(t);
+  await f.runtime.load(ROOT);
+  const empty = { projectRoot: ROOT, episodeId: null, taskWasOpen: false, occurrenceEpoch: f.runtime.taskOccurrenceEpoch, externalStateEpoch: f.runtime.externalStateEpoch };
+  await f.runtime.dispatch(start);
+  const a = await f.episodes.current(ROOT, f.runtime.state);
+  const end = () => ({ projectRoot: ROOT, state: f.runtime.state, episodeId: a, occurrenceEpoch: f.runtime.taskOccurrenceEpoch, externalStateEpoch: f.runtime.externalStateEpoch });
+  assert.equal(exactRunWorkEpisodeId(empty, end()), a); // idle -> one Task
+  const startA = { ...empty, episodeId: a, taskWasOpen: true, occurrenceEpoch: f.runtime.taskOccurrenceEpoch };
+  assert.equal(exactRunWorkEpisodeId(startA, end()), a); // stable across Runs
+  await f.runtime.dispatch({ ...start, type: "replace_task" });
+  const b = await f.episodes.current(ROOT, f.runtime.state);
+  assert.notEqual(a, b);
+  assert.equal(exactRunWorkEpisodeId(startA, { ...end(), episodeId: b }), null); // A -> B
+  assert.equal(exactRunWorkEpisodeId(empty, { ...end(), episodeId: b }), null); // idle -> A -> B
+  assert.equal(exactRunWorkEpisodeId(startA, { ...end(), episodeId: b, externalStateEpoch: 99 }), null);
+});
 test("F1 jobs are deterministic, fenced, persistent and never silently compacted", async (t) => {
   const f = await setup(t);
   const root = join(f.dir, "global");
   const ledger = new FileLearningJobLedger({ globalBaseDir: root });
   const scope = { kind: "project" as const, projectId: getProjectId(ROOT) };
-  const fp = "a".repeat(64);
+  const fp = `sha256:${"a".repeat(64)}`;
   const key = learningJobKey("project-discovery", scope, fp, 1);
   const a = await ledger.enqueue("project-discovery", scope, fp, 1, 100);
   assert.equal(a.key, key);
@@ -103,33 +145,55 @@ test("F1 jobs are deterministic, fenced, persistent and never silently compacted
   const lease = await ledger.claim(key, "one", 100, 10, 200, 1000);
   assert.ok(lease);
   assert.equal(await ledger.claim(key, "two", 100, 10, 0, 0), null);
+  const other = await ledger.enqueue("evaluation", scope, fp, 1, 100);
+  assert.equal(await ledger.claim(other.key, "two", 100, 10, 0, 0), null); // global one-running invariant
   await assert.rejects(ledger.complete(key, "wrong", fp), /Stale/);
   const restarted = new FileLearningJobLedger({ globalBaseDir: root });
   assert.equal(await restarted.reconcileExpired(111), 1);
   assert.equal((await restarted.listEligible(111))[0]?.key, key);
+  assert.equal((await restarted.read())[0]?.stopReason, "timeout");
   const next = await restarted.claim(key, "two", 111, 10, 0, 0);
   assert.notEqual(next?.leaseToken, lease?.leaseToken);
   await assert.rejects(restarted.complete(key, lease!.leaseToken!, fp), /Stale/);
-  await restarted.complete(key, next!.leaseToken!, fp);
+  await restarted.release(key, next!.leaseToken!, 115, "human-work");
+  assert.equal((await restarted.read())[0]?.stopReason, "human-work");
+  const final = await restarted.claim(key, "three", 115, 10, 0, 0);
+  assert.equal(final?.stopReason, null);
+  await restarted.complete(key, final!.leaseToken!, fp);
   assert.deepEqual(await restarted.enqueue("project-discovery", scope, fp, 1, 300), (await restarted.read())[0]);
   const failing = new FileLearningJobLedger({ globalBaseDir: root, onBeforeRename: async () => { throw new Error("disk failure"); } });
-  await assert.rejects(failing.enqueue("evaluation", scope, fp, 1, 300), /disk failure/);
-  assert.equal((await restarted.read()).length, 1);
+  await assert.rejects(failing.enqueue("evaluation", scope, `sha256:${"d".repeat(64)}`, 1, 300), /disk failure/);
+  assert.equal((await restarted.read()).length, 2);
   await writeFile(join(root, "learning-v1", "jobs.json"), "not json");
   await assert.rejects(restarted.enqueue("evaluation", scope, fp, 1, 300), /Malformed/);
+});
+test("F1 independent job directory initializes, owner/token are strictly bounded", async (t) => {
+  const f = await setup(t);
+  const base = join(f.dir, "shared-global");
+  await (await import("node:fs/promises")).mkdir(join(base, "learning-v1"), { recursive: true });
+  const ledger = new FileLearningJobLedger({ globalBaseDir: base });
+  assert.deepEqual(await ledger.read(), []);
+  const scope = { kind: "project" as const, projectId: getProjectId(ROOT) };
+  const job = await ledger.enqueue("evaluation", scope, `sha256:${"e".repeat(64)}`, 1, 1);
+  await assert.rejects(ledger.claim(job.key, "x".repeat(129), 1, 10, 0, 0), /claim/);
+  const claimed = await ledger.claim(job.key, "owner", 1, 10, 0, 0);
+  assert.ok(validateLearningJob(claimed));
+  assert.equal(validateLearningJob({ ...claimed, leaseOwner: "x".repeat(129) }), false);
+  assert.equal(validateLearningJob({ ...claimed, leaseToken: "arbitrary" }), false);
+  assert.equal(await ledger.claim(job.key, "another", 1, 10, 0, 0), null);
 });
 test("F1 ledger at capacity refuses enqueue without evicting pending/running", async (t) => {
   const f = await setup(t);
   const globalBaseDir = join(f.dir, "capacity");
   const ledger = new FileLearningJobLedger({ globalBaseDir });
   const scope = { kind: "project" as const, projectId: getProjectId(ROOT) };
-  const first = await ledger.enqueue("project-discovery", scope, "0".repeat(64), 1, 1);
+  const first = await ledger.enqueue("project-discovery", scope, `sha256:${"0".repeat(64)}`, 1, 1);
   const jobs = Array.from({ length: 2048 }, (_, index) => {
-    const inputFingerprint = index.toString(16).padStart(64, "0");
+    const inputFingerprint = `sha256:${index.toString(16).padStart(64, "0")}`;
     return { ...first, inputFingerprint, key: learningJobKey("project-discovery", scope, inputFingerprint, 1) };
   });
   await writeFile(join(globalBaseDir, "learning-v1", "jobs.json"), JSON.stringify({ schemaVersion: 1, jobs }));
-  await assert.rejects(ledger.enqueue("evaluation", scope, "f".repeat(64), 1, 2), /capacity/);
+  await assert.rejects(ledger.enqueue("evaluation", scope, `sha256:${"f".repeat(64)}`, 1, 2), /capacity/);
   assert.equal((await ledger.read()).length, 2048);
   assert.equal((await ledger.read())[0]?.state, "pending");
 });
@@ -148,11 +212,16 @@ test("F1 v4 remains readable; coherent v5 survives storage and pruning", async (
       finalPolicyFirstDeclaredAfter: null, finalPolicyLastDeclaredAfter: null },
     execution: { toolCalls: 1, observations: 1, consequentialCalls: 0, projectMutationEffectCalls: 0,
       verificationCalls: 0, toolErrors: 0, deniedCalls: 0 }, durationMs: 1, cost: 0,
+    recordedAt: "2026-01-01T00:00:00.000Z",
   };
   const v4 = assembleRunExperience(input);
   const v5 = assembleRunExperience({ ...input, workEpisodeId: episodeId });
   assert.equal(v4.schemaVersion, 4);
   assert.equal(v5.schemaVersion, 5);
+  assert.equal(runExperienceRecordFingerprint(v4), "sha256:76fb8aa2d87549d6e4f4e167a828c61bf5f6b1c1416b0be540021c442ffdb6c1");
+  assert.equal(crossProjectExperienceRecordFingerprint(v4), runExperienceRecordFingerprint(v4));
+  assert.equal(crossProjectExperienceRecordFingerprint(v5), runExperienceRecordFingerprint(v5));
+  assert.notEqual(runExperienceRecordFingerprint(v5), runExperienceRecordFingerprint({ ...v5, workEpisodeId: "11111111-1111-4111-8111-111111111111" }));
   assert.deepEqual(parseRunExperience(JSON.parse(JSON.stringify(v4))), v4);
   assert.deepEqual(parseRunExperience(JSON.parse(JSON.stringify(v5))), v5);
   const store = new FileRunExperienceStore({ baseDir: f.projects });
@@ -169,17 +238,59 @@ test("F1 hypothesis contract rejects authority-bearing fields and fingerprint dr
     lineage: "new", parentFingerprint: null, baseRevisionFingerprint: null, summary: "Focus on evidence",
     useWhen: ["Evidence exists"], avoidWhen: ["No evidence"], expectedEffect: "Fewer regressions",
     failureSignals: ["More regressions"], trialHints: [],
-    sources: [{ projectId: "a".repeat(64), recordId: "r", fingerprint: "b".repeat(64) }],
-    discoveryPacketFingerprint: "c".repeat(64) };
+    sources: [{ projectId: "a".repeat(64), recordId: "00000000-0000-4000-8000-000000000000.json", fingerprint: `sha256:${"b".repeat(64)}` }],
+    discoveryPacketFingerprint: `sha256:${"c".repeat(64)}` };
   const hypothesis = { ...semantic, id: "00000000-0000-4000-8000-000000000000", fingerprint: learningFingerprint(semantic) };
   assert.equal(validateStrategyHypothesis(hypothesis), true);
   assert.equal(validateStrategyHypothesis({ ...hypothesis, capability: "task.complete" }), false);
   assert.equal(validateStrategyHypothesis({ ...hypothesis, expectedEffect: "" }), false);
-  assert.equal(validateStrategyHypothesis({ ...hypothesis, fingerprint: "d".repeat(64) }), false);
+  assert.equal(validateStrategyHypothesis({ ...hypothesis, fingerprint: `sha256:${"d".repeat(64)}` }), false);
+  assert.equal(validateStrategyHypothesis({ ...hypothesis, parentFingerprint: `sha256:${"b".repeat(64)}` }), false);
+  assert.equal(validateStrategyHypothesis({ ...hypothesis, baseRevisionFingerprint: `sha256:${"b".repeat(64)}` }), false);
+  const revision = { ...hypothesis, lineage: "revise", parentFingerprint: `sha256:${"b".repeat(64)}` };
+  assert.equal(validateStrategyHypothesis({ ...revision, fingerprint: learningFingerprint((({ id: _id, fingerprint: _fp, ...rest }) => rest)(revision)) }), true);
+});
+test("F1 all frozen artifact shells reject extra fields, malformed IDs and inconsistent relations", () => {
+  const id = "00000000-0000-4000-8000-000000000000";
+  const other = "11111111-1111-4111-8111-111111111111";
+  const fp = `sha256:${"a".repeat(64)}`;
+  const projectId = "a".repeat(64);
+  const ref = { projectId, recordId: `${id}.json`, fingerprint: fp };
+  assert.equal(validateExactEvidenceRef(ref), true);
+  assert.equal(validateExactEvidenceRef({ ...ref, recordId: id }), false);
+  assert.equal(validateExactEvidenceRef({ ...ref, fingerprint: "a".repeat(64) }), false);
+  const binding = { schemaVersion: 1, projectId, episodeId: id, observedStateFingerprint: fp,
+    openedAt: "2026-01-01T00:00:00.000Z", closedAt: null };
+  assert.equal(validateWorkEpisodeBinding(binding), true);
+  assert.equal(validateWorkEpisodeBinding({ ...binding, invented: true }), false);
+  assert.equal(validateWorkEpisodeBinding({ ...binding, closedAt: "2025-01-01T00:00:00.000Z" }), false);
+  const receipt = { schemaVersion: 1, id, jobKey: fp, packetFingerprint: fp, outcome: "none", hypothesisIds: [] };
+  assert.equal(validateDiscoveryReceipt(receipt), true);
+  assert.equal(validateDiscoveryReceipt({ ...receipt, outcome: "published" }), false);
+  assert.equal(validateDiscoveryReceipt({ ...receipt, id: "arbitrary" }), false);
+  const assignment = { schemaVersion: 1, id, projectId, workEpisodeId: other, sessionId: "session",
+    hypothesisId: other, hypothesisFingerprint: fp, comparison: [ref], offerPolicyFingerprint: fp, expiresAt: 100 };
+  assert.equal(validateTrialAssignment(assignment), true);
+  assert.equal(validateTrialAssignment({ ...assignment, permission: "task.complete" }), false);
+  const evidence = { schemaVersion: 1, id, assignmentId: other, hypothesisFingerprint: fp, source: ref,
+    workEpisodeId: other, exposed: true, eligible: true, eligibilityReason: "verified",
+    outcome: "passed", regressions: [], comparison: [] };
+  assert.equal(validateTrialEvidence(evidence), true);
+  assert.equal(validateTrialEvidence({ ...evidence, exposed: false }), false);
+  const evaluation = { schemaVersion: 1, id, hypothesisFingerprint: fp, packetFingerprint: fp,
+    gateVersion: 1, trialEvidence: [other], verdict: "continue-testing", rationale: "not enough data", citedHandles: ["E1"] };
+  assert.equal(validateStrategyEvaluation(evaluation), true);
+  assert.equal(validateStrategyEvaluation({ ...evaluation, verdict: "suspend" }), false);
+  const decision = { schemaVersion: 1, id, scope: { kind: "project", projectId }, action: "promote",
+    actor: "autonomous", hypothesisFingerprint: fp, evaluationId: other, evidenceRefs: [fp],
+    supersedesFingerprint: null, decidedAt: "2026-01-01T00:00:00.000Z" };
+  assert.equal(validateStrategyDecision(decision), true);
+  assert.equal(validateStrategyDecision({ ...decision, evaluationId: null }), false);
+  assert.equal(validateStrategyDecision({ ...decision, action: "reject", supersedesFingerprint: fp }), false);
 });
 test("F1 budget validates bounded positive policy", () => {
   assert.equal(validateLearningBudgetPolicy(DEFAULT_LEARNING_BUDGET_POLICY), true);
   assert.equal(validateLearningBudgetPolicy({ ...DEFAULT_LEARNING_BUDGET_POLICY, maxAttempts: 0 }), false);
   assert.equal(validateLearningBudgetPolicy({ ...DEFAULT_LEARNING_BUDGET_POLICY, perJobTokenCap: 30_000 }), false);
-  assert.match(learningJobKey("evaluation", { kind: "user-global" }, "a".repeat(64), 1), FINGERPRINT);
+  assert.match(learningJobKey("evaluation", { kind: "user-global" }, `sha256:${"a".repeat(64)}`, 1), FINGERPRINT);
 });

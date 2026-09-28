@@ -318,6 +318,14 @@ test("CrossProjectExperienceRefV1 is strict and record fingerprints are canonica
   assert.match(ref.recordFingerprint, /^sha256:[0-9a-f]{64}$/);
   const reordered = reverseObjectKeys(record);
   assert.equal(crossProjectExperienceRecordFingerprint(record), crossProjectExperienceRecordFingerprint(reordered));
+  // v4's historical exact fingerprint stays unchanged; v5 binds the episode as part of the exact record.
+  const v4 = crossProjectExperienceRecordFingerprint(record);
+  const firstV5 = { ...record, schemaVersion: 5, workEpisodeId: "00000000-0000-4000-8000-000000000000" };
+  const secondV5 = { ...firstV5, workEpisodeId: "11111111-1111-4111-8111-111111111111" };
+  assert.equal(crossProjectExperienceRecordFingerprint(record), v4);
+  assert.notEqual(crossProjectExperienceRecordFingerprint(firstV5), crossProjectExperienceRecordFingerprint(secondV5));
+  assert.notEqual(crossProjectExperienceRecordFingerprint(firstV5), v4);
+  assert.equal(crossProjectExperienceRecordFingerprint(firstV5), crossProjectExperienceRecordFingerprint(reverseObjectKeys(firstV5)));
   assert.notEqual(
     crossProjectExperienceRecordFingerprint({ ...record, recordedAt: "2026-07-09T00:00:00.000Z" }),
     ref.recordFingerprint,

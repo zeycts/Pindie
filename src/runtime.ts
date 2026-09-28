@@ -93,12 +93,14 @@ export class PindieRuntime {
   private currentProjectRoot: string | null = null;
   private currentState: PindieState = EMPTY_STATE;
   private currentExternalStateEpoch = 0;
+  private occurrenceEpoch = 0;
   private authorityGeneration = 0;
 
   constructor(store: PindieStateStore, workEpisodes?: WorkEpisodeLedger) { this.store = store; this.workEpisodes = workEpisodes; }
   get state(): PindieState { return this.currentState; }
   get projectRoot(): string | null { return this.currentProjectRoot; }
   get externalStateEpoch(): number { return this.currentExternalStateEpoch; }
+  get taskOccurrenceEpoch(): number { return this.occurrenceEpoch; }
 
   unload(): void {
     this.authorityGeneration += 1;
@@ -205,6 +207,7 @@ export class PindieRuntime {
     this.assertCurrentAuthority(projectRoot, generation, signal);
     this.assertNoPendingSemanticMutation(projectRoot);
     this.currentState = result.state;
+    if (event.type === "start_task" || event.type === "replace_task") this.occurrenceEpoch++;
     if (this.workEpisodes) {
       try { await this.workEpisodes.committed(projectRoot, state, result.state, event); }
       catch (error) { console.warn(`[Pindie] WorkEpisode binding unavailable: ${String(error)}`); }

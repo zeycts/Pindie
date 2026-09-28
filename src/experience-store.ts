@@ -10,6 +10,7 @@ import {
   type RunExperience,
 } from "./run-experience.ts";
 import { getProjectId } from "./store.ts";
+import { EXPERIENCE_RECORD_ID, PROJECT_ID } from "./exact-identity.ts";
 
 export const EXPERIENCE_DIRECTORY_NAME = "experience";
 
@@ -70,9 +71,8 @@ const EMPTY_READ_RESULT: RunExperienceReadResult = Object.freeze({
   invalid: 0,
 });
 
-const CANONICAL_RECORD_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/;
-
-const CANONICAL_PROJECT_NAMESPACE = /^[0-9a-f]{64}$/;
+const CANONICAL_RECORD_FILE = EXPERIENCE_RECORD_ID;
+const CANONICAL_PROJECT_NAMESPACE = PROJECT_ID;
 
 /** Read-only current-project access to immutable Run Experience records. */
 export class FileRunExperienceReader implements RunExperienceReader, RunExperienceProjectReader {

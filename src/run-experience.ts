@@ -1,5 +1,5 @@
 import type { ToolEffect } from "./execution-semantics.ts";
-import { WORK_EPISODE_ID } from "./learning-v1-contract.ts";
+import { UUID_V4 } from "./exact-identity.ts";
 import {
   createStrategyRevisionSelection,
   policySnapshotIdentity,
@@ -292,7 +292,7 @@ function metric(value: number | null): number | null {
 export function assembleRunExperience(
   input: AssembleRunExperienceInput,
 ): RunExperience {
-  if (input.workEpisodeId != null && !WORK_EPISODE_ID.test(input.workEpisodeId)) throw new Error("Invalid WorkEpisodeId.");
+  if (input.workEpisodeId != null && !UUID_V4.test(input.workEpisodeId)) throw new Error("Invalid WorkEpisodeId.");
   const record: RunExperience = {
     ...(input.workEpisodeId == null
       ? { schemaVersion: LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION }
@@ -554,7 +554,7 @@ export function parseRunExperience(value: unknown): RunExperience | null {
     (value.schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION && value.schemaVersion !== LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION) ||
     typeof value.recordedAt !== "string" || value.recordedAt.length === 0 ||
     !hasExactFields(value, value.schemaVersion === 5 ? [...V4_ROOT_FIELDS, "workEpisodeId"] : V4_ROOT_FIELDS) ||
-    (value.schemaVersion === 5 && (typeof value.workEpisodeId !== "string" || !WORK_EPISODE_ID.test(value.workEpisodeId)))) {
+    (value.schemaVersion === 5 && (typeof value.workEpisodeId !== "string" || !UUID_V4.test(value.workEpisodeId)))) {
     return null;
   }
 
