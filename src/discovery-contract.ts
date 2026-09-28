@@ -32,7 +32,7 @@ export interface DiscoveryPacketV1 {
   readonly schemaVersion: 2; readonly selectionVersion: 2; readonly projectId: string;
   readonly policy: ProjectDiscoveryPolicy; readonly eligibleCounts: { readonly new: number; readonly episodes: number; readonly outcomes: number };
   readonly portfolio: { readonly fingerprint: string; readonly revisions: readonly { readonly strategyId: string; readonly kind: "approach" | "modifier"; readonly revisionIdentity: string; readonly revisionFingerprint: string; readonly summary: string; readonly useWhen: readonly string[]; readonly avoidWhen: readonly string[]; readonly principles: readonly string[] }[] };
-  readonly openHypotheses: { readonly fingerprint: string; readonly entries: readonly { readonly ref: LearningArtifactRef; readonly logicalId: string; readonly kind: "approach" | "modifier"; readonly summary: string; readonly expectedEffect: string; readonly useWhen: readonly string[]; readonly avoidWhen: readonly string[]; readonly failureSignals: readonly string[] }[] };
+  readonly openHypotheses: { readonly fingerprint: string; readonly entries: readonly { readonly ref: LearningArtifactRef; readonly logicalId: string; readonly kind: "approach" | "modifier"; readonly baseRevisionFingerprint: string | null; readonly summary: string; readonly expectedEffect: string; readonly useWhen: readonly string[]; readonly avoidWhen: readonly string[]; readonly failureSignals: readonly string[] }[] };
   readonly sources: readonly DiscoverySourceSummary[]; readonly fingerprint: string;
 }
 export function discoveryPacketFingerprint(packet: Omit<DiscoveryPacketV1, "fingerprint">): string { return learningFingerprint(packet); }
@@ -45,9 +45,10 @@ export function validateDiscoveryPacket(v: unknown): v is DiscoveryPacketV1 {
     !Array.isArray(v.portfolio.revisions) || v.portfolio.revisions.length > 64 || !v.portfolio.revisions.every((r: unknown) => obj(r) && exact(r, ["strategyId", "kind", "revisionIdentity", "revisionFingerprint", "summary", "useWhen", "avoidWhen", "principles"]) && string(r.strategyId, 64) && (r.kind === "approach" || r.kind === "modifier") && string(r.revisionIdentity, 128) && FINGERPRINT.test(r.revisionFingerprint as string) && string(r.summary, 512) && [r.useWhen, r.avoidWhen, r.principles].every((items) => Array.isArray(items) && items.length <= 8 && items.every((x: unknown) => string(x, 256)))) ||
     !obj(v.openHypotheses) || !exact(v.openHypotheses, ["fingerprint", "entries"]) || !FINGERPRINT.test(v.openHypotheses.fingerprint as string) ||
     !Array.isArray(v.openHypotheses.entries) || v.openHypotheses.entries.length > 64 ||
-    !v.openHypotheses.entries.every((e: unknown) => obj(e) && exact(e, ["ref", "logicalId", "kind", "summary", "expectedEffect", "useWhen", "avoidWhen", "failureSignals"]) &&
+    !v.openHypotheses.entries.every((e: unknown) => obj(e) && exact(e, ["ref", "logicalId", "kind", "baseRevisionFingerprint", "summary", "expectedEffect", "useWhen", "avoidWhen", "failureSignals"]) &&
       validateLearningArtifactRef(e.ref, "strategy-hypothesis") && e.ref.scope.kind === "project" && e.ref.scope.projectId === v.projectId &&
-      string(e.logicalId, 64) && (e.kind === "approach" || e.kind === "modifier") && string(e.summary, 512) && string(e.expectedEffect, 512) &&
+      string(e.logicalId, 64) && (e.kind === "approach" || e.kind === "modifier") &&
+      (e.baseRevisionFingerprint === null || FINGERPRINT.test(e.baseRevisionFingerprint as string)) && string(e.summary, 512) && string(e.expectedEffect, 512) &&
       [e.useWhen, e.avoidWhen, e.failureSignals].every((items) => Array.isArray(items) && items.length <= 8 && items.every((x: unknown) => string(x, 256)))) ||
     v.openHypotheses.fingerprint !== learningFingerprint(v.openHypotheses.entries) ||
     !Array.isArray(v.sources) || v.sources.length < (v.policy as ProjectDiscoveryPolicy).minNewExperiences || v.sources.length > (v.policy as ProjectDiscoveryPolicy).maxCorpus) return false;

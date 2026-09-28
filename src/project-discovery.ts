@@ -87,7 +87,7 @@ export async function buildProjectDiscoveryPacket(projectId: string, dependencie
       metrics: experience.metrics,
     };
   });
-  const openEntries = open.map((h) => ({ ref: hypothesisRef(h), logicalId: h.logicalId, kind: h.kind, summary: h.summary, expectedEffect: h.expectedEffect,
+  const openEntries = open.map((h) => ({ ref: hypothesisRef(h), logicalId: h.logicalId, kind: h.kind, baseRevisionFingerprint: h.baseRevisionFingerprint, summary: h.summary, expectedEffect: h.expectedEffect,
     useWhen: h.useWhen, avoidWhen: h.avoidWhen, failureSignals: h.failureSignals }));
   const content = { schemaVersion: 2 as const, selectionVersion: 2 as const, projectId, policy,
     eligibleCounts: { new: fresh.length, episodes: episodes.size, outcomes: outcomes.size },

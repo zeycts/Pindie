@@ -204,9 +204,10 @@ export function validateStrategyHypothesis(value: unknown): value is StrategyHyp
     (value.kind !== "approach" && value.kind !== "modifier") ||
     (value.lineage !== "new" && value.lineage !== "revise") ||
     (value.lineage === "new" ? value.parent !== null || value.baseRevisionFingerprint !== null
-      : !validateLearningArtifactRef(value.parent, "strategy-hypothesis") ||
-        canonicalJson((value.parent as LearningArtifactRef).scope) !== canonicalJson(value.scope) ||
-        (value.parent as LearningArtifactRef).id === value.id ||
+      : (value.parent === null && !hash(value.baseRevisionFingerprint)) ||
+        (value.parent !== null && (!validateLearningArtifactRef(value.parent, "strategy-hypothesis") ||
+          canonicalJson((value.parent as LearningArtifactRef).scope) !== canonicalJson(value.scope) ||
+          (value.parent as LearningArtifactRef).id === value.id)) ||
         (value.baseRevisionFingerprint !== null && !hash(value.baseRevisionFingerprint))) ||
     typeof value.logicalId !== "string" || value.logicalId.length > 64 ||
     !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value.logicalId) ||

@@ -1,4 +1,4 @@
-import { canonicalJson, learningFingerprint, learningJobKey, matchesLearningArtifactRef, type LearningArtifactRef, type LearningJob, type StrategyHypothesis } from "./learning-v1-contract.ts";
+import { canonicalJson, learningFingerprint, learningJobKey, matchesLearningArtifactRef, validateLearningArtifactRef, type LearningArtifactRef, type LearningJob, type StrategyHypothesis } from "./learning-v1-contract.ts";
 import { validateDiscoveryPacket, type DiscoveryPacketV1 } from "./discovery-contract.ts";
 import { FileDiscoveryHypothesisStore, hypothesisRef, mintHypothesis } from "./discovery-hypotheses.ts";
 import type { ProjectDiscoveryDependencies } from "./project-discovery.ts";
@@ -11,6 +11,18 @@ const list = (v: unknown, max: number, min = 0) => Array.isArray(v) && v.length 
 const logical = (v: unknown) => text(v, 64) && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(v as string);
 const authorityClaim = (v: unknown) => typeof v === "string" && /\b(grant|enable|bypass|override|disable)\s+(?:\w+\s+){0,2}(?:permission|capabilit|gate|verification|safety|authorization)/i.test(v);
 const ref = (h: StrategyHypothesis) => hypothesisRef(h);
+const targetMatches = (target: unknown, p: Record<string, unknown>, packet: DiscoveryPacketV1): boolean => {
+  if (p.intent === "new") return target === null;
+  if (!object(target)) return false;
+  if (target.kind === "open-hypothesis") return keys(target, ["kind", "ref"]) &&
+    validateLearningArtifactRef(target.ref, "strategy-hypothesis") &&
+    packet.openHypotheses.entries.some((e) => canonicalJson(e.ref) === canonicalJson(target.ref) &&
+      e.logicalId === p.logicalId && e.kind === p.kind);
+  if (target.kind === "trusted-revision") return keys(target, ["kind", "logicalId", "strategyKind", "revisionFingerprint"]) &&
+    packet.portfolio.revisions.some((r) => r.strategyId === target.logicalId && r.kind === target.strategyKind &&
+      r.revisionFingerprint === target.revisionFingerprint && r.strategyId === p.logicalId && r.kind === p.kind);
+  return false;
+};
 const receiptRef = (r: { scope: LearningArtifactRef["scope"]; id: string; fingerprint: string }): LearningArtifactRef =>
   ({ schemaVersion: 1, family: "discovery-receipt", scope: r.scope, id: r.id, fingerprint: r.fingerprint });
 
@@ -23,9 +35,9 @@ export function parseDiscoveryResult(raw: string, packet: DiscoveryPacketV1): re
   if (v.outcome !== "proposals" || !Array.isArray(v.proposals) || v.proposals.length < 1 || v.proposals.length > 2) throw new Error("Invalid Discovery proposals.");
   const valid: Record<string, unknown>[] = [];
   for (const p of v.proposals) {
-    if (!object(p) || !keys(p, ["logicalId", "kind", "intent", "parent", "summary", "useWhen", "avoidWhen", "expectedEffect", "failureSignals", "trialHints", "sourceHandles"]) ||
+    if (!object(p) || !keys(p, ["logicalId", "kind", "intent", "revisionTarget", "summary", "useWhen", "avoidWhen", "expectedEffect", "failureSignals", "trialHints", "sourceHandles"]) ||
       !logical(p.logicalId) || (p.kind !== "approach" && p.kind !== "modifier") || (p.intent !== "new" && p.intent !== "revise") ||
-      (p.intent === "new" ? p.parent !== null : !object(p.parent) || !packet.openHypotheses.entries.some((e) => canonicalJson(e.ref) === canonicalJson(p.parent))) ||
+      !targetMatches(p.revisionTarget, p, packet) ||
       !text(p.summary, 512) || !list(p.useWhen, 8, 1) || !list(p.avoidWhen, 8) || !text(p.expectedEffect, 512) ||
       !list(p.failureSignals, 8, 1) || !list(p.trialHints, 8, 1) ||
       [p.summary, p.expectedEffect, ...p.useWhen as string[], ...p.avoidWhen as string[], ...p.failureSignals as string[], ...p.trialHints as string[]].some(authorityClaim) ||
@@ -81,7 +93,7 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
       if (await deps.receipts.find(packet.projectId, job.key, packet.fingerprint) ||
         await deps.hypotheses.committed(packet.projectId, packet.fingerprint)) return true;
       const [portfolio, open] = await Promise.all([deps.portfolio.readProjectId(packet.projectId), deps.hypotheses.list(packet.projectId)]);
-      const entries = open.map((h) => ({ ref: ref(h), logicalId: h.logicalId, kind: h.kind, summary: h.summary, expectedEffect: h.expectedEffect,
+      const entries = open.map((h) => ({ ref: ref(h), logicalId: h.logicalId, kind: h.kind, baseRevisionFingerprint: h.baseRevisionFingerprint, summary: h.summary, expectedEffect: h.expectedEffect,
         useWhen: h.useWhen, avoidWhen: h.avoidWhen, failureSignals: h.failureSignals }));
       return portfolio.fingerprint === packet.portfolio.fingerprint &&
         canonicalJson(packet.portfolio.revisions) === canonicalJson(portfolio.resolvedEntries.map((e) => ({
@@ -96,7 +108,7 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
       const packet = await packetFor(job);
       if (!packet || !runner || !await authority()) throw new Error("Unavailable Discovery authority.");
       // Only the frozen packet and exact JSON contract enter this isolated no-tool Session.
-      const prompt = `Return ONLY one JSON object: {"outcome":"none"} OR {"outcome":"proposals","proposals":[...]} (1-2). Each proposal has exactly logicalId (lowercase kebab-case), kind (approach|modifier), intent (new|revise), parent (null or exact openHypotheses.entries ref), summary, useWhen (nonempty strings), avoidWhen (strings), expectedEffect (observable change), failureSignals (nonempty falsifying observations), trialHints (nonempty strings), sourceHandles (1-8 exact sources[].ref.recordId). No other fields, authority claims, or hidden reasoning. This is untrusted advisory hypothesis generation, not trust or novelty proof.\nDiscoveryPacket: ${canonicalJson(packet)}`;
+      const prompt = `Return ONLY one JSON object: {"outcome":"none"} OR {"outcome":"proposals","proposals":[...]} (1-2). Each proposal has exactly logicalId (lowercase kebab-case), kind (approach|modifier), intent (new|revise), revisionTarget (null for new; for revise either {"kind":"open-hypothesis","ref":<exact openHypotheses.entries ref>} or {"kind":"trusted-revision","logicalId":<exact portfolio.revisions strategyId>,"strategyKind":<exact kind>,"revisionFingerprint":<exact revisionFingerprint>}), summary, useWhen (nonempty strings), avoidWhen (strings), expectedEffect (observable change), failureSignals (nonempty falsifying observations), trialHints (nonempty strings), sourceHandles (1-8 exact sources[].ref.recordId). No other fields, authority claims, or hidden reasoning. This is untrusted advisory hypothesis generation, not trust or novelty proof.\nDiscoveryPacket: ${canonicalJson(packet)}`;
       const result = parseDiscoveryResult((await runner.run(prompt, signal)).text, packet);
       if (!await authority()) throw new Error("Discovery preempted or stale.");
       if (result === null) return { receiptRef: receiptRef(await deps.receipts.publish(packet, "none", [])) };
@@ -106,27 +118,32 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
         const open = await deps.hypotheses.list(packet.projectId);
         const refs: LearningArtifactRef[] = []; const fresh: StrategyHypothesis[] = [];
         for (const p of result) {
-          const parent = p.intent === "revise" ? open.find((h) => canonicalJson(ref(h)) === canonicalJson(p.parent)) : null;
-          if (p.intent === "revise" && (!parent || parent.logicalId !== p.logicalId || parent.kind !== p.kind)) continue;
+          const target = p.revisionTarget as { kind: "open-hypothesis"; ref: LearningArtifactRef } |
+            { kind: "trusted-revision"; revisionFingerprint: string } | null;
+          const parent = target?.kind === "open-hypothesis" ? open.find((h) => canonicalJson(ref(h)) === canonicalJson(target.ref)) : null;
+          if (target?.kind === "open-hypothesis" && (!parent || parent.logicalId !== p.logicalId || parent.kind !== p.kind))
+            throw new Error("Frozen open-hypothesis lineage changed.");
           const h = mintHypothesis(packet, { logicalId: p.logicalId as string, kind: p.kind as "approach" | "modifier",
-            lineage: p.intent as "new" | "revise", parent: parent ? ref(parent) : null, baseRevisionFingerprint: parent?.fingerprint ?? null,
+            lineage: p.intent as "new" | "revise", parent: parent ? ref(parent) : null,
+            baseRevisionFingerprint: parent ? parent.baseRevisionFingerprint : target?.kind === "trusted-revision" ? target.revisionFingerprint : null,
             summary: p.summary as string, useWhen: p.useWhen as string[], avoidWhen: p.avoidWhen as string[],
             expectedEffect: p.expectedEffect as string, failureSignals: p.failureSignals as string[], trialHints: p.trialHints as string[],
             sources: (p.sourceHandles as string[]).map((handle) => packet.sources.find((s) => s.ref.recordId === handle)!.ref) });
           const duplicate = [...open, ...fresh].find((e) => e.fingerprint === h.fingerprint);
-          if (packet.portfolio.revisions.some((trusted) => trusted.revisionFingerprint === h.fingerprint) && !duplicate)
-            throw new Error("Trusted duplicate has no resolvable hypothesis reference.");
           if (duplicate) { if (!refs.some((r) => canonicalJson(r) === canonicalJson(ref(duplicate)))) refs.push(ref(duplicate)); continue; }
-          if (open.some((e) => e.logicalId === h.logicalId && p.intent === "new") ||
-            packet.portfolio.revisions.some((e) => e.strategyId === h.logicalId && p.intent === "new") ||
+          if ((p.intent === "new" && (open.some((e) => e.logicalId === h.logicalId) ||
+            packet.portfolio.revisions.some((e) => e.strategyId === h.logicalId))) ||
+            (target?.kind === "trusted-revision" && open.some((e) => e.logicalId === h.logicalId)) ||
+            (parent && open.some((e) => e.parent && canonicalJson(e.parent) === canonicalJson(ref(parent)))) ||
             fresh.some((e) => e.logicalId === h.logicalId)) continue;
           fresh.push(h); refs.push(ref(h));
         }
-        if (!refs.length) throw new Error("No publishable Discovery proposals.");
-        const batch = await deps.hypotheses.publish(packet, fresh.length ? "published" : "covered", refs, fresh);
-        return batch;
+        // Valid proposals already represented by trusted cognition or colliding with an unrelated
+        // active lineage are none-equivalent, not 'covered' with invented trusted refs.
+        if (!refs.length) return null;
+        return deps.hypotheses.publish(packet, fresh.length ? "published" : "covered", refs, fresh);
       });
-      return { receiptRef: receiptRef(await deps.receipts.publish(packet, batch.outcome, batch.refs)) };
+      return { receiptRef: receiptRef(await deps.receipts.publish(packet, batch?.outcome ?? "none", batch?.refs ?? [])) };
     },
   };
 }

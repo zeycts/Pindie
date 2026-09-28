@@ -264,6 +264,10 @@ test("F1 hypothesis contract rejects authority-bearing fields and fingerprint dr
   assert.equal(validateStrategyHypothesis({ ...hypothesis, baseRevisionFingerprint: `sha256:${"b".repeat(64)}` }), false);
   const revision = { ...hypothesis, lineage: "revise", parent: { schemaVersion: 1, family: "strategy-hypothesis", scope: semantic.scope, id: "11111111-1111-4111-8111-111111111111", fingerprint: `sha256:${"b".repeat(64)}` } };
   assert.equal(validateStrategyHypothesis({ ...revision, fingerprint: hypothesisFingerprint((({ id: _id, fingerprint: _fp, ...rest }) => rest)(revision) as Parameters<typeof hypothesisFingerprint>[0]) }), true);
+  const trustedRevision = { ...hypothesis, lineage: "revise", parent: null, baseRevisionFingerprint: `sha256:${"e".repeat(64)}` };
+  assert.equal(validateStrategyHypothesis({ ...trustedRevision, fingerprint: hypothesisFingerprint((({ id: _id, fingerprint: _fp, ...rest }) => rest)(trustedRevision) as Parameters<typeof hypothesisFingerprint>[0]) }), true);
+  const unanchored = { ...hypothesis, lineage: "revise", parent: null, baseRevisionFingerprint: null };
+  assert.equal(validateStrategyHypothesis({ ...unanchored, fingerprint: hypothesisFingerprint((({ id: _id, fingerprint: _fp, ...rest }) => rest)(unanchored) as Parameters<typeof hypothesisFingerprint>[0]) }), false);
 });
 test("F1 all frozen artifact shells reject extra fields, malformed IDs and inconsistent relations", () => {
   const id = "00000000-0000-4000-8000-000000000000";

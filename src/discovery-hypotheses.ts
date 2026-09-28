@@ -75,9 +75,14 @@ export class FileDiscoveryHypothesisStore {
     const content = { schemaVersion: 1 as const, packetFingerprint: packet.fingerprint, outcome, refs, newHypotheses };
     const commit: DiscoveryCommit = { ...content, fingerprint: learningFingerprint(content) };
     if (!validateDiscoveryPacket(packet) || !this.valid(commit, packet.projectId) ||
+      refs.some((r) => !newHypotheses.some((h) => matchesLearningArtifactRef(r, h)) &&
+        !packet.openHypotheses.entries.some((e) => canonicalJson(e.ref) === canonicalJson(r))) ||
       newHypotheses.some((h) => h.sources.some((s) => !packet.sources.some((p) => canonicalJson(p.ref) === canonicalJson(s))) ||
-        (h.lineage === "revise" && !packet.openHypotheses.entries.some((e) => canonicalJson(e.ref) === canonicalJson(h.parent) &&
-          e.logicalId === h.logicalId && e.kind === h.kind && e.ref.fingerprint === h.baseRevisionFingerprint))))
+        (h.lineage === "revise" && !(h.parent === null
+          ? packet.portfolio.revisions.some((r) => r.strategyId === h.logicalId && r.kind === h.kind &&
+              r.revisionFingerprint === h.baseRevisionFingerprint)
+          : packet.openHypotheses.entries.some((e) => canonicalJson(e.ref) === canonicalJson(h.parent) &&
+              e.logicalId === h.logicalId && e.kind === h.kind && e.baseRevisionFingerprint === h.baseRevisionFingerprint)))))
       throw new Error("Invalid hypothesis publication.");
     const previous = await this.committed(packet.projectId, packet.fingerprint);
     if (previous) {

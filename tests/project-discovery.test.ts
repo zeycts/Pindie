@@ -191,7 +191,7 @@ test("D1 bounds and corrupted evidence/portfolio/receipt fail closed without blo
 });
 
 const proposal = (packet: NonNullable<Awaited<ReturnType<typeof buildProjectDiscoveryPacket>>>, overrides: Record<string, unknown> = {}) => ({
-  logicalId: "discovery-focus", kind: "approach", intent: "new", parent: null,
+  logicalId: "discovery-focus", kind: "approach", intent: "new", revisionTarget: null,
   summary: "Focus on the immediate evidence", useWhen: ["Evidence is available"], avoidWhen: [],
   expectedEffect: "Fewer failed verification checks on similar Tasks", failureSignals: ["More failed checks"],
   trialHints: ["Compare verified results"], sourceHandles: [packet.sources[0]!.ref.recordId], ...overrides,
@@ -280,7 +280,7 @@ test("D2 duplicate open hypothesis is covered and revision needs the exact froze
   assert.equal(await f.handler.matchesOutput(f.job, first.receiptRef), true);
   // Another packet with the same exact sources, but changed open comparison, retains semantic dedupe identity.
   const existing = (await f.deps.hypotheses.list(id))[0]!;
-  const openEntries = [{ ref: hypothesisRef(existing), logicalId: existing.logicalId, kind: existing.kind,
+  const openEntries = [{ ref: hypothesisRef(existing), logicalId: existing.logicalId, kind: existing.kind, baseRevisionFingerprint: existing.baseRevisionFingerprint,
     summary: existing.summary, expectedEffect: existing.expectedEffect,
     useWhen: existing.useWhen, avoidWhen: existing.avoidWhen, failureSignals: existing.failureSignals }];
   const content = { ...f.packet, openHypotheses: { fingerprint: learningFingerprint(openEntries), entries: openEntries } };
@@ -300,12 +300,12 @@ test("D2 duplicate open hypothesis is covered and revision needs the exact froze
     { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(next)] }) }) });
   assert.equal((await f.deps.receipts.resolve(covered.receiptRef, nextJob.key, next.fingerprint))?.outcome, "covered");
   assert.equal((await f.deps.hypotheses.list(id)).length, 1);
-  const wrongParent = proposal(next, { intent: "revise", parent: { ...hypothesisRef(existing), fingerprint: learningFingerprint("wrong") } });
+  const wrongParent = proposal(next, { intent: "revise", revisionTarget: { kind: "open-hypothesis", ref: { ...hypothesisRef(existing), fingerprint: learningFingerprint("wrong") } } });
   assert.throws(() => parseDiscoveryResult(JSON.stringify({ outcome: "proposals", proposals: [wrongParent] }), next));
-  const wrongLogical = proposal(next, { intent: "revise", parent: hypothesisRef(existing), logicalId: "unrelated" });
+  const wrongLogical = proposal(next, { intent: "revise", revisionTarget: { kind: "open-hypothesis", ref: hypothesisRef(existing) }, logicalId: "unrelated" });
   const { fingerprint: _f, ...otherUnsigned } = next;
   const other = { ...otherUnsigned, fingerprint: learningFingerprint(otherUnsigned) };
-  assert.ok(parseDiscoveryResult(JSON.stringify({ outcome: "proposals", proposals: [wrongLogical] }), other));
+  assert.throws(() => parseDiscoveryResult(JSON.stringify({ outcome: "proposals", proposals: [wrongLogical] }), other));
   // Semantic parent mismatch is rejected at reconciliation; no fresh cognition follows.
   const changed = { ...otherUnsigned, eligibleCounts: { ...next.eligibleCounts, new: next.eligibleCounts.new + 1 } };
   const third = { ...changed, fingerprint: learningFingerprint(changed) };
@@ -314,7 +314,7 @@ test("D2 duplicate open hypothesis is covered and revision needs the exact froze
   await assert.rejects(f.handler.execute(thirdJob, async () => true, new AbortController().signal,
     { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [wrongLogical] }) }) }));
   assert.equal((await f.deps.hypotheses.list(id)).length, 1);
-  const revised = proposal(third, { intent: "revise", parent: hypothesisRef(existing),
+  const revised = proposal(third, { intent: "revise", revisionTarget: { kind: "open-hypothesis", ref: hypothesisRef(existing) },
     expectedEffect: "Fewer tool errors on similar Tasks" });
   const output = await f.handler.execute(thirdJob, async () => true, new AbortController().signal,
     { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [revised] }) }) });
@@ -322,6 +322,88 @@ test("D2 duplicate open hypothesis is covered and revision needs the exact froze
   const children = await f.deps.hypotheses.list(id);
   assert.equal(children.length, 2);
   assert.deepEqual(children.find((h) => h.lineage === "revise")?.parent, hypothesisRef(existing));
+  assert.equal(children.find((h) => h.lineage === "revise")?.baseRevisionFingerprint, null);
+});
+test("D2 covered batch recovers exact receipt after interrupted publication without model rerun", async (t) => {
+  const f = await prepared(t);
+  await f.handler.execute(f.job, async () => true, new AbortController().signal,
+    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
+  const h = (await f.deps.hypotheses.list(id))[0]!;
+  const entries = [{ ref: hypothesisRef(h), logicalId: h.logicalId, kind: h.kind,
+    baseRevisionFingerprint: h.baseRevisionFingerprint, summary: h.summary, expectedEffect: h.expectedEffect,
+    useWhen: h.useWhen, avoidWhen: h.avoidWhen, failureSignals: h.failureSignals }];
+  const { fingerprint: _prior, ...content } = { ...f.packet, openHypotheses: { fingerprint: learningFingerprint(entries), entries } };
+  const packet = { ...content, fingerprint: learningFingerprint(content) };
+  await f.deps.packets.publish(packet);
+  const job = await f.deps.jobs.enqueue("project-discovery", { kind: "project", projectId: id }, packet.fingerprint, 2, Date.now());
+  const original = f.deps.receipts.publish.bind(f.deps.receipts);
+  f.deps.receipts.publish = async () => { throw new Error("crash"); };
+  try {
+    await assert.rejects(f.handler.execute(job, async () => true, new AbortController().signal,
+      { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(packet)] }) }) }));
+  } finally { f.deps.receipts.publish = original; }
+  const commit = await f.deps.hypotheses.committed(id, packet.fingerprint);
+  assert.equal(commit?.outcome, "covered");
+  assert.deepEqual(commit?.refs, [hypothesisRef(h)]);
+  assert.deepEqual(commit?.newHypotheses, []);
+  const recovered = await createProjectDiscoveryHandler(f.deps).resolveCommitted(job);
+  assert.ok(recovered);
+  assert.equal((await f.deps.receipts.resolve(recovered, job.key, packet.fingerprint))?.outcome, "covered");
+  assert.equal(await f.handler.matchesOutput(job, recovered), true);
+  assert.equal((await f.deps.hypotheses.list(id)).length, 1);
+});
+test("D2 trusted revision and chained open revision retain the exact trusted base", async (t) => {
+  const f = await prepared(t);
+  const trusted = f.packet.portfolio.revisions.find((r) => r.strategyId === "direct-action")!;
+  assert.ok(trusted);
+  const target = { kind: "trusted-revision", logicalId: trusted.strategyId, strategyKind: trusted.kind,
+    revisionFingerprint: trusted.revisionFingerprint };
+  const result = proposal(f.packet, { logicalId: trusted.strategyId, kind: trusted.kind, intent: "revise", revisionTarget: target });
+  assert.equal(await f.handler.isCurrent(f.job), true);
+  const first = await f.handler.execute(f.job, async () => true, new AbortController().signal,
+    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [result] }) }) });
+  assert.equal((await f.deps.receipts.resolve(first.receiptRef, f.job.key, f.packet.fingerprint))?.outcome, "published");
+  const base = (await f.deps.hypotheses.list(id))[0]!;
+  assert.equal(base.parent, null);
+  assert.equal(base.baseRevisionFingerprint, trusted.revisionFingerprint);
+  assert.equal(base.logicalId, trusted.strategyId);
+  const entries = [{ ref: hypothesisRef(base), logicalId: base.logicalId, kind: base.kind,
+    baseRevisionFingerprint: base.baseRevisionFingerprint, summary: base.summary, expectedEffect: base.expectedEffect,
+    useWhen: base.useWhen, avoidWhen: base.avoidWhen, failureSignals: base.failureSignals }];
+  const unsigned = { ...f.packet, openHypotheses: { fingerprint: learningFingerprint(entries), entries } };
+  const { fingerprint: _prior, ...content } = unsigned;
+  const packet = { ...content, fingerprint: learningFingerprint(content) };
+  await f.deps.packets.publish(packet);
+  const job = await f.deps.jobs.enqueue("project-discovery", { kind: "project", projectId: id }, packet.fingerprint, 2, Date.now());
+  assert.equal(await f.handler.isCurrent(job), true);
+  const second = proposal(packet, { logicalId: trusted.strategyId, kind: trusted.kind, intent: "revise",
+    revisionTarget: { kind: "open-hypothesis", ref: hypothesisRef(base) }, expectedEffect: "Fewer failed checks after revisions" });
+  await f.handler.execute(job, async () => true, new AbortController().signal,
+    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [second] }) }) });
+  const child = (await f.deps.hypotheses.list(id)).find((h) => h.parent !== null)!;
+  assert.deepEqual(child.parent, hypothesisRef(base));
+  assert.equal(child.baseRevisionFingerprint, trusted.revisionFingerprint);
+  assert.equal((await f.deps.hypotheses.list(id)).length, 2);
+});
+test("D2 trusted targets must resolve exactly; unrelated new collisions are none-equivalent", async (t) => {
+  const f = await prepared(t);
+  const trusted = f.packet.portfolio.revisions.find((r) => r.strategyId === "direct-action")!;
+  const valid = { kind: "trusted-revision", logicalId: trusted.strategyId, strategyKind: trusted.kind,
+    revisionFingerprint: trusted.revisionFingerprint };
+  for (const bad of [{ ...valid, revisionFingerprint: learningFingerprint("invented") },
+    { ...valid, logicalId: "missing" }, { ...valid, strategyKind: trusted.kind === "approach" ? "modifier" : "approach" }]) {
+    const invalid = proposal(f.packet, { logicalId: trusted.strategyId, kind: trusted.kind, intent: "revise", revisionTarget: bad });
+    await assert.rejects(f.handler.execute(f.job, async () => true, new AbortController().signal,
+      { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [invalid] }) }) }));
+  }
+  const mismatch = proposal(f.packet, { logicalId: "unrelated", kind: trusted.kind, intent: "revise", revisionTarget: valid });
+  assert.throws(() => parseDiscoveryResult(JSON.stringify({ outcome: "proposals", proposals: [mismatch] }), f.packet));
+  assert.deepEqual(await f.deps.receipts.read(id), []);
+  const collision = proposal(f.packet, { logicalId: trusted.strategyId, kind: trusted.kind });
+  const outcome = await f.handler.execute(f.job, async () => true, new AbortController().signal,
+    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [collision] }) }) });
+  assert.equal((await f.deps.receipts.resolve(outcome.receiptRef, f.job.key, f.packet.fingerprint))?.outcome, "none");
+  assert.deepEqual(await f.deps.hypotheses.list(id), []);
 });
 test("D2 bounded publication rejects conflicting fingerprints and capacity without erasing open cognition", async (t) => {
   const f = await prepared(t);
