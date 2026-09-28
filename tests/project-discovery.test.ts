@@ -10,6 +10,7 @@ import { getProjectId, FileStateStore } from "../src/store.ts";
 import { PindieRuntime } from "../src/runtime.ts";
 import { assembleRunExperience } from "../src/run-experience.ts";
 import { FileRunExperienceStore, FileRunExperienceReader } from "../src/experience-store.ts";
+import { FileRunExperienceMaintenance, MAX_LIVE_ORDINARY_EXPERIENCE_PER_PROJECT } from "../src/experience-lifecycle.ts";
 import { FileProjectTrustedStrategyPortfolioReader } from "../src/strategy-trust-safety.ts";
 import { FileDiscoveryReceiptStore } from "../src/discovery-receipts.ts";
 import { FileDiscoveryPacketStore } from "../src/discovery-packets.ts";
@@ -555,4 +556,73 @@ test("D2 comparison drift makes old job stale; preemption leaves nothing committ
   controller.abort(); release();
   await assert.rejects(run);
   assert.deepEqual(await f.deps.receipts.read(id), []);
+});
+test("D2 unresolved hypothesis source Experience survives pruning and restart", async (t) => {
+  const f = await prepared(t);
+  await f.handler.execute(f.job, async () => true, new AbortController().signal,
+    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
+  const [hypothesis] = await f.deps.hypotheses.list(id);
+  assert.ok(hypothesis && hypothesis.sources.length > 0);
+  const protectedName = hypothesis.sources[0]!.recordId;
+  const experienceDir = join(f.projects, id, "experience");
+  assert.ok((await readdir(experienceDir)).includes(protectedName));
+  for (let i = 6; i < MAX_LIVE_ORDINARY_EXPERIENCE_PER_PROJECT + 15; i++) await f.add(i);
+  const maintenance = new FileRunExperienceMaintenance({ projectsBaseDir: f.projects, globalBaseDir: f.global });
+  assert.ok(await maintenance.prune(ROOT) > 0);
+  assert.ok((await readdir(experienceDir)).includes(protectedName));
+  // Restart rebuilds the same protection from the immutable store alone.
+  const restarted = new FileRunExperienceMaintenance({ projectsBaseDir: f.projects, globalBaseDir: join(f.dir, "global") });
+  assert.equal(await restarted.prune(ROOT), 0);
+  assert.ok((await readdir(experienceDir)).includes(protectedName));
+});
+test("D2 corrupt hypothesis store fails closed for pruning without undoing a committed Experience save", async (t) => {
+  const f = await prepared(t);
+  for (let i = 6; i < MAX_LIVE_ORDINARY_EXPERIENCE_PER_PROJECT + 5; i++) await f.add(i);
+  const hypothesesDir = join(f.projects, id, "learning-v1", "hypotheses");
+  await mkdir(hypothesesDir, { recursive: true });
+  await writeFile(join(hypothesesDir, "not-a-canonical-commit.json"), "{}");
+  const maintenance = new FileRunExperienceMaintenance({ projectsBaseDir: f.projects, globalBaseDir: f.global });
+  await assert.rejects(maintenance.prune(ROOT));
+  const warnings: string[] = [];
+  const warn = console.warn;
+  console.warn = (message) => warnings.push(String(message));
+  try {
+    const store = new FileRunExperienceStore({ baseDir: f.projects, onSaved: async (root) => { await maintenance.prune(root); } });
+    const existing = (await f.deps.reader.readProjectId(id)).records[0]!.experience;
+    const before = (await readdir(join(f.projects, id, "experience"))).length;
+    await store.save(ROOT, existing); // a committed save; only its best-effort cleanup fails
+    assert.equal(warnings.length, 1);
+    assert.equal((await readdir(join(f.projects, id, "experience"))).length, before + 1);
+  } finally { console.warn = warn; }
+});
+test("D2 model proposal needs a new source; context-only is discarded", async (t) => {
+  const f = await prepared(t);
+  await f.handler.execute(f.job, async () => true, new AbortController().signal,
+    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
+  for (let i = 6; i < 12; i++) await f.add(i);
+  // Rebuild from the live corpus: six new Experiences plus six assessed context records.
+  const packet = (await buildProjectDiscoveryPacket(id, f.deps))!;
+  assert.ok(packet.sources.some((s) => s.role === "new") && packet.sources.some((s) => s.role === "context"));
+  const { fingerprint: _alt, ...altUnsigned } = { ...packet, eligibleCounts: { ...packet.eligibleCounts, new: packet.eligibleCounts.new + 1 } };
+  const packetAlt = { ...altUnsigned, fingerprint: learningFingerprint(altUnsigned) };
+  await f.deps.packets.publish(packet);
+  await f.deps.packets.publish(packetAlt);
+  const contextHandle = packet.sources.find((s) => s.role === "context")!.ref.recordId;
+  const newHandle = packet.sources.find((s) => s.role === "new")!.ref.recordId;
+  const contextJob = await f.deps.jobs.enqueue("project-discovery", { kind: "project", projectId: id }, packetAlt.fingerprint, packetAlt.policy.selectionVersion, Date.now());
+  const contextOnly = proposal(packetAlt, { logicalId: "context-only-focus", sourceHandles: [contextHandle], expectedEffect: "Context-only effect" });
+  const none = await f.handler.execute(contextJob, async () => true, new AbortController().signal,
+    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [contextOnly] }) }) });
+  assert.equal((await f.deps.receipts.resolve(none.receiptRef, contextJob.key, packetAlt.fingerprint))?.outcome, "none");
+  assert.equal((await f.deps.hypotheses.list(id)).length, 1);
+  const newJob = await f.deps.jobs.enqueue("project-discovery", { kind: "project", projectId: id }, packet.fingerprint, packet.policy.selectionVersion, Date.now() + 1);
+  const withNew = proposal(packet, { logicalId: "new-plus-context", sourceHandles: [newHandle, contextHandle], expectedEffect: "New plus context effect" });
+  const published = await f.handler.execute(newJob, async () => true, new AbortController().signal,
+    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [withNew] }) }) });
+  assert.equal((await f.deps.receipts.resolve(published.receiptRef, newJob.key, packet.fingerprint))?.outcome, "published");
+  const refreshed = await f.deps.hypotheses.list(id);
+  assert.equal(refreshed.length, 2);
+  const added = refreshed.find((x) => x.logicalId === "new-plus-context")!;
+  assert.equal(added.sources.length, 2);
+  assert.ok(added.sources.some((s) => s.recordId === newHandle) && added.sources.some((s) => s.recordId === contextHandle));
 });

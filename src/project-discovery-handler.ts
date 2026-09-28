@@ -108,7 +108,7 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
       const packet = await packetFor(job);
       if (!packet || !runner || !await authority()) throw new Error("Unavailable Discovery authority.");
       // Only the frozen packet and exact JSON contract enter this isolated no-tool Session.
-      const prompt = `Return ONLY one JSON object: {"outcome":"none"} OR {"outcome":"proposals","proposals":[...]} (1-2). Each proposal has exactly logicalId (lowercase kebab-case), kind (approach|modifier), intent (new|revise), revisionTarget (null for new; for revise either {"kind":"open-hypothesis","ref":<exact openHypotheses.entries ref>} or {"kind":"trusted-revision","logicalId":<exact portfolio.revisions strategyId>,"strategyKind":<exact kind>,"revisionFingerprint":<exact revisionFingerprint>}), summary, useWhen (nonempty strings), avoidWhen (strings), expectedEffect (observable change), failureSignals (nonempty falsifying observations), trialHints (nonempty strings), sourceHandles (1-8 exact sources[].ref.recordId). No other fields, authority claims, or hidden reasoning. This is untrusted advisory hypothesis generation, not trust or novelty proof.\nDiscoveryPacket: ${canonicalJson(packet)}`;
+      const prompt = `Return ONLY one JSON object: {"outcome":"none"} OR {"outcome":"proposals","proposals":[...]} (1-2). Each proposal has exactly logicalId (lowercase kebab-case), kind (approach|modifier), intent (new|revise), revisionTarget (null for new; for revise either {"kind":"open-hypothesis","ref":<exact openHypotheses.entries ref>} or {"kind":"trusted-revision","logicalId":<exact portfolio.revisions strategyId>,"strategyKind":<exact kind>,"revisionFingerprint":<exact revisionFingerprint>}), summary, useWhen (nonempty strings), avoidWhen (strings), expectedEffect (observable change), failureSignals (nonempty falsifying observations), trialHints (nonempty strings), sourceHandles (1-8 exact sources[].ref.recordId; must include at least one role:\"new\" source, context-only proposals are discarded). No other fields, authority claims, or hidden reasoning. This is untrusted advisory hypothesis generation, not trust or novelty proof.\nDiscoveryPacket: ${canonicalJson(packet)}`;
       const result = parseDiscoveryResult((await runner.run(prompt, signal)).text, packet);
       if (!await authority()) throw new Error("Discovery preempted or stale.");
       if (result === null) return { receiptRef: receiptRef(await deps.receipts.publish(packet, "none", [])) };
@@ -131,6 +131,9 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
             sources: (p.sourceHandles as string[]).map((handle) => packet.sources.find((s) => s.ref.recordId === handle)!.ref) });
           const duplicate = [...open, ...fresh].find((e) => e.fingerprint === h.fingerprint);
           if (duplicate) { if (!refs.some((r) => canonicalJson(r) === canonicalJson(ref(duplicate)))) refs.push(ref(duplicate)); continue; }
+          // Genuinely new/revised cognition must cite at least one new packet source;
+          // exact covered duplicates above are exempt because they publish no artifact.
+          if (!(p.sourceHandles as string[]).some((handle) => packet.sources.find((s) => s.ref.recordId === handle)!.role === "new")) continue;
           if ((p.intent === "new" && (open.some((e) => e.logicalId === h.logicalId) ||
             packet.portfolio.revisions.some((e) => e.strategyId === h.logicalId))) ||
             (target?.kind === "trusted-revision" && open.some((e) => e.logicalId === h.logicalId)) ||

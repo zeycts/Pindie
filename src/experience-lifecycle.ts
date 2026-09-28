@@ -13,6 +13,7 @@ import { validateStrategyDerivationDecisionBinding } from "./strategy-derivation
 import { validateStrategyTrustScopeDecisionBinding } from "./strategy-trust-scope-decisions.ts";
 import { validateStrategySynthesisDecisionBinding } from "./strategy-synthesis-decisions.ts";
 import { strategySelectionRevisionFingerprint, strategySelectionRevisionIdentity, strategySelectionRevisionStatus } from "./policy.ts";
+import { FileV1HypothesisExperienceProtectionReader, type V1ExperienceProtectionReader } from "./v1-experience-protection.ts";
 
 export const MAX_LIVE_ORDINARY_EXPERIENCE_PER_PROJECT = 256;
 
@@ -138,16 +139,22 @@ async function protectedRecords(projectRoot: string, read: RunExperienceReadResu
 export class FileRunExperienceMaintenance {
   private readonly reader: FileRunExperienceReader;
   private readonly knowledge: FileStrategyKnowledge;
+  private readonly v1Protection: V1ExperienceProtectionReader;
 
-  constructor(options: { projectsBaseDir?: string; globalBaseDir?: string } = {}) {
+  constructor(options: { projectsBaseDir?: string; globalBaseDir?: string; v1Protection?: V1ExperienceProtectionReader } = {}) {
     this.reader = new FileRunExperienceReader({ baseDir: options.projectsBaseDir });
     this.knowledge = new FileStrategyKnowledge(options);
+    this.v1Protection = options.v1Protection ??
+      new FileV1HypothesisExperienceProtectionReader({ projectsBaseDir: options.projectsBaseDir });
   }
 
   /** No artifact or surviving Experience is rewritten. Throw with deletion count on partial failure. */
   async prune(projectRoot: string): Promise<number> {
     const read = await this.reader.read(projectRoot);
     const protectedIds = await protectedRecords(projectRoot, read, this.knowledge);
+    // Unresolved D2 hypotheses keep their exact source Experience live. A malformed
+    // or ambiguous store throws here, before any deletion; Experience saves stay committed.
+    for (const ref of await this.v1Protection.requiredSourceRefs(getProjectId(projectRoot))) protectedIds.add(ref.recordId);
     const ordinary = read.records.filter((record) => !trial(record.experience))
       .sort((a, b) => instant(b.experience.recordedAt) - instant(a.experience.recordedAt) ||
         (a.recordId < b.recordId ? -1 : a.recordId > b.recordId ? 1 : 0));

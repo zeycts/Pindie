@@ -80,6 +80,7 @@ export class FileDiscoveryHypothesisStore {
       refs.some((r) => !newHypotheses.some((h) => matchesLearningArtifactRef(r, h)) &&
         !packet.openHypotheses.entries.some((e) => canonicalJson(e.ref) === canonicalJson(r))) ||
       newHypotheses.some((h) => h.sources.some((s) => !packet.sources.some((p) => canonicalJson(p.ref) === canonicalJson(s))) ||
+        !h.sources.some((s) => packet.sources.some((p) => canonicalJson(p.ref) === canonicalJson(s) && p.role === "new")) ||
         (h.lineage === "revise" && !(h.parent === null
           ? packet.portfolio.revisions.some((r) => r.strategyId === h.logicalId && r.kind === h.kind &&
               r.revisionFingerprint === h.baseRevisionFingerprint)
