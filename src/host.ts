@@ -63,6 +63,14 @@ import { FileLearningJobLedger } from "./learning-job-store.ts";
 import { LearningSupervisor, type LearningJobHandler } from "./learning-supervisor.ts";
 import { createLearningSessionRunner } from "./learning-session-runner.ts";
 import { resolvePindieStorageRoots } from "./composition.ts";
+import { resolveProjectRoot } from "./project.ts";
+import { getProjectId } from "./store.ts";
+import { FileRunExperienceReader } from "./experience-store.ts";
+import { FileProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safety.ts";
+import { FileDiscoveryPacketStore } from "./discovery-packets.ts";
+import { FileDiscoveryReceiptStore } from "./discovery-receipts.ts";
+import { enqueueProjectDiscovery } from "./project-discovery.ts";
+import { validateProjectDiscoveryPolicy, type ProjectDiscoveryPolicy } from "./discovery-contract.ts";
 
 export interface PindieResourcePaths {
   extensionPath: string;
@@ -102,6 +110,8 @@ export interface PindieHostOptions {
   quotaFallback?: QuotaFallbackSupervisorOptions;
   /** F2 has no production handlers; injection is for focused runtime/idle tests and later slices. */
   learningHandlers?: readonly LearningJobHandler[];
+  /** Human-controlled v1 local discovery threshold/corpus configuration. */
+  discoveryPolicy?: ProjectDiscoveryPolicy;
   env?: Record<string, string | undefined>;
   dependencies?: PindieHostDependencies;
 }
@@ -141,6 +151,7 @@ export function createPindieRuntimeFactory(
     readonly storageRoots?: PindieStorageRootOverrides;
     readonly browserExtensionFactory?: (pi: ExtensionAPI) => void;
     readonly onPresentationReaderChange?: (reader: PindiePresentationReader | null) => void;
+    readonly onExperienceSaved?: (projectRoot: string) => void;
     readonly onHumanRunStart?: () => void;
     readonly onHumanRunSettled?: () => void;
     readonly onSessionChange?: () => void;
@@ -174,6 +185,7 @@ export function createPindieRuntimeFactory(
               taskMetrics,
               featureSelection: compositionOptions.featureSelection,
               storageRoots: compositionOptions.storageRoots,
+              onExperienceSaved: compositionOptions.onExperienceSaved,
             });
             pendingPresentationReader = integration.presentation;
             return integration;
@@ -242,6 +254,19 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   let learningGeneration = 0;
   let learningHumanActive = false;
   let learningBoundSession: AgentSession | null = null;
+  if (options.discoveryPolicy && !validateProjectDiscoveryPolicy(options.discoveryPolicy)) throw new Error("Invalid project discovery policy.");
+  const roots = resolvePindieStorageRoots(options.storageRoots);
+  const jobs = new FileLearningJobLedger({ globalBaseDir: roots.globalBaseDir });
+  const discovery = {
+    reader: new FileRunExperienceReader({ baseDir: roots.projectsBaseDir }),
+    portfolio: new FileProjectTrustedStrategyPortfolioReader({ projectsBaseDir: roots.projectsBaseDir, globalBaseDir: roots.globalBaseDir }),
+    receipts: new FileDiscoveryReceiptStore({ projectsBaseDir: roots.projectsBaseDir }),
+    packets: new FileDiscoveryPacketStore(roots.projectsBaseDir),
+    jobs,
+    ...(options.discoveryPolicy ? { policy: options.discoveryPolicy } : {}),
+  };
+  const enqueue = (projectRoot: string) => { void enqueueProjectDiscovery(getProjectId(projectRoot), discovery); };
+  let currentProjectRoot: string | null = null;
   const preemptLearning = (reason: "human-work" | "session-change") => {
     ++learningGeneration;
     learningSupervisor?.preempt(reason);
@@ -325,12 +350,14 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       onPresentationReaderChange: (reader) => {
         currentPresentationReader = reader;
       },
+      onExperienceSaved: (root) => { if (root === currentProjectRoot) enqueue(root); },
       onHumanRunStart: () => {
         learningHumanActive = true;
         preemptLearning("human-work");
       },
       onHumanRunSettled: () => {
         learningHumanActive = false;
+        if (currentProjectRoot) enqueue(currentProjectRoot);
         queueMicrotask(kickLearning);
       },
       onSessionChange: () => {
@@ -348,6 +375,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
           learningBoundSession = session;
           // Do not clear a Human Run that began on the newly bound Session.
           if (runtime.getActiveSessionFacts().isIdle) learningHumanActive = false;
+          if (currentProjectRoot) enqueue(currentProjectRoot);
           kickLearning();
         }, 0).unref();
       },
@@ -357,10 +385,11 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       sessionManager,
     });
     runtime = new PiRuntimeAdapter(nativeRuntime);
-    const learningRoot = resolvePindieStorageRoots(options.storageRoots).globalBaseDir;
+    try { currentProjectRoot = await resolveProjectRoot(cwd); }
+    catch { console.warn("[Pindie] Project discovery root unavailable; enqueue skipped."); }
     learningSupervisor = new LearningSupervisor({
-      ledger: new FileLearningJobLedger({ globalBaseDir: learningRoot }),
-      budget: new FileLearningBudgetLedger({ globalBaseDir: learningRoot }),
+      ledger: jobs,
+      budget: new FileLearningBudgetLedger({ globalBaseDir: roots.globalBaseDir }),
       handlers: options.learningHandlers ?? [],
       runner: {
         run: (prompt, signal) => {
@@ -378,6 +407,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
         },
       },
     });
+    if (currentProjectRoot) enqueue(currentProjectRoot);
     quotaFallbackSupervisor = new QuotaFallbackSupervisor(runtime, options.quotaFallback);
     const testWaitingChange = options.quotaResume?.onWaitingChange;
     quotaResumeSupervisor = new QuotaResumeSupervisor(runtime, {
