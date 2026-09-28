@@ -2,7 +2,7 @@
 
 Status: implemented, dogfooded, trust-closed, normal-use validated, frozen; retained as the SI v0.7 artifact/trust contract during migration, not future Autonomous Learning authority.
 
-This document records the implemented SI v0.7 contract. It starts from the frozen SI v0.6 contract in `docs/self-improvement-v0.6.md` and the completed v0.6 dogfood loop. It does not reopen or migrate SI v0.6 artifacts. Future learning architecture is proposed in `docs/autonomous-learning-v1.md` (pending Human review).
+This document records the implemented SI v0.7 contract. It starts from the frozen SI v0.6 contract in `docs/self-improvement-v0.6.md` and the completed v0.6 dogfood loop. It does not reopen or migrate SI v0.6 artifacts. The approved target learning architecture is in `docs/autonomous-learning-v1.md` (implementation pending).
 
 The status terms are narrow:
 

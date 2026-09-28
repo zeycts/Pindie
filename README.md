@@ -39,7 +39,7 @@ Capabilities
        Reality
 ```
 
-The current semantic layer is deliberately small. Pindie does not add a second Agent Loop, workflow engine, task queue, planner framework, or separate Skill runtime. The proposed Autonomous Learning v1 architecture allows a separate, bounded LearningJob scheduler (not a user Task queue or second Agent Loop); it is not implemented yet.
+The current semantic layer is deliberately small. Pindie does not add a second Agent Loop, workflow engine, task queue, planner framework, or separate Skill runtime. The approved Autonomous Learning v1 target architecture allows a separate, bounded LearningJob scheduler (not a user Task queue or second Agent Loop); implementation is pending.
 
 ## What Pindie adds
 
@@ -82,7 +82,7 @@ pindie_memory_capture (when Work Memory is configured)
 - `docs/behavior.md` — current semantic and behavioral contract.
 - `docs/self-improvement-v0.6.md` and `docs/self-improvement-v0.7.md` — frozen implemented SI artifact/trust contracts during migration.
 - `docs/cross-project-learning-v0.1.md` and `docs/cross-project-learning-v0.2.md` — implemented legacy cross-project artifacts/trust during migration.
-- `docs/autonomous-learning-v1.md` — complete future architecture proposed for Human review, not current runtime.
+- `docs/autonomous-learning-v1.md` — approved target architecture; implementation pending, not current runtime.
 - `AGENTS.md` — repository instructions for agents working on Pindie.
 
 Git history and tests are the record of the v0.2 migration; stable docs describe the system as it exists now.
