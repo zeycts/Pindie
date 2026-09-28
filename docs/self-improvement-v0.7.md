@@ -1,8 +1,8 @@
 # Pindie Self-Improvement v0.7 — Strategy Derivation
 
-Status: implemented, dogfooded, trust-closed, normal-use validated, frozen.
+Status: implemented, dogfooded, trust-closed, normal-use validated, frozen; retained as the SI v0.7 artifact/trust contract during migration, not future Autonomous Learning authority.
 
-This document is the authoritative SI v0.7 architecture contract. It refines the SI v0.7 direction in `docs/self-improvement.md`. It starts from the frozen SI v0.6 contract in `docs/self-improvement-v0.6.md` and the completed v0.6 dogfood loop. It does not reopen or migrate SI v0.6 artifacts.
+This document records the implemented SI v0.7 contract. It starts from the frozen SI v0.6 contract in `docs/self-improvement-v0.6.md` and the completed v0.6 dogfood loop. It does not reopen or migrate SI v0.6 artifacts. Future learning architecture is proposed in `docs/autonomous-learning-v1.md` (pending Human review).
 
 The status terms are narrow:
 

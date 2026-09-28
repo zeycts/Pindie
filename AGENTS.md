@@ -10,13 +10,15 @@ For architecture or implementation work, use this order:
 2. `docs/pindie-control-v0.2.md` — authoritative approved contract when the task touches workspace/project selection, active-project Host replacement, or the v0.2 Pindie Control surface. Preserve the implemented v0.1 runtime/control safety underneath it.
 3. `docs/pindie-control-v0.1.md` — implemented baseline for headless Host control, Control Projection/lease semantics, and the six project-scoped Control tools.
 4. `docs/quota-fallback-v0.1.md` — authoritative implemented contract when the task touches Quota Fallback, quota recovery, or temporary backup model switching; not authority over unrelated architecture.
-5. `docs/cross-project-learning-v0.2.md` — authoritative architecture contract when the task touches Cross-Project Learning v0.2 Strategy Synthesis, Synthesis Trial/Decision, shared cross-project validation, or synthesis-origin user-global trust.
-6. `docs/cross-project-learning-v0.1.md` — authoritative implemented contract for Cross-Project Strategy Trust Transfer. Preserve its Scope Candidate/source-project semantics unless v0.2 explicitly extends shared validation around them.
-7. `docs/composable-pindie-architecture-v0.1.md` — authoritative implemented architecture contract for the final composition boundary and its Slices A–F.
-8. `docs/architecture.md` — current architecture and ownership boundaries.
-9. `docs/remote-companion.md` — authoritative Remote Companion architecture/behavior when the task touches Remote Companion or Discord integration.
-10. `docs/behavior.md` — current semantic and behavioral contract.
-11. Existing source and tests — implemented runtime baseline.
+5. `docs/autonomous-learning-v1.md` — proposed for Human review, not yet approved or implemented; consult for the proposed future Learning Plane when explicitly designing v1. Its approved design inputs supersede legacy future-autonomy direction, not current runtime truth.
+6. `docs/self-improvement-v0.6.md` and `docs/self-improvement-v0.7.md` — frozen implemented SI artifact and trust contracts during migration, not future autonomy authority.
+7. `docs/cross-project-learning-v0.2.md` — implemented legacy contract for Strategy Synthesis, Synthesis Trial/Decision, shared cross-project validation, and synthesis-origin user-global trust.
+8. `docs/cross-project-learning-v0.1.md` — implemented contract for Cross-Project Strategy Trust Transfer during migration. Preserve its Scope Candidate/source-project semantics unless v0.2 explicitly extends shared validation around them.
+9. `docs/composable-pindie-architecture-v0.1.md` — authoritative implemented architecture contract for the final composition boundary and its Slices A–F.
+10. `docs/architecture.md` — current architecture and ownership boundaries.
+11. `docs/remote-companion.md` — authoritative Remote Companion architecture/behavior when the task touches Remote Companion or Discord integration.
+12. `docs/behavior.md` — current semantic and behavioral contract.
+13. Existing source and tests — implemented runtime baseline.
 
 If those sources conflict, report the contradiction before widening scope. Do not preserve obsolete behavior merely because an older implementation or test encoded it.
 
@@ -28,7 +30,7 @@ If those sources conflict, report the contradiction before widening scope. Do no
 - **Human** owns goals, taste, consequential judgment, and final approval where required.
 - **Reality** is authoritative for reconstructable facts.
 
-Pindie must not implement a second Agent Loop, workflow engine, persisted phase machine, task queue, planner framework, memory database, verification-log database, or second Skill runtime.
+Pindie must not implement a second Agent Loop, general workflow engine, persisted Work Plane phase machine or Task queue, planner framework, memory database, verification-log database, or second Skill runtime. Proposed Autonomous Learning v1 permits a tiny persistent domain-specific LearningJob scheduler/ledger separate from user Task State; this exception is not a general task queue or second LLM Agent Loop.
 
 ## Design principles
 
@@ -86,13 +88,13 @@ Preserve these rules:
 - Discovery evidence never grants trust. Synthesis Candidate authority is none until explicit Trial; only Human promotion grants user-global trust.
 - Synthesis discovery provenance is historical audit context, not Promotion authority. Promotion revalidates fresh Trial evidence and current trust safety.
 - Transfer-origin and synthesis-origin promoted Strategies converge only at the normal user-global trusted Policy projection.
-- Autonomous/background triggering is outside v0.2.
+- Autonomous/background triggering is outside the implemented v0.2 contract. Its future-autonomy direction is superseded by the proposed v1 Learning Plane, pending Human review.
 
 ## Development workflow
 
 For an approved task:
 
-1. Read only the relevant architecture/behavior sections, source, and tests. For workspace-aware Pindie Control work, read `docs/pindie-control-v0.2.md` first, then `docs/pindie-control-v0.1.md`, and keep project selection above rather than inside the existing Host/runtime truth. For CPL v0.2 work, read `docs/cross-project-learning-v0.2.md` first and preserve the implemented v0.1 transfer contract. For Composable Pindie work, read the relevant Slice and invariants in `docs/composable-pindie-architecture-v0.1.md`; for Remote Companion work, read `docs/remote-companion.md` before implementation.
+1. Read only the relevant architecture/behavior sections, source, and tests. For workspace-aware Pindie Control work, read `docs/pindie-control-v0.2.md` first, then `docs/pindie-control-v0.1.md`, and keep project selection above rather than inside the existing Host/runtime truth. For proposed Autonomous Learning v1 design, read `docs/autonomous-learning-v1.md` first; do not implement it before Human approval. For current CPL v0.2 work, read `docs/cross-project-learning-v0.2.md` first and preserve the implemented v0.1 transfer contract. For Composable Pindie work, read the relevant Slice and invariants in `docs/composable-pindie-architecture-v0.1.md`; for Remote Companion work, read `docs/remote-companion.md` before implementation.
 2. Preserve the requested scope; do not implement adjacent cleanup speculatively.
 3. Add focused tests for changed contracts; during implementation, run the smallest relevant test file(s) for rapid feedback. When independent and useful, targeted tests and typecheck may run concurrently; avoid repeating the full suite after every small edit. Broader or brittle changes may justify an earlier full check when evidence requires it.
 4. Implement the smallest change that satisfies them.
@@ -101,7 +103,7 @@ For an approved task:
 
 Composable Pindie Architecture v0.1 is complete through final Slice F. Preserve its final feature-selection, trust-safety, lifecycle, and dependency-direction invariants.
 
-Cross-Project Learning v0.2 is implemented through the Slices defined in `docs/cross-project-learning-v0.2.md`, through final Slice E. Preserve its completed human-triggered lifecycle and do not add a Slice F or skip ahead to Autonomous Learning.
+Cross-Project Learning v0.2 is implemented through final Slice E. Preserve its completed human-triggered lifecycle while v1 remains proposed; do not add a Slice F or implement v1 before approval.
 
 ## Maintenance posture
 
@@ -109,7 +111,7 @@ The existing implemented Pindie architecture baseline and the Composable Pindie 
 
 `docs/composable-pindie-architecture-v0.1.md` records the implemented final composition boundary and remains the single architecture source of truth for that boundary. Source/tests and the synchronized architecture guidance remain the implemented-state baseline.
 
-`docs/cross-project-learning-v0.2.md` records the implemented v0.2 architecture through Slice E and remains the authoritative contract for that boundary. Source/tests and the synchronized guidance are the implemented-state baseline; existing v0.1 source/tests remain compatibility truth where v0.2 explicitly preserves them.
+`docs/cross-project-learning-v0.2.md` records the implemented v0.2 architecture through Slice E and remains compatibility/history authority for those artifacts and trust rules during migration. SI v0.6/v0.7 likewise remain frozen implemented artifact/trust contracts. Source/tests are current runtime truth. `docs/autonomous-learning-v1.md` is proposed for Human review; after approval it governs future Autonomous Learning design, not current behavior until code migration.
 
 Pindie Control v0.1 is implemented and dogfood-validated through ChatGPT → Secure MCP Tunnel → headless Pindie Control. `docs/pindie-control-v0.2.md` is the approved next architecture contract for workspace-aware single-active-project selection.
 

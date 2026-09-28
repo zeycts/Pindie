@@ -1,6 +1,6 @@
 # Pindie Cross-Project Learning v0.2 — Strategy Synthesis and Global Validation
 
-Status: authoritative architecture contract; implemented through Slice E.
+Status: implemented legacy artifact/trust contract through Slice E, retained for compatibility and history during migration. Proposed `docs/autonomous-learning-v1.md` supersedes future autonomy direction after Human approval, not these currently implemented trust semantics.
 
 ## 1. Goal and exact boundary
 

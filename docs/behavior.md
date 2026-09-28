@@ -190,6 +190,8 @@ Denied calls create no mutation window. Failed ambiguous tools are still observe
 
 When mutation is detected or cannot be determined safely, verification is invalidated and recent verification evidence is made stale.
 
+**Migration note (proposed, not current runtime):** SI-enabled ordinary Runs currently have a single-Run learning signal and completion `learningDisposition`, followed by post-settlement assessment/admission. Proposed `docs/autonomous-learning-v1.md` replaces this legacy path with a separate Learning Plane; the tools and capability behavior below still describe implemented runtime until migration.
+
 ## 7. Model-facing semantic tools and Tool Surface
 
 Pindie exposes narrow semantic affordances:
