@@ -3,11 +3,12 @@ import { runExperienceRecordFingerprint } from "./run-experience-fingerprint.ts"
 import type { RunExperienceProjectReader } from "./experience-store.ts";
 import type { ProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safety.ts";
 import { MAX_TRUSTED_PORTFOLIO_ENTRIES, trustedPortfolioFingerprint } from "./strategy-portfolio.ts";
-import { learningJobKey } from "./learning-v1-contract.ts";
+import { learningFingerprint, learningJobKey } from "./learning-v1-contract.ts";
 import { DEFAULT_PROJECT_DISCOVERY_POLICY, discoveryPacketFingerprint, validateDiscoveryPacket, validateProjectDiscoveryPolicy,
   type DiscoveryPacketV1, type DiscoverySourceSummary, type ProjectDiscoveryPolicy } from "./discovery-contract.ts";
 import { FileDiscoveryPacketStore } from "./discovery-packets.ts";
 import { FileDiscoveryReceiptStore } from "./discovery-receipts.ts";
+import { FileDiscoveryHypothesisStore, hypothesisRef } from "./discovery-hypotheses.ts";
 import type { LearningJobLedger } from "./learning-job-store.ts";
 
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
@@ -17,6 +18,7 @@ export interface ProjectDiscoveryDependencies {
   portfolio: ProjectTrustedStrategyPortfolioReader;
   receipts: FileDiscoveryReceiptStore;
   packets: FileDiscoveryPacketStore;
+  hypotheses: FileDiscoveryHypothesisStore;
   jobs: LearningJobLedger;
   policy?: ProjectDiscoveryPolicy;
 }
@@ -24,8 +26,8 @@ export interface ProjectDiscoveryDependencies {
 export async function buildProjectDiscoveryPacket(projectId: string, dependencies: Omit<ProjectDiscoveryDependencies, "jobs">): Promise<DiscoveryPacketV1 | null> {
   const policy = dependencies.policy ?? DEFAULT_PROJECT_DISCOVERY_POLICY;
   if (!validateProjectDiscoveryPolicy(policy)) throw new Error("Invalid project discovery policy.");
-  const [read, portfolio, receipts] = await Promise.all([
-    dependencies.reader.readProjectId(projectId), dependencies.portfolio.readProjectId(projectId), dependencies.receipts.read(projectId),
+  const [read, portfolio, receipts, open] = await Promise.all([
+    dependencies.reader.readProjectId(projectId), dependencies.portfolio.readProjectId(projectId), dependencies.receipts.read(projectId), dependencies.hypotheses.list(projectId),
   ]);
   if (read.invalid || read.unsupportedSchema || read.loadedRecords !== read.records.length ||
     portfolio.projectId !== projectId || portfolio.entries.length > MAX_TRUSTED_PORTFOLIO_ENTRIES ||
@@ -85,12 +87,15 @@ export async function buildProjectDiscoveryPacket(projectId: string, dependencie
       metrics: experience.metrics,
     };
   });
-  const content = { schemaVersion: 1 as const, selectionVersion: 1 as const, projectId, policy,
+  const openEntries = open.map((h) => ({ ref: hypothesisRef(h), logicalId: h.logicalId, kind: h.kind, summary: h.summary, expectedEffect: h.expectedEffect,
+    useWhen: h.useWhen, avoidWhen: h.avoidWhen, failureSignals: h.failureSignals }));
+  const content = { schemaVersion: 2 as const, selectionVersion: 2 as const, projectId, policy,
     eligibleCounts: { new: fresh.length, episodes: episodes.size, outcomes: outcomes.size },
     portfolio: { fingerprint: portfolio.fingerprint, revisions: portfolio.resolvedEntries.map((entry) => ({
       strategyId: entry.manifest.strategyId, kind: entry.manifest.kind, revisionIdentity: entry.manifest.revisionIdentity,
       revisionFingerprint: entry.manifest.revisionFingerprint, summary: entry.semantics.summary,
-    })) }, sources };
+      useWhen: entry.semantics.useWhen, avoidWhen: entry.semantics.avoidWhen, principles: entry.semantics.principles,
+    })) }, openHypotheses: { fingerprint: learningFingerprint(openEntries), entries: openEntries }, sources };
   const packet = { ...content, fingerprint: discoveryPacketFingerprint(content) };
   if (!validateDiscoveryPacket(packet)) throw new Error("Invalid generated DiscoveryPacket.");
   return packet;

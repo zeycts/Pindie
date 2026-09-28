@@ -190,7 +190,11 @@ export interface StrategyHypothesis {
   readonly expectedEffect: string; readonly failureSignals: readonly string[]; readonly trialHints: readonly string[];
   readonly sources: readonly ExactEvidenceRef[]; readonly discoveryPacketFingerprint: string;
 }
-export function hypothesisFingerprint(value: Omit<StrategyHypothesis, "id" | "fingerprint">): string { return learningFingerprint(value); }
+export function hypothesisFingerprint(value: Omit<StrategyHypothesis, "id" | "fingerprint">): string {
+  // Packet provenance is not cognition: a changed comparison catalog must not create a new semantic identity.
+  const { discoveryPacketFingerprint: _packet, ...semantic } = value;
+  return learningFingerprint(semantic);
+}
 /** Shape/provenance validation, not model interpretation of observability or usefulness. */
 export function validateStrategyHypothesis(value: unknown): value is StrategyHypothesis {
   if (!object(value) || !exact(value, ["schemaVersion", "id", "fingerprint", "scope", "logicalId", "kind", "lineage",
@@ -207,10 +211,10 @@ export function validateStrategyHypothesis(value: unknown): value is StrategyHyp
     typeof value.logicalId !== "string" || value.logicalId.length > 64 ||
     !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value.logicalId) ||
     !text(value.summary) || !text(value.expectedEffect) || !hash(value.discoveryPacketFingerprint) ||
-    !list(value.useWhen, 8, (x) => text(x, 256)) || !list(value.avoidWhen, 8, (x) => text(x, 256)) ||
+    !list(value.useWhen, 8, (x) => text(x, 256), 1) || !list(value.avoidWhen, 8, (x) => text(x, 256)) ||
     !list(value.trialHints, 8, (x) => text(x, 256)) || !list(value.failureSignals, 8, (x) => text(x, 256), 1) ||
     !list(value.sources, 8, validateExactEvidenceRef, 1) || !unique(value.sources)) return false;
-  try { const { id: _id, fingerprint, ...semantic } = value; return fingerprint === learningFingerprint(semantic); }
+  try { const { id: _id, fingerprint, ...semantic } = value; return fingerprint === hypothesisFingerprint(semantic as unknown as Omit<StrategyHypothesis, "id" | "fingerprint">); }
   catch { return false; }
 }
 export interface TrialAssignment {

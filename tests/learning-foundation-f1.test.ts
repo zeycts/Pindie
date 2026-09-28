@@ -13,7 +13,7 @@ import { runExperienceRecordFingerprint } from "../src/run-experience-fingerprin
 import { crossProjectExperienceRecordFingerprint } from "../src/cross-project-experience.ts";
 import { FileRunExperienceMaintenance } from "../src/experience-lifecycle.ts";
 import { FileLearningJobLedger } from "../src/learning-job-store.ts";
-import { DEFAULT_LEARNING_BUDGET_POLICY, FINGERPRINT, validateLearningBudgetPolicy, learningJobKey, learningFingerprint, validateStrategyHypothesis, validateWorkEpisodeBinding, validateLearningJob, validateExactEvidenceRef, validateDiscoveryReceipt, validateTrialAssignment, validateTrialEvidence, validateStrategyEvaluation, validateStrategyDecision, learningArtifactFingerprint, validateLearningArtifactRef, matchesLearningArtifactRef, matchesTrialEvidenceAssignment, matchesEvaluationTrial, matchesDecisionEvaluation, matchesLearningJobOutput, validateLearningTerminalOutput } from "../src/learning-v1-contract.ts";
+import { DEFAULT_LEARNING_BUDGET_POLICY, FINGERPRINT, validateLearningBudgetPolicy, learningJobKey, learningFingerprint, validateStrategyHypothesis, validateWorkEpisodeBinding, validateLearningJob, validateExactEvidenceRef, validateDiscoveryReceipt, validateTrialAssignment, validateTrialEvidence, validateStrategyEvaluation, validateStrategyDecision, learningArtifactFingerprint, hypothesisFingerprint, validateLearningArtifactRef, matchesLearningArtifactRef, matchesTrialEvidenceAssignment, matchesEvaluationTrial, matchesDecisionEvaluation, matchesLearningJobOutput, validateLearningTerminalOutput } from "../src/learning-v1-contract.ts";
 import { exactRunWorkEpisodeId } from "../src/work-episode-attribution.ts";
 
 const ROOT = "/repo/f1";
@@ -255,7 +255,7 @@ test("F1 hypothesis contract rejects authority-bearing fields and fingerprint dr
     failureSignals: ["More regressions"], trialHints: [],
     sources: [{ projectId: "a".repeat(64), recordId: "00000000-0000-4000-8000-000000000000.json", fingerprint: `sha256:${"b".repeat(64)}` }],
     discoveryPacketFingerprint: `sha256:${"c".repeat(64)}` };
-  const hypothesis = { ...semantic, id: "00000000-0000-4000-8000-000000000000", fingerprint: learningFingerprint(semantic) };
+  const hypothesis = { ...semantic, id: "00000000-0000-4000-8000-000000000000", fingerprint: hypothesisFingerprint(semantic as Parameters<typeof hypothesisFingerprint>[0]) };
   assert.equal(validateStrategyHypothesis(hypothesis), true);
   assert.equal(validateStrategyHypothesis({ ...hypothesis, capability: "task.complete" }), false);
   assert.equal(validateStrategyHypothesis({ ...hypothesis, expectedEffect: "" }), false);
@@ -263,7 +263,7 @@ test("F1 hypothesis contract rejects authority-bearing fields and fingerprint dr
   assert.equal(validateStrategyHypothesis({ ...hypothesis, parent: { schemaVersion: 1, family: "strategy-hypothesis", scope: semantic.scope, id: hypothesis.id, fingerprint: `sha256:${"b".repeat(64)}` } }), false);
   assert.equal(validateStrategyHypothesis({ ...hypothesis, baseRevisionFingerprint: `sha256:${"b".repeat(64)}` }), false);
   const revision = { ...hypothesis, lineage: "revise", parent: { schemaVersion: 1, family: "strategy-hypothesis", scope: semantic.scope, id: "11111111-1111-4111-8111-111111111111", fingerprint: `sha256:${"b".repeat(64)}` } };
-  assert.equal(validateStrategyHypothesis({ ...revision, fingerprint: learningFingerprint((({ id: _id, fingerprint: _fp, ...rest }) => rest)(revision)) }), true);
+  assert.equal(validateStrategyHypothesis({ ...revision, fingerprint: hypothesisFingerprint((({ id: _id, fingerprint: _fp, ...rest }) => rest)(revision) as Parameters<typeof hypothesisFingerprint>[0]) }), true);
 });
 test("F1 all frozen artifact shells reject extra fields, malformed IDs and inconsistent relations", () => {
   const id = "00000000-0000-4000-8000-000000000000";

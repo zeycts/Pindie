@@ -70,6 +70,8 @@ import { FileProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safe
 import { FileDiscoveryPacketStore } from "./discovery-packets.ts";
 import { FileDiscoveryReceiptStore } from "./discovery-receipts.ts";
 import { enqueueProjectDiscovery } from "./project-discovery.ts";
+import { createProjectDiscoveryHandler } from "./project-discovery-handler.ts";
+import { FileDiscoveryHypothesisStore } from "./discovery-hypotheses.ts";
 import { validateProjectDiscoveryPolicy, type ProjectDiscoveryPolicy } from "./discovery-contract.ts";
 
 export interface PindieResourcePaths {
@@ -262,6 +264,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     portfolio: new FileProjectTrustedStrategyPortfolioReader({ projectsBaseDir: roots.projectsBaseDir, globalBaseDir: roots.globalBaseDir }),
     receipts: new FileDiscoveryReceiptStore({ projectsBaseDir: roots.projectsBaseDir }),
     packets: new FileDiscoveryPacketStore(roots.projectsBaseDir),
+    hypotheses: new FileDiscoveryHypothesisStore({ projectsBaseDir: roots.projectsBaseDir }),
     jobs,
     ...(options.discoveryPolicy ? { policy: options.discoveryPolicy } : {}),
   };
@@ -390,7 +393,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     learningSupervisor = new LearningSupervisor({
       ledger: jobs,
       budget: new FileLearningBudgetLedger({ globalBaseDir: roots.globalBaseDir }),
-      handlers: options.learningHandlers ?? [],
+      handlers: options.learningHandlers ?? [createProjectDiscoveryHandler(discovery)],
       runner: {
         run: (prompt, signal) => {
           const model = runtime!.activeSession.model;
