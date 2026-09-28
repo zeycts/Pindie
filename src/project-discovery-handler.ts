@@ -88,7 +88,9 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
     if (!batch) return null;
     const existing = await deps.hypotheses.list(packet.projectId);
     if (batch.refs.some((r) => !existing.some((h) => matchesLearningArtifactRef(r, h)))) throw new Error("Unresolved Discovery commit.");
-    const output = await deps.receipts.publish(packet, batch.outcome, batch.refs);
+    // Recovery republishes the receipt with the model provenance bound to the committed output,
+    // never the model configured after restart.
+    const output = await deps.receipts.publish(packet, batch.outcome, batch.refs, batch.modelIdentity);
     return receiptRef(output);
   };
   const matches = async (job: LearningJob, output: LearningArtifactRef): Promise<boolean> => {
@@ -98,7 +100,8 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
     if (!receipt || canonicalJson(receipt.sources) !== canonicalJson(packet.sources.map((s) => ({ ...s.ref, recordedAt: s.recordedAt, role: s.role })))) return false;
     if (receipt.outcome === "none") return !(await deps.hypotheses.committed(packet.projectId, packet.fingerprint));
     const batch = await deps.hypotheses.committed(packet.projectId, packet.fingerprint);
-    if (!batch || batch.outcome !== receipt.outcome || canonicalJson(batch.refs) !== canonicalJson(receipt.hypotheses)) return false;
+    if (!batch || batch.outcome !== receipt.outcome || canonicalJson(batch.refs) !== canonicalJson(receipt.hypotheses) ||
+      canonicalJson(batch.modelIdentity) !== canonicalJson(receipt.modelIdentity)) return false;
     const existing = await deps.hypotheses.list(packet.projectId);
     return batch.refs.every((r) => existing.some((h) => matchesLearningArtifactRef(r, h)));
   };
@@ -125,17 +128,18 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
     async execute(job, authority, signal, runner) {
       const packet = await packetFor(job);
       if (!packet || !runner || !await authority()) throw new Error("Unavailable Discovery authority.");
+      const modelIdentity = runner.modelIdentity;
       // Only the frozen packet and exact JSON contract enter this isolated no-tool Session.
       const prompt = `Return ONLY one JSON object: {"outcome":"none"} when no useful novel hypothesis exists; {"outcome":"covered","hypotheses":[<1-2 exact openHypotheses.entries ref>]} when the evidence is already represented by existing open hypotheses; OR {"outcome":"proposals","proposals":[...]} (1-2) when proposing novel cognition. Each proposal has exactly logicalId (lowercase kebab-case), kind (approach|modifier), intent (new|revise), revisionTarget (null for new; for revise either {"kind":"open-hypothesis","ref":<exact openHypotheses.entries ref>} or {"kind":"trusted-revision","logicalId":<exact portfolio.revisions strategyId>,"strategyKind":<exact kind>,"revisionFingerprint":<exact revisionFingerprint>}), summary, useWhen (nonempty strings), avoidWhen (strings), expectedEffect (observable change), failureSignals (nonempty falsifying observations), trialHints (nonempty strings), sourceHandles (1-8 exact sources[].ref.recordId; must include at least one role:\"new\" source, context-only proposals are discarded). No other fields, authority claims, or hidden reasoning. This is untrusted advisory hypothesis generation, not trust or novelty proof.\nDiscoveryPacket: ${canonicalJson(packet)}`;
       const result = parseDiscoveryResult((await runner.run(prompt, signal)).text, packet);
       if (!await authority()) throw new Error("Discovery preempted or stale.");
-      if (result.kind === "none") return { receiptRef: receiptRef(await deps.receipts.publish(packet, "none", [])) };
+      if (result.kind === "none") return { receiptRef: receiptRef(await deps.receipts.publish(packet, "none", [], modelIdentity)) };
       // Publish under a common project writer lock, rechecking freshness after acquiring it.
       const batch = await deps.hypotheses.lock.withLock(async () => {
         if (!await authority()) throw new Error("Discovery stale at publication.");
         if (result.kind === "covered") {
           // Semantic coverage publishes no artifact; it references exact frozen open hypotheses.
-          return deps.hypotheses.publish(packet, "covered", result.refs, []);
+          return deps.hypotheses.publish(packet, "covered", result.refs, [], modelIdentity);
         }
         const open = await deps.hypotheses.list(packet.projectId);
         const refs: LearningArtifactRef[] = []; const fresh: StrategyHypothesis[] = [];
@@ -173,9 +177,9 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
           if (sourceContractViolation) throw new Error("Discovery proposals cited no new source; retryable contract violation.");
           return null;
         }
-        return deps.hypotheses.publish(packet, fresh.length ? "published" : "covered", refs, fresh);
+        return deps.hypotheses.publish(packet, fresh.length ? "published" : "covered", refs, fresh, modelIdentity);
       });
-      return { receiptRef: receiptRef(await deps.receipts.publish(packet, batch?.outcome ?? "none", batch?.refs ?? [])) };
+      return { receiptRef: receiptRef(await deps.receipts.publish(packet, batch?.outcome ?? "none", batch?.refs ?? [], batch?.modelIdentity ?? modelIdentity)) };
     },
   };
 }

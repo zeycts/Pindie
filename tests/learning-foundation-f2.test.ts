@@ -8,7 +8,7 @@ import { createAgentSession, createAgentSessionServices, SessionManager } from "
 import { createPindieHost } from "../src/host.ts";
 import { FileLearningBudgetLedger } from "../src/learning-budget-store.ts";
 import { FileLearningJobLedger } from "../src/learning-job-store.ts";
-import { createLearningSessionRunner, DEFAULT_LEARNING_THINKING_LEVEL, type LearningModelPolicy } from "../src/learning-session-runner.ts";
+import { createLearningSessionRunner, resolveLearningModel, DEFAULT_LEARNING_THINKING_LEVEL, type LearningModelPolicy } from "../src/learning-session-runner.ts";
 import { LearningSupervisor, type LearningJobHandler } from "../src/learning-supervisor.ts";
 import { DEFAULT_LEARNING_BUDGET_POLICY, type LearningJob, type LearningArtifactRef } from "../src/learning-v1-contract.ts";
 
@@ -305,6 +305,20 @@ test("F2 learning runner freezes an explicit model independent of any Human mode
   assert.deepEqual(runner.modelIdentity, policy);
   assert.throws(() => createLearningSessionRunner({ cwd: process.cwd(), model: frozen!,
     policy: { ...policy, modelId: "claude-opus-4-5" } }), /Invalid isolated learning model policy/);
+});
+test("F2 learning model resolution honors explicit config and refuses an automatic fallback baseline", () => {
+  const baseline = { provider: "provider-a", id: "model-a" } as never;
+  const explicit = { provider: "provider-b", id: "model-b" } as never;
+  const resolve = (provider: string, modelId: string) =>
+    provider === "provider-b" && modelId === "model-b" ? explicit :
+      provider === "provider-a" && modelId === "model-a" ? baseline : undefined;
+  assert.deepEqual(resolveLearningModel({ requested: { provider: "provider-b", modelId: "model-b", thinkingLevel: "off" },
+    baseline, startupFellBack: true, resolve }), { policy: { provider: "provider-b", modelId: "model-b", thinkingLevel: "off" }, model: explicit });
+  assert.deepEqual(resolveLearningModel({ baseline, startupFellBack: false, resolve }),
+    { policy: { provider: "provider-a", modelId: "model-a", thinkingLevel: DEFAULT_LEARNING_THINKING_LEVEL }, model: baseline });
+  assert.equal(resolveLearningModel({ baseline, startupFellBack: true, resolve }), null); // fallback is not a baseline
+  assert.equal(resolveLearningModel({ requested: { provider: "provider-x", modelId: "missing" }, baseline, startupFellBack: false, resolve }), null);
+  assert.equal(resolveLearningModel({ baseline: undefined, startupFellBack: false, resolve }), null);
 });
 test("F2 absent learning runner never invokes a model and leaves the job recoverable", async () => {
   await fixture(async (root) => {

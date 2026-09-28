@@ -4,7 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { FileGlobalWriterLock, type GlobalWriterLock } from "./store.ts";
 import { canonicalJson, hypothesisFingerprint, learningFingerprint, matchesLearningArtifactRef, validateLearningArtifactRef,
-  validateStrategyHypothesis, type LearningArtifactRef, type StrategyHypothesis } from "./learning-v1-contract.ts";
+  validateLearningModelProvenance, validateStrategyHypothesis, type LearningArtifactRef, type LearningModelProvenance,
+  type StrategyHypothesis } from "./learning-v1-contract.ts";
 import { validateDiscoveryPacket, type DiscoveryPacketV1 } from "./discovery-contract.ts";
 
 // Immutable packet commit/receipt history is bounded independently of cognition
@@ -16,9 +17,10 @@ export const MAX_DISCOVERY_COMMITS = 2048;
 // yet, every stored hypothesis is open; closing one later must not require
 // rewriting or deleting its immutable artifact.
 export const MAX_OPEN_HYPOTHESES = 64;
-export type DiscoveryCommit = { readonly schemaVersion: 1; readonly packetFingerprint: string;
+export type DiscoveryCommit = { readonly schemaVersion: 2; readonly packetFingerprint: string;
   readonly outcome: "covered" | "published"; readonly refs: readonly LearningArtifactRef[];
-  readonly newHypotheses: readonly StrategyHypothesis[]; readonly fingerprint: string };
+  readonly newHypotheses: readonly StrategyHypothesis[]; readonly modelIdentity: LearningModelProvenance;
+  readonly fingerprint: string };
 export const hypothesisRef = (h: StrategyHypothesis): LearningArtifactRef =>
   ({ schemaVersion: 1, family: "strategy-hypothesis", scope: h.scope, id: h.id, fingerprint: h.fingerprint });
 
@@ -50,8 +52,8 @@ export class FileDiscoveryHypothesisStore {
   private valid(v: unknown, projectId: string): v is DiscoveryCommit {
     if (!v || typeof v !== "object" || Array.isArray(v)) return false;
     const d = v as DiscoveryCommit;
-    if (Object.keys(d).sort().join() !== "fingerprint,newHypotheses,outcome,packetFingerprint,refs,schemaVersion" ||
-      d.schemaVersion !== 1 || !/^sha256:[0-9a-f]{64}$/.test(d.packetFingerprint) ||
+    if (Object.keys(d).sort().join() !== "fingerprint,modelIdentity,newHypotheses,outcome,packetFingerprint,refs,schemaVersion" ||
+      d.schemaVersion !== 2 || !validateLearningModelProvenance(d.modelIdentity) || !/^sha256:[0-9a-f]{64}$/.test(d.packetFingerprint) ||
       !["covered", "published"].includes(d.outcome) || !Array.isArray(d.refs) || !Array.isArray(d.newHypotheses) ||
       !d.refs.length || d.refs.length > 2 || d.newHypotheses.length > 2 ||
       (d.outcome === "covered" ? d.newHypotheses.length !== 0 : d.newHypotheses.length === 0) ||
@@ -80,8 +82,9 @@ export class FileDiscoveryHypothesisStore {
     }
     return hypotheses.sort((a, b) => a.fingerprint.localeCompare(b.fingerprint) || a.id.localeCompare(b.id));
   }
-  async publish(packet: DiscoveryPacketV1, outcome: DiscoveryCommit["outcome"], refs: readonly LearningArtifactRef[], newHypotheses: readonly StrategyHypothesis[]): Promise<DiscoveryCommit> {
-    const content = { schemaVersion: 1 as const, packetFingerprint: packet.fingerprint, outcome, refs, newHypotheses };
+  async publish(packet: DiscoveryPacketV1, outcome: DiscoveryCommit["outcome"], refs: readonly LearningArtifactRef[], newHypotheses: readonly StrategyHypothesis[], modelIdentity: LearningModelProvenance): Promise<DiscoveryCommit> {
+    if (!validateLearningModelProvenance(modelIdentity)) throw new Error("Invalid hypothesis publication model provenance.");
+    const content = { schemaVersion: 2 as const, packetFingerprint: packet.fingerprint, outcome, refs, newHypotheses, modelIdentity };
     const commit: DiscoveryCommit = { ...content, fingerprint: learningFingerprint(content) };
     if (!validateDiscoveryPacket(packet) || !this.valid(commit, packet.projectId) ||
       refs.some((r) => !newHypotheses.some((h) => matchesLearningArtifactRef(r, h)) &&

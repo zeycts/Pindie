@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { FileGlobalWriterLock, type GlobalWriterLock } from "./store.ts";
-import { learningArtifactFingerprint, learningJobKey, validateDiscoveryReceipt, type DiscoveryReceipt, type LearningArtifactRef } from "./learning-v1-contract.ts";
+import { learningArtifactFingerprint, learningJobKey, validateDiscoveryReceipt, validateLearningModelProvenance, type DiscoveryReceipt, type LearningArtifactRef, type LearningModelProvenance } from "./learning-v1-contract.ts";
 import { validateDiscoveryPacket, type DiscoveryPacketV1 } from "./discovery-contract.ts";
 
 /** Strict immutable receipts. Missing directory is empty; any malformed entry blocks discovery. */
@@ -39,15 +39,15 @@ export class FileDiscoveryReceiptStore {
     const receipt = await this.find(ref.scope.projectId, jobKey, packetFingerprint);
     return receipt?.id === ref.id && receipt.fingerprint === ref.fingerprint ? receipt : null;
   }
-  /** Terminal outcomes assess only new sources; the full packet source list remains exact provenance. */
-  async publish(packet: DiscoveryPacketV1, outcome: DiscoveryReceipt["outcome"], hypotheses: readonly LearningArtifactRef[]): Promise<DiscoveryReceipt> {
-    if (!validateDiscoveryPacket(packet)) throw new Error("Invalid DiscoveryPacket.");
+  /** Terminal outcomes assess only new sources and persist exact model provenance. */
+  async publish(packet: DiscoveryPacketV1, outcome: DiscoveryReceipt["outcome"], hypotheses: readonly LearningArtifactRef[], modelIdentity: LearningModelProvenance): Promise<DiscoveryReceipt> {
+    if (!validateDiscoveryPacket(packet) || !validateLearningModelProvenance(modelIdentity)) throw new Error("Invalid DiscoveryPacket or model provenance.");
     const scope = { kind: "project" as const, projectId: packet.projectId };
     const jobKey = learningJobKey("project-discovery", scope, packet.fingerprint, packet.policy.selectionVersion);
     const sources = packet.sources.map((s) => ({ ...s.ref, recordedAt: s.recordedAt, role: s.role }));
     return this.lock.withLock(async () => {
       const previous = await this.find(packet.projectId, jobKey, packet.fingerprint);
-      const content = { schemaVersion: 2 as const, jobKey, packetFingerprint: packet.fingerprint, scope, outcome, hypotheses, sources };
+      const content = { schemaVersion: 3 as const, jobKey, packetFingerprint: packet.fingerprint, scope, outcome, hypotheses, sources, modelIdentity };
       if (previous) {
         if (JSON.stringify({ ...previous, id: null, fingerprint: null }) !== JSON.stringify({ ...content, id: null, fingerprint: null })) throw new Error("Conflicting DiscoveryReceipt publication.");
         return previous;

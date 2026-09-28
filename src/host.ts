@@ -61,7 +61,7 @@ import { installQuotaFallbackReceiver } from "./quota-fallback-control.ts";
 import { FileLearningBudgetLedger } from "./learning-budget-store.ts";
 import { FileLearningJobLedger } from "./learning-job-store.ts";
 import { LearningSupervisor, type LearningJobHandler } from "./learning-supervisor.ts";
-import { createLearningSessionRunner, validateLearningModelPolicy, DEFAULT_LEARNING_THINKING_LEVEL, type LearningModelPolicy } from "./learning-session-runner.ts";
+import { createLearningSessionRunner, resolveLearningModel, type LearningModelPolicy } from "./learning-session-runner.ts";
 import { resolvePindieStorageRoots } from "./composition.ts";
 import { resolveProjectRoot } from "./project.ts";
 import { getProjectId } from "./store.ts";
@@ -395,25 +395,19 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     try { currentProjectRoot = await resolveProjectRoot(cwd); }
     catch { console.warn("[Pindie] Project discovery root unavailable; enqueue skipped."); }
     // Learning model identity is frozen once at Host start; it never follows the
-    // mutable Human Session model/fallback. Absence fails closed so jobs stay pending.
+    // mutable Human Session model/fallback. A startup fallback is not a baseline,
+    // and absence fails closed so jobs stay pending.
     const learningSession = runtime.activeSession;
-    const requestedLearningModel = options.learningModel;
-    const baselineModel = learningSession.model;
-    const candidateIdentity = requestedLearningModel
-      ? { provider: requestedLearningModel.provider, modelId: requestedLearningModel.modelId,
-          thinkingLevel: requestedLearningModel.thinkingLevel ?? DEFAULT_LEARNING_THINKING_LEVEL }
-      : baselineModel
-        ? { provider: baselineModel.provider, modelId: baselineModel.id, thinkingLevel: DEFAULT_LEARNING_THINKING_LEVEL }
-        : null;
-    const learningModelPolicy: LearningModelPolicy | null = candidateIdentity && validateLearningModelPolicy(candidateIdentity) ? candidateIdentity : null;
-    const learningModel = learningModelPolicy
-      ? (learningSession.modelRuntime?.getModel(learningModelPolicy.provider, learningModelPolicy.modelId) ??
-        (baselineModel && baselineModel.provider === learningModelPolicy.provider && baselineModel.id === learningModelPolicy.modelId ? baselineModel : undefined))
+    const resolvedLearningModel = resolveLearningModel({
+      ...(options.learningModel ? { requested: options.learningModel } : {}),
+      baseline: learningSession.model,
+      startupFellBack: nativeRuntime.modelFallbackMessage !== undefined,
+      resolve: (provider, modelId) => learningSession.modelRuntime?.getModel(provider, modelId),
+    });
+    const learningRunner = resolvedLearningModel
+      ? createLearningSessionRunner({ cwd, model: resolvedLearningModel.model, policy: resolvedLearningModel.policy })
       : undefined;
-    const learningRunner = learningModelPolicy && learningModel
-      ? createLearningSessionRunner({ cwd, model: learningModel, policy: learningModelPolicy })
-      : undefined;
-    if (!learningRunner) console.warn("[Pindie] Explicit learning model unavailable; learning jobs remain pending.");
+    if (!learningRunner) console.warn("[Pindie] Learning model unavailable (explicit config missing/unresolved or startup fallback); learning jobs remain pending.");
     learningSupervisor = new LearningSupervisor({
       ledger: jobs,
       budget: new FileLearningBudgetLedger({ globalBaseDir: roots.globalBaseDir }),

@@ -21,7 +21,10 @@ import { FileLearningBudgetLedger } from "../src/learning-budget-store.ts";
 import { FileLearningJobLedger } from "../src/learning-job-store.ts";
 import { buildProjectDiscoveryPacket, enqueueProjectDiscovery } from "../src/project-discovery.ts";
 import { validateDiscoveryPacket, MAX_DISCOVERY_PACKET_CHARS_V3, DEFAULT_PROJECT_DISCOVERY_POLICY } from "../src/discovery-contract.ts";
-import { matchesLearningJobOutput, learningFingerprint, canonicalJson } from "../src/learning-v1-contract.ts";
+import { matchesLearningJobOutput, learningFingerprint, canonicalJson, type LearningModelProvenance } from "../src/learning-v1-contract.ts";
+
+const MODEL: LearningModelProvenance = { provider: "test", modelId: "test-learning-model", thinkingLevel: "low" };
+const MODEL_B: LearningModelProvenance = { provider: "test", modelId: "other-learning-model", thinkingLevel: "off" };
 
 const ROOT = "/repo/discovery"; const id = getProjectId(ROOT);
 async function setup(t: import("node:test").TestContext) {
@@ -85,7 +88,7 @@ test("D2 new-only trigger reuses assessed A context alongside B and never counts
   for (let i = 0; i < 6; i++) await f.add(i);
   const first = (await buildProjectDiscoveryPacket(id, f.deps))!;
   assert.equal(first.sources.filter((s) => s.role === "new").length, 6);
-  await f.deps.receipts.publish(first, "none", []);
+  await f.deps.receipts.publish(first, "none", [], MODEL);
   assert.equal(await buildProjectDiscoveryPacket(id, f.deps), null);
   for (let i = 6; i < 11; i++) await f.add(i);
   assert.equal(await buildProjectDiscoveryPacket(id, f.deps), null); // five new + six old is NOT eligible
@@ -95,7 +98,7 @@ test("D2 new-only trigger reuses assessed A context alongside B and never counts
   assert.equal(second.sources.filter((s) => s.role === "new").length, 6);
   assert.equal(second.sources.filter((s) => s.role === "context").length, 6);
   assert.ok(second.sources.some((s) => s.role === "context" && first.sources.some((a) => a.ref.fingerprint === s.ref.fingerprint)));
-  assert.equal((await f.deps.receipts.publish(second, "none", [])).sources.length, 12); // full packet binding
+  assert.equal((await f.deps.receipts.publish(second, "none", [], MODEL)).sources.length, 12); // full packet binding
   assert.equal(await buildProjectDiscoveryPacket(id, f.deps), null);
   for (let i = 12; i < 18; i++) await f.add(i);
   const third = (await buildProjectDiscoveryPacket(id, f.deps))!;
@@ -123,7 +126,7 @@ test("D1 bounded receipt assesses only selected fingerprints; leftover older evi
   assert.equal(first.eligibleCounts.new, 50);
   const firstKey = await enqueueProjectDiscovery(id, f.deps);
   assert.ok(firstKey);
-  await f.deps.receipts.publish(first, "none", []);
+  await f.deps.receipts.publish(first, "none", [], MODEL);
   // Even a new file with the same exact payload as an assessed source is not new.
   const assessed = (await f.deps.reader.readProjectId(id)).records.find((r) => r.recordId === first.sources[0]!.ref.recordId)!;
   await f.store.save(ROOT, assessed.experience);
@@ -138,7 +141,7 @@ test("D1 bounded receipt assesses only selected fingerprints; leftover older evi
   const secondKey = await enqueueProjectDiscovery(id, restarted);
   assert.ok(secondKey && secondKey !== firstKey);
   assert.equal((await restarted.jobs.read()).length, 2);
-  await restarted.receipts.publish(second, "none", []);
+  await restarted.receipts.publish(second, "none", [], MODEL);
   assert.equal(await buildProjectDiscoveryPacket(id, restarted), null); // two unassessed sources, below threshold
 });
 test("D1 duplicates, terminal receipt and cancellation without receipt", async (t) => {
@@ -160,9 +163,9 @@ test("D1 duplicates, terminal receipt and cancellation without receipt", async (
   assert.ok(changed.sources.some((source) => source.ref.fingerprint === packet.sources[0]!.ref.fingerprint));
   assert.notEqual(await enqueueProjectDiscovery(id, f.deps), key);
   assert.equal((await f.deps.jobs.read()).length, 2);
-  const receipt = await f.deps.receipts.publish(packet, "none", []);
-  assert.deepEqual(await f.deps.receipts.publish(packet, "none", []), receipt);
-  await assert.rejects(f.deps.receipts.publish(packet, "covered", []));
+  const receipt = await f.deps.receipts.publish(packet, "none", [], MODEL);
+  assert.deepEqual(await f.deps.receipts.publish(packet, "none", [], MODEL), receipt);
+  await assert.rejects(f.deps.receipts.publish(packet, "covered", [], MODEL));
   const ref = { schemaVersion: 1 as const, family: "discovery-receipt" as const, scope: receipt.scope, id: receipt.id, fingerprint: receipt.fingerprint };
   assert.deepEqual(await f.deps.receipts.resolve(ref, key, packet.fingerprint), receipt);
   assert.equal(matchesLearningJobOutput({ ...claimed, state: "completed", leaseOwner: null, leaseToken: null, leaseExpiresAt: null, terminalReceiptRef: ref }, receipt), true);
@@ -265,7 +268,7 @@ test("D2 frozen packet isolated runner none -> exact receipt -> completed job, n
   const supervisor = new LearningSupervisor({ ledger: f.deps.jobs,
     budget: new FileLearningBudgetLedger({ globalBaseDir: f.global }), handlers: [f.handler],
     authority: { idle: () => true, generation: () => 0 },
-    runner: { run: async (prompt) => { calls++; assert.ok(prompt.includes(f.packet.fingerprint)); return { text: '{"outcome":"none"}' }; } },
+    runner: { modelIdentity: MODEL, run: async (prompt) => { calls++; assert.ok(prompt.includes(f.packet.fingerprint)); return { text: '{"outcome":"none"}' }; } },
   });
   await supervisor.kick();
   assert.equal(calls, 1);
@@ -278,7 +281,7 @@ test("D2 frozen packet isolated runner none -> exact receipt -> completed job, n
 test("D2 proposal is minted, immutable, reconciled and recovered from committed batch and receipt", async (t) => {
   const f = await prepared(t);
   let calls = 0;
-  const runner = { run: async () => { calls++; return { text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }; } };
+  const runner = { modelIdentity: MODEL, run: async () => { calls++; return { text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }; } };
   const output = await f.handler.execute(f.job, async () => true, new AbortController().signal, runner);
   const [hypothesis] = await f.deps.hypotheses.list(id);
   assert.ok(hypothesis);
@@ -288,7 +291,7 @@ test("D2 proposal is minted, immutable, reconciled and recovered from committed 
   assert.equal(await f.handler.matchesOutput(f.job, output.receiptRef), true);
   assert.deepEqual(await f.handler.resolveCommitted(f.job), output.receiptRef);
   assert.equal(calls, 1);
-  await assert.rejects(f.deps.hypotheses.publish(f.packet, "published", [hypothesisRef(hypothesis)], [{ ...hypothesis, id: randomUUID() }]));
+  await assert.rejects(f.deps.hypotheses.publish(f.packet, "published", [hypothesisRef(hypothesis)], [{ ...hypothesis, id: randomUUID() }], MODEL));
 });
 test("D2 crash after hypothesis commit recovers without a second model invocation", async (t) => {
   const f = await prepared(t);
@@ -296,7 +299,7 @@ test("D2 crash after hypothesis commit recovers without a second model invocatio
   const original = f.deps.receipts.publish.bind(f.deps.receipts);
   f.deps.receipts.publish = async () => { throw new Error("crash"); };
   let calls = 0;
-  const runner = { run: async () => { calls++; return { text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }; } };
+  const runner = { modelIdentity: MODEL, run: async () => { calls++; return { text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }; } };
   await assert.rejects(f.handler.execute(f.job, async () => true, new AbortController().signal, runner));
   f.deps.receipts.publish = original;
   const recovered = await createProjectDiscoveryHandler(f.deps).resolveCommitted(f.job);
@@ -307,7 +310,7 @@ test("D2 crash after hypothesis commit recovers without a second model invocatio
   const supervisor = new LearningSupervisor({ ledger: f.deps.jobs,
     budget: new FileLearningBudgetLedger({ globalBaseDir: f.global }), handlers: [f.handler],
     authority: { idle: () => true, generation: () => 0 },
-    runner: { run: async () => { throw new Error("A second model call is forbidden."); } },
+    runner: { modelIdentity: MODEL, run: async () => { throw new Error("A second model call is forbidden."); } },
   });
   await supervisor.kick();
   assert.equal((await f.deps.jobs.read()).find((j) => j.key === f.job.key)?.state, "completed");
@@ -322,7 +325,7 @@ test("D2 invalid model contract and authority fields cannot create a semantic re
     JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet, { capability: "task.complete" })] }),
     JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet), proposal(f.packet), proposal(f.packet)] })];
   for (const raw of invalid) await assert.rejects(f.handler.execute(f.job, async () => true, new AbortController().signal,
-    { run: async () => ({ text: raw }) }));
+    { modelIdentity: MODEL, run: async () => ({ text: raw }) }));
   assert.deepEqual(await f.deps.receipts.read(id), []);
   assert.deepEqual(await f.deps.hypotheses.list(id), []);
   assert.equal(await f.handler.isCurrent(f.job), true);
@@ -330,7 +333,7 @@ test("D2 invalid model contract and authority fields cannot create a semantic re
 test("D2 duplicate open hypothesis is covered and revision needs the exact frozen parent", async (t) => {
   const f = await prepared(t);
   const first = await f.handler.execute(f.job, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
   assert.equal(await f.handler.matchesOutput(f.job, first.receiptRef), true);
   // Another packet with the same exact sources, but changed open comparison, retains semantic dedupe identity.
   const existing = (await f.deps.hypotheses.list(id))[0]!;
@@ -351,7 +354,7 @@ test("D2 duplicate open hypothesis is covered and revision needs the exact froze
   const staleJob = await f.deps.jobs.enqueue("project-discovery", { kind: "project", projectId: id }, stale.fingerprint, stale.policy.selectionVersion, Date.now());
   assert.equal(await f.handler.isCurrent(staleJob), false);
   const covered = await f.handler.execute(nextJob, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(next)] }) }) });
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(next)] }) }) });
   assert.equal((await f.deps.receipts.resolve(covered.receiptRef, nextJob.key, next.fingerprint))?.outcome, "covered");
   assert.equal((await f.deps.hypotheses.list(id)).length, 1);
   const wrongParent = proposal(next, { intent: "revise", revisionTarget: { kind: "open-hypothesis", ref: { ...hypothesisRef(existing), fingerprint: learningFingerprint("wrong") } } });
@@ -366,12 +369,12 @@ test("D2 duplicate open hypothesis is covered and revision needs the exact froze
   await f.deps.packets.publish(third);
   const thirdJob = await f.deps.jobs.enqueue("project-discovery", { kind: "project", projectId: id }, third.fingerprint, third.policy.selectionVersion, Date.now());
   await assert.rejects(f.handler.execute(thirdJob, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [wrongLogical] }) }) }));
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [wrongLogical] }) }) }));
   assert.equal((await f.deps.hypotheses.list(id)).length, 1);
   const revised = proposal(third, { intent: "revise", revisionTarget: { kind: "open-hypothesis", ref: hypothesisRef(existing) },
     expectedEffect: "Fewer tool errors on similar Tasks" });
   const output = await f.handler.execute(thirdJob, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [revised] }) }) });
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [revised] }) }) });
   assert.equal((await f.deps.receipts.resolve(output.receiptRef, thirdJob.key, third.fingerprint))?.outcome, "published");
   const children = await f.deps.hypotheses.list(id);
   assert.equal(children.length, 2);
@@ -381,7 +384,7 @@ test("D2 duplicate open hypothesis is covered and revision needs the exact froze
 test("D2 covered batch recovers exact receipt after interrupted publication without model rerun", async (t) => {
   const f = await prepared(t);
   await f.handler.execute(f.job, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
   const h = (await f.deps.hypotheses.list(id))[0]!;
   const entries = [{ ref: hypothesisRef(h), logicalId: h.logicalId, kind: h.kind,
     baseRevisionFingerprint: h.baseRevisionFingerprint, summary: h.summary, expectedEffect: h.expectedEffect,
@@ -394,7 +397,7 @@ test("D2 covered batch recovers exact receipt after interrupted publication with
   f.deps.receipts.publish = async () => { throw new Error("crash"); };
   try {
     await assert.rejects(f.handler.execute(job, async () => true, new AbortController().signal,
-      { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(packet)] }) }) }));
+      { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(packet)] }) }) }));
   } finally { f.deps.receipts.publish = original; }
   const commit = await f.deps.hypotheses.committed(id, packet.fingerprint);
   assert.equal(commit?.outcome, "covered");
@@ -415,7 +418,7 @@ test("D2 trusted revision and chained open revision retain the exact trusted bas
   const result = proposal(f.packet, { logicalId: trusted.strategyId, kind: trusted.kind, intent: "revise", revisionTarget: target });
   assert.equal(await f.handler.isCurrent(f.job), true);
   const first = await f.handler.execute(f.job, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [result] }) }) });
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [result] }) }) });
   assert.equal((await f.deps.receipts.resolve(first.receiptRef, f.job.key, f.packet.fingerprint))?.outcome, "published");
   const base = (await f.deps.hypotheses.list(id))[0]!;
   assert.equal(base.parent, null);
@@ -433,7 +436,7 @@ test("D2 trusted revision and chained open revision retain the exact trusted bas
   const second = proposal(packet, { logicalId: trusted.strategyId, kind: trusted.kind, intent: "revise",
     revisionTarget: { kind: "open-hypothesis", ref: hypothesisRef(base) }, expectedEffect: "Fewer failed checks after revisions" });
   await f.handler.execute(job, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [second] }) }) });
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [second] }) }) });
   const child = (await f.deps.hypotheses.list(id)).find((h) => h.parent !== null)!;
   assert.deepEqual(child.parent, hypothesisRef(base));
   assert.equal(child.baseRevisionFingerprint, trusted.revisionFingerprint);
@@ -448,37 +451,37 @@ test("D2 trusted targets must resolve exactly; unrelated new collisions are none
     { ...valid, logicalId: "missing" }, { ...valid, strategyKind: trusted.kind === "approach" ? "modifier" : "approach" }]) {
     const invalid = proposal(f.packet, { logicalId: trusted.strategyId, kind: trusted.kind, intent: "revise", revisionTarget: bad });
     await assert.rejects(f.handler.execute(f.job, async () => true, new AbortController().signal,
-      { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [invalid] }) }) }));
+      { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [invalid] }) }) }));
   }
   const mismatch = proposal(f.packet, { logicalId: "unrelated", kind: trusted.kind, intent: "revise", revisionTarget: valid });
   assert.throws(() => parseDiscoveryResult(JSON.stringify({ outcome: "proposals", proposals: [mismatch] }), f.packet));
   assert.deepEqual(await f.deps.receipts.read(id), []);
   const collision = proposal(f.packet, { logicalId: trusted.strategyId, kind: trusted.kind });
   const outcome = await f.handler.execute(f.job, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [collision] }) }) });
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [collision] }) }) });
   assert.equal((await f.deps.receipts.resolve(outcome.receiptRef, f.job.key, f.packet.fingerprint))?.outcome, "none");
   assert.deepEqual(await f.deps.hypotheses.list(id), []);
 });
 test("D2 bounded publication rejects conflicting fingerprints and capacity without erasing open cognition", async (t) => {
   const f = await prepared(t);
   const output = await f.handler.execute(f.job, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
   const [h] = await f.deps.hypotheses.list(id);
   assert.ok(h);
   const commit = (await f.deps.hypotheses.committed(id, f.packet.fingerprint))!;
-  assert.deepEqual(await f.deps.hypotheses.publish(f.packet, commit.outcome, commit.refs, commit.newHypotheses), commit);
-  await assert.rejects(f.deps.hypotheses.publish(f.packet, "covered", [hypothesisRef(h)], []));
+  assert.deepEqual(await f.deps.hypotheses.publish(f.packet, commit.outcome, commit.refs, commit.newHypotheses, commit.modelIdentity), commit);
+  await assert.rejects(f.deps.hypotheses.publish(f.packet, "covered", [hypothesisRef(h)], [], MODEL));
   assert.equal(await f.handler.matchesOutput(f.job, output.receiptRef), true);
   const content = { ...f.packet, eligibleCounts: { ...f.packet.eligibleCounts, new: 7 } };
   const { fingerprint: _old, ...unsigned } = content;
   const next = { ...unsigned, fingerprint: learningFingerprint(unsigned) };
-  await assert.rejects(f.deps.hypotheses.publish(next, "published", [hypothesisRef(h)], [h]));
+  await assert.rejects(f.deps.hypotheses.publish(next, "published", [hypothesisRef(h)], [h], MODEL));
   assert.equal((await f.deps.hypotheses.list(id)).length, 1);
 });
 test("D2 commit history exceeds 64 covered packets without exhausting 64-hypothesis cognition", async (t) => {
   const f = await prepared(t);
   await f.handler.execute(f.job, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
   const h = (await f.deps.hypotheses.list(id))[0]!;
   const entries = [{ ref: hypothesisRef(h), logicalId: h.logicalId, kind: h.kind,
     baseRevisionFingerprint: h.baseRevisionFingerprint, summary: h.summary, expectedEffect: h.expectedEffect,
@@ -487,7 +490,7 @@ test("D2 commit history exceeds 64 covered packets without exhausting 64-hypothe
     const { fingerprint: _prior, ...content } = { ...f.packet, eligibleCounts: { ...f.packet.eligibleCounts, new: 10 + i },
       openHypotheses: { fingerprint: learningFingerprint(entries), entries } };
     const packet = { ...content, fingerprint: learningFingerprint(content) };
-    await f.deps.hypotheses.publish(packet, "covered", [hypothesisRef(h)], []);
+    await f.deps.hypotheses.publish(packet, "covered", [hypothesisRef(h)], [], MODEL);
   }
   assert.deepEqual(await new FileDiscoveryHypothesisStore({ projectsBaseDir: f.projects }).list(id), [h]);
   assert.equal((await readdir(join(f.projects, id, "learning-v1", "hypotheses"))).filter((n) => n.endsWith(".json")).length, 66);
@@ -517,10 +520,10 @@ test("D2 canonical open ordering survives reversed commit-file insertion and res
   const a = f.deps.hypotheses;
   const otherProjects = join(f.dir, "other-projects");
   const b = new FileDiscoveryHypothesisStore({ projectsBaseDir: otherProjects });
-  await a.publish(f.packet, "published", [hypothesisRef(first)], [first]);
-  await a.publish(next, "published", [hypothesisRef(second)], [second]);
-  await b.publish(next, "published", [hypothesisRef(second)], [second]);
-  await b.publish(f.packet, "published", [hypothesisRef(first)], [first]);
+  await a.publish(f.packet, "published", [hypothesisRef(first)], [first], MODEL);
+  await a.publish(next, "published", [hypothesisRef(second)], [second], MODEL);
+  await b.publish(next, "published", [hypothesisRef(second)], [second], MODEL);
+  await b.publish(f.packet, "published", [hypothesisRef(first)], [first], MODEL);
   const sorted = [first, second].sort((x, y) => x.fingerprint.localeCompare(y.fingerprint));
   assert.deepEqual(await a.list(id), sorted);
   assert.deepEqual(await b.list(id), sorted);
@@ -546,7 +549,7 @@ test("D2 oversized packet fails validation; builder drops context before new and
   const large = { ...f.deps, portfolio: { readProjectId: async () => largePortfolio } };
   assert.equal(await enqueueProjectDiscovery(id, large), null);
   assert.deepEqual(await f.deps.jobs.read(), []); // no guaranteed-overflow model job
-  await f.deps.receipts.publish(first, "none", []);
+  await f.deps.receipts.publish(first, "none", [], MODEL);
   for (let i = 6; i < 12; i++) await f.add(i);
   const second = (await buildProjectDiscoveryPacket(id, f.deps))!;
   assert.equal(second.sources.filter((s) => s.role === "context").length, 6);
@@ -582,7 +585,7 @@ test("D2 comparison drift makes old job stale; preemption leaves nothing committ
   const waiting = new Promise<void>((resolve) => { release = resolve; });
   const controller = new AbortController();
   const run = f.handler.execute(f.job, async () => !controller.signal.aborted, controller.signal,
-    { run: async () => { await waiting; return { text: '{"outcome":"none"}' }; } });
+    { modelIdentity: MODEL, run: async () => { await waiting; return { text: '{"outcome":"none"}' }; } });
   controller.abort(); release();
   await assert.rejects(run);
   assert.deepEqual(await f.deps.receipts.read(id), []);
@@ -590,7 +593,7 @@ test("D2 comparison drift makes old job stale; preemption leaves nothing committ
 test("D2 unresolved hypothesis source Experience survives pruning and restart", async (t) => {
   const f = await prepared(t);
   await f.handler.execute(f.job, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
   const [hypothesis] = await f.deps.hypotheses.list(id);
   assert.ok(hypothesis && hypothesis.sources.length > 0);
   const protectedName = hypothesis.sources[0]!.recordId;
@@ -628,7 +631,7 @@ test("D2 corrupt hypothesis store fails closed for pruning without undoing a com
 test("D2 model proposal needs a new source; context-only is discarded", async (t) => {
   const f = await prepared(t);
   await f.handler.execute(f.job, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
   for (let i = 6; i < 12; i++) await f.add(i);
   // Rebuild from the live corpus: six new Experiences plus six assessed context records.
   const packet = (await buildProjectDiscoveryPacket(id, f.deps))!;
@@ -642,13 +645,13 @@ test("D2 model proposal needs a new source; context-only is discarded", async (t
   const contextJob = await f.deps.jobs.enqueue("project-discovery", { kind: "project", projectId: id }, packetAlt.fingerprint, packetAlt.policy.selectionVersion, Date.now());
   const contextOnly = proposal(packetAlt, { logicalId: "context-only-focus", sourceHandles: [contextHandle], expectedEffect: "Context-only effect" });
   await assert.rejects(f.handler.execute(contextJob, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [contextOnly] }) }) }), /new source/);
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [contextOnly] }) }) }), /new source/);
   assert.equal(await f.deps.receipts.find(id, contextJob.key, packetAlt.fingerprint), null);
   assert.equal((await f.deps.hypotheses.list(id)).length, 1);
   const newJob = await f.deps.jobs.enqueue("project-discovery", { kind: "project", projectId: id }, packet.fingerprint, packet.policy.selectionVersion, Date.now() + 1);
   const withNew = proposal(packet, { logicalId: "new-plus-context", sourceHandles: [newHandle, contextHandle], expectedEffect: "New plus context effect" });
   const published = await f.handler.execute(newJob, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [withNew] }) }) });
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [withNew] }) }) });
   assert.equal((await f.deps.receipts.resolve(published.receiptRef, newJob.key, packet.fingerprint))?.outcome, "published");
   const refreshed = await f.deps.hypotheses.list(id);
   assert.equal(refreshed.length, 2);
@@ -659,7 +662,7 @@ test("D2 model proposal needs a new source; context-only is discarded", async (t
 async function coveredPacket(t: import("node:test").TestContext) {
   const f = await prepared(t);
   await f.handler.execute(f.job, async () => true, new AbortController().signal,
-    { run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
   const [h] = await f.deps.hypotheses.list(id);
   for (let i = 6; i < 12; i++) await f.add(i);
   const key = (await enqueueProjectDiscovery(id, f.deps))!;
@@ -671,7 +674,7 @@ async function coveredPacket(t: import("node:test").TestContext) {
 test("D2 semantic covered references exact open hypothesis with new sources, no artifact", async (t) => {
   const f = await coveredPacket(t);
   assert.equal((await f.deps.hypotheses.list(id)).length, 1);
-  const output = await f.handler.execute(f.job, async () => true, new AbortController().signal, { run: async () => ({ text: f.coveredJson }) });
+  const output = await f.handler.execute(f.job, async () => true, new AbortController().signal, { modelIdentity: MODEL, run: async () => ({ text: f.coveredJson }) });
   const receipt = await f.deps.receipts.resolve(output.receiptRef, f.job.key, f.packet.fingerprint);
   assert.equal(receipt?.outcome, "covered");
   assert.deepEqual(receipt?.hypotheses, [hypothesisRef(f.h)]);
@@ -690,7 +693,7 @@ test("D2 none and covered are distinct outcomes; covered commit recovers without
   const packetAlt = { ...altUnsigned, fingerprint: learningFingerprint(altUnsigned) };
   await f.deps.packets.publish(packetAlt);
   const noneJob = await f.deps.jobs.enqueue("project-discovery", { kind: "project", projectId: id }, packetAlt.fingerprint, packetAlt.policy.selectionVersion, Date.now());
-  const noneOut = await f.handler.execute(noneJob, async () => true, new AbortController().signal, { run: async () => ({ text: '{"outcome":"none"}' }) });
+  const noneOut = await f.handler.execute(noneJob, async () => true, new AbortController().signal, { modelIdentity: MODEL, run: async () => ({ text: '{"outcome":"none"}' }) });
   const noneReceipt = await f.deps.receipts.resolve(noneOut.receiptRef, noneJob.key, packetAlt.fingerprint);
   assert.equal(noneReceipt?.outcome, "none");
   assert.deepEqual(noneReceipt?.hypotheses, []);
@@ -698,7 +701,7 @@ test("D2 none and covered are distinct outcomes; covered commit recovers without
   const original = f.deps.receipts.publish.bind(f.deps.receipts);
   f.deps.receipts.publish = async () => { throw new Error("crash"); };
   try {
-    await assert.rejects(f.handler.execute(f.job, async () => true, new AbortController().signal, { run: async () => ({ text: f.coveredJson }) }));
+    await assert.rejects(f.handler.execute(f.job, async () => true, new AbortController().signal, { modelIdentity: MODEL, run: async () => ({ text: f.coveredJson }) }));
   } finally { f.deps.receipts.publish = original; }
   const commit = await f.deps.hypotheses.committed(id, f.packet.fingerprint);
   assert.equal(commit?.outcome, "covered");
@@ -719,7 +722,7 @@ test("D2 open catalog capacity is separate from immutable commit history", async
       summary: `Open ${i} a`, useWhen: ["u"], avoidWhen: [], expectedEffect: "e", failureSignals: ["f"], trialHints: [], sources: [source] });
     const b = mintHypothesis(packet, { logicalId: `open-${i}-b`, kind: "modifier", lineage: "new", parent: null, baseRevisionFingerprint: null,
       summary: `Open ${i} b`, useWhen: ["u"], avoidWhen: [], expectedEffect: "e", failureSignals: ["f"], trialHints: [], sources: [source] });
-    await f.deps.hypotheses.publish(packet, "published", [hypothesisRef(a), hypothesisRef(b)], [a, b]);
+    await f.deps.hypotheses.publish(packet, "published", [hypothesisRef(a), hypothesisRef(b)], [a, b], MODEL);
     const { fingerprint: _p, ...next } = { ...packet, eligibleCounts: { ...packet.eligibleCounts, new: packet.eligibleCounts.new + 1 } };
     packet = { ...next, fingerprint: learningFingerprint(next) };
   }
@@ -731,10 +734,48 @@ test("D2 open catalog capacity is separate from immutable commit history", async
   const entry = { ref: hypothesisRef(last), logicalId: last.logicalId, kind: last.kind, baseRevisionFingerprint: null,
     summary: last.summary, expectedEffect: last.expectedEffect, useWhen: last.useWhen, avoidWhen: last.avoidWhen, failureSignals: last.failureSignals };
   const { fingerprint: _cov, ...cov } = { ...packet, openHypotheses: { fingerprint: learningFingerprint([entry]), entries: [entry] } };
-  await f.deps.hypotheses.publish({ ...cov, fingerprint: learningFingerprint(cov) }, "covered", [hypothesisRef(last)], []);
+  await f.deps.hypotheses.publish({ ...cov, fingerprint: learningFingerprint(cov) }, "covered", [hypothesisRef(last)], [], MODEL);
   assert.equal((await readdir(join(f.projects, id, "learning-v1", "hypotheses"))).filter((n) => n.endsWith(".json")).length, historyBefore + 1);
   const overflow = mintHypothesis(packet, { logicalId: "open-overflow", kind: "approach", lineage: "new", parent: null, baseRevisionFingerprint: null,
     summary: "Overflow", useWhen: ["u"], avoidWhen: [], expectedEffect: "e", failureSignals: ["f"], trialHints: [], sources: [source] });
-  await assert.rejects(f.deps.hypotheses.publish(packet, "published", [hypothesisRef(overflow)], [overflow]), /Open hypothesis capacity/);
+  await assert.rejects(f.deps.hypotheses.publish(packet, "published", [hypothesisRef(overflow)], [overflow], MODEL), /Open hypothesis capacity/);
   assert.equal((await f.deps.hypotheses.list(id)).length, MAX_OPEN_HYPOTHESES);
+});
+test("D2 terminal receipts persist exact model provenance and reject conflicting provenance", async (t) => {
+  const f = await prepared(t);
+  const noneOut = await f.handler.execute(f.job, async () => true, new AbortController().signal,
+    { modelIdentity: MODEL, run: async () => ({ text: '{"outcome":"none"}' }) });
+  assert.deepEqual((await f.deps.receipts.resolve(noneOut.receiptRef, f.job.key, f.packet.fingerprint))?.modelIdentity, MODEL);
+  // Conflicting model provenance for the same committed packet fails closed.
+  await assert.rejects(f.deps.receipts.publish(f.packet, "none", [], MODEL_B));
+});
+test("D2 published commit recovers original model provenance without rerunning the model", async (t) => {
+  const f = await prepared(t);
+  const original = f.deps.receipts.publish.bind(f.deps.receipts);
+  f.deps.receipts.publish = async () => { throw new Error("crash"); };
+  try {
+    await assert.rejects(f.handler.execute(f.job, async () => true, new AbortController().signal,
+      { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) }));
+  } finally { f.deps.receipts.publish = original; }
+  const commit = await f.deps.hypotheses.committed(id, f.packet.fingerprint);
+  assert.equal(commit?.outcome, "published");
+  assert.deepEqual(commit?.modelIdentity, MODEL);
+  // Recovery republishes the receipt from the committed provenance, regardless of any current model.
+  const recovered = await createProjectDiscoveryHandler(f.deps).resolveCommitted(f.job);
+  assert.deepEqual((await f.deps.receipts.resolve(recovered!, f.job.key, f.packet.fingerprint))?.modelIdentity, MODEL);
+  assert.equal(await f.handler.matchesOutput(f.job, recovered!), true);
+});
+test("D2 covered commit recovers original model provenance across restart", async (t) => {
+  const f = await coveredPacket(t);
+  const original = f.deps.receipts.publish.bind(f.deps.receipts);
+  f.deps.receipts.publish = async () => { throw new Error("crash"); };
+  try {
+    await assert.rejects(f.handler.execute(f.job, async () => true, new AbortController().signal,
+      { modelIdentity: MODEL, run: async () => ({ text: f.coveredJson }) }));
+  } finally { f.deps.receipts.publish = original; }
+  assert.deepEqual((await f.deps.hypotheses.committed(id, f.packet.fingerprint))?.modelIdentity, MODEL);
+  const recovered = await createProjectDiscoveryHandler(f.deps).resolveCommitted(f.job);
+  const receipt = await f.deps.receipts.resolve(recovered!, f.job.key, f.packet.fingerprint);
+  assert.equal(receipt?.outcome, "covered");
+  assert.deepEqual(receipt?.modelIdentity, MODEL);
 });

@@ -3,6 +3,7 @@ import {
   type AgentSession, type ResourceLoader,
 } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai/compat";
+import { validateLearningModelProvenance, type LearningModelProvenance, type LearningThinkingLevel } from "./learning-v1-contract.ts";
 
 /** No default discovery: no project/user extensions, Task tools, skills, context files or templates. */
 export function learningResourceLoader(): ResourceLoader {
@@ -26,20 +27,35 @@ export interface LearningSessionRunner {
   readonly modelIdentity: LearningModelPolicy;
   run(prompt: string, signal: AbortSignal): Promise<LearningSessionResult>;
 }
-export const LEARNING_THINKING_LEVELS = ["off", "low", "medium"] as const;
-export const DEFAULT_LEARNING_THINKING_LEVEL = "low" as const;
+export const DEFAULT_LEARNING_THINKING_LEVEL: LearningThinkingLevel = "low";
 /** Explicit isolated learning model identity, independent of the Human Session's mutable model/fallback. */
-export interface LearningModelPolicy {
-  readonly provider: string;
-  readonly modelId: string;
-  readonly thinkingLevel: "off" | "low" | "medium";
-}
-export function validateLearningModelPolicy(v: unknown): v is LearningModelPolicy {
-  return !!v && typeof v === "object" && !Array.isArray(v) &&
-    Object.keys(v).sort().join() === "modelId,provider,thinkingLevel" &&
-    typeof (v as LearningModelPolicy).provider === "string" && (v as LearningModelPolicy).provider.trim().length > 0 &&
-    typeof (v as LearningModelPolicy).modelId === "string" && (v as LearningModelPolicy).modelId.trim().length > 0 &&
-    (LEARNING_THINKING_LEVELS as readonly string[]).includes((v as LearningModelPolicy).thinkingLevel);
+export type LearningModelPolicy = LearningModelProvenance;
+export const validateLearningModelPolicy = validateLearningModelProvenance;
+
+/**
+ * Resolve the exact learning model to freeze. An explicit request must resolve exactly;
+ * an omitted request may use the startup baseline only when it was not an automatic fallback.
+ */
+export function resolveLearningModel(options: {
+  readonly requested?: { readonly provider: string; readonly modelId: string; readonly thinkingLevel?: LearningThinkingLevel };
+  readonly baseline: Model<any> | undefined;
+  readonly startupFellBack: boolean;
+  readonly resolve: (provider: string, modelId: string) => Model<any> | undefined;
+}): { readonly policy: LearningModelProvenance; readonly model: Model<any> } | null {
+  const requested = options.requested;
+  if (requested) {
+    const policy: LearningModelProvenance = { provider: requested.provider, modelId: requested.modelId,
+      thinkingLevel: requested.thinkingLevel ?? DEFAULT_LEARNING_THINKING_LEVEL };
+    if (!validateLearningModelProvenance(policy)) return null;
+    const model = options.resolve(policy.provider, policy.modelId);
+    return model ? { policy, model } : null;
+  }
+  // A fallback startup value is not an intentional baseline and must not become long-lived cognition.
+  if (options.startupFellBack || !options.baseline) return null;
+  const policy: LearningModelProvenance = { provider: options.baseline.provider, modelId: options.baseline.id,
+    thinkingLevel: DEFAULT_LEARNING_THINKING_LEVEL };
+  if (!validateLearningModelProvenance(policy)) return null;
+  return { policy, model: options.resolve(policy.provider, policy.modelId) ?? options.baseline };
 }
 export interface LearningSessionFactoryOptions {
   readonly cwd: string;
