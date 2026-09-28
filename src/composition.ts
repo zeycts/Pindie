@@ -21,6 +21,7 @@ import {
 import { RemoteRoutingStore } from "./remote-routing.ts";
 import { FileStrategyKnowledge } from "./strategy-knowledge-file.ts";
 import { FileRunExperienceMaintenance } from "./experience-lifecycle.ts";
+import { FileWorkEpisodeLedger } from "./work-episode.ts";
 import {
   type StrategyCandidateReader,
   type StrategyCandidateStore,
@@ -468,6 +469,14 @@ export function composePindieExtension(
   } = input;
   const extensionOptions: PindieExtensionOptions = {
     ...inputWithoutOptionalFeatures,
+    workEpisodes: input.workEpisodes ?? (stateStore instanceof FileStateStore &&
+      stateStore.storageBaseDir === roots.projectsBaseDir &&
+      (experienceReader === undefined || experienceReader instanceof FileRunExperienceReader)
+      ? new FileWorkEpisodeLedger({
+          projectsBaseDir: roots.projectsBaseDir,
+          stateStore,
+          experienceReader: experienceReader ?? new FileRunExperienceReader({ baseDir: roots.projectsBaseDir }),
+        }) : undefined),
     store: stateStore,
     continuityStore,
     quotaResumePreferenceStore,

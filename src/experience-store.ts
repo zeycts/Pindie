@@ -6,9 +6,11 @@ import { join } from "node:path";
 import {
   parseRunExperience,
   RUN_EXPERIENCE_SCHEMA_VERSION,
+  LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION,
   type RunExperience,
 } from "./run-experience.ts";
 import { getProjectId } from "./store.ts";
+import { EXPERIENCE_RECORD_ID, PROJECT_ID } from "./exact-identity.ts";
 
 export const EXPERIENCE_DIRECTORY_NAME = "experience";
 
@@ -31,7 +33,7 @@ export interface RunExperienceSourceRecord {
 
 export interface RunExperienceReadResult {
   readonly records: readonly RunExperienceSourceRecord[];
-  /** Valid current schema-v4 records loaded from the live Experience directory. */
+  /** Valid schema-v4 and v5 records loaded from the live Experience directory. */
   readonly loadedRecords: number;
   /** Records with a numeric schema version that is not the current schema. */
   readonly unsupportedSchema: number;
@@ -69,9 +71,8 @@ const EMPTY_READ_RESULT: RunExperienceReadResult = Object.freeze({
   invalid: 0,
 });
 
-const CANONICAL_RECORD_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/;
-
-const CANONICAL_PROJECT_NAMESPACE = /^[0-9a-f]{64}$/;
+const CANONICAL_RECORD_FILE = EXPERIENCE_RECORD_ID;
+const CANONICAL_PROJECT_NAMESPACE = PROJECT_ID;
 
 /** Read-only current-project access to immutable Run Experience records. */
 export class FileRunExperienceReader implements RunExperienceReader, RunExperienceProjectReader {
@@ -146,7 +147,7 @@ export class FileRunExperienceReader implements RunExperienceReader, RunExperien
       const schemaVersion = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>).schemaVersion
         : undefined;
-      if (schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION) {
+      if (schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION && schemaVersion !== LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION) {
         if (typeof schemaVersion === "number") unsupportedSchema += 1;
         else invalid += 1;
         continue;
@@ -201,8 +202,9 @@ export class FileRunExperienceStore implements RunExperienceStore {
     experience: RunExperience,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (experience.schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION) {
-      throw new Error("Could not save Pindie Run Experience: new records must use schema-v4.");
+    if (experience.schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION && experience.schemaVersion !== LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION ||
+      parseRunExperience(experience) === null) {
+      throw new Error("Could not save Pindie Run Experience: invalid record.");
     }
     signal?.throwIfAborted();
     const directory = this.experienceDirectory(projectRoot);

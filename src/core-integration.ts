@@ -82,6 +82,7 @@ export interface CorePromptContribution {
 
 export interface CoreIntegrationOptions {
   readonly store: PindieStateStore;
+  readonly workEpisodes?: import("./work-episode.ts").WorkEpisodeLedger;
   readonly continuityStore: TaskContinuityStore;
   readonly committedRolloverPublisher?: CommittedRolloverPublisher | null;
   readonly taskHandoffEnabled?: boolean;
@@ -111,6 +112,9 @@ export interface CoreToolRegistrationOptions {
 }
 
 export interface CoreSettlementFacts {
+  readonly runStartEpisode: import("./work-episode-attribution.ts").RunStartEpisodeBinding | null;
+  readonly settlementOccurrenceEpoch: number;
+  readonly settlementExternalStateEpoch: number;
   readonly settlementGeneration: number | null;
   readonly projectRoot: string | null;
   readonly state: PindieState | null;
@@ -225,9 +229,10 @@ export class CoreIntegration {
   private readonly taskHandoffEnabled: boolean;
   private readonly now: () => number;
   private measurementContext: ExtensionContext | null = null;
+  private runStartEpisode: import("./work-episode-attribution.ts").RunStartEpisodeBinding | null = null;
 
   constructor(options: CoreIntegrationOptions) {
-    this.runtime = new PindieRuntime(options.store);
+    this.runtime = new PindieRuntime(options.store, options.workEpisodes);
     this.run = new RunIntegration(this.runtime);
     this.execution = new ExecutionIntegration({
       captureProjectFingerprint: options.captureProjectFingerprint,
@@ -455,6 +460,7 @@ export class CoreIntegration {
   }
 
   resetAgentRunBookkeeping(): void {
+    this.runStartEpisode = null;
     this.run.resetAgentRun();
     this.execution.discardRuntime();
   }
@@ -473,6 +479,7 @@ export class CoreIntegration {
   }
 
   beginAgentRunFacts(ctx: ExtensionContext): void {
+    this.runStartEpisode = null;
     this.setMeasurementContext(ctx);
     this.execution.beginEvidenceScope(this.runtime.externalStateEpoch);
     this.run.beginAgentRunFacts();
@@ -482,6 +489,28 @@ export class CoreIntegration {
         this.run.activeAgentRunGeneration!,
       );
     }
+  }
+
+  /** Capture exact operational identity after pre-Run State refresh, without adding model context. */
+  async captureRunStartEpisode(signal?: AbortSignal): Promise<void> {
+    const ledger = this.runtime.workEpisodes;
+    const generation = this.run.activeAgentRunGeneration;
+    const root = this.runtime.projectRoot;
+    const state = this.run.authoritativeState;
+    const derivation = this.run.deriveSnapshot();
+    if (!ledger || generation === null || !root || !state || !derivation.ok || derivation.snapshot.authority !== "coherent") return;
+    const taskWasOpen = state.task !== null && !state.task.completed;
+    let episodeId: string | null = null;
+    try { if (taskWasOpen) episodeId = await ledger.current(root, state); }
+    catch { return; }
+    if (taskWasOpen && episodeId === null) return; // Ambiguous existing Task, not idle.
+    if (signal?.aborted || !this.run.isAgentRunCurrent(generation) || this.runtime.projectRoot !== root ||
+      this.run.authoritativeState !== state) return;
+    this.runStartEpisode = {
+      projectRoot: root, episodeId, taskWasOpen,
+      occurrenceEpoch: this.runtime.taskOccurrenceEpoch,
+      externalStateEpoch: this.runtime.externalStateEpoch,
+    };
   }
 
   beginAgentRun(
@@ -559,6 +588,9 @@ export class CoreIntegration {
         cost: settledCost?.cost ?? 0,
       });
       const facts: CoreSettlementFacts = Object.freeze({
+        runStartEpisode: this.runStartEpisode,
+        settlementOccurrenceEpoch: this.runtime.taskOccurrenceEpoch,
+        settlementExternalStateEpoch: this.runtime.externalStateEpoch,
         settlementGeneration,
         projectRoot,
         state: finalState,
@@ -611,6 +643,7 @@ export class CoreIntegration {
         try {
           this.execution.discardRuntime();
         } finally {
+          this.runStartEpisode = null;
           this.run.resetAgentRun();
         }
       }

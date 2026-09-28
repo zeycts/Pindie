@@ -176,6 +176,7 @@ export interface PindieExtensionOptions {
   quotaFallbackPreferenceStore?: QuotaFallbackPreferenceStore;
   experienceStore?: RunExperienceStore;
   experienceReader?: RunExperienceReader;
+  workEpisodes?: import("./work-episode.ts").WorkEpisodeLedger;
   strategyCandidateStore?: StrategyCandidateStore;
   strategyCandidateReader?: StrategyCandidateReader;
   strategyDerivationCandidateStore?: StrategyDerivationCandidateStore;
@@ -368,6 +369,7 @@ function registerComposedPindieExtension(
   const continuityNow = options.now ?? Date.now;
   const core = createCoreIntegration({
     store: stateStore,
+    workEpisodes: options.workEpisodes,
     continuityStore,
     committedRolloverPublisher,
     taskHandoffEnabled,
@@ -420,6 +422,7 @@ function registerComposedPindieExtension(
       throw new Error("Self-Improvement composition is missing an explicit production dependency.");
     }
     selfImprovement = new SelfImprovementIntegration({
+      workEpisodes: options.workEpisodes,
       pi,
       core: {
         getProjectRoot: () => runtime.projectRoot,
@@ -948,6 +951,16 @@ function registerComposedPindieExtension(
       // authoritative project State rather than a previous session snapshot.
       core.beginAgentRunFacts(ctx);
       preparationGeneration = run.activeAgentRunGeneration;
+      // Operational provenance only; failed/ambiguous reads never change Task authority or prompt.
+      try {
+        await runBoundedOperation({
+          label: "Pindie WorkEpisode Run-start observation",
+          timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+          run: (signal) => core.captureRunStartEpisode(signal),
+        });
+      } catch (error) {
+        console.warn(`[Pindie] WorkEpisode Run-start attribution unavailable: ${errorMessage(error)}`);
+      }
       const selfImprovementRun = selfImprovement === null
         ? {
             adaptationLease: null,

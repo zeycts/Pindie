@@ -8,6 +8,7 @@ import {
 } from "./liveness.ts";
 import { EMPTY_STATE, type PindieState } from "./state.ts";
 import type { PindieStateStore } from "./store.ts";
+import type { WorkEpisodeLedger } from "./work-episode.ts";
 import {
   reduceState,
   type PindieEvent,
@@ -88,15 +89,18 @@ function installProcessSemanticMutationFence(
 
 export class PindieRuntime {
   private readonly store: PindieStateStore;
+  readonly workEpisodes: WorkEpisodeLedger | undefined;
   private currentProjectRoot: string | null = null;
   private currentState: PindieState = EMPTY_STATE;
   private currentExternalStateEpoch = 0;
+  private occurrenceEpoch = 0;
   private authorityGeneration = 0;
 
-  constructor(store: PindieStateStore) { this.store = store; }
+  constructor(store: PindieStateStore, workEpisodes?: WorkEpisodeLedger) { this.store = store; this.workEpisodes = workEpisodes; }
   get state(): PindieState { return this.currentState; }
   get projectRoot(): string | null { return this.currentProjectRoot; }
   get externalStateEpoch(): number { return this.currentExternalStateEpoch; }
+  get taskOccurrenceEpoch(): number { return this.occurrenceEpoch; }
 
   unload(): void {
     this.authorityGeneration += 1;
@@ -114,6 +118,10 @@ export class PindieRuntime {
     this.assertNoPendingSemanticMutation(projectRoot);
     this.currentProjectRoot = projectRoot;
     this.currentState = state;
+    if (this.workEpisodes) {
+      try { await this.workEpisodes.reconcile(projectRoot, state); }
+      catch (error) { console.warn(`[Pindie] WorkEpisode reconciliation unavailable: ${String(error)}`); }
+    }
   }
 
   async refresh(signal?: AbortSignal): Promise<boolean> {
@@ -191,10 +199,19 @@ export class PindieRuntime {
     if (result.state === state) return result;
     this.assertCurrentAuthority(projectRoot, generation, signal);
     this.assertNoPendingSemanticMutation(projectRoot);
+    if (this.workEpisodes) {
+      try { await this.workEpisodes.prepared(projectRoot, state, event); }
+      catch (error) { console.warn(`[Pindie] WorkEpisode preparation unavailable: ${String(error)}`); }
+    }
     await this.store.save(projectRoot, result.state, signal);
     this.assertCurrentAuthority(projectRoot, generation, signal);
     this.assertNoPendingSemanticMutation(projectRoot);
     this.currentState = result.state;
+    if (event.type === "start_task" || event.type === "replace_task") this.occurrenceEpoch++;
+    if (this.workEpisodes) {
+      try { await this.workEpisodes.committed(projectRoot, state, result.state, event); }
+      catch (error) { console.warn(`[Pindie] WorkEpisode binding unavailable: ${String(error)}`); }
+    }
     return result;
   }
 
