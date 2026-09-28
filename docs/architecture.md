@@ -102,6 +102,8 @@ GateRunRelation       none | existed_before_run | opened_during_run
 
 Run-start object identity is only a coherent-Run immutable-State change detector. It is never persistent Task identity.
 
+**Migration note (approved target, not current runtime):** Current SI-enabled ordinary Runs still expose the single-Run learning signal and completion `learningDisposition`, with post-settlement assessment/admission. This is legacy implementation slated for removal under approved `docs/autonomous-learning-v1.md`; its separate Learning Plane is not implemented yet. The current capabilities/tools below remain factual until code migration.
+
 ## 4. Capabilities and execution authority
 
 Capability vocabulary:

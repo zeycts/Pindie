@@ -1,8 +1,8 @@
 # Pindie Self-Improvement v0.6 — Candidate Trial & Promotion
 
-Status: architecture contract for SI v0.6. All four implementation slices are implemented and frozen.
+Status: implemented and frozen SI v0.6 artifact/trust contract, retained for compatibility and history during migration; not authority for future Autonomous Learning v1. All four implementation slices are implemented.
 
-This document is the just-in-time refinement of the directional SI v0.6 section in `docs/self-improvement.md`. It preserves the SI v0.1–v0.5 ownership model.
+This document preserves the SI v0.1–v0.5 ownership model for the implemented v0.6 lifecycle. The approved target architecture is in `docs/autonomous-learning-v1.md` (implementation pending).
 
 ## 1. Goal
 
