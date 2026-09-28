@@ -13,7 +13,7 @@ import { runExperienceRecordFingerprint } from "../src/run-experience-fingerprin
 import { crossProjectExperienceRecordFingerprint } from "../src/cross-project-experience.ts";
 import { FileRunExperienceMaintenance } from "../src/experience-lifecycle.ts";
 import { FileLearningJobLedger } from "../src/learning-job-store.ts";
-import { DEFAULT_LEARNING_BUDGET_POLICY, FINGERPRINT, validateLearningBudgetPolicy, learningJobKey, learningFingerprint, validateStrategyHypothesis, validateWorkEpisodeBinding, validateLearningJob, validateExactEvidenceRef, validateDiscoveryReceipt, validateTrialAssignment, validateTrialEvidence, validateStrategyEvaluation, validateStrategyDecision } from "../src/learning-v1-contract.ts";
+import { DEFAULT_LEARNING_BUDGET_POLICY, FINGERPRINT, validateLearningBudgetPolicy, learningJobKey, learningFingerprint, validateStrategyHypothesis, validateWorkEpisodeBinding, validateLearningJob, validateExactEvidenceRef, validateDiscoveryReceipt, validateTrialAssignment, validateTrialEvidence, validateStrategyEvaluation, validateStrategyDecision, learningArtifactFingerprint, validateLearningArtifactRef, matchesLearningArtifactRef, matchesTrialEvidenceAssignment, matchesEvaluationTrial, matchesDecisionEvaluation, matchesLearningJobOutput, validateLearningTerminalOutput } from "../src/learning-v1-contract.ts";
 import { exactRunWorkEpisodeId } from "../src/work-episode-attribution.ts";
 
 const ROOT = "/repo/f1";
@@ -139,6 +139,11 @@ test("F1 jobs are deterministic, fenced, persistent and never silently compacted
   const scope = { kind: "project" as const, projectId: getProjectId(ROOT) };
   const fp = `sha256:${"a".repeat(64)}`;
   const key = learningJobKey("project-discovery", scope, fp, 1);
+  const receiptBody = { schemaVersion: 1, id: "00000000-0000-4000-8000-000000000000",
+    jobKey: key, packetFingerprint: fp, scope, outcome: "none", hypotheses: [] };
+  const receipt = { ...receiptBody, fingerprint: learningArtifactFingerprint(receiptBody) };
+  const receiptRef = { schemaVersion: 1 as const, family: "discovery-receipt" as const, scope,
+    id: receipt.id, fingerprint: receipt.fingerprint };
   const a = await ledger.enqueue("project-discovery", scope, fp, 1, 100);
   assert.equal(a.key, key);
   assert.deepEqual(await ledger.enqueue("project-discovery", scope, fp, 1, 200), a);
@@ -147,19 +152,28 @@ test("F1 jobs are deterministic, fenced, persistent and never silently compacted
   assert.equal(await ledger.claim(key, "two", 100, 10, 0, 0), null);
   const other = await ledger.enqueue("evaluation", scope, fp, 1, 100);
   assert.equal(await ledger.claim(other.key, "two", 100, 10, 0, 0), null); // global one-running invariant
-  await assert.rejects(ledger.complete(key, "wrong", fp), /Stale/);
+  await assert.rejects(ledger.complete(key, "wrong", receiptRef), /Stale/);
   const restarted = new FileLearningJobLedger({ globalBaseDir: root });
   assert.equal(await restarted.reconcileExpired(111), 1);
   assert.equal((await restarted.listEligible(111))[0]?.key, key);
   assert.equal((await restarted.read())[0]?.stopReason, "timeout");
   const next = await restarted.claim(key, "two", 111, 10, 0, 0);
   assert.notEqual(next?.leaseToken, lease?.leaseToken);
-  await assert.rejects(restarted.complete(key, lease!.leaseToken!, fp), /Stale/);
+  await assert.rejects(restarted.complete(key, lease!.leaseToken!, receiptRef), /Stale/);
   await restarted.release(key, next!.leaseToken!, 115, "human-work");
   assert.equal((await restarted.read())[0]?.stopReason, "human-work");
   const final = await restarted.claim(key, "three", 115, 10, 0, 0);
   assert.equal(final?.stopReason, null);
-  await restarted.complete(key, final!.leaseToken!, fp);
+  await assert.rejects(restarted.complete(key, final!.leaseToken!, { ...receiptRef, scope: { kind: "user-global" } }), /validation/);
+  await restarted.complete(key, final!.leaseToken!, receiptRef);
+  assert.deepEqual((await restarted.read())[0]?.terminalReceiptRef, receiptRef);
+  assert.ok(validateLearningJob((await restarted.read())[0]));
+  assert.equal(validateDiscoveryReceipt(receipt), true);
+  assert.equal(matchesLearningArtifactRef((await restarted.read())[0]!.terminalReceiptRef, receipt), true);
+  assert.equal(matchesLearningJobOutput((await restarted.read())[0]!, receipt), true);
+  const wrongKeyReceipt = { ...receipt, jobKey: fp };
+  assert.equal(matchesLearningJobOutput((await restarted.read())[0]!, { ...wrongKeyReceipt, fingerprint: learningArtifactFingerprint(wrongKeyReceipt) }), false);
+  assert.equal(matchesLearningArtifactRef((await restarted.read())[0]!.terminalReceiptRef, { ...receipt, packetFingerprint: key }), false);
   assert.deepEqual(await restarted.enqueue("project-discovery", scope, fp, 1, 300), (await restarted.read())[0]);
   const failing = new FileLearningJobLedger({ globalBaseDir: root, onBeforeRename: async () => { throw new Error("disk failure"); } });
   await assert.rejects(failing.enqueue("evaluation", scope, `sha256:${"d".repeat(64)}`, 1, 300), /disk failure/);
@@ -235,7 +249,7 @@ test("F1 v4 remains readable; coherent v5 survives storage and pruning", async (
 });
 test("F1 hypothesis contract rejects authority-bearing fields and fingerprint drift", () => {
   const semantic = { schemaVersion: 1, scope: { kind: "user-global" }, logicalId: "focus", kind: "approach",
-    lineage: "new", parentFingerprint: null, baseRevisionFingerprint: null, summary: "Focus on evidence",
+    lineage: "new", parent: null, baseRevisionFingerprint: null, summary: "Focus on evidence",
     useWhen: ["Evidence exists"], avoidWhen: ["No evidence"], expectedEffect: "Fewer regressions",
     failureSignals: ["More regressions"], trialHints: [],
     sources: [{ projectId: "a".repeat(64), recordId: "00000000-0000-4000-8000-000000000000.json", fingerprint: `sha256:${"b".repeat(64)}` }],
@@ -245,9 +259,9 @@ test("F1 hypothesis contract rejects authority-bearing fields and fingerprint dr
   assert.equal(validateStrategyHypothesis({ ...hypothesis, capability: "task.complete" }), false);
   assert.equal(validateStrategyHypothesis({ ...hypothesis, expectedEffect: "" }), false);
   assert.equal(validateStrategyHypothesis({ ...hypothesis, fingerprint: `sha256:${"d".repeat(64)}` }), false);
-  assert.equal(validateStrategyHypothesis({ ...hypothesis, parentFingerprint: `sha256:${"b".repeat(64)}` }), false);
+  assert.equal(validateStrategyHypothesis({ ...hypothesis, parent: { schemaVersion: 1, family: "strategy-hypothesis", scope: semantic.scope, id: hypothesis.id, fingerprint: `sha256:${"b".repeat(64)}` } }), false);
   assert.equal(validateStrategyHypothesis({ ...hypothesis, baseRevisionFingerprint: `sha256:${"b".repeat(64)}` }), false);
-  const revision = { ...hypothesis, lineage: "revise", parentFingerprint: `sha256:${"b".repeat(64)}` };
+  const revision = { ...hypothesis, lineage: "revise", parent: { schemaVersion: 1, family: "strategy-hypothesis", scope: semantic.scope, id: "11111111-1111-4111-8111-111111111111", fingerprint: `sha256:${"b".repeat(64)}` } };
   assert.equal(validateStrategyHypothesis({ ...revision, fingerprint: learningFingerprint((({ id: _id, fingerprint: _fp, ...rest }) => rest)(revision)) }), true);
 });
 test("F1 all frozen artifact shells reject extra fields, malformed IDs and inconsistent relations", () => {
@@ -264,29 +278,68 @@ test("F1 all frozen artifact shells reject extra fields, malformed IDs and incon
   assert.equal(validateWorkEpisodeBinding(binding), true);
   assert.equal(validateWorkEpisodeBinding({ ...binding, invented: true }), false);
   assert.equal(validateWorkEpisodeBinding({ ...binding, closedAt: "2025-01-01T00:00:00.000Z" }), false);
-  const receipt = { schemaVersion: 1, id, jobKey: fp, packetFingerprint: fp, outcome: "none", hypothesisIds: [] };
+  const scope = { kind: "project" as const, projectId };
+  const hyp = { schemaVersion: 1 as const, family: "strategy-hypothesis" as const, scope, id: other, fingerprint: fp };
+  const seal = <T extends Record<string, unknown>>(content: T) => ({ ...content, fingerprint: learningArtifactFingerprint(content) });
+  const receipt = seal({ schemaVersion: 1, id, jobKey: fp, packetFingerprint: fp, scope, outcome: "none", hypotheses: [] });
   assert.equal(validateDiscoveryReceipt(receipt), true);
-  assert.equal(validateDiscoveryReceipt({ ...receipt, outcome: "published" }), false);
+  assert.equal(validateDiscoveryReceipt(seal({ ...receipt, outcome: "published" })), false);
+  const published = seal({ ...receipt, outcome: "published", hypotheses: [hyp] });
+  assert.equal(validateDiscoveryReceipt(published), true);
+  assert.equal(validateDiscoveryReceipt(seal({ ...published, hypotheses: [{ ...hyp, scope: { kind: "user-global" } }] })), false);
+  assert.equal(validateDiscoveryReceipt(seal({ ...receipt, outcome: "covered", hypotheses: [hyp] })), true);
+  assert.equal(validateDiscoveryReceipt(seal({ ...receipt, outcome: "covered", hypotheses: [] })), false);
   assert.equal(validateDiscoveryReceipt({ ...receipt, id: "arbitrary" }), false);
-  const assignment = { schemaVersion: 1, id, projectId, workEpisodeId: other, sessionId: "session",
-    hypothesisId: other, hypothesisFingerprint: fp, comparison: [ref], offerPolicyFingerprint: fp, expiresAt: 100 };
+  const assignment = seal({ schemaVersion: 1, id, projectId, workEpisodeId: other, sessionId: "session",
+    hypothesis: hyp, comparison: [ref], offerPolicyFingerprint: fp, expiresAt: 100 });
+  const assignmentRef = { schemaVersion: 1 as const, family: "trial-assignment" as const, scope, id, fingerprint: assignment.fingerprint };
   assert.equal(validateTrialAssignment(assignment), true);
+  assert.equal(validateTrialAssignment(seal({ ...assignment, comparison: [{ ...ref, projectId: "b".repeat(64) }] })), false);
+  assert.equal(validateLearningArtifactRef(assignmentRef), true);
+  assert.equal(matchesLearningArtifactRef(assignmentRef, assignment), true);
+  assert.equal(matchesLearningArtifactRef({ ...assignmentRef, fingerprint: fp }, assignment), false);
   assert.equal(validateTrialAssignment({ ...assignment, permission: "task.complete" }), false);
-  const evidence = { schemaVersion: 1, id, assignmentId: other, hypothesisFingerprint: fp, source: ref,
+  assert.equal(validateTrialAssignment({ ...assignment, expiresAt: 101 }), false); // exact content changed
+  assert.notEqual(learningArtifactFingerprint({ ...assignment, expiresAt: 101 }), assignment.fingerprint);
+  const evidence = seal({ schemaVersion: 1, id, assignment: assignmentRef, hypothesis: hyp, source: ref,
     workEpisodeId: other, exposed: true, eligible: true, eligibilityReason: "verified",
-    outcome: "passed", regressions: [], comparison: [] };
+    outcome: "passed", regressions: [], comparison: [] });
+  const evidenceRef = { schemaVersion: 1 as const, family: "trial-evidence" as const, scope, id, fingerprint: evidence.fingerprint };
   assert.equal(validateTrialEvidence(evidence), true);
-  assert.equal(validateTrialEvidence({ ...evidence, exposed: false }), false);
-  const evaluation = { schemaVersion: 1, id, hypothesisFingerprint: fp, packetFingerprint: fp,
-    gateVersion: 1, trialEvidence: [other], verdict: "continue-testing", rationale: "not enough data", citedHandles: ["E1"] };
+  assert.equal(validateTrialEvidence(seal({ ...evidence, comparison: [{ ...ref, projectId: "b".repeat(64) }] })), false);
+  assert.equal(matchesTrialEvidenceAssignment(evidence, assignment), true);
+  assert.equal(matchesTrialEvidenceAssignment(seal({ ...evidence, hypothesis: { ...hyp, fingerprint: `sha256:${"b".repeat(64)}` } }), assignment), false);
+  assert.equal(validateTrialEvidence(seal({ ...evidence, exposed: false })), false);
+  assert.equal(validateTrialEvidence(seal({ ...evidence, assignment: { ...assignmentRef, family: "strategy-evaluation" } })), false);
+  const evaluation = seal({ schemaVersion: 1, id, hypothesis: hyp, packetFingerprint: fp,
+    gateVersion: 1, trialEvidence: [evidenceRef], verdict: "continue-testing", rationale: "not enough data", citedHandles: ["E1"] });
+  const evaluationRef = { schemaVersion: 1 as const, family: "strategy-evaluation" as const, scope, id, fingerprint: evaluation.fingerprint };
   assert.equal(validateStrategyEvaluation(evaluation), true);
-  assert.equal(validateStrategyEvaluation({ ...evaluation, verdict: "suspend" }), false);
-  const decision = { schemaVersion: 1, id, scope: { kind: "project", projectId }, action: "promote",
-    actor: "autonomous", hypothesisFingerprint: fp, evaluationId: other, evidenceRefs: [fp],
-    supersedesFingerprint: null, decidedAt: "2026-01-01T00:00:00.000Z" };
+  assert.equal(validateStrategyEvaluation(seal({ ...evaluation, trialEvidence: [{ ...evidenceRef, scope: { kind: "user-global" } }] })), false);
+  assert.equal(matchesEvaluationTrial(evaluation, evidence), true);
+  assert.equal(matchesEvaluationTrial(seal({ ...evaluation, hypothesis: { ...hyp, fingerprint: `sha256:${"b".repeat(64)}` } }), evidence), false);
+  assert.equal(validateStrategyEvaluation(seal({ ...evaluation, verdict: "suspend" })), false);
+  assert.equal(validateStrategyEvaluation(seal({ ...evaluation, trialEvidence: [{ ...evidenceRef, fingerprint: "bad" }] })), false);
+  const decision = seal({ schemaVersion: 1, id, scope, action: "promote", actor: "autonomous", hypothesis: hyp,
+    evaluation: evaluationRef, evidence: [evidenceRef], supersedes: null, decidedAt: "2026-01-01T00:00:00.000Z" });
   assert.equal(validateStrategyDecision(decision), true);
-  assert.equal(validateStrategyDecision({ ...decision, evaluationId: null }), false);
-  assert.equal(validateStrategyDecision({ ...decision, action: "reject", supersedesFingerprint: fp }), false);
+  assert.equal(validateStrategyDecision(seal({ ...decision, evidence: [{ ...evidenceRef, scope: { kind: "user-global" } }] })), false);
+  assert.equal(matchesDecisionEvaluation(decision, evaluation), false); // continue-testing cannot promote
+  const promoting = seal({ ...evaluation, verdict: "promote" });
+  assert.equal(matchesDecisionEvaluation(seal({ ...decision, evaluation: { ...evaluationRef, fingerprint: promoting.fingerprint } }), promoting), true);
+  assert.equal(matchesDecisionEvaluation(seal({ ...decision, evaluation: { ...evaluationRef, fingerprint: promoting.fingerprint }, hypothesis: { ...hyp, fingerprint: `sha256:${"b".repeat(64)}` } }), promoting), false);
+  assert.equal(validateStrategyDecision(seal({ ...decision, evaluation: null })), false);
+  assert.equal(validateStrategyDecision(seal({ ...decision, action: "reject", supersedes: hyp })), false);
+  assert.equal(validateStrategyDecision(seal({ ...decision, supersedes: hyp })), false);
+  assert.equal(validateStrategyDecision(seal({ ...decision, action: "suspend", evaluation: evaluationRef })), false);
+  assert.equal(validateStrategyDecision(seal({ ...decision, action: "suspend", evaluation: null,
+    evidence: [{ schemaVersion: 1, family: "terminal-output", scope, id: other, fingerprint: fp }] })), true);
+  assert.equal(validateStrategyDecision({ ...decision, actor: "human" }), false); // self-fingerprint binds every field
+  assert.equal(matchesLearningArtifactRef({ schemaVersion: 1, family: "strategy-decision", scope, id, fingerprint: decision.fingerprint }, decision), true);
+  const terminal = seal({ schemaVersion: 1, id, scope, jobKey: fp, state: "cancelled", stopReason: "budget" });
+  assert.equal(validateLearningTerminalOutput(terminal), true);
+  assert.equal(matchesLearningArtifactRef({ schemaVersion: 1, family: "terminal-output", scope, id, fingerprint: terminal.fingerprint }, terminal), true);
+  assert.equal(validateLearningTerminalOutput(seal({ ...terminal, state: "completed" })), false);
 });
 test("F1 budget validates bounded positive policy", () => {
   assert.equal(validateLearningBudgetPolicy(DEFAULT_LEARNING_BUDGET_POLICY), true);

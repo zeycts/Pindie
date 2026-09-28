@@ -75,13 +75,56 @@ export function validateLearningBudgetPolicy(value: unknown): value is LearningB
     (value.perJobTimeMsCap as number) <= (value.dailyTimeMsCeiling as number) &&
     (value.retryBaseMs as number) <= (value.retryMaxMs as number);
 }
+export const LEARNING_ARTIFACT_FAMILIES = [
+  "discovery-receipt", "strategy-hypothesis", "trial-assignment", "trial-evidence",
+  "strategy-evaluation", "strategy-decision", "terminal-output",
+] as const;
+export type LearningArtifactFamily = typeof LEARNING_ARTIFACT_FAMILIES[number];
+/** Exact lookup key: family and scope locate the immutable artifact; ID and digest revalidate it. */
+export interface LearningArtifactRef {
+  readonly schemaVersion: 1;
+  readonly family: LearningArtifactFamily;
+  readonly scope: LearningScope;
+  readonly id: string;
+  readonly fingerprint: string;
+}
+export function validateLearningArtifactRef(v: unknown, family?: LearningArtifactFamily): v is LearningArtifactRef {
+  return object(v) && exact(v, ["schemaVersion", "family", "scope", "id", "fingerprint"]) &&
+    v.schemaVersion === 1 && LEARNING_ARTIFACT_FAMILIES.includes(v.family as LearningArtifactFamily) &&
+    (family === undefined || v.family === family) && validateLearningScope(v.scope) && uuid(v.id) && hash(v.fingerprint);
+}
+/** Exact persisted-content digest: includes schema and ID; excludes only its own fingerprint field. */
+export function learningArtifactFingerprint(value: Record<string, unknown>): string {
+  const { fingerprint: _fingerprint, ...content } = value;
+  return learningFingerprint(content);
+}
+function authentic(v: Record<string, unknown>): boolean {
+  try { return hash(v.fingerprint) && v.fingerprint === learningArtifactFingerprint(v); }
+  catch { return false; }
+}
+const refs = (v: unknown, family: LearningArtifactFamily, max: number, min = 0): v is LearningArtifactRef[] =>
+  list(v, max, (x) => validateLearningArtifactRef(x, family), min) && unique(v);
+
+/** Minimal immutable output for jobs without a DiscoveryReceipt or StrategyEvaluation. */
+export interface LearningTerminalOutput {
+  readonly schemaVersion: 1; readonly id: string; readonly fingerprint: string;
+  readonly scope: LearningScope; readonly jobKey: string;
+  readonly state: "completed" | "cancelled";
+  readonly stopReason: LearningStopReason | null;
+}
+export function validateLearningTerminalOutput(v: unknown): v is LearningTerminalOutput {
+  return object(v) && exact(v, ["schemaVersion", "id", "fingerprint", "scope", "jobKey", "state", "stopReason"]) &&
+    v.schemaVersion === 1 && uuid(v.id) && validateLearningScope(v.scope) && hash(v.jobKey) &&
+    (v.state === "completed" ? v.stopReason === null : v.state === "cancelled" &&
+      LEARNING_STOP_REASONS.includes(v.stopReason as LearningStopReason)) && authentic(v);
+}
 export interface LearningJob {
   readonly schemaVersion: 1; readonly key: string; readonly kind: LearningJobKind;
   readonly scope: LearningScope; readonly inputFingerprint: string; readonly policyVersion: number;
   readonly state: LearningJobState; readonly attempt: number; readonly eligibleAfter: number;
   readonly reservedTokens: number; readonly reservedTimeMs: number;
   readonly leaseOwner: string | null; readonly leaseToken: string | null; readonly leaseExpiresAt: number | null;
-  readonly terminalReceiptRef: string | null; readonly stopReason: LearningStopReason | null;
+  readonly terminalReceiptRef: LearningArtifactRef | null; readonly stopReason: LearningStopReason | null;
   readonly createdAt: number;
 }
 export const MAX_LEARNING_LEASE_OWNER_LENGTH = 128;
@@ -93,15 +136,23 @@ export function validateLearningJob(v: unknown): v is LearningJob {
     !uint(v.policyVersion) || v.policyVersion === 0 || !uint(v.attempt) || !uint(v.eligibleAfter) ||
     !uint(v.reservedTokens) || !uint(v.reservedTimeMs) || !uint(v.createdAt) ||
     (v.stopReason !== null && !LEARNING_STOP_REASONS.includes(v.stopReason as LearningStopReason)) ||
-    (v.terminalReceiptRef !== null && !hash(v.terminalReceiptRef))) return false;
+    (v.terminalReceiptRef !== null && !validateLearningArtifactRef(v.terminalReceiptRef))) return false;
   if (v.key !== learningJobKey(v.kind as LearningJobKind, v.scope, v.inputFingerprint, v.policyVersion)) return false;
+  if (v.terminalReceiptRef !== null) {
+    const ref = v.terminalReceiptRef as LearningArtifactRef;
+    if (canonicalJson(ref.scope) !== canonicalJson(v.scope)) return false;
+    if ((v.kind === "project-discovery" || v.kind === "revision-discovery" || v.kind === "global-discovery") &&
+      ref.family !== "discovery-receipt" && ref.family !== "terminal-output") return false;
+    if (v.kind === "evaluation" && ref.family !== "strategy-evaluation" && ref.family !== "terminal-output") return false;
+    if (v.kind === "portfolio-maintenance" && ref.family !== "terminal-output") return false;
+  }
   if (v.state === "running") return text(v.leaseOwner, MAX_LEARNING_LEASE_OWNER_LENGTH) && uuid(v.leaseToken) &&
     uint(v.leaseExpiresAt) && v.attempt > 0 && v.terminalReceiptRef === null && v.stopReason === null;
   if (v.leaseOwner !== null || v.leaseToken !== null || v.leaseExpiresAt !== null) return false;
   if (v.state === "pending") return v.terminalReceiptRef === null &&
     (v.attempt === 0 ? v.stopReason === null : v.stopReason !== null);
-  if (v.state === "completed") return hash(v.terminalReceiptRef) && v.stopReason === null && v.attempt > 0;
-  return v.state === "cancelled" && v.stopReason !== null && (v.terminalReceiptRef === null || hash(v.terminalReceiptRef));
+  if (v.state === "completed") return v.terminalReceiptRef !== null && v.stopReason === null && v.attempt > 0;
+  return v.state === "cancelled" && v.stopReason !== null;
 }
 export interface ExactEvidenceRef { readonly projectId: string; readonly recordId: string; readonly fingerprint: string }
 export function validateExactEvidenceRef(v: unknown): v is ExactEvidenceRef {
@@ -110,20 +161,24 @@ export function validateExactEvidenceRef(v: unknown): v is ExactEvidenceRef {
     typeof v.recordId === "string" && EXPERIENCE_RECORD_ID.test(v.recordId) && hash(v.fingerprint);
 }
 export interface DiscoveryReceipt {
-  readonly schemaVersion: 1; readonly id: string; readonly jobKey: string; readonly packetFingerprint: string;
-  readonly outcome: "none" | "covered" | "published"; readonly hypothesisIds: readonly string[];
+  readonly schemaVersion: 1; readonly id: string; readonly fingerprint: string;
+  readonly jobKey: string; readonly packetFingerprint: string; readonly scope: LearningScope;
+  readonly outcome: "none" | "covered" | "published";
+  /** Covered means exact refs to preexisting hypotheses; none has no refs. */
+  readonly hypotheses: readonly LearningArtifactRef[];
 }
 export function validateDiscoveryReceipt(v: unknown): v is DiscoveryReceipt {
-  return object(v) && exact(v, ["schemaVersion", "id", "jobKey", "packetFingerprint", "outcome", "hypothesisIds"]) &&
-    v.schemaVersion === 1 && uuid(v.id) && hash(v.jobKey) && hash(v.packetFingerprint) &&
+  return object(v) && exact(v, ["schemaVersion", "id", "fingerprint", "jobKey", "packetFingerprint", "scope", "outcome", "hypotheses"]) &&
+    v.schemaVersion === 1 && uuid(v.id) && hash(v.jobKey) && hash(v.packetFingerprint) && validateLearningScope(v.scope) &&
     (v.outcome === "none" || v.outcome === "covered" || v.outcome === "published") &&
-    list(v.hypothesisIds, 8, uuid) && unique(v.hypothesisIds) &&
-    (v.outcome === "published" ? v.hypothesisIds.length > 0 : v.outcome !== "none" || v.hypothesisIds.length === 0);
+    refs(v.hypotheses, "strategy-hypothesis", 8) &&
+    (v.hypotheses as LearningArtifactRef[]).every((ref) => canonicalJson(ref.scope) === canonicalJson(v.scope)) &&
+    (v.outcome === "none" ? v.hypotheses.length === 0 : v.hypotheses.length > 0) && authentic(v);
 }
 export interface StrategyHypothesis {
   readonly schemaVersion: 1; readonly id: string; readonly fingerprint: string; readonly scope: LearningScope;
   readonly logicalId: string; readonly kind: "approach" | "modifier";
-  readonly lineage: "new" | "revise"; readonly parentFingerprint: string | null; readonly baseRevisionFingerprint: string | null;
+  readonly lineage: "new" | "revise"; readonly parent: LearningArtifactRef | null; readonly baseRevisionFingerprint: string | null;
   readonly summary: string; readonly useWhen: readonly string[]; readonly avoidWhen: readonly string[];
   readonly expectedEffect: string; readonly failureSignals: readonly string[]; readonly trialHints: readonly string[];
   readonly sources: readonly ExactEvidenceRef[]; readonly discoveryPacketFingerprint: string;
@@ -132,13 +187,16 @@ export function hypothesisFingerprint(value: Omit<StrategyHypothesis, "id" | "fi
 /** Shape/provenance validation, not model interpretation of observability or usefulness. */
 export function validateStrategyHypothesis(value: unknown): value is StrategyHypothesis {
   if (!object(value) || !exact(value, ["schemaVersion", "id", "fingerprint", "scope", "logicalId", "kind", "lineage",
-    "parentFingerprint", "baseRevisionFingerprint", "summary", "useWhen", "avoidWhen",
+    "parent", "baseRevisionFingerprint", "summary", "useWhen", "avoidWhen",
     "expectedEffect", "failureSignals", "trialHints", "sources", "discoveryPacketFingerprint"]) ||
     value.schemaVersion !== 1 || !uuid(value.id) || !hash(value.fingerprint) || !validateLearningScope(value.scope) ||
     (value.kind !== "approach" && value.kind !== "modifier") ||
     (value.lineage !== "new" && value.lineage !== "revise") ||
-    (value.lineage === "new" ? value.parentFingerprint !== null || value.baseRevisionFingerprint !== null
-      : !hash(value.parentFingerprint) || (value.baseRevisionFingerprint !== null && !hash(value.baseRevisionFingerprint))) ||
+    (value.lineage === "new" ? value.parent !== null || value.baseRevisionFingerprint !== null
+      : !validateLearningArtifactRef(value.parent, "strategy-hypothesis") ||
+        canonicalJson((value.parent as LearningArtifactRef).scope) !== canonicalJson(value.scope) ||
+        (value.parent as LearningArtifactRef).id === value.id ||
+        (value.baseRevisionFingerprint !== null && !hash(value.baseRevisionFingerprint))) ||
     typeof value.logicalId !== "string" || value.logicalId.length > 64 ||
     !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value.logicalId) ||
     !text(value.summary) || !text(value.expectedEffect) || !hash(value.discoveryPacketFingerprint) ||
@@ -149,63 +207,144 @@ export function validateStrategyHypothesis(value: unknown): value is StrategyHyp
   catch { return false; }
 }
 export interface TrialAssignment {
-  readonly schemaVersion: 1; readonly id: string; readonly projectId: string; readonly workEpisodeId: string;
-  readonly sessionId: string; readonly hypothesisId: string; readonly hypothesisFingerprint: string;
-  readonly comparison: readonly ExactEvidenceRef[]; readonly offerPolicyFingerprint: string; readonly expiresAt: number;
+  readonly schemaVersion: 1; readonly id: string; readonly fingerprint: string;
+  readonly projectId: string; readonly workEpisodeId: string; readonly sessionId: string;
+  readonly hypothesis: LearningArtifactRef; readonly comparison: readonly ExactEvidenceRef[];
+  readonly offerPolicyFingerprint: string; readonly expiresAt: number;
 }
 export function validateTrialAssignment(v: unknown): v is TrialAssignment {
-  return object(v) && exact(v, ["schemaVersion", "id", "projectId", "workEpisodeId", "sessionId", "hypothesisId",
-    "hypothesisFingerprint", "comparison", "offerPolicyFingerprint", "expiresAt"]) && v.schemaVersion === 1 &&
+  return object(v) && exact(v, ["schemaVersion", "id", "fingerprint", "projectId", "workEpisodeId", "sessionId",
+    "hypothesis", "comparison", "offerPolicyFingerprint", "expiresAt"]) && v.schemaVersion === 1 &&
     uuid(v.id) && typeof v.projectId === "string" && PROJECT_ID.test(v.projectId) && uuid(v.workEpisodeId) &&
-    text(v.sessionId, 128) && uuid(v.hypothesisId) && hash(v.hypothesisFingerprint) &&
+    text(v.sessionId, 128) && validateLearningArtifactRef(v.hypothesis, "strategy-hypothesis") &&
+    ((v.hypothesis as LearningArtifactRef).scope.kind === "user-global" ||
+      ((v.hypothesis as LearningArtifactRef).scope as { projectId: string }).projectId === v.projectId) &&
     hash(v.offerPolicyFingerprint) && uint(v.expiresAt) &&
-    list(v.comparison, 8, validateExactEvidenceRef) && unique(v.comparison);
+    list(v.comparison, 8, validateExactEvidenceRef) && unique(v.comparison) &&
+    (v.comparison as ExactEvidenceRef[]).every((ref) => ref.projectId === v.projectId) && authentic(v);
 }
 export interface TrialEvidence {
-  readonly schemaVersion: 1; readonly id: string; readonly assignmentId: string; readonly hypothesisFingerprint: string;
+  readonly schemaVersion: 1; readonly id: string; readonly fingerprint: string;
+  readonly assignment: LearningArtifactRef; readonly hypothesis: LearningArtifactRef;
   readonly source: ExactEvidenceRef; readonly workEpisodeId: string; readonly exposed: boolean;
   readonly eligible: boolean; readonly eligibilityReason: string; readonly outcome: string;
   readonly regressions: readonly string[]; readonly comparison: readonly ExactEvidenceRef[];
 }
 export function validateTrialEvidence(v: unknown): v is TrialEvidence {
-  return object(v) && exact(v, ["schemaVersion", "id", "assignmentId", "hypothesisFingerprint", "source",
+  return object(v) && exact(v, ["schemaVersion", "id", "fingerprint", "assignment", "hypothesis", "source",
     "workEpisodeId", "exposed", "eligible", "eligibilityReason", "outcome", "regressions", "comparison"]) &&
-    v.schemaVersion === 1 && uuid(v.id) && uuid(v.assignmentId) && hash(v.hypothesisFingerprint) &&
-    validateExactEvidenceRef(v.source) && uuid(v.workEpisodeId) && typeof v.exposed === "boolean" &&
-    typeof v.eligible === "boolean" && (!v.eligible || v.exposed) && text(v.eligibilityReason, 256) &&
-    text(v.outcome, 512) && list(v.regressions, 8, (x) => text(x, 256)) &&
-    list(v.comparison, 8, validateExactEvidenceRef) && unique(v.comparison);
+    v.schemaVersion === 1 && uuid(v.id) && validateLearningArtifactRef(v.assignment, "trial-assignment") &&
+    validateLearningArtifactRef(v.hypothesis, "strategy-hypothesis") && validateExactEvidenceRef(v.source) &&
+    (v.assignment as LearningArtifactRef).scope.kind === "project" &&
+    ((v.assignment as LearningArtifactRef).scope as { projectId: string }).projectId === (v.source as ExactEvidenceRef).projectId &&
+    ((v.hypothesis as LearningArtifactRef).scope.kind === "user-global" ||
+      canonicalJson((v.hypothesis as LearningArtifactRef).scope) === canonicalJson((v.assignment as LearningArtifactRef).scope)) &&
+    uuid(v.workEpisodeId) && typeof v.exposed === "boolean" && typeof v.eligible === "boolean" &&
+    (!v.eligible || v.exposed) && text(v.eligibilityReason, 256) && text(v.outcome, 512) &&
+    list(v.regressions, 8, (x) => text(x, 256)) &&
+    list(v.comparison, 8, validateExactEvidenceRef) && unique(v.comparison) &&
+    (v.comparison as ExactEvidenceRef[]).every((ref) => ref.projectId === (v.source as ExactEvidenceRef).projectId) && authentic(v);
 }
 export interface StrategyEvaluation {
-  readonly schemaVersion: 1; readonly id: string; readonly hypothesisFingerprint: string;
-  readonly packetFingerprint: string; readonly gateVersion: number; readonly trialEvidence: readonly string[];
+  readonly schemaVersion: 1; readonly id: string; readonly fingerprint: string;
+  readonly hypothesis: LearningArtifactRef; readonly packetFingerprint: string;
+  readonly gateVersion: number; readonly trialEvidence: readonly LearningArtifactRef[];
   readonly verdict: "promote" | "continue-testing" | "revise" | "reject";
   readonly rationale: string; readonly citedHandles: readonly string[];
 }
 export function validateStrategyEvaluation(v: unknown): v is StrategyEvaluation {
-  return object(v) && exact(v, ["schemaVersion", "id", "hypothesisFingerprint", "packetFingerprint", "gateVersion",
-    "trialEvidence", "verdict", "rationale", "citedHandles"]) && v.schemaVersion === 1 && uuid(v.id) &&
-    hash(v.hypothesisFingerprint) && hash(v.packetFingerprint) && uint(v.gateVersion) && v.gateVersion > 0 &&
-    list(v.trialEvidence, 64, uuid, 1) && unique(v.trialEvidence) &&
+  return object(v) && exact(v, ["schemaVersion", "id", "fingerprint", "hypothesis", "packetFingerprint",
+    "gateVersion", "trialEvidence", "verdict", "rationale", "citedHandles"]) && v.schemaVersion === 1 && uuid(v.id) &&
+    validateLearningArtifactRef(v.hypothesis, "strategy-hypothesis") && hash(v.packetFingerprint) &&
+    uint(v.gateVersion) && v.gateVersion > 0 && refs(v.trialEvidence, "trial-evidence", 64, 1) &&
+    ((v.hypothesis as LearningArtifactRef).scope.kind === "user-global" ||
+      (v.trialEvidence as LearningArtifactRef[]).every((ref) => canonicalJson(ref.scope) === canonicalJson((v.hypothesis as LearningArtifactRef).scope))) &&
     (v.verdict === "promote" || v.verdict === "continue-testing" || v.verdict === "revise" || v.verdict === "reject") &&
-    text(v.rationale, 1024) && list(v.citedHandles, 16, (x) => text(x, 64), 1) && unique(v.citedHandles);
+    text(v.rationale, 1024) && list(v.citedHandles, 16, (x) => text(x, 64), 1) && unique(v.citedHandles) && authentic(v);
 }
 export interface StrategyDecision {
-  readonly schemaVersion: 1; readonly id: string; readonly scope: LearningScope;
+  readonly schemaVersion: 1; readonly id: string; readonly fingerprint: string; readonly scope: LearningScope;
   readonly action: "promote" | "reject" | "suspend" | "reinstate";
-  readonly actor: "autonomous" | "human"; readonly hypothesisFingerprint: string;
-  readonly evaluationId: string | null; readonly evidenceRefs: readonly string[];
-  readonly supersedesFingerprint: string | null; readonly decidedAt: string;
+  readonly actor: "autonomous" | "human"; readonly hypothesis: LearningArtifactRef;
+  /** Four-verdict untrusted Evaluation only; never a degradation assessment. */
+  readonly evaluation: LearningArtifactRef | null;
+  /** Immutable cited TrialEvidence or dedicated terminal assessment/integrity output. */
+  readonly evidence: readonly LearningArtifactRef[];
+  readonly supersedes: LearningArtifactRef | null; readonly decidedAt: string;
 }
 export function validateStrategyDecision(v: unknown): v is StrategyDecision {
-  if (!object(v) || !exact(v, ["schemaVersion", "id", "scope", "action", "actor", "hypothesisFingerprint",
-    "evaluationId", "evidenceRefs", "supersedesFingerprint", "decidedAt"]) || v.schemaVersion !== 1 ||
-    !uuid(v.id) || !validateLearningScope(v.scope) || !hash(v.hypothesisFingerprint) || !instant(v.decidedAt) ||
+  if (!object(v) || !exact(v, ["schemaVersion", "id", "fingerprint", "scope", "action", "actor", "hypothesis",
+    "evaluation", "evidence", "supersedes", "decidedAt"]) || v.schemaVersion !== 1 ||
+    !uuid(v.id) || !validateLearningScope(v.scope) || !validateLearningArtifactRef(v.hypothesis, "strategy-hypothesis") ||
+    canonicalJson(v.scope) !== canonicalJson((v.hypothesis as LearningArtifactRef).scope) || !instant(v.decidedAt) ||
     (v.actor !== "autonomous" && v.actor !== "human") ||
     (v.action !== "promote" && v.action !== "reject" && v.action !== "suspend" && v.action !== "reinstate") ||
-    !list(v.evidenceRefs, 64, hash, 1) || !unique(v.evidenceRefs) ||
-    (v.supersedesFingerprint !== null && (!hash(v.supersedesFingerprint) || v.action !== "promote"))) return false;
-  return v.action === "promote" || v.action === "reject"
-    ? uuid(v.evaluationId) || (v.actor === "human" && v.evaluationId === null)
-    : v.evaluationId === null;
+    !list(v.evidence, 64, (x) => validateLearningArtifactRef(x) &&
+      (x.family === "trial-evidence" || x.family === "terminal-output"), 1) || !unique(v.evidence) ||
+    ((v.scope as LearningScope).kind === "project" &&
+      !(v.evidence as LearningArtifactRef[]).every((ref) => canonicalJson(ref.scope) === canonicalJson(v.scope))) ||
+    (v.supersedes !== null && (!validateLearningArtifactRef(v.supersedes, "strategy-hypothesis") ||
+      canonicalJson((v.supersedes as LearningArtifactRef).scope) !== canonicalJson(v.scope) ||
+      (v.supersedes as LearningArtifactRef).id === (v.hypothesis as LearningArtifactRef).id ||
+      (v.supersedes as LearningArtifactRef).fingerprint === (v.hypothesis as LearningArtifactRef).fingerprint ||
+      v.action !== "promote"))) return false;
+  if (v.action === "promote" || v.action === "reject") {
+    if (v.evaluation === null) return v.actor === "human" && authentic(v);
+    return validateLearningArtifactRef(v.evaluation, "strategy-evaluation") && authentic(v);
+  }
+  return v.evaluation === null && v.supersedes === null && authentic(v);
+}
+/** Validate a resolved immutable artifact against the exact scoped reference; never trust ID alone. */
+export function matchesLearningArtifactRef(ref: unknown, artifact: unknown): boolean {
+  if (!validateLearningArtifactRef(ref) || !object(artifact) || artifact.id !== ref.id || artifact.fingerprint !== ref.fingerprint) return false;
+  const validators: Record<Exclude<LearningArtifactFamily, "terminal-output">, (v: unknown) => boolean> = {
+    "discovery-receipt": validateDiscoveryReceipt, "strategy-hypothesis": validateStrategyHypothesis,
+    "trial-assignment": validateTrialAssignment, "trial-evidence": validateTrialEvidence,
+    "strategy-evaluation": validateStrategyEvaluation, "strategy-decision": validateStrategyDecision,
+  };
+  if (ref.family === "terminal-output") return validateLearningTerminalOutput(artifact) &&
+    canonicalJson(artifact.scope) === canonicalJson(ref.scope);
+  if (!validators[ref.family](artifact)) return false;
+  // Scope is intrinsic to these artifacts; others are resolved in the ref's namespace later.
+  if (ref.family === "discovery-receipt" || ref.family === "strategy-hypothesis" || ref.family === "strategy-decision")
+    return canonicalJson(artifact.scope) === canonicalJson(ref.scope);
+  if (ref.family === "trial-assignment")
+    return ref.scope.kind === "project" && artifact.projectId === ref.scope.projectId;
+  if (ref.family === "trial-evidence")
+    return ref.scope.kind === "project" && (artifact as unknown as TrialEvidence).source.projectId === ref.scope.projectId;
+  if (ref.family === "strategy-evaluation")
+    return canonicalJson((artifact as unknown as StrategyEvaluation).hypothesis.scope) === canonicalJson(ref.scope);
+  return false;
+}
+/** A terminal job is only reconciled when its exact output is present and bound to its key. */
+export function matchesLearningJobOutput(job: LearningJob, output: unknown): boolean {
+  if (!validateLearningJob(job) || job.terminalReceiptRef === null ||
+    !matchesLearningArtifactRef(job.terminalReceiptRef, output)) return false;
+  if (job.terminalReceiptRef.family === "discovery-receipt")
+    return (output as DiscoveryReceipt).jobKey === job.key;
+  if (job.terminalReceiptRef.family === "terminal-output")
+    return (output as LearningTerminalOutput).jobKey === job.key && (output as LearningTerminalOutput).state === job.state &&
+      (output as LearningTerminalOutput).stopReason === job.stopReason;
+  // Evaluation input identity lives in the frozen packet; validate it when the packet store exists.
+  return job.terminalReceiptRef.family === "strategy-evaluation";
+}
+/** Resolve exact linked children before using their provenance for a future decision. */
+export function matchesTrialEvidenceAssignment(evidence: TrialEvidence, assignment: TrialAssignment): boolean {
+  return validateTrialEvidence(evidence) && validateTrialAssignment(assignment) &&
+    matchesLearningArtifactRef(evidence.assignment, assignment) &&
+    canonicalJson(evidence.hypothesis) === canonicalJson(assignment.hypothesis) &&
+    evidence.workEpisodeId === assignment.workEpisodeId;
+}
+export function matchesEvaluationTrial(evaluation: StrategyEvaluation, evidence: TrialEvidence): boolean {
+  return validateStrategyEvaluation(evaluation) && validateTrialEvidence(evidence) &&
+    evaluation.trialEvidence.some((ref) => matchesLearningArtifactRef(ref, evidence)) &&
+    canonicalJson(evaluation.hypothesis) === canonicalJson(evidence.hypothesis);
+}
+export function matchesDecisionEvaluation(decision: StrategyDecision, evaluation: StrategyEvaluation): boolean {
+  return validateStrategyDecision(decision) && validateStrategyEvaluation(evaluation) &&
+    decision.evaluation !== null && matchesLearningArtifactRef(decision.evaluation, evaluation) &&
+    canonicalJson(decision.hypothesis) === canonicalJson(evaluation.hypothesis) &&
+    decision.action === evaluation.verdict &&
+    (decision.actor === "human" || (decision.evidence.every((ref) => ref.family === "trial-evidence" &&
+      evaluation.trialEvidence.some((trial) => canonicalJson(trial) === canonicalJson(ref)))));
 }

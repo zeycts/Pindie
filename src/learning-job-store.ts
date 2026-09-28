@@ -4,8 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { FileGlobalWriterLock, type GlobalWriterLock } from "./store.ts";
 import {
-  FINGERPRINT, LEARNING_STOP_REASONS, MAX_LEARNING_LEASE_OWNER_LENGTH, learningJobKey, validateLearningJob,
-  type LearningJob, type LearningJobKind, type LearningScope, type LearningStopReason,
+  LEARNING_STOP_REASONS, MAX_LEARNING_LEASE_OWNER_LENGTH, learningJobKey, validateLearningArtifactRef, validateLearningJob,
+  type LearningArtifactRef, type LearningJob, type LearningJobKind, type LearningScope, type LearningStopReason,
 } from "./learning-v1-contract.ts";
 
 const MAX_JOBS = 2048; // No eviction: capacity pressure fails closed, including for terminal entries.
@@ -16,8 +16,8 @@ export interface LearningJobLedger {
   enqueue(kind: LearningJobKind, scope: LearningScope, inputFingerprint: string, policyVersion: number, now: number): Promise<LearningJob>;
   listEligible(now: number): Promise<readonly LearningJob[]>;
   claim(key: string, owner: string, now: number, leaseMs: number, reservedTokens: number, reservedTimeMs: number): Promise<LearningJob | null>;
-  complete(key: string, token: string, receiptRef: string): Promise<LearningJob>;
-  cancel(key: string, token: string | null, reason: LearningStopReason, receiptRef?: string): Promise<LearningJob>;
+  complete(key: string, token: string, receiptRef: LearningArtifactRef): Promise<LearningJob>;
+  cancel(key: string, token: string | null, reason: LearningStopReason, receiptRef?: LearningArtifactRef): Promise<LearningJob>;
   release(key: string, token: string, eligibleAfter: number, reason: LearningStopReason): Promise<LearningJob>;
   reconcileExpired(now: number): Promise<number>;
   read(): Promise<readonly LearningJob[]>;
@@ -107,13 +107,13 @@ export class FileLearningJobLedger implements LearningJobLedger {
       return jobs[i] = update(jobs[i]!);
     });
   }
-  async complete(key: string, token: string, receiptRef: string): Promise<LearningJob> {
-    if (!FINGERPRINT.test(receiptRef)) throw new Error("Invalid terminal receipt ref.");
+  async complete(key: string, token: string, receiptRef: LearningArtifactRef): Promise<LearningJob> {
+    if (!validateLearningArtifactRef(receiptRef)) throw new Error("Invalid terminal receipt ref.");
     return this.settle(key, token, (job) => ({ ...job, state: "completed", terminalReceiptRef: receiptRef,
       leaseOwner: null, leaseToken: null, leaseExpiresAt: null }));
   }
-  async cancel(key: string, token: string | null, reason: LearningStopReason, receiptRef?: string): Promise<LearningJob> {
-    if (!LEARNING_STOP_REASONS.includes(reason) || (receiptRef !== undefined && !FINGERPRINT.test(receiptRef))) throw new Error("Invalid cancellation.");
+  async cancel(key: string, token: string | null, reason: LearningStopReason, receiptRef?: LearningArtifactRef): Promise<LearningJob> {
+    if (!LEARNING_STOP_REASONS.includes(reason) || (receiptRef !== undefined && !validateLearningArtifactRef(receiptRef))) throw new Error("Invalid cancellation.");
     return this.settle(key, token, (job) => ({ ...job, state: "cancelled", stopReason: reason,
       terminalReceiptRef: receiptRef ?? null, leaseOwner: null, leaseToken: null, leaseExpiresAt: null }));
   }
