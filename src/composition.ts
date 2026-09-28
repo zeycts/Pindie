@@ -136,6 +136,7 @@ export type PindieStorageRootOverrides = Partial<PindieStorageRoots>;
 export interface PindieCompositionConfig {
   /** Resolve environment-configured Remote and Work Memory adapters. */
   readonly configureOptionalFeatures?: boolean;
+  readonly onExperienceSaved?: (projectRoot: string) => void;
   readonly env?: Record<string, string | undefined>;
 }
 
@@ -330,10 +331,13 @@ export function composePindieExtension(
   if (selection.selfImprovement) {
     experienceStore = input.experienceStore ?? new FileRunExperienceStore({
       baseDir: roots.projectsBaseDir,
-      onSaved: (projectRoot) => new FileRunExperienceMaintenance({
-        projectsBaseDir: roots.projectsBaseDir,
-        globalBaseDir: roots.globalBaseDir,
-      }).prune(projectRoot).then(() => undefined),
+      onSaved: async (projectRoot) => {
+        await new FileRunExperienceMaintenance({
+          projectsBaseDir: roots.projectsBaseDir,
+          globalBaseDir: roots.globalBaseDir,
+        }).prune(projectRoot);
+        config.onExperienceSaved?.(projectRoot); // Host hook is fire-and-forget; never Task delivery.
+      },
     });
     experienceReader = input.experienceReader ?? new FileRunExperienceReader({
       baseDir: roots.projectsBaseDir,

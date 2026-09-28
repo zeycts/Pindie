@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
 import {
-  composeConfiguredPindieExtension,
   composePindieExtension,
   type PindieFeatureSelection,
   type PindieStorageRoots,
@@ -175,6 +174,8 @@ export interface PindieExtensionOptions {
   quotaResumePreferenceStore?: QuotaResumePreferenceStore;
   quotaFallbackPreferenceStore?: QuotaFallbackPreferenceStore;
   experienceStore?: RunExperienceStore;
+  /** Host-only best-effort post-commit notification; not Task semantics. */
+  onExperienceSaved?: (projectRoot: string) => void;
   experienceReader?: RunExperienceReader;
   workEpisodes?: import("./work-episode.ts").WorkEpisodeLedger;
   strategyCandidateStore?: StrategyCandidateStore;
@@ -1661,7 +1662,7 @@ export function registerConfiguredPindieExtension(
   options: PindieExtensionOptions = {},
   env: Record<string, string | undefined> = process.env,
 ): PindieExtensionIntegration {
-  const composition = composeConfiguredPindieExtension(options, env);
+  const composition = composePindieExtension(options, { configureOptionalFeatures: true, env, onExperienceSaved: options.onExperienceSaved });
   for (const warning of composition.warnings) console.warn(warning);
   return registerComposedPindieExtension(
     pi,

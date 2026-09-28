@@ -140,7 +140,8 @@ test("F1 jobs are deterministic, fenced, persistent and never silently compacted
   const fp = `sha256:${"a".repeat(64)}`;
   const key = learningJobKey("project-discovery", scope, fp, 1);
   const receiptBody = { schemaVersion: 1, id: "00000000-0000-4000-8000-000000000000",
-    jobKey: key, packetFingerprint: fp, scope, outcome: "none", hypotheses: [] };
+    jobKey: key, packetFingerprint: fp, scope, outcome: "none", hypotheses: [],
+    sources: [{ projectId: scope.projectId, recordId: "00000000-0000-4000-8000-000000000001.json", fingerprint: fp, recordedAt: "2026-01-01T00:00:00.000Z" }] };
   const receipt = { ...receiptBody, fingerprint: learningArtifactFingerprint(receiptBody) };
   const receiptRef = { schemaVersion: 1 as const, family: "discovery-receipt" as const, scope,
     id: receipt.id, fingerprint: receipt.fingerprint };
@@ -281,7 +282,7 @@ test("F1 all frozen artifact shells reject extra fields, malformed IDs and incon
   const scope = { kind: "project" as const, projectId };
   const hyp = { schemaVersion: 1 as const, family: "strategy-hypothesis" as const, scope, id: other, fingerprint: fp };
   const seal = <T extends Record<string, unknown>>(content: T) => ({ ...content, fingerprint: learningArtifactFingerprint(content) });
-  const receipt = seal({ schemaVersion: 1, id, jobKey: fp, packetFingerprint: fp, scope, outcome: "none", hypotheses: [] });
+  const receipt = seal({ schemaVersion: 1, id, jobKey: fp, packetFingerprint: fp, scope, outcome: "none", hypotheses: [], sources: [{ ...ref, recordedAt: "2026-01-01T00:00:00.000Z" }] });
   assert.equal(validateDiscoveryReceipt(receipt), true);
   assert.equal(validateDiscoveryReceipt(seal({ ...receipt, outcome: "published" })), false);
   const published = seal({ ...receipt, outcome: "published", hypotheses: [hyp] });

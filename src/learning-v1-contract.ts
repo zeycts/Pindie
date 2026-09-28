@@ -168,13 +168,18 @@ export interface DiscoveryReceipt {
   readonly outcome: "none" | "covered" | "published";
   /** Covered means exact refs to preexisting hypotheses; none has no refs. */
   readonly hypotheses: readonly LearningArtifactRef[];
+  /** Only these exact packet-source fingerprints become assessed at terminal publication. */
+  readonly sources: readonly (ExactEvidenceRef & { readonly recordedAt: string })[];
 }
 export function validateDiscoveryReceipt(v: unknown): v is DiscoveryReceipt {
-  return object(v) && exact(v, ["schemaVersion", "id", "fingerprint", "jobKey", "packetFingerprint", "scope", "outcome", "hypotheses"]) &&
+  return object(v) && exact(v, ["schemaVersion", "id", "fingerprint", "jobKey", "packetFingerprint", "scope", "outcome", "hypotheses", "sources"]) &&
     v.schemaVersion === 1 && uuid(v.id) && hash(v.jobKey) && hash(v.packetFingerprint) && validateLearningScope(v.scope) &&
     (v.outcome === "none" || v.outcome === "covered" || v.outcome === "published") &&
     refs(v.hypotheses, "strategy-hypothesis", 8) &&
     (v.hypotheses as LearningArtifactRef[]).every((ref) => canonicalJson(ref.scope) === canonicalJson(v.scope)) &&
+    list(v.sources, 32, (source) => object(source) && exact(source, ["projectId", "recordId", "fingerprint", "recordedAt"]) &&
+      validateExactEvidenceRef({ projectId: source.projectId, recordId: source.recordId, fingerprint: source.fingerprint }) && instant(source.recordedAt), 1) &&
+    unique(v.sources) && (v.scope.kind !== "project" || (v.sources as DiscoveryReceipt["sources"]).every((source) => source.projectId === (v.scope as { projectId: string }).projectId)) &&
     (v.outcome === "none" ? v.hypotheses.length === 0 : v.hypotheses.length > 0) && authentic(v);
 }
 export interface StrategyHypothesis {
@@ -324,7 +329,8 @@ export function matchesLearningJobOutput(job: LearningJob, output: unknown): boo
   if (!validateLearningJob(job) || job.terminalReceiptRef === null ||
     !matchesLearningArtifactRef(job.terminalReceiptRef, output)) return false;
   if (job.terminalReceiptRef.family === "discovery-receipt")
-    return (output as DiscoveryReceipt).jobKey === job.key;
+    return (output as DiscoveryReceipt).jobKey === job.key &&
+      (job.kind !== "project-discovery" || (output as DiscoveryReceipt).packetFingerprint === job.inputFingerprint);
   if (job.terminalReceiptRef.family === "terminal-output")
     return (output as LearningTerminalOutput).jobKey === job.key && (output as LearningTerminalOutput).state === job.state &&
       (output as LearningTerminalOutput).stopReason === job.stopReason;
