@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { canonicalJson } from "./learning-v1-contract.ts";
@@ -25,8 +26,13 @@ export class FileDiscoveryPacketStore {
     if (!validateDiscoveryPacket(packet)) throw new Error("Invalid DiscoveryPacket.");
     const path = this.path(packet.projectId, packet.fingerprint);
     await mkdir(join(this.root, packet.projectId, "learning-v1", "packets"), { recursive: true });
-    try { await writeFile(path, JSON.stringify(packet) + "\n", { flag: "wx" }); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    const temp = `${path}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temp, JSON.stringify(packet) + "\n", { flag: "wx" });
+      // Atomic no-replace publication: a crash before link leaves no visible packet.
+      try { await link(temp, path); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    } finally { await rm(temp, { force: true }); }
     const stored = await this.read(packet.projectId, packet.fingerprint);
     if (!stored || canonicalJson(stored) !== canonicalJson(packet)) throw new Error("Conflicting DiscoveryPacket publication.");
   }
