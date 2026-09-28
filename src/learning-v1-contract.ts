@@ -156,6 +156,17 @@ export function validateLearningJob(v: unknown): v is LearningJob {
   if (v.state === "completed") return v.terminalReceiptRef !== null && v.stopReason === null && v.attempt > 0;
   return v.state === "cancelled" && v.stopReason !== null;
 }
+export const LEARNING_THINKING_LEVELS = ["off", "low", "medium"] as const;
+export type LearningThinkingLevel = typeof LEARNING_THINKING_LEVELS[number];
+/** Exact operational model provenance for a learning attempt; never Hypothesis semantic input. */
+export interface LearningModelProvenance {
+  readonly provider: string; readonly modelId: string; readonly thinkingLevel: LearningThinkingLevel;
+}
+export function validateLearningModelProvenance(v: unknown): v is LearningModelProvenance {
+  return object(v) && exact(v, ["provider", "modelId", "thinkingLevel"]) &&
+    text(v.provider, 128) && text(v.modelId, 128) &&
+    (LEARNING_THINKING_LEVELS as readonly string[]).includes(v.thinkingLevel as string);
+}
 export interface ExactEvidenceRef { readonly projectId: string; readonly recordId: string; readonly fingerprint: string }
 export function validateExactEvidenceRef(v: unknown): v is ExactEvidenceRef {
   return object(v) && exact(v, ["projectId", "recordId", "fingerprint"]) &&
@@ -163,22 +174,31 @@ export function validateExactEvidenceRef(v: unknown): v is ExactEvidenceRef {
     typeof v.recordId === "string" && EXPERIENCE_RECORD_ID.test(v.recordId) && hash(v.fingerprint);
 }
 export interface DiscoveryReceipt {
-  readonly schemaVersion: 1; readonly id: string; readonly fingerprint: string;
+  /** v1 receipts assess every source; v2 adds source roles; v3 adds exact model provenance. */
+  readonly schemaVersion: 1 | 2 | 3; readonly id: string; readonly fingerprint: string;
   readonly jobKey: string; readonly packetFingerprint: string; readonly scope: LearningScope;
   readonly outcome: "none" | "covered" | "published";
   /** Covered means exact refs to preexisting hypotheses; none has no refs. */
   readonly hypotheses: readonly LearningArtifactRef[];
   /** Only these exact packet-source fingerprints become assessed at terminal publication. */
-  readonly sources: readonly (ExactEvidenceRef & { readonly recordedAt: string })[];
+  readonly sources: readonly (ExactEvidenceRef & { readonly recordedAt: string; readonly role?: "new" | "context" })[];
+  /** Exact model/thinking policy that produced a v3 terminal outcome. */
+  readonly modelIdentity?: LearningModelProvenance;
 }
 export function validateDiscoveryReceipt(v: unknown): v is DiscoveryReceipt {
-  return object(v) && exact(v, ["schemaVersion", "id", "fingerprint", "jobKey", "packetFingerprint", "scope", "outcome", "hypotheses", "sources"]) &&
-    v.schemaVersion === 1 && uuid(v.id) && hash(v.jobKey) && hash(v.packetFingerprint) && validateLearningScope(v.scope) &&
+  return object(v) && exact(v, v.schemaVersion === 3
+    ? ["schemaVersion", "id", "fingerprint", "jobKey", "packetFingerprint", "scope", "outcome", "hypotheses", "sources", "modelIdentity"]
+    : ["schemaVersion", "id", "fingerprint", "jobKey", "packetFingerprint", "scope", "outcome", "hypotheses", "sources"]) &&
+    (v.schemaVersion === 1 || v.schemaVersion === 2 || v.schemaVersion === 3) && (v.schemaVersion !== 3 || validateLearningModelProvenance(v.modelIdentity)) &&
+    uuid(v.id) && hash(v.jobKey) && hash(v.packetFingerprint) && validateLearningScope(v.scope) &&
     (v.outcome === "none" || v.outcome === "covered" || v.outcome === "published") &&
     refs(v.hypotheses, "strategy-hypothesis", 8) &&
     (v.hypotheses as LearningArtifactRef[]).every((ref) => canonicalJson(ref.scope) === canonicalJson(v.scope)) &&
-    list(v.sources, 32, (source) => object(source) && exact(source, ["projectId", "recordId", "fingerprint", "recordedAt"]) &&
+    list(v.sources, 32, (source) => object(source) && exact(source, v.schemaVersion === 1
+      ? ["projectId", "recordId", "fingerprint", "recordedAt"] : ["projectId", "recordId", "fingerprint", "recordedAt", "role"]) &&
+      (v.schemaVersion === 1 || source.role === "new" || source.role === "context") &&
       validateExactEvidenceRef({ projectId: source.projectId, recordId: source.recordId, fingerprint: source.fingerprint }) && instant(source.recordedAt), 1) &&
+    (v.schemaVersion === 1 || (v.sources as DiscoveryReceipt["sources"]).some((source) => source.role === "new")) &&
     unique(v.sources) && (v.scope.kind !== "project" || (v.sources as DiscoveryReceipt["sources"]).every((source) => source.projectId === (v.scope as { projectId: string }).projectId)) &&
     (v.outcome === "none" ? v.hypotheses.length === 0 : v.hypotheses.length > 0) && authentic(v);
 }
@@ -190,7 +210,11 @@ export interface StrategyHypothesis {
   readonly expectedEffect: string; readonly failureSignals: readonly string[]; readonly trialHints: readonly string[];
   readonly sources: readonly ExactEvidenceRef[]; readonly discoveryPacketFingerprint: string;
 }
-export function hypothesisFingerprint(value: Omit<StrategyHypothesis, "id" | "fingerprint">): string { return learningFingerprint(value); }
+export function hypothesisFingerprint(value: Omit<StrategyHypothesis, "id" | "fingerprint">): string {
+  // Packet provenance is not cognition: a changed comparison catalog must not create a new semantic identity.
+  const { discoveryPacketFingerprint: _packet, ...semantic } = value;
+  return learningFingerprint(semantic);
+}
 /** Shape/provenance validation, not model interpretation of observability or usefulness. */
 export function validateStrategyHypothesis(value: unknown): value is StrategyHypothesis {
   if (!object(value) || !exact(value, ["schemaVersion", "id", "fingerprint", "scope", "logicalId", "kind", "lineage",
@@ -200,17 +224,18 @@ export function validateStrategyHypothesis(value: unknown): value is StrategyHyp
     (value.kind !== "approach" && value.kind !== "modifier") ||
     (value.lineage !== "new" && value.lineage !== "revise") ||
     (value.lineage === "new" ? value.parent !== null || value.baseRevisionFingerprint !== null
-      : !validateLearningArtifactRef(value.parent, "strategy-hypothesis") ||
-        canonicalJson((value.parent as LearningArtifactRef).scope) !== canonicalJson(value.scope) ||
-        (value.parent as LearningArtifactRef).id === value.id ||
+      : (value.parent === null && !hash(value.baseRevisionFingerprint)) ||
+        (value.parent !== null && (!validateLearningArtifactRef(value.parent, "strategy-hypothesis") ||
+          canonicalJson((value.parent as LearningArtifactRef).scope) !== canonicalJson(value.scope) ||
+          (value.parent as LearningArtifactRef).id === value.id)) ||
         (value.baseRevisionFingerprint !== null && !hash(value.baseRevisionFingerprint))) ||
     typeof value.logicalId !== "string" || value.logicalId.length > 64 ||
     !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value.logicalId) ||
     !text(value.summary) || !text(value.expectedEffect) || !hash(value.discoveryPacketFingerprint) ||
-    !list(value.useWhen, 8, (x) => text(x, 256)) || !list(value.avoidWhen, 8, (x) => text(x, 256)) ||
+    !list(value.useWhen, 8, (x) => text(x, 256), 1) || !list(value.avoidWhen, 8, (x) => text(x, 256)) ||
     !list(value.trialHints, 8, (x) => text(x, 256)) || !list(value.failureSignals, 8, (x) => text(x, 256), 1) ||
     !list(value.sources, 8, validateExactEvidenceRef, 1) || !unique(value.sources)) return false;
-  try { const { id: _id, fingerprint, ...semantic } = value; return fingerprint === learningFingerprint(semantic); }
+  try { const { id: _id, fingerprint, ...semantic } = value; return fingerprint === hypothesisFingerprint(semantic as unknown as Omit<StrategyHypothesis, "id" | "fingerprint">); }
   catch { return false; }
 }
 export interface TrialAssignment {

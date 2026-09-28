@@ -3,11 +3,12 @@ import { runExperienceRecordFingerprint } from "./run-experience-fingerprint.ts"
 import type { RunExperienceProjectReader } from "./experience-store.ts";
 import type { ProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safety.ts";
 import { MAX_TRUSTED_PORTFOLIO_ENTRIES, trustedPortfolioFingerprint } from "./strategy-portfolio.ts";
-import { learningJobKey } from "./learning-v1-contract.ts";
-import { DEFAULT_PROJECT_DISCOVERY_POLICY, discoveryPacketFingerprint, validateDiscoveryPacket, validateProjectDiscoveryPolicy,
+import { canonicalJson, learningFingerprint, learningJobKey } from "./learning-v1-contract.ts";
+import { DEFAULT_PROJECT_DISCOVERY_POLICY, MAX_DISCOVERY_PACKET_CHARS_V3, discoveryPacketFingerprint, validateDiscoveryPacket, validateProjectDiscoveryPolicy,
   type DiscoveryPacketV1, type DiscoverySourceSummary, type ProjectDiscoveryPolicy } from "./discovery-contract.ts";
 import { FileDiscoveryPacketStore } from "./discovery-packets.ts";
 import { FileDiscoveryReceiptStore } from "./discovery-receipts.ts";
+import { FileDiscoveryHypothesisStore, hypothesisRef } from "./discovery-hypotheses.ts";
 import type { LearningJobLedger } from "./learning-job-store.ts";
 
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
@@ -17,6 +18,7 @@ export interface ProjectDiscoveryDependencies {
   portfolio: ProjectTrustedStrategyPortfolioReader;
   receipts: FileDiscoveryReceiptStore;
   packets: FileDiscoveryPacketStore;
+  hypotheses: FileDiscoveryHypothesisStore;
   jobs: LearningJobLedger;
   policy?: ProjectDiscoveryPolicy;
 }
@@ -24,8 +26,8 @@ export interface ProjectDiscoveryDependencies {
 export async function buildProjectDiscoveryPacket(projectId: string, dependencies: Omit<ProjectDiscoveryDependencies, "jobs">): Promise<DiscoveryPacketV1 | null> {
   const policy = dependencies.policy ?? DEFAULT_PROJECT_DISCOVERY_POLICY;
   if (!validateProjectDiscoveryPolicy(policy)) throw new Error("Invalid project discovery policy.");
-  const [read, portfolio, receipts] = await Promise.all([
-    dependencies.reader.readProjectId(projectId), dependencies.portfolio.readProjectId(projectId), dependencies.receipts.read(projectId),
+  const [read, portfolio, receipts, open] = await Promise.all([
+    dependencies.reader.readProjectId(projectId), dependencies.portfolio.readProjectId(projectId), dependencies.receipts.read(projectId), dependencies.hypotheses.list(projectId),
   ]);
   if (read.invalid || read.unsupportedSchema || read.loadedRecords !== read.records.length ||
     portfolio.projectId !== projectId || portfolio.entries.length > MAX_TRUSTED_PORTFOLIO_ENTRIES ||
@@ -34,20 +36,23 @@ export async function buildProjectDiscoveryPacket(projectId: string, dependencie
     portfolio.resolvedEntries.some((entry, i) => JSON.stringify(entry.manifest) !== JSON.stringify(portfolio.entries[i]) ||
       !entry.semantics.summary.trim() || entry.semantics.summary.length > 512))
     throw new Error("Incoherent discovery evidence or trusted portfolio.");
-  // Terminal semantic receipts assess only their exact packet fingerprints. An
-  // unselected older record and a later copy of an assessed record are handled
-  // independently of timestamps, pruning, or cancelled operational jobs.
-  const assessed = new Set(receipts.flatMap((receipt) => receipt.sources.map((source) => source.fingerprint)));
+  // Only new sources in terminal receipts advance the trigger boundary. Historical
+  // assessed sources can recur as bounded context without counting as new evidence.
+  // v1 receipts had no roles: all their sources were new by definition.
+  const assessed = new Set(receipts.flatMap((receipt) => receipt.sources.filter((source) => source.role !== "context").map((source) => source.fingerprint)));
   const seen = new Set<string>();
+  // Sort before deduplication: identical Experience in multiple files must bind
+  // the same exact record ID regardless of filesystem enumeration order.
   const records = read.records.flatMap(({ recordId, experience }) => {
     if (experience.schemaVersion !== 5 || !experience.workEpisodeId) return [];
     // v5 parser enforces coherent episode/task linkage; no learning/internal Run is recorded by the Work Plane.
     const fingerprint = runExperienceRecordFingerprint(experience);
-    if (seen.has(fingerprint)) return [];
-    seen.add(fingerprint);
     const ref = { projectId, recordId, fingerprint };
     return [{ ref, experience, recordedAt: experience.recordedAt, recordId }];
-  }).sort((a, b) => compare(position(b), position(a)));
+  }).sort((a, b) => compare(position(b), position(a))).filter((r) => {
+    if (seen.has(r.ref.fingerprint)) return false;
+    seen.add(r.ref.fingerprint); return true;
+  });
   const fresh = records.filter((r) => !assessed.has(r.ref.fingerprint));
   const episodes = new Set(fresh.map((r) => r.experience.workEpisodeId));
   const outcomes = new Set(fresh.map((r) => `${r.experience.outcome.taskStatus}/${r.experience.outcome.verificationStatus}`));
@@ -71,9 +76,23 @@ export async function buildProjectDiscoveryPacket(projectId: string, dependencie
   choose(() => true);
   if (new Set(chosen.map((r) => r.experience.workEpisodeId)).size < policy.minWorkEpisodes ||
     new Set(chosen.map((r) => `${r.experience.outcome.taskStatus}/${r.experience.outcome.verificationStatus}`)).size < policy.minOutcomes) return null;
-  const sources: DiscoverySourceSummary[] = chosen.sort((a, b) => compare(position(a), position(b))).map(({ ref, experience }) => {
+  const historical = records.filter((r) => assessed.has(r.ref.fingerprint));
+  const context: typeof fresh = []; const contextIds = new Set<string>();
+  const appendContext = (predicate: (r: typeof fresh[number]) => boolean) => {
+    for (const r of historical) if (chosen.length + context.length < policy.maxCorpus && !contextIds.has(r.recordId) && predicate(r)) {
+      context.push(r); contextIds.add(r.recordId);
+    }
+  };
+  const knownEpisodes = new Set(chosen.map((r) => r.experience.workEpisodeId));
+  appendContext((r) => { if (knownEpisodes.has(r.experience.workEpisodeId)) return false; knownEpisodes.add(r.experience.workEpisodeId); return true; });
+  const knownOutcomes = new Set([...chosen, ...context].map((r) => `${r.experience.outcome.taskStatus}/${r.experience.outcome.verificationStatus}`));
+  appendContext((r) => { const key = `${r.experience.outcome.taskStatus}/${r.experience.outcome.verificationStatus}`; if (knownOutcomes.has(key)) return false; knownOutcomes.add(key); return true; });
+  const knownExposure = new Set([...chosen, ...context].map(exposure));
+  appendContext((r) => { const key = exposure(r); if (knownExposure.has(key)) return false; knownExposure.add(key); return true; });
+  appendContext(() => true);
+  const summarize = (selected: typeof fresh, role: DiscoverySourceSummary["role"]): DiscoverySourceSummary[] => selected.map(({ ref, experience }) => {
     const snapshot = experience.policy.finalSnapshot;
-    return { ref, recordedAt: experience.recordedAt, workEpisodeId: experience.workEpisodeId,
+    return { ref, role, recordedAt: experience.recordedAt, workEpisodeId: experience.workEpisodeId,
       goal: experience.task.goal.slice(0, 512), taskRelation: experience.task.taskRelation,
       outcome: { taskStatus: experience.outcome.taskStatus, verificationStatus: experience.outcome.verificationStatus, completionRelation: experience.outcome.completionRelation },
       policy: snapshot === null ? [] : [snapshot.approach, ...snapshot.modifiers].map((s) => ({
@@ -85,12 +104,28 @@ export async function buildProjectDiscoveryPacket(projectId: string, dependencie
       metrics: experience.metrics,
     };
   });
-  const content = { schemaVersion: 1 as const, selectionVersion: 1 as const, projectId, policy,
+  const openEntries = open.map((h) => ({ ref: hypothesisRef(h), logicalId: h.logicalId, kind: h.kind, baseRevisionFingerprint: h.baseRevisionFingerprint, summary: h.summary, expectedEffect: h.expectedEffect,
+    useWhen: h.useWhen, avoidWhen: h.avoidWhen, failureSignals: h.failureSignals }));
+  const comparison = { schemaVersion: 3 as const, selectionVersion: 3 as const, projectId, policy,
     eligibleCounts: { new: fresh.length, episodes: episodes.size, outcomes: outcomes.size },
     portfolio: { fingerprint: portfolio.fingerprint, revisions: portfolio.resolvedEntries.map((entry) => ({
       strategyId: entry.manifest.strategyId, kind: entry.manifest.kind, revisionIdentity: entry.manifest.revisionIdentity,
       revisionFingerprint: entry.manifest.revisionFingerprint, summary: entry.semantics.summary,
-    })) }, sources };
+      useWhen: entry.semantics.useWhen, avoidWhen: entry.semantics.avoidWhen, principles: entry.semantics.principles,
+    })) }, openHypotheses: { fingerprint: learningFingerprint(openEntries), entries: openEntries } };
+  const enoughNew = () => chosen.length >= policy.minNewExperiences &&
+    new Set(chosen.map((r) => r.experience.workEpisodeId)).size >= policy.minWorkEpisodes &&
+    new Set(chosen.map((r) => `${r.experience.outcome.taskStatus}/${r.experience.outcome.verificationStatus}`)).size >= policy.minOutcomes;
+  let content: Omit<DiscoveryPacketV1, "fingerprint">;
+  for (;;) {
+    const sources = [...summarize(chosen, "new"), ...summarize(context, "context")]
+      .sort((a, b) => compare(position({ ...a, recordId: a.ref.recordId }), position({ ...b, recordId: b.ref.recordId })));
+    content = { ...comparison, sources };
+    if (canonicalJson(content).length <= MAX_DISCOVERY_PACKET_CHARS_V3) break;
+    if (context.length) { context.pop(); continue; }
+    const last = chosen.pop();
+    if (!last || !enoughNew()) throw new Error("Discovery comparison/new evidence exceeds model-ready packet budget.");
+  }
   const packet = { ...content, fingerprint: discoveryPacketFingerprint(content) };
   if (!validateDiscoveryPacket(packet)) throw new Error("Invalid generated DiscoveryPacket.");
   return packet;

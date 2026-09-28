@@ -61,7 +61,7 @@ import { installQuotaFallbackReceiver } from "./quota-fallback-control.ts";
 import { FileLearningBudgetLedger } from "./learning-budget-store.ts";
 import { FileLearningJobLedger } from "./learning-job-store.ts";
 import { LearningSupervisor, type LearningJobHandler } from "./learning-supervisor.ts";
-import { createLearningSessionRunner } from "./learning-session-runner.ts";
+import { createLearningSessionRunner, resolveLearningModel, type LearningModelPolicy } from "./learning-session-runner.ts";
 import { resolvePindieStorageRoots } from "./composition.ts";
 import { resolveProjectRoot } from "./project.ts";
 import { getProjectId } from "./store.ts";
@@ -70,6 +70,8 @@ import { FileProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safe
 import { FileDiscoveryPacketStore } from "./discovery-packets.ts";
 import { FileDiscoveryReceiptStore } from "./discovery-receipts.ts";
 import { enqueueProjectDiscovery } from "./project-discovery.ts";
+import { createProjectDiscoveryHandler } from "./project-discovery-handler.ts";
+import { FileDiscoveryHypothesisStore } from "./discovery-hypotheses.ts";
 import { validateProjectDiscoveryPolicy, type ProjectDiscoveryPolicy } from "./discovery-contract.ts";
 
 export interface PindieResourcePaths {
@@ -108,8 +110,10 @@ export interface PindieHostOptions {
   longTaskRollover?: LongTaskRolloverSupervisorOptions;
   quotaResume?: QuotaResumeSupervisorOptions;
   quotaFallback?: QuotaFallbackSupervisorOptions;
-  /** F2 has no production handlers; injection is for focused runtime/idle tests and later slices. */
+  /** D2 registers project-discovery by default; override for isolated Host/runtime tests. */
   learningHandlers?: readonly LearningJobHandler[];
+  /** Explicit isolated learning model. When omitted, the Host baseline model is frozen once at start. */
+  learningModel?: { readonly provider: string; readonly modelId: string; readonly thinkingLevel?: "off" | "low" | "medium" };
   /** Human-controlled v1 local discovery threshold/corpus configuration. */
   discoveryPolicy?: ProjectDiscoveryPolicy;
   env?: Record<string, string | undefined>;
@@ -124,6 +128,8 @@ export interface PindieHost {
   readonly runtime: PiRuntimeAdapter;
   readonly interactiveMode: PindieInteractiveMode;
   readonly presentation: PindiePresentationReaderLease;
+  /** Frozen isolated learning model identity, or null when learning is unavailable this Host. */
+  readonly learningModelIdentity: LearningModelPolicy | null;
   run(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -262,6 +268,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     portfolio: new FileProjectTrustedStrategyPortfolioReader({ projectsBaseDir: roots.projectsBaseDir, globalBaseDir: roots.globalBaseDir }),
     receipts: new FileDiscoveryReceiptStore({ projectsBaseDir: roots.projectsBaseDir }),
     packets: new FileDiscoveryPacketStore(roots.projectsBaseDir),
+    hypotheses: new FileDiscoveryHypothesisStore({ projectsBaseDir: roots.projectsBaseDir }),
     jobs,
     ...(options.discoveryPolicy ? { policy: options.discoveryPolicy } : {}),
   };
@@ -387,17 +394,25 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     runtime = new PiRuntimeAdapter(nativeRuntime);
     try { currentProjectRoot = await resolveProjectRoot(cwd); }
     catch { console.warn("[Pindie] Project discovery root unavailable; enqueue skipped."); }
+    // Learning model identity is frozen once at Host start; it never follows the
+    // mutable Human Session model/fallback. A startup fallback is not a baseline,
+    // and absence fails closed so jobs stay pending.
+    const learningSession = runtime.activeSession;
+    const resolvedLearningModel = resolveLearningModel({
+      ...(options.learningModel ? { requested: options.learningModel } : {}),
+      baseline: learningSession.model,
+      startupFellBack: nativeRuntime.modelFallbackMessage !== undefined,
+      resolve: (provider, modelId) => learningSession.modelRuntime?.getModel(provider, modelId),
+    });
+    const learningRunner = resolvedLearningModel
+      ? createLearningSessionRunner({ cwd, model: resolvedLearningModel.model, policy: resolvedLearningModel.policy })
+      : undefined;
+    if (!learningRunner) console.warn("[Pindie] Learning model unavailable (explicit config missing/unresolved or startup fallback); learning jobs remain pending.");
     learningSupervisor = new LearningSupervisor({
       ledger: jobs,
       budget: new FileLearningBudgetLedger({ globalBaseDir: roots.globalBaseDir }),
-      handlers: options.learningHandlers ?? [],
-      runner: {
-        run: (prompt, signal) => {
-          const model = runtime!.activeSession.model;
-          if (!model) throw new Error("No configured Pi learning model.");
-          return createLearningSessionRunner({ cwd, model }).run(prompt, signal);
-        },
-      },
+      handlers: options.learningHandlers ?? [createProjectDiscoveryHandler(discovery)],
+      runner: learningRunner,
       authority: {
         generation: () => learningGeneration,
         idle: () => {
@@ -465,6 +480,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       runtime,
       interactiveMode,
       presentation,
+      learningModelIdentity: learningRunner?.modelIdentity ?? null,
       run: async () => {
         try {
           await interactiveMode.run();
