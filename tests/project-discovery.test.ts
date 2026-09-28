@@ -33,7 +33,7 @@ async function setup(t: import("node:test").TestContext) {
   const packets = new FileDiscoveryPacketStore(projects);
   const jobs = new FileLearningJobLedger({ globalBaseDir: global });
   const deps = { reader, portfolio, receipts, packets, jobs };
-  const add = async (index: number, schema: 4 | 5 = 5, episode = randomUUID()) => {
+  const add = async (index: number, schema: 4 | 5 = 5, episode = randomUUID(), successful = false) => {
     const record = assembleRunExperience({ task: runtime.state.task!, runStart: { taskStatus: "active", taskGoal: "goal" },
       snapshot: { authority: "coherent", taskStatus: "active", verificationStatus: "pending", hasBlockers: false,
         hasQuestions: false, completionReady: false, taskRelation: "preexisting_untouched", completionRelation: "not_completed", gateRelation: "none" },
@@ -43,7 +43,11 @@ async function setup(t: import("node:test").TestContext) {
       ...(schema === 5 ? { workEpisodeId: episode } : {}),
     });
     // Outcome diversity is factual and validated: active/pending vs active/failed verification.
-    const experience = index % 2 ? { ...record, outcome: { ...record.outcome, verificationStatus: "failed" as const } } : record;
+    const experience = successful ? { ...record,
+      task: { ...record.task, taskRelation: "preexisting_changed" as const },
+      outcome: { ...record.outcome, taskStatus: "done" as const, verificationStatus: "passed" as const,
+        completionRelation: "completed_during_run" as const },
+    } : index % 2 ? { ...record, outcome: { ...record.outcome, verificationStatus: "failed" as const } } : record;
     await store.save(ROOT, experience);
     return experience;
   };
@@ -70,6 +74,44 @@ test("D1 legacy v4-only evidence never triggers, v5 deterministic packet/job sur
   assert.notEqual(await enqueueProjectDiscovery(id, restarted), key);
   assert.equal((await restarted.jobs.read()).length, 2);
 });
+test("D1 uniform done/passed v5 outcomes satisfy the conservative default", async (t) => {
+  const f = await setup(t);
+  for (let i = 0; i < 6; i++) await f.add(i, 5, randomUUID(), true);
+  const packet = await buildProjectDiscoveryPacket(id, f.deps);
+  assert.ok(packet && validateDiscoveryPacket(packet));
+  assert.equal(packet.eligibleCounts.episodes, 6);
+  assert.equal(packet.eligibleCounts.outcomes, 1);
+  assert.equal(packet.sources.length, 6);
+  assert.ok(packet.sources.every((s) => s.outcome.taskStatus === "done" && s.outcome.verificationStatus === "passed"));
+  assert.ok(await enqueueProjectDiscovery(id, f.deps));
+  assert.equal(await buildProjectDiscoveryPacket(id, { ...f.deps, policy: { ...DEFAULT_PROJECT_DISCOVERY_POLICY, minOutcomes: 2 } }), null);
+});
+test("D1 bounded receipt assesses only selected fingerprints; leftover older evidence survives restart", async (t) => {
+  const f = await setup(t);
+  for (let i = 0; i < 50; i++) await f.add(i);
+  const first = (await buildProjectDiscoveryPacket(id, f.deps))!;
+  assert.equal(first.sources.length, 24);
+  assert.equal(first.eligibleCounts.new, 50);
+  const firstKey = await enqueueProjectDiscovery(id, f.deps);
+  assert.ok(firstKey);
+  await f.deps.receipts.publish(first, "none", []);
+  // Even a new file with the same exact payload as an assessed source is not new.
+  const assessed = (await f.deps.reader.readProjectId(id)).records.find((r) => r.recordId === first.sources[0]!.ref.recordId)!;
+  await f.store.save(ROOT, assessed.experience);
+  const second = (await buildProjectDiscoveryPacket(id, f.deps))!;
+  assert.equal(second.eligibleCounts.new, 26);
+  assert.equal(second.sources.length, 24);
+  assert.ok(second.sources.every((s) => !first.sources.some((prior) => prior.ref.fingerprint === s.ref.fingerprint)));
+  const restarted = { ...f.deps, reader: new FileRunExperienceReader({ baseDir: f.projects }),
+    receipts: new FileDiscoveryReceiptStore({ projectsBaseDir: f.projects }), packets: new FileDiscoveryPacketStore(f.projects),
+    jobs: new FileLearningJobLedger({ globalBaseDir: f.global }) };
+  assert.deepEqual(await buildProjectDiscoveryPacket(id, restarted), second);
+  const secondKey = await enqueueProjectDiscovery(id, restarted);
+  assert.ok(secondKey && secondKey !== firstKey);
+  assert.equal((await restarted.jobs.read()).length, 2);
+  await restarted.receipts.publish(second, "none", []);
+  assert.equal(await buildProjectDiscoveryPacket(id, restarted), null); // two unassessed sources, below threshold
+});
 test("D1 duplicates, terminal receipt and cancellation without receipt", async (t) => {
   const f = await setup(t);
   for (let i = 0; i < 5; i++) await f.add(i);
@@ -82,13 +124,20 @@ test("D1 duplicates, terminal receipt and cancellation without receipt", async (
   await f.deps.jobs.cancel(key, claimed.leaseToken, "retry-exhausted");
   assert.equal((await buildProjectDiscoveryPacket(id, f.deps))?.fingerprint, packet.fingerprint);
   assert.equal(await enqueueProjectDiscovery(id, f.deps), key);
+  assert.equal((await f.deps.jobs.read()).find((job) => job.key === key)?.state, "cancelled");
+  await f.add(6);
+  const changed = (await buildProjectDiscoveryPacket(id, f.deps))!;
+  assert.equal(changed.eligibleCounts.new, 7);
+  assert.ok(changed.sources.some((source) => source.ref.fingerprint === packet.sources[0]!.ref.fingerprint));
+  assert.notEqual(await enqueueProjectDiscovery(id, f.deps), key);
+  assert.equal((await f.deps.jobs.read()).length, 2);
   const receipt = await f.deps.receipts.publish(packet, "none", []);
   assert.deepEqual(await f.deps.receipts.publish(packet, "none", []), receipt);
   await assert.rejects(f.deps.receipts.publish(packet, "covered", []));
   const ref = { schemaVersion: 1 as const, family: "discovery-receipt" as const, scope: receipt.scope, id: receipt.id, fingerprint: receipt.fingerprint };
   assert.deepEqual(await f.deps.receipts.resolve(ref, key, packet.fingerprint), receipt);
   assert.equal(matchesLearningJobOutput({ ...claimed, state: "completed", leaseOwner: null, leaseToken: null, leaseExpiresAt: null, terminalReceiptRef: ref }, receipt), true);
-  assert.equal(await buildProjectDiscoveryPacket(id, f.deps), null);
+  assert.equal(await buildProjectDiscoveryPacket(id, f.deps), null); // one remaining new source
   assert.equal(await enqueueProjectDiscovery(id, f.deps), null);
 });
 test("D1 Host startup enqueue does not start a model or change the Human Session surface", async (t) => {

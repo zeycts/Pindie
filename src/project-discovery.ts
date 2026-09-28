@@ -34,10 +34,10 @@ export async function buildProjectDiscoveryPacket(projectId: string, dependencie
     portfolio.resolvedEntries.some((entry, i) => JSON.stringify(entry.manifest) !== JSON.stringify(portfolio.entries[i]) ||
       !entry.semantics.summary.trim() || entry.semantics.summary.length > 512))
     throw new Error("Incoherent discovery evidence or trusted portfolio.");
-  const terminal = receipts.filter((r) => r.scope.kind === "project" && r.scope.projectId === projectId && r.sources.length);
-  const boundary = terminal.map((r) => r.sources.reduce((last, s) => compare(position({ recordedAt: s.recordedAt, recordId: s.recordId }), position(last)) > 0
-    ? { recordedAt: s.recordedAt, recordId: s.recordId } : last, { recordedAt: "", recordId: "" }))
-    .sort((a, b) => compare(position(b), position(a)))[0];
+  // Terminal semantic receipts assess only their exact packet fingerprints. An
+  // unselected older record and a later copy of an assessed record are handled
+  // independently of timestamps, pruning, or cancelled operational jobs.
+  const assessed = new Set(receipts.flatMap((receipt) => receipt.sources.map((source) => source.fingerprint)));
   const seen = new Set<string>();
   const records = read.records.flatMap(({ recordId, experience }) => {
     if (experience.schemaVersion !== 5 || !experience.workEpisodeId) return [];
@@ -48,7 +48,7 @@ export async function buildProjectDiscoveryPacket(projectId: string, dependencie
     const ref = { projectId, recordId, fingerprint };
     return [{ ref, experience, recordedAt: experience.recordedAt, recordId }];
   }).sort((a, b) => compare(position(b), position(a)));
-  const fresh = records.filter((r) => !boundary || compare(position(r), position(boundary)) > 0);
+  const fresh = records.filter((r) => !assessed.has(r.ref.fingerprint));
   const episodes = new Set(fresh.map((r) => r.experience.workEpisodeId));
   const outcomes = new Set(fresh.map((r) => `${r.experience.outcome.taskStatus}/${r.experience.outcome.verificationStatus}`));
   if (fresh.length < policy.minNewExperiences || episodes.size < policy.minWorkEpisodes || outcomes.size < policy.minOutcomes) return null;
@@ -103,7 +103,8 @@ export async function enqueueProjectDiscovery(projectId: string, dependencies: P
     const key = learningJobKey("project-discovery", scope, packet.fingerprint, packet.policy.selectionVersion);
     if (await dependencies.receipts.find(projectId, key, packet.fingerprint)) return key;
     await dependencies.packets.publish(packet); // freeze input before durable enqueue
-    // Ledger dedupes all states including cancelled jobs; a terminal receipt is never inferred from cancellation alone.
+    // A cancelled exact key remains operationally terminal, never reset for
+    // endless retries. Its sources remain unassessed for later changed packets.
     await dependencies.jobs.enqueue("project-discovery", scope, packet.fingerprint, packet.policy.selectionVersion, Date.now());
     return key;
   } catch (error) {

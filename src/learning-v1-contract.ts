@@ -168,7 +168,7 @@ export interface DiscoveryReceipt {
   readonly outcome: "none" | "covered" | "published";
   /** Covered means exact refs to preexisting hypotheses; none has no refs. */
   readonly hypotheses: readonly LearningArtifactRef[];
-  /** Exact selected packet sources; last source by (recordedAt, recordId) is the assessed boundary. */
+  /** Only these exact packet-source fingerprints become assessed at terminal publication. */
   readonly sources: readonly (ExactEvidenceRef & { readonly recordedAt: string })[];
 }
 export function validateDiscoveryReceipt(v: unknown): v is DiscoveryReceipt {

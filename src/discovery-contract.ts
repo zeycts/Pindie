@@ -8,7 +8,7 @@ export interface ProjectDiscoveryPolicy {
   readonly minOutcomes: number; readonly maxCorpus: number;
 }
 export const DEFAULT_PROJECT_DISCOVERY_POLICY: ProjectDiscoveryPolicy = Object.freeze({
-  schemaVersion: 1, selectionVersion: 1, minNewExperiences: 6, minWorkEpisodes: 3, minOutcomes: 2, maxCorpus: 24,
+  schemaVersion: 1, selectionVersion: 1, minNewExperiences: 6, minWorkEpisodes: 3, minOutcomes: 1, maxCorpus: 24,
 });
 const obj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const exact = (v: Record<string, unknown>, keys: string[]) => Object.keys(v).sort().join() === keys.sort().join();
