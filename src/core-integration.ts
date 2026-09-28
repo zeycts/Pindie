@@ -108,8 +108,6 @@ export interface CoreToolRegistrationOptions {
   readonly onSemanticStateChange?: () => void;
   /** Successful completion report for runtime presentation; never semantic State. */
   readonly onCompletionReport?: (report: string) => void;
-  /** Optional SI-owned runtime-only completion disposition seam. */
-  readonly learningDisposition?: PindieTaskToolOptions["learningDisposition"];
 }
 
 export interface CoreSettlementFacts {
@@ -182,10 +180,10 @@ export function coreGatewayDenialReason(
   requiredCapability: ToolEffect["requiredCapability"],
 ): string {
   if (requiredCapability === "policy.adapt") {
-    return "Pindie blocked this call: Strategy Candidate creation requires a live Seed-targeted adaptation lease (explicit /adapt <strategy-id> or matching autonomously admitted learning Run). Outside an admitted Run, use /adapt <strategy-id> while the Agent is idle.";
+    return "Pindie blocked this call: Strategy Candidate creation requires a live Seed-targeted adaptation lease (explicit /adapt <strategy-id>). Outside that Run, use /adapt <strategy-id> while the Agent is idle.";
   }
   if (requiredCapability === "policy.derive") {
-    return "Pindie blocked this call: Strategy Derivation or Synthesis Candidate creation requires a live matching lease (explicit /derive or /derive-global Run, or matching autonomously admitted learning Run). Outside an admitted Run, use /derive or /derive-global as appropriate while the Agent is idle.";
+    return "Pindie blocked this call: Strategy Derivation or Synthesis Candidate creation requires a live matching lease (explicit /derive or /derive-global Run). Outside that Run, use /derive or /derive-global as appropriate while the Agent is idle.";
   }
   if (snapshot.authority === "coherent" && requiredCapability === "task.replace") {
     if (snapshot.taskStatus === "done") {
@@ -285,7 +283,6 @@ export class CoreIntegration {
         options.onSemanticStateChange?.();
         return result;
       },
-      learningDisposition: options.learningDisposition,
       onCompletionReport: options.onCompletionReport,
       onStateChange: onSemanticStateChange,
       onMutationUncertain,

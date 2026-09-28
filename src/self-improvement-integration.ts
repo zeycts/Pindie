@@ -1738,11 +1738,7 @@ export class SelfImprovementIntegration {
     ctx.ui.notify("No Candidate selected. Use command completion to choose one.", "warning");
   }
 
-  async prepareTrustedLearningPortfolio(projectRoot: string): Promise<TrustedStrategyPortfolio> {
-    return this.loadTrustedPortfolio(projectRoot);
-  }
-
-  /** Read-only eligibility shared by explicit adaptation and the post-Run Gate. */
+  /** Read-only evidence preparation for the explicit legacy /adapt command. */
   async prepareAdaptationEvidence(projectRoot: string, targetId: string) {
     const target = getSeedStrategy(targetId);
     if (target === null) throw new Error("Target is not an immutable Seed Strategy.");
@@ -1754,7 +1750,7 @@ export class SelfImprovementIntegration {
     return { target, packet };
   }
 
-  /** Read-only eligibility shared by explicit derivation and the post-Run Gate. */
+  /** Read-only evidence preparation for the explicit legacy /derive command. */
   async prepareDerivationEvidence(projectRoot: string) {
     const portfolio = await this.loadProjectTrustedPortfolio(projectRoot);
     const read = await this.experienceReader.read(projectRoot);
@@ -1762,25 +1758,9 @@ export class SelfImprovementIntegration {
     return { portfolio, packet };
   }
 
-  async admitAutonomousLearning(
-    intent: "revise-existing" | "derive-local",
-    targetId: string | undefined,
-    ctx: ExtensionContext,
-    isCurrent: () => boolean,
-  ): Promise<boolean> {
-    if (!isCurrent()) return false;
-    if (intent === "revise-existing") {
-      await this.handleAdaptationCommand(targetId ?? "", ctx, "autonomous-signal", isCurrent);
-      return this.adaptation.hasAttempt;
-    }
-    await this.handleDerivationCommand("", ctx, "autonomous-signal", isCurrent);
-    return this.derivation.hasDerivation;
-  }
-
   private async handleAdaptationCommand(
     args: string,
     ctx: ExtensionContext,
-    origin: "human-command" | "autonomous-signal" = "human-command",
     isCurrent: () => boolean = () => true,
   ): Promise<void> {
     const requestedId = args.trim();
@@ -1859,7 +1839,7 @@ export class SelfImprovementIntegration {
     }
     try {
       this.pi.sendUserMessage(
-        `Begin the ${origin === "human-command" ? "explicitly requested" : "autonomously admitted"} Self-Improvement adaptation for Seed Strategy '${target.id}'. Use the bounded Adaptation Packet supplied for this Run. This is optional hypothesis generation, not project implementation work.`,
+        `Begin the explicitly requested Self-Improvement adaptation for Seed Strategy '${target.id}'. Use the bounded Adaptation Packet supplied for this Run. This is optional hypothesis generation, not project implementation work.`,
       );
     } catch (error) {
       this.adaptation.clear();
@@ -2395,7 +2375,6 @@ export class SelfImprovementIntegration {
   private async handleDerivationCommand(
     args: string,
     ctx: ExtensionContext,
-    origin: "human-command" | "autonomous-signal" = "human-command",
     isCurrent: () => boolean = () => true,
   ): Promise<void> {
     if (args.trim() !== "") {
@@ -2470,7 +2449,7 @@ export class SelfImprovementIntegration {
     }
     try {
       this.pi.sendUserMessage(
-        `Begin the ${origin === "human-command" ? "explicitly requested" : "autonomously admitted"} Self-Improvement Strategy Derivation. Use the bounded Derivation Packet supplied for this Run. This is optional missing-abstraction hypothesis generation, not project implementation work.`,
+        `Begin the explicitly requested Self-Improvement Strategy Derivation. Use the bounded Derivation Packet supplied for this Run. This is optional missing-abstraction hypothesis generation, not project implementation work.`,
       );
     } catch (error) {
       this.derivation.clear();

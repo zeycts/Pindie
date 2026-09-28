@@ -102,7 +102,7 @@ GateRunRelation       none | existed_before_run | opened_during_run
 
 Run-start object identity is only a coherent-Run immutable-State change detector. It is never persistent Task identity.
 
-**Migration note (approved target, not current runtime):** Current SI-enabled ordinary Runs still expose the single-Run learning signal and completion `learningDisposition`, with post-settlement assessment/admission. This is legacy implementation slated for removal under approved `docs/autonomous-learning-v1.md`; its separate Learning Plane is not implemented yet. The current capabilities/tools below remain factual until code migration.
+**Migration note:** Autonomous Learning v1 Slice 1 removed the rejected single-Run admission path. Ordinary completion is learning-free; factual Experience and explicit SI/CPL commands remain. The separate Learning Plane in `docs/autonomous-learning-v1.md` is not implemented yet.
 
 ## 4. Capabilities and execution authority
 
@@ -127,7 +127,7 @@ gate.open
 gate.resolve
 ```
 
-Ordinary Task/verification/Gate capabilities are pure derived authority and are never persisted. Candidate creation uses runtime-only `policy.adapt` or `policy.derive` control authority bound to the corresponding explicit or admitted learning Run; it is not persisted as Task State.
+Ordinary Task/verification/Gate capabilities are pure derived authority and are never persisted. Candidate creation uses runtime-only `policy.adapt` or `policy.derive` control authority bound to the corresponding explicit legacy SI/CPL Run; it is not persisted as Task State.
 
 Important capability consequences:
 
@@ -155,7 +155,6 @@ edit / write            → project.mutate / mutation known
 bash / unknown/custom   → project.mutate / mutation ambiguous
 semantic Pindie tool    → exact semantic capability / mutation none
 strategy Candidate tools → policy.adapt or policy.derive / mutation none (matching Run lease only)
-learning signal tool    → learning.signal / mutation none
 Work Memory tool        → memory.capture / mutation none
 ```
 
@@ -180,7 +179,6 @@ pindie_policy_set          → policy.declare
 pindie_strategy_candidate_create → policy.adapt
 pindie_strategy_derivation_candidate_create → policy.derive
 pindie_strategy_synthesis_candidate_create → policy.derive
-pindie_learning_signal      → learning.signal
 pindie_memory_capture      → memory.capture (configured Work Memory)
 pindie_task_start          → task.start
 pindie_task_replace        → task.replace

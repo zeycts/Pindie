@@ -3,7 +3,6 @@ import { isDeepStrictEqual } from "node:util";
 import {
   composeConfiguredPindieExtension,
   composePindieExtension,
-  resolvePindieStorageRoots,
   type PindieFeatureSelection,
   type PindieStorageRoots,
 } from "./composition.ts";
@@ -43,13 +42,6 @@ import {
 import { PINDIE_REMOTE_NOTICE_TYPE, renderPindieRemoteNotice } from "./remote-notice.ts";
 import { CrossProjectLearningIntegration } from "./cross-project-learning-integration.ts";
 import { SelfImprovementIntegration } from "./self-improvement-integration.ts";
-import { LEARNING_SIGNAL_POLICY, LearningSignalHolder, createCompletionLearningDispositionSeam, createPindieLearningSignalTool } from "./learning-signal.ts";
-import {
-  assessLearningOpportunity,
-  FileLearningAssessmentReceiptReader,
-  type LearningAssessmentReceiptReader,
-  type LearningOpportunityAssessment,
-} from "./learning-opportunity.ts";
 import type {
   RunExperienceProjectReader,
   RunExperienceReader,
@@ -184,9 +176,6 @@ export interface PindieExtensionOptions {
   quotaFallbackPreferenceStore?: QuotaFallbackPreferenceStore;
   experienceStore?: RunExperienceStore;
   experienceReader?: RunExperienceReader;
-  /** Internal read-only assessment seams; no receipt writing in Slice C. */
-  learningAssessmentReceipts?: LearningAssessmentReceiptReader;
-  onLearningOpportunityAssessment?: (assessment: LearningOpportunityAssessment) => void;
   strategyCandidateStore?: StrategyCandidateStore;
   strategyCandidateReader?: StrategyCandidateReader;
   strategyDerivationCandidateStore?: StrategyDerivationCandidateStore;
@@ -391,20 +380,6 @@ function registerComposedPindieExtension(
   });
   const runtime = core.runtime;
   const run = core.run;
-  const learningSignal = new LearningSignalHolder();
-  type AutonomousAttempt = {
-    identity: string;
-    intent: "revise-existing" | "derive-local" | "derive-global";
-    projectRoot: string;
-    sessionId: string;
-    generation: number | null;
-    candidateId: string | null;
-    completed: boolean;
-    candidateToolFailed: boolean;
-  };
-  let autonomousAttempt: AutonomousAttempt | null = null;
-  const learningAssessmentReceipts = options.learningAssessmentReceipts ??
-    new FileLearningAssessmentReceiptReader(resolvePindieStorageRoots(options.storageRoots).globalBaseDir);
   const handoff = core.handoff;
   const contextGovernor = core.contextGovernor;
   const execution = core.execution;
@@ -763,28 +738,12 @@ function registerComposedPindieExtension(
         remoteCompletionReport = { generation, sessionId: liveRemoteSession.sessionId, text };
       }
     },
-    learningDisposition: featureSelection.selfImprovement ? createCompletionLearningDispositionSeam({
-      holder: learningSignal,
-      getGeneration: () => run.activeAgentRunGeneration,
-      isRequired: () => run.hasActiveAgentRun && selfImprovement !== null &&
-        !selfImprovement.hasConflictingLearningPath &&
-        (() => { const derived = run.deriveSnapshot(); return derived.ok && derived.snapshot.authority === "coherent"; })(),
-    }) : undefined,
     resolveRevisionSelector: selfImprovement === null
       ? undefined
       : (selector, kind, ctx) => selfImprovement!.resolveRevisionSelector(selector, kind, ctx),
   });
   selfImprovement?.registerTools();
   crossProjectLearning?.registerTools();
-  if (featureSelection.selfImprovement) {
-    pi.registerTool(createPindieLearningSignalTool({
-      holder: learningSignal,
-      getGeneration: () => run.activeAgentRunGeneration,
-      isOrdinary: () => run.hasActiveAgentRun &&
-        selfImprovement !== null && !selfImprovement.hasConflictingLearningPath &&
-        (() => { const derived = run.deriveSnapshot(); return derived.ok && derived.snapshot.authority === "coherent"; })(),
-    }));
-  }
 
   if (options.projectMemorySink !== undefined) {
     pi.registerTool(createPindieMemoryCaptureTool({
@@ -815,8 +774,6 @@ function registerComposedPindieExtension(
 
   pi.on("session_start", async (_event, ctx) => {
     ++agentRunLifecycleGeneration;
-    learningSignal.begin(null);
-    autonomousAttempt = null;
     await quotaResume.restoreSession(ctx);
     await quotaFallback.restoreSession(ctx);
     const nativeSessionId = options.remoteCompanion || taskHandoffEnabled
@@ -886,8 +843,6 @@ function registerComposedPindieExtension(
 
   pi.on("session_tree", async (_event, ctx) => {
     ++agentRunLifecycleGeneration;
-    learningSignal.begin(null);
-    autonomousAttempt = null;
     cancelQuotaResume(ctx);
     try { fallbackController?.cancel(ctx.sessionManager.getSessionId()); } catch { /* Released Host. */ }
     await quotaResume.restoreBranch(ctx);
@@ -895,7 +850,6 @@ function registerComposedPindieExtension(
   });
 
   pi.on("input", (event, ctx) => {
-    if (event.source !== "extension" && autonomousAttempt?.generation === null) autonomousAttempt = null;
     ++agentRunLifecycleGeneration;
     cancelQuotaResume(ctx);
     options.remoteCompanion?.companion.observeInput(event.source, event.streamingBehavior);
@@ -936,8 +890,6 @@ function registerComposedPindieExtension(
 
   pi.on("session_shutdown", (event, ctx) => {
     ++agentRunLifecycleGeneration;
-    learningSignal.begin(null);
-    autonomousAttempt = null;
     cancelQuotaResume(ctx);
     releaseQuotaStatusObserver?.();
     releaseQuotaStatusObserver = null;
@@ -972,7 +924,6 @@ function registerComposedPindieExtension(
   pi.on("before_agent_start", async (event, ctx) => {
     ++agentRunLifecycleGeneration;
     remoteCompletionReport = null;
-    learningSignal.begin(null);
     let preparationGeneration: number | null = null;
     try {
       presentation.setStatusContext(ctx);
@@ -997,7 +948,6 @@ function registerComposedPindieExtension(
       // authoritative project State rather than a previous session snapshot.
       core.beginAgentRunFacts(ctx);
       preparationGeneration = run.activeAgentRunGeneration;
-      learningSignal.begin(preparationGeneration);
       const selfImprovementRun = selfImprovement === null
         ? {
             adaptationLease: null,
@@ -1012,13 +962,6 @@ function registerComposedPindieExtension(
             run: (signal) => selfImprovement.prepareAgentRun(ctx, signal),
           });
 
-      if (autonomousAttempt !== null && preparationGeneration !== null &&
-          runtime.projectRoot === autonomousAttempt.projectRoot &&
-          ((autonomousAttempt.intent === "revise-existing" && selfImprovementRun.adaptationLease !== null) ||
-           (autonomousAttempt.intent === "derive-local" && selfImprovementRun.derivationLease !== null) ||
-           (autonomousAttempt.intent === "derive-global" && selfImprovementRun.globalDerivationLease !== null))) {
-        autonomousAttempt.generation = preparationGeneration;
-      }
       let derivation = run.deriveSnapshot();
       if (!derivation.ok) {
         markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
@@ -1069,11 +1012,6 @@ function registerComposedPindieExtension(
           ? []
           : [corePromptContribution(appendPindieWorkMemoryContract(""))]),
         ...selfImprovementRun.promptContributions.map((content) => corePromptContribution(content)),
-        ...(featureSelection.selfImprovement &&
-          selfImprovementRun.adaptationLease === null && selfImprovementRun.derivationLease === null &&
-          selfImprovementRun.globalDerivationLease === null && selfImprovementRun.trialLease === null &&
-          derivation.snapshot.authority === "coherent"
-          ? [corePromptContribution(LEARNING_SIGNAL_POLICY)] : []),
       ];
       const systemPrompt = core.buildSystemPrompt(
         event.systemPrompt,
@@ -1192,9 +1130,6 @@ function registerComposedPindieExtension(
   });
 
   pi.on("agent_before_settle", (event, ctx) => {
-    if (autonomousAttempt?.generation !== null && autonomousAttempt?.generation === run.activeAgentRunGeneration) {
-      autonomousAttempt.completed = event.outcome === "completed";
-    }
     if (selfImprovement?.isSelfImprovementRunForGeneration(run.activeAgentRunGeneration) === true) return;
     if (taskHandoffEnabled) {
       try {
@@ -1277,11 +1212,7 @@ function registerComposedPindieExtension(
       if (isHandoffCall) handoff.cancelHandoffReservation(event.toolCallId);
       else handoff.cancelNormalToolCall(event.toolCallId);
     };
-    const selfImprovementRestriction = effect.requiredCapability === "learning.signal" &&
-      (!featureSelection.selfImprovement || !run.hasActiveAgentRun ||
-        selfImprovement?.hasConflictingLearningPath !== false)
-      ? "Pindie blocked this call: learning signals require an ordinary normal-use Run."
-      : selfImprovement?.restrictToolCall(effect, event.toolName) ?? null;
+    const selfImprovementRestriction = selfImprovement?.restrictToolCall(effect, event.toolName) ?? null;
     if (selfImprovementRestriction !== null) {
       cancelToolAdmission();
       run.recordDeniedCall(effect);
@@ -1348,11 +1279,6 @@ function registerComposedPindieExtension(
     const derivationActive = selfImprovement?.isDerivationRunActive === true;
     const globalDerivationActive = selfImprovement?.isGlobalDerivationRunActive === true;
     const capabilities = new Set<PindieCapability>(deriveCapabilities(snapshot));
-    if (effect.requiredCapability === "learning.signal" && featureSelection.selfImprovement &&
-        run.hasActiveAgentRun && selfImprovement?.hasConflictingLearningPath === false &&
-        snapshot.authority === "coherent") {
-      capabilities.add("learning.signal");
-    }
     if (effect.requiredCapability === "policy.adapt" && adaptationActive) {
       capabilities.add("policy.adapt");
     }
@@ -1424,18 +1350,6 @@ function registerComposedPindieExtension(
             };
       } catch {
         handoffBinding = null;
-      }
-    }
-    if (autonomousAttempt?.generation !== null &&
-        autonomousAttempt?.generation === run.activeAgentRunGeneration &&
-        ((autonomousAttempt.intent === "revise-existing" && event.toolName === "pindie_strategy_candidate_create") ||
-         (autonomousAttempt.intent === "derive-local" && event.toolName === "pindie_strategy_derivation_candidate_create") ||
-         (autonomousAttempt.intent === "derive-global" && event.toolName === "pindie_strategy_synthesis_candidate_create"))) {
-      if (event.isError) autonomousAttempt.candidateToolFailed = true;
-      else {
-        const details: unknown = event.details;
-        if (details !== null && typeof details === "object" && "candidateId" in details &&
-            typeof details.candidateId === "string") autonomousAttempt.candidateId = details.candidateId;
       }
     }
     const handoffResult = handoff.handleToolResult(
@@ -1556,7 +1470,6 @@ function registerComposedPindieExtension(
     if (!entries) return;
 
     const settlementLifecycleGeneration = agentRunLifecycleGeneration;
-    const settlementStateEpoch = runtime.externalStateEpoch;
     const settlementRemoteLease = liveRemoteSession;
     let settlementSessionId: string | null = null;
     try {
@@ -1589,59 +1502,6 @@ function registerComposedPindieExtension(
       selfImprovement?.createSettlementObserver(),
     );
     if (result.status !== "settled") return;
-
-    const settledAttempt = autonomousAttempt?.generation !== null &&
-      autonomousAttempt?.generation === result.facts?.settlementGeneration ? autonomousAttempt : null;
-    if (settledAttempt !== null) autonomousAttempt = null;
-    if (settledAttempt?.completed && (settledAttempt.candidateId !== null || !settledAttempt.candidateToolFailed) &&
-        settlementSessionId === settledAttempt.sessionId &&
-        result.facts?.projectRoot === settledAttempt.projectRoot && isCurrentSettlement() &&
-        learningAssessmentReceipts.writeTerminal) {
-      try {
-        const id = settledAttempt.candidateId;
-        const exists = id === null ? false : settledAttempt.intent === "revise-existing"
-          ? (await options.strategyCandidateReader?.read(settledAttempt.projectRoot, id))?.candidateId === id
-          : settledAttempt.intent === "derive-local"
-            ? (await options.strategyDerivationCandidateReader?.read(settledAttempt.projectRoot, id))?.candidateId === id
-            : (await options.strategySynthesisCandidateReader?.read(id))?.candidateId === id;
-        if (id !== null && !exists) throw new Error("Published Candidate could not be revalidated at settlement.");
-        if (isCurrentSettlement()) await learningAssessmentReceipts.writeTerminal(
-          settledAttempt.identity, exists ? "candidate-created" : "no-candidate",
-        );
-      } catch (error) {
-        console.warn(`[Pindie] Autonomous learning terminal receipt unavailable: ${errorMessage(error)}`);
-      }
-    }
-
-    // Core's settlement observer has already frozen/persisted ordinary Experience.
-    // This read-only Gate cannot affect the completed work or start a successor Run.
-    const acceptedLearningSignal = settledAttempt === null
-      ? learningSignal.take(result.facts?.settlementGeneration ?? null) : null;
-    let admitted: { identity: string; signal: NonNullable<typeof acceptedLearningSignal>; projectRoot: string } | null = null;
-    if (acceptedLearningSignal !== null &&
-        (result.facts?.snapshot?.authority !== "coherent" || result.facts.projectRoot === null || selfImprovement === null)) {
-      options.onLearningOpportunityAssessment?.({ status: "rejected", reason: "Source project authority is unavailable." });
-    } else if (acceptedLearningSignal !== null && result.facts?.snapshot?.authority === "coherent" &&
-        result.facts.projectRoot !== null && selfImprovement !== null) {
-      const projectRoot = result.facts.projectRoot;
-      const assessment = await assessLearningOpportunity({
-        signal: acceptedLearningSignal,
-        projectRoot,
-        selfImprovement,
-        crossProjectLearning,
-        receipts: learningAssessmentReceipts,
-        now: continuityNow,
-        isCurrent: () => {
-          return isCurrentSettlement() && runtime.projectRoot === projectRoot &&
-            runtime.externalStateEpoch === settlementStateEpoch &&
-            result.facts?.snapshot?.authority === "coherent" &&
-            run.stateUnavailableReason === null &&
-            selfImprovement?.hasConflictingLearningPath === false;
-        },
-      });
-      options.onLearningOpportunityAssessment?.(assessment);
-      if (assessment.status === "admitted") admitted = { identity: assessment.identity, signal: acceptedLearningSignal, projectRoot };
-    }
 
     presentation.clearActivityLingerRefresh();
     presentation.runActivity?.settle();
@@ -1745,41 +1605,6 @@ function registerComposedPindieExtension(
       markUnavailable(
         `Pindie in-memory State failed validation: ${validation.errors.join(" ")}`,
       );
-    }
-    // The source Run and its Experience are fully settled. No durable pending job:
-    // a changed Session, input, successor, or busy Pi silently drops this chance.
-    if (admitted !== null && selfImprovement !== null && !result.automaticSuccessorCommitted &&
-        quotaSuccessorPromise === null && isCurrentSettlement() && ctx.isIdle() &&
-        !selfImprovement.hasConflictingLearningPath) {
-      const { identity, signal, projectRoot } = admitted;
-      const isSafe = () => isCurrentSettlement() && ctx.isIdle() &&
-        runtime.projectRoot === projectRoot && runtime.externalStateEpoch === settlementStateEpoch &&
-        result.facts?.snapshot?.authority === "coherent" && run.stateUnavailableReason === null;
-      // Pi defers prompts sent inside agent_settled. A single event-loop turn
-      // puts the admission on the idle side of that boundary, so fresh Human
-      // input can win before any native Run is submitted. Nothing is persisted.
-      setImmediate(() => { void (async () => {
-        if (!isSafe() || selfImprovement.hasConflictingLearningPath || settlementSessionId === null ||
-            await learningAssessmentReceipts.hasTerminal(identity).catch(() => true) || !isSafe()) return;
-        const attempt: AutonomousAttempt = {
-          identity, intent: signal.intent, projectRoot, sessionId: settlementSessionId,
-          generation: null, candidateId: null, completed: false, candidateToolFailed: false,
-        };
-        autonomousAttempt = attempt;
-        // Existing command preparation only; no alternative packet or writer.
-        const quietCtx = Object.assign(Object.create(ctx) as ExtensionContext, {
-          ui: Object.assign(Object.create(ctx.ui) as ExtensionContext["ui"], { notify: () => {} }),
-        });
-        try {
-          const started = signal.intent === "derive-global"
-            ? await crossProjectLearning?.admitAutonomousLearning(quietCtx, isSafe) === true
-            : await selfImprovement.admitAutonomousLearning(signal.intent, signal.targetStrategyId, quietCtx, isSafe);
-          if (!started && autonomousAttempt === attempt) autonomousAttempt = null;
-        } catch (error) {
-          if (autonomousAttempt === attempt) autonomousAttempt = null;
-          console.warn(`[Pindie] Autonomous learning admission failed closed: ${errorMessage(error)}`);
-        }
-      })().catch((error) => console.warn(`[Pindie] Autonomous admission unavailable: ${errorMessage(error)}`)); });
     }
   });
 

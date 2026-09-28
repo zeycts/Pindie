@@ -301,16 +301,9 @@ export class CrossProjectLearningIntegration {
     return buildCrossProjectSynthesisPacket({ scan, capturedAt });
   }
 
-  async admitAutonomousLearning(ctx: ExtensionContext, isCurrent: () => boolean): Promise<boolean> {
-    if (!isCurrent()) return false;
-    await this.handleGlobalDerivationCommand("", ctx, "autonomous-signal", isCurrent);
-    return this.pendingGlobalDerivation !== null;
-  }
-
   private async handleGlobalDerivationCommand(
     args: string,
     ctx: ExtensionContext,
-    origin: "human-command" | "autonomous-signal" = "human-command",
     isCurrent: () => boolean = () => true,
   ): Promise<void> {
     if (args.trim() !== "") {
@@ -379,7 +372,7 @@ export class CrossProjectLearningIntegration {
       });
       try {
         this.pi.sendUserMessage(
-          `Begin the ${origin === "human-command" ? "explicitly requested" : "autonomously admitted"} cross-project Strategy Synthesis discovery Run. Use only the frozen Cross-Project Synthesis Packet supplied for this Run. Candidate creation is optional missing-abstraction hypothesis generation, not project implementation work.`,
+          `Begin the explicitly requested cross-project Strategy Synthesis discovery Run. Use only the frozen Cross-Project Synthesis Packet supplied for this Run. Candidate creation is optional missing-abstraction hypothesis generation, not project implementation work.`,
         );
       } catch (error) {
         this.clearGlobalDerivationPreparation();

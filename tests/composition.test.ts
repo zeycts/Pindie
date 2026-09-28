@@ -350,8 +350,8 @@ test("Slice F protects the final Core/SI/CPL and trust runtime import boundaries
   }
   const taskSource = await readFile(new URL("../src/tools/task.ts", import.meta.url), "utf8");
   assert.doesNotMatch(taskSource, /(?:import|require)\s*.*learning-signal(?:\.ts)?/, "Core Task tools must not load SI signal implementation");
-  assert.match(taskSource, /learning-disposition-contract\.ts/, "Core uses only the pure shape and optional seam");
-  assert.doesNotMatch(taskSource, /LearningSignalHolder|isValidLearningSignal/, "SI holder and validation remain outside Core");
+  assert.doesNotMatch(taskSource, /learning-disposition-contract/, "Core completion has no learning seam");
+  assert.doesNotMatch(taskSource, /LearningSignalHolder|isValidLearningSignal/, "removed SI signal holder and validation must not return to Core");
   assert.equal(hasRuntimeImport(selfImprovementSource, "./cross-project-learning-integration.ts"), false);
   assert.equal(hasRuntimeImport(selfImprovementSource, "./strategy-synthesis-review.ts"), false);
 

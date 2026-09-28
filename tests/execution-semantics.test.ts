@@ -51,7 +51,6 @@ for (const [toolName, requiredCapability, projectMutation] of exactCases) {
 const semanticToolEffects = [
   ["pindie_policy_set", "policy.declare", "none"],
   ["pindie_memory_capture", "memory.capture", "none"],
-  ["pindie_learning_signal", "learning.signal", "none"],
   ["pindie_strategy_candidate_create", "policy.adapt", "none"],
   ["pindie_strategy_derivation_candidate_create", "policy.derive", "none"],
   ["pindie_strategy_synthesis_candidate_create", "policy.derive", "none"],
@@ -74,7 +73,6 @@ test("every defined Pindie semantic tool has its explicit effect classification"
   const sources = [
     ...readdirSync(toolDirectory).filter((name) => name.endsWith(".ts"))
       .map((name) => readFileSync(new URL(name, toolDirectory), "utf8")),
-    readFileSync(new URL("../src/learning-signal.ts", import.meta.url), "utf8"),
   ];
   const definedNames = sources.flatMap((source) =>
     [...source.matchAll(/\bname:\s*"(pindie_[a-z0-9_]+)"/g)].map((match) => match[1]!),
@@ -86,7 +84,7 @@ test("every defined Pindie semantic tool has its explicit effect classification"
 });
 
 test("unknown tools always fail safe to ambiguous project mutation", () => {
-  for (const toolName of ["custom_observer", "read_database", "future.pindie.tool"]) {
+  for (const toolName of ["custom_observer", "read_database", "future.pindie.tool", "pindie_learning_signal"]) {
     assertEffect(toolName, "project.mutate", "ambiguous");
   }
 });
