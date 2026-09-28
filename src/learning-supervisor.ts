@@ -101,13 +101,16 @@ export class LearningSupervisor {
         await this.ledger.cancel(candidate.key, null, "stale-input");
         continue;
       }
-      if (candidate.attempt >= this.policy.maxAttempts && !await handler.resolveCommitted(candidate)) continue;
-      const reservation = await this.budget.reserve(this.now(), this.policy);
-      if (!reservation) return;
+      if (candidate.attempt >= this.policy.maxAttempts && !await handler.resolveCommitted(candidate)) {
+        // A competing claimant may have changed this pending entry in the meantime.
+        try { await this.ledger.cancel(candidate.key, null, "retry-exhausted"); }
+        catch (error) { if (!(error instanceof Error) || !/Stale LearningJob lease\/fence/.test(error.message)) throw error; }
+        continue;
+      }
       if (!this.eligible(generation)) return;
-      // Lease outlives the timeout to allow abort/settlement without an overlapping claimant.
+      // Claim without a reservation: only the winner may charge budget, after recovery.
       const leaseMs = this.policy.perJobTimeMsCap + 30_000;
-      const job = await this.ledger.claim(candidate.key, this.owner, this.now(), leaseMs, reservation.tokens, reservation.timeMs);
+      const job = await this.ledger.claim(candidate.key, this.owner, this.now(), leaseMs, 0, 0);
       if (!job) return;
       const token = job.leaseToken!;
       const controller = new AbortController();
@@ -126,10 +129,14 @@ export class LearningSupervisor {
           if (recovered) result = { receiptRef: recovered };
           else {
             if (!(await authority())) { reason = active.reason ?? "human-work"; return; }
-            result = await handler.execute(job, authority, controller.signal, this.runner);
+            const reservation = await this.budget.reserve(this.now(), this.policy);
+            if (!reservation) { reason = "budget"; return; }
+            const reservedJob = await this.ledger.attachReservation(job.key, token, reservation.tokens, reservation.timeMs);
+            if (!(await authority())) { reason = active.reason ?? "human-work"; return; }
+            result = await handler.execute(reservedJob, authority, controller.signal, this.runner);
+            try { this.budget.account(reservation, result.usage); }
+            catch (error) { reason = "budget"; throw error; }
           }
-          try { this.budget.account(reservation, result.usage); }
-          catch (error) { reason = "budget"; throw error; }
           if (!validateLearningArtifactRef(result.receiptRef) || !await handler.matchesOutput(job, result.receiptRef)) {
             throw new Error("Learning output is not an exact committed job binding.");
           }

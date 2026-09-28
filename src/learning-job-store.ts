@@ -16,6 +16,7 @@ export interface LearningJobLedger {
   enqueue(kind: LearningJobKind, scope: LearningScope, inputFingerprint: string, policyVersion: number, now: number): Promise<LearningJob>;
   listEligible(now: number): Promise<readonly LearningJob[]>;
   claim(key: string, owner: string, now: number, leaseMs: number, reservedTokens: number, reservedTimeMs: number): Promise<LearningJob | null>;
+  attachReservation(key: string, token: string, tokens: number, timeMs: number): Promise<LearningJob>;
   complete(key: string, token: string, receiptRef: LearningArtifactRef): Promise<LearningJob>;
   cancel(key: string, token: string | null, reason: LearningStopReason, receiptRef?: LearningArtifactRef): Promise<LearningJob>;
   release(key: string, token: string, eligibleAfter: number, reason: LearningStopReason): Promise<LearningJob>;
@@ -105,6 +106,14 @@ export class FileLearningJobLedger implements LearningJobLedger {
       if (i < 0 || (token === null ? jobs[i]!.state !== "pending" : jobs[i]!.state !== "running" || jobs[i]!.leaseToken !== token))
         throw new Error("Stale LearningJob lease/fence.");
       return jobs[i] = update(jobs[i]!);
+    });
+  }
+  /** Only the current running lease can record a charged reservation, once. */
+  async attachReservation(key: string, token: string, tokens: number, timeMs: number): Promise<LearningJob> {
+    if (!safe(tokens) || tokens === 0 || !safe(timeMs) || timeMs === 0) throw new Error("Invalid learning reservation.");
+    return this.settle(key, token, (job) => {
+      if (job.reservedTokens !== 0 || job.reservedTimeMs !== 0) throw new Error("Learning reservation already attached.");
+      return { ...job, reservedTokens: tokens, reservedTimeMs: timeMs };
     });
   }
   async complete(key: string, token: string, receiptRef: LearningArtifactRef): Promise<LearningJob> {

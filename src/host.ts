@@ -7,6 +7,7 @@ import {
   getAgentDir,
   InteractiveMode,
   SessionManager,
+  type AgentSession,
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
   type ExtensionAPI,
@@ -143,7 +144,7 @@ export function createPindieRuntimeFactory(
     readonly onHumanRunStart?: () => void;
     readonly onHumanRunSettled?: () => void;
     readonly onSessionChange?: () => void;
-    readonly onSessionReady?: () => void;
+    readonly onSessionReady?: (session: AgentSession) => void;
   } = {},
 ): CreateAgentSessionRuntimeFactory {
   const createServices = dependencies.createAgentSessionServices ?? createAgentSessionServices;
@@ -201,7 +202,7 @@ export function createPindieRuntimeFactory(
     // or Session construction fails, the lease remains null rather than
     // claiming a partially constructed Session is current.
     compositionOptions.onPresentationReaderChange?.(pendingPresentationReader);
-    compositionOptions.onSessionReady?.();
+    compositionOptions.onSessionReady?.(created.session);
 
     return {
       ...created,
@@ -240,6 +241,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   let learningSupervisor: LearningSupervisor | undefined;
   let learningGeneration = 0;
   let learningHumanActive = false;
+  let learningBoundSession: AgentSession | null = null;
   const preemptLearning = (reason: "human-work" | "session-change") => {
     ++learningGeneration;
     learningSupervisor?.preempt(reason);
@@ -333,12 +335,21 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       },
       onSessionChange: () => {
         learningHumanActive = true;
+        learningBoundSession = null;
         preemptLearning("session-change");
       },
-      onSessionReady: () => {
-        // Factory success precedes native runtime replacement/rebind. Do not
-        // kick against the outgoing Session before Pi publishes the new one.
-        learningHumanActive = false;
+      onSessionReady: (session) => {
+        // Pi's apply(await createRuntime(...)) publishes the new Session in
+        // the await continuation, before the next event-loop turn. A one-shot
+        // macrotask therefore observes binding (even if later setup awaits),
+        // without kicking against the outgoing Session or polling on failure.
+        setTimeout(() => {
+          if (!runtime || runtime.activeSession !== session) return;
+          learningBoundSession = session;
+          // Do not clear a Human Run that began on the newly bound Session.
+          if (runtime.getActiveSessionFacts().isIdle) learningHumanActive = false;
+          kickLearning();
+        }, 0).unref();
       },
     }), {
       cwd,
@@ -361,7 +372,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       authority: {
         generation: () => learningGeneration,
         idle: () => {
-          if (learningHumanActive || !runtime) return false;
+          if (learningHumanActive || !runtime || runtime.activeSession !== learningBoundSession) return false;
           const facts = runtime.getActiveSessionFacts();
           return facts.isIdle && !facts.isStreaming && !facts.isCompacting && facts.pendingMessageCount === 0;
         },
