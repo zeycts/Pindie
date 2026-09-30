@@ -1001,7 +1001,7 @@ function registerComposedPindieExtension(
       (generation !== null && selfImprovement?.hasPacketForGeneration(generation))) return null;
     return { projectId: trialProjectId(root), workEpisodeId: id, sessionId: trialSessionId, hostId: trialHostId, authorityGeneration: trialAuthorityGeneration };
   };
-  // One predicate serves staging, actual exposure and execution. Executable Pi
+  // One predicate serves staging, rendered projection and declaration execution. Executable Pi
   // snapshots can outlive a loadout change; execute must re-authorize independently.
   const currentTrialWindow = (ctx: ExtensionContext, portfolio = selfImprovement?.trustedStrategyPortfolio) => {
     const window = trialContext, ready = window?.ready;
@@ -1025,15 +1025,15 @@ function registerComposedPindieExtension(
   if (options.trialOffers) {
     pi.registerTool({
       name: trialSelectionTool, label: "Experimental declaration",
-      description: "Declare select or decline for the exact exposed UNTRUSTED experimental advisory. Records a factual declaration only; grants no authority or trust and does not assert causal use.",
+      description: "Declare select or decline for the exact rendered UNTRUSTED experimental advisory. Final provider delivery is unknown. Records a model declaration only; grants no authority or trust and does not assert actual exposure or use.",
       exposure: "model-only", defaultActive: false,
       parameters: Type.Object({ assignmentId: Type.String({ minLength: 1, maxLength: 128 }),
         decision: Type.Union([Type.Literal("select"), Type.Literal("decline")]) }, { additionalProperties: false }),
       execute: async (_id, params, _signal, _update, ctx) => {
         if (!currentTrialWindow(ctx) || !await run.trialAttribution.declare(params.assignmentId, params.decision,
           (claim) => options.trialOffers!.resolvePublished(claim), () => currentTrialWindow(ctx) !== null,
-          () => run.executionCounters, continuityNow)) throw new Error("Experimental declaration rejected: stale, unexposed, unpublished or conflicting assignment.");
-        return { content: [{ type: "text", text: `Experimental declaration recorded: ${params.decision}. This is not proof of causal use.` }], details: undefined };
+          () => run.executionCounters, continuityNow)) throw new Error("Experimental declaration rejected: stale, unrendered, unpublished or conflicting assignment.");
+        return { content: [{ type: "text", text: `Experimental declaration recorded: ${params.decision}. Final provider delivery is unknown; this is not proof of exposure or use.` }], details: undefined };
       },
     });
     // Native declaration preparation precedes turn_start; executable preparation
@@ -1083,8 +1083,9 @@ function registerComposedPindieExtension(
           { role: "system" as const, content: "", timestamp: 0,
             toolsAdded: [{ name: trialSelectionTool, description: definition.description, parameters: definition.parameters }] },
           { role: "user" as const, content: ready.content, timestamp: 0 }];
-        // This synchronous successful return is the exposure boundary, not readiness.
-        if (!run.trialAttribution.expose(ready, { sessionId: window.authority.sessionId,
+        // Rendering is observable, not delivery: later context/payload handlers
+        // may strip this block. Pi 0.99.1 has no public final-request observer.
+        if (!run.trialAttribution.render(ready, { sessionId: window.authority.sessionId,
           agentRunGeneration: window.runGeneration!, occurrenceEpoch: window.occurrenceEpoch }, continuityNow(), trialContextOrder++)) {
           closeTrialWindow(); return;
         }
@@ -1702,12 +1703,12 @@ function registerComposedPindieExtension(
     const result = await core.settleAgentRun(
       ctx,
       entries,
-      selfImprovement?.createSettlementObserver(options.trialOffers ? async (facts, workEpisodeId) => {
+      selfImprovement?.createSettlementObserver(options.trialOffers ? async (facts) => {
         if (settlementSessionId === null || facts.settlementGeneration === null ||
           facts.projectRoot === null || facts.projectRoot !== runtime.projectRoot) return null;
         return run.trialAttribution.settle({ sessionId: settlementSessionId,
           agentRunGeneration: facts.settlementGeneration, occurrenceEpoch: facts.settlementOccurrenceEpoch },
-          workEpisodeId, (claim) => options.trialOffers!.resolvePublished(claim),
+          (claim) => options.trialOffers!.resolvePublished(claim),
           () => currentTrialWindow(ctx, settlementTrialPortfolio) !== null);
       } : undefined),
     );

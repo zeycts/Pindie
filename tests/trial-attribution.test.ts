@@ -35,26 +35,26 @@ async function fixture(t: TestContext) {
   const binding = { sessionId: authority.sessionId, agentRunGeneration: 1, occurrenceEpoch: 1 };
   const resolve = () => offers.resolvePublished(claim);
   const declare = (decision: "select" | "decline", isCurrent = () => true) => holder.declare(claim.commit.assignment!.id, decision, resolve, isCurrent, () => tracker.execution, () => now);
-  const settle = (isCurrent = () => true) => holder.settle(binding, authority.workEpisodeId, resolve, isCurrent);
+  const settle = (isCurrent = () => true) => holder.settle(binding, resolve, isCurrent);
   return { run, holder, claim, tracker, binding, authority, resolve, declare, settle, now: () => now, setNow: (value: number) => { now = value; } };
 }
 
-test("offered but never exposed records nothing; restart cannot reconstruct selection", async (t) => {
+test("offered but never rendered records nothing; restart cannot reconstruct selection", async (t) => {
   const f = await fixture(t);
   assert.equal(await f.declare("select"), false);
   assert.equal(await f.settle(), null);
-  f.holder.expose(f.claim, f.binding, f.now(), 0);
+  f.holder.render(f.claim, f.binding, f.now(), 0);
   assert.equal(await f.declare("select"), true);
   f.holder.reset();
   assert.equal(await f.declare("select"), false);
   assert.equal(await f.settle(), null);
 });
 
-test("one exact exposure; none, decline and duplicate declarations remain factual", async (t) => {
+test("one exact rendering; none, decline and duplicate declarations remain factual", async (t) => {
   const f = await fixture(t);
-  assert.equal(f.holder.expose(f.claim, f.binding, f.now(), 2), true);
-  assert.equal(f.holder.expose(f.claim, f.binding, f.now() + 1, 3), true);
-  assert.equal((await f.settle())?.exposure.order, 2);
+  assert.equal(f.holder.render(f.claim, f.binding, f.now(), 2), true);
+  assert.equal(f.holder.render(f.claim, f.binding, f.now() + 1, 3), true);
+  assert.equal((await f.settle())?.rendered.order, 2);
   assert.equal((await f.settle())?.declaration, "none");
   assert.equal(await f.declare("decline"), true);
   assert.equal(await f.declare("decline"), true);
@@ -68,7 +68,7 @@ test("one exact exposure; none, decline and duplicate declarations remain factua
 
 test("only post-selection authorized call IDs contribute errors, including late results", async (t) => {
   const f = await fixture(t);
-  f.holder.expose(f.claim, f.binding, f.now(), 0);
+  f.holder.render(f.claim, f.binding, f.now(), 0);
   const effect = classifyToolEffect("edit");
   f.tracker.recordAuthorizedCall("before", effect);
   f.holder.recordAuthorizedCall("before", effect);
@@ -91,7 +91,7 @@ test("only post-selection authorized call IDs contribute errors, including late 
 
 test("awaited publication cannot cross preemption or a fresh Run", async (t) => {
   const f = await fixture(t);
-  f.holder.expose(f.claim, f.binding, f.now(), 0);
+  f.holder.render(f.claim, f.binding, f.now(), 0);
   let release!: () => void;
   const barrier = new Promise<void>((r) => { release = r; });
   const declaration = f.holder.declare(f.claim.commit.assignment!.id, "select", async () => { await barrier; return f.resolve(); },
@@ -100,14 +100,15 @@ test("awaited publication cannot cross preemption or a fresh Run", async (t) => 
   release();
   assert.equal(await declaration, false);
   assert.equal((await f.settle())?.declaration, "none");
-  assert.equal(f.holder.expose(f.claim, f.binding, f.now(), 1), false, "invalidated exposure cannot be restored");
-  assert.equal(await f.holder.settle({ ...f.binding, agentRunGeneration: 2 }, f.authority.workEpisodeId, f.resolve, () => true), null);
-  assert.equal(await f.holder.settle(f.binding, randomUUID(), f.resolve, () => true), null);
+  assert.equal(f.holder.render(f.claim, f.binding, f.now(), 1), false, "invalidated rendering cannot be restored");
+  assert.equal(await f.holder.settle({ ...f.binding, agentRunGeneration: 2 }, f.resolve, () => true), null);
+  const partial = await f.holder.settle({ ...f.binding, occurrenceEpoch: 2 }, f.resolve, () => false);
+  assert.equal(partial?.rendered.occurrenceEpoch, 1, "replacement retains the original occurrence");
 });
 
 test("expiry, failed resolution, and fresh authority reject declarations", async (t) => {
   const f = await fixture(t);
-  f.holder.expose(f.claim, f.binding, f.now(), 0);
+  f.holder.render(f.claim, f.binding, f.now(), 0);
   assert.equal(await f.declare("select", () => false), false);
   assert.equal(await f.holder.declare(f.claim.commit.assignment!.id, "select", async () => null, () => true, () => f.tracker.execution, f.now), false);
   f.setNow(f.claim.expiresAt);
@@ -115,9 +116,9 @@ test("expiry, failed resolution, and fresh authority reject declarations", async
   assert.equal((await f.settle(() => false))?.authorityCurrent, false);
 });
 
-test("Run owns telemetry and clears exposure across authority reset and generation replacement", async (t) => {
+test("Run owns telemetry and clears rendering across authority reset and generation replacement", async (t) => {
   const f = await fixture(t);
-  f.holder.expose(f.claim, f.binding, f.now(), 0);
+  f.holder.render(f.claim, f.binding, f.now(), 0);
   f.run.recordAuthorizedCall("before", classifyToolEffect("read"));
   assert.equal(await f.declare("select"), true);
   f.run.recordAuthorizedCall("after", classifyToolEffect("write"));
@@ -135,7 +136,23 @@ test("Run owns telemetry and clears exposure across authority reset and generati
 
 test("concurrent conflicting declarations cannot both commit", async (t) => {
   const f = await fixture(t);
-  f.holder.expose(f.claim, f.binding, f.now(), 0);
+  f.holder.render(f.claim, f.binding, f.now(), 0);
   const results = await Promise.all([f.declare("select"), f.declare("decline")]);
   assert.equal(results.filter(Boolean).length, 1);
+});
+
+test("failed publication preserves only an unconfirmed rendering; failed later lookup cannot erase accepted intent", async (t) => {
+  const f = await fixture(t);
+  f.holder.render(f.claim, f.binding, f.now(), 0);
+  const unresolved = await f.holder.settle(f.binding, async () => null, () => true);
+  assert.equal(unresolved?.publication, "unconfirmed");
+  assert.equal(unresolved?.declaration, "none");
+  assert.equal(unresolved?.delivery, "unknown");
+  assert.equal(unresolved?.authorityCurrent, false);
+  assert.equal(await f.declare("select"), true);
+  const partial = await f.holder.settle(f.binding, async () => { throw new Error("support unavailable"); }, () => true);
+  assert.equal(partial?.publication, "confirmed", "the accepted declaration already observed exact publication");
+  assert.equal(partial?.declaration, "select");
+  assert.equal(partial?.authorityCurrent, false);
+  assert.equal(partial?.delivery, "unknown");
 });

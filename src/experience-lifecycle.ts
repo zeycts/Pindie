@@ -14,6 +14,8 @@ import { validateStrategyTrustScopeDecisionBinding } from "./strategy-trust-scop
 import { validateStrategySynthesisDecisionBinding } from "./strategy-synthesis-decisions.ts";
 import { strategySelectionRevisionFingerprint, strategySelectionRevisionIdentity, strategySelectionRevisionStatus } from "./policy.ts";
 import { FileV1HypothesisExperienceProtectionReader, type V1ExperienceProtectionReader } from "./v1-experience-protection.ts";
+import { FileTrialOfferStore } from "./trial-offer-store.ts";
+import { canonicalJson } from "./learning-v1-contract.ts";
 
 export const MAX_LIVE_ORDINARY_EXPERIENCE_PER_PROJECT = 256;
 
@@ -140,10 +142,12 @@ export class FileRunExperienceMaintenance {
   private readonly reader: FileRunExperienceReader;
   private readonly knowledge: FileStrategyKnowledge;
   private readonly v1Protection: V1ExperienceProtectionReader;
+  private readonly trialOffers: FileTrialOfferStore;
 
   constructor(options: { projectsBaseDir?: string; globalBaseDir?: string; v1Protection?: V1ExperienceProtectionReader } = {}) {
     this.reader = new FileRunExperienceReader({ baseDir: options.projectsBaseDir });
     this.knowledge = new FileStrategyKnowledge(options);
+    this.trialOffers = new FileTrialOfferStore(options);
     this.v1Protection = options.v1Protection ??
       new FileV1HypothesisExperienceProtectionReader({ projectsBaseDir: options.projectsBaseDir });
   }
@@ -155,7 +159,22 @@ export class FileRunExperienceMaintenance {
     // Unresolved D2 hypotheses keep their exact source Experience live. A malformed
     // or ambiguous store throws here, before any deletion; Experience saves stay committed.
     for (const ref of await this.v1Protection.requiredSourceRefs(getProjectId(projectRoot))) protectedIds.add(ref.recordId);
-    const ordinary = read.records.filter((record) => !trial(record.experience))
+    // T3 does not exist: no exact immutable TrialEvidence can release these
+    // dependencies yet. Protect only exact T2 records, not all ordinary history.
+    // Lease expiry closes declaration authority, not historical evidence support.
+    const offers = await this.trialOffers.readHistory(getProjectId(projectRoot));
+    for (const record of read.records) {
+      const e = record.experience;
+      if (e.schemaVersion !== 6 && e.schemaVersion !== 7) continue;
+      const assignment = e.schemaVersion === 6 ? e.trialAttribution.assignment : e.trialAttempt.assignmentProposal;
+      const confirmed = e.schemaVersion === 6 || e.trialAttempt.publication === "confirmed";
+      if (confirmed && !offers.some((c) => c.assignment && canonicalJson(c.assignment) === canonicalJson(assignment))) {
+        throw new Error("Unresolved T2 assignment support; pruning refused.");
+      }
+      protectedIds.add(record.recordId);
+    }
+    const ordinary = read.records.filter((record) => !trial(record.experience) &&
+      record.experience.schemaVersion !== 6 && record.experience.schemaVersion !== 7)
       .sort((a, b) => instant(b.experience.recordedAt) - instant(a.experience.recordedAt) ||
         (a.recordId < b.recordId ? -1 : a.recordId > b.recordId ? 1 : 0));
     // Validate the timestamp of every record before any deletion, including old Trials.

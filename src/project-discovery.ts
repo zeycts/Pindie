@@ -48,7 +48,7 @@ export async function buildProjectDiscoveryPacket(projectId: string, dependencie
     // v5 parser enforces coherent episode/task linkage; no learning/internal Run is recorded by the Work Plane.
     const fingerprint = runExperienceRecordFingerprint(experience);
     const ref = { projectId, recordId, fingerprint };
-    return [{ ref, experience, recordedAt: experience.recordedAt, recordId }];
+    return [{ ref, experience: { ...experience, workEpisodeId: experience.workEpisodeId }, recordedAt: experience.recordedAt, recordId }];
   }).sort((a, b) => compare(position(b), position(a))).filter((r) => {
     if (seen.has(r.ref.fingerprint)) return false;
     seen.add(r.ref.fingerprint); return true;

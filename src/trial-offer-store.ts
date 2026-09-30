@@ -90,7 +90,11 @@ export class FileTrialOfferStore implements TrialOfferStore {
     if (!validateTrialOfferReceipt(r) || r.projectId !== projectId || r.workEpisodeId !== episodeId || r.reason !== "interrupted" || r.outcome !== "no-offer") throw new Error("Malformed offer intent.");
     return r;
   }
-  private async history(projectId: string): Promise<readonly TrialOfferCommit[]> {
+  /** Strict read-only maintenance view. Never reconcile intents or publish offers. */
+  async readHistory(projectId: string): Promise<readonly TrialOfferCommit[]> {
+    return this.history(projectId, false);
+  }
+  private async history(projectId: string, recover = true): Promise<readonly TrialOfferCommit[]> {
     let names: string[];
     try { names = await readdir(this.dir(projectId)); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; throw e; }
     const uuid = "[0-9a-f-]{36}";
@@ -103,7 +107,7 @@ export class FileTrialOfferStore implements TrialOfferStore {
       const c = await this.readCommit(projectId, id), intent = await this.pending(projectId, id);
       if (!intent || (c && (c.receipt.offerPolicyFingerprint !== intent.offerPolicyFingerprint || c.receipt.createdAt !== intent.createdAt))) throw new Error("Ambiguous offer history.");
       // Every interrupted prior attempt becomes a terminal no-offer, never a fairness attempt.
-      if (!c) await this.publishUnlocked({ schemaVersion: 1, receipt: intent, assignment: null });
+      if (!c && recover) await this.publishUnlocked({ schemaVersion: 1, receipt: intent, assignment: null });
       commits.push(c ?? { schemaVersion: 1, receipt: intent, assignment: null });
     }
     return commits;

@@ -218,3 +218,31 @@ test("Pi 0.99.1 earlier tool-result activation is executable in the immediate co
     await f.session.prompt("later ordinary work");
   } finally { await f.close(); }
 });
+
+test("Pi 0.99.1 public before-provider-request observation is not final: later handler replaces messages/tools", async () => {
+  let observed: unknown, replacement: unknown;
+  const f = await fixture((pi) => {
+    pi.on("context_with_system", (event) => ({ messages: [...exposeRequestTool(event.messages, pi),
+      { role: "user", content: "UNTRUSTED API probe advisory", timestamp: 0 }] }));
+    pi.on("before_provider_request", (event) => { observed = structuredClone(event.payload); });
+    pi.on("before_provider_request", () => {
+      replacement = { messages: [{ role: "user", content: "replacement without advisory" }], tools: [] };
+      return replacement;
+    });
+  });
+  try {
+    f.faux.setResponses([async (context, options, model) => {
+      // Faux's response callback is the test provider implementation. Invoke the
+      // public provider onPayload contract, then inspect the effective payload.
+      const final = await options.onPayload?.({ messages: context.messages, tools: names(context) }, model);
+      assert.ok(JSON.stringify(observed).includes("UNTRUSTED API probe advisory"));
+      assert.ok(JSON.stringify(observed).includes(NAME));
+      assert.deepEqual(final, replacement);
+      assert.ok(!JSON.stringify(final).includes("UNTRUSTED API probe advisory"));
+      assert.ok(!JSON.stringify(final).includes(NAME));
+      return fauxAssistantMessage("Response does not prove which advisory was delivered.");
+    }]);
+    await f.session.prompt("probe supported payload transform ordering");
+    assert.ok(observed);
+  } finally { await f.close(); }
+});

@@ -8,6 +8,7 @@ import {
   RUN_EXPERIENCE_SCHEMA_VERSION,
   LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION,
   TRIAL_RUN_EXPERIENCE_SCHEMA_VERSION,
+  TRIAL_ATTEMPT_EXPERIENCE_SCHEMA_VERSION,
   type RunExperience,
 } from "./run-experience.ts";
 import { getProjectId } from "./store.ts";
@@ -148,13 +149,14 @@ export class FileRunExperienceReader implements RunExperienceReader, RunExperien
       const schemaVersion = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>).schemaVersion
         : undefined;
-      if (schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION && schemaVersion !== LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION && schemaVersion !== TRIAL_RUN_EXPERIENCE_SCHEMA_VERSION) {
+      if (schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION && schemaVersion !== LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION && schemaVersion !== TRIAL_RUN_EXPERIENCE_SCHEMA_VERSION && schemaVersion !== TRIAL_ATTEMPT_EXPERIENCE_SCHEMA_VERSION) {
         if (typeof schemaVersion === "number") unsupportedSchema += 1;
         else invalid += 1;
         continue;
       }
       const experience = parseRunExperience(parsed);
-      if (experience === null || (experience.schemaVersion === 6 && experience.trialAttribution.assignment.projectId !== projectId)) {
+      if (experience === null || (experience.schemaVersion === 6 && experience.trialAttribution.assignment.projectId !== projectId) ||
+        (experience?.schemaVersion === 7 && experience.trialAttempt.assignmentProposal.projectId !== projectId)) {
         invalid += 1;
         continue;
       }
@@ -204,7 +206,8 @@ export class FileRunExperienceStore implements RunExperienceStore {
     signal?: AbortSignal,
   ): Promise<void> {
     if (parseRunExperience(experience) === null ||
-      (experience.schemaVersion === 6 && experience.trialAttribution.assignment.projectId !== getProjectId(projectRoot))) {
+      (experience.schemaVersion === 6 && experience.trialAttribution.assignment.projectId !== getProjectId(projectRoot)) ||
+      (experience.schemaVersion === 7 && experience.trialAttempt.assignmentProposal.projectId !== getProjectId(projectRoot))) {
       throw new Error("Could not save Pindie Run Experience: invalid record.");
     }
     signal?.throwIfAborted();

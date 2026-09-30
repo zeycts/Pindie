@@ -11,7 +11,8 @@ import { TrialOffers } from "../src/trial-offers.ts";
 import { FileTrialOfferStore } from "../src/trial-offer-store.ts";
 import { D2OpenHypothesisReader } from "../src/open-hypotheses.ts";
 import { trialEligibilityObserver } from "../src/trial-eligibility-watch.ts";
-import { FileRunExperienceReader } from "../src/experience-store.ts";
+import { FileRunExperienceReader, FileRunExperienceStore } from "../src/experience-store.ts";
+import { FileRunExperienceMaintenance } from "../src/experience-lifecycle.ts";
 import { FileStateStore, getProjectId } from "../src/store.ts";
 import { hypothesisFingerprint, type StrategyHypothesis } from "../src/learning-v1-contract.ts";
 import { DEFAULT_TRIAL_OFFER_POLICY } from "../src/trial-offer-contract.ts";
@@ -20,7 +21,7 @@ import { createPromotedStrategyRevisionCatalog } from "../src/strategy-decisions
 import { reduceState } from "../src/transitions.ts";
 import { EMPTY_STATE } from "../src/state.ts";
 
-async function fixture(options: { offerable?: boolean; blocked?: Promise<void>; active?: boolean; revision?: boolean; holdPreparation?: boolean; experienceFailure?: boolean; boundaryChange?: "lineage" | "trust" } = {}) {
+async function fixture(options: { offerable?: boolean; blocked?: Promise<void>; active?: boolean; revision?: boolean; holdPreparation?: boolean; experienceFailure?: boolean; boundaryChange?: "lineage" | "trust"; stripContext?: boolean; publicationFailure?: boolean } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), "pindie-t1-pi-")), agentDir = join(cwd, "agent"), projectsBaseDir = join(cwd, "projects"), globalBaseDir = join(cwd, "global");
   await mkdir(agentDir, { recursive: true });
   const projectId = getProjectId(cwd);
@@ -34,6 +35,11 @@ async function fixture(options: { offerable?: boolean; blocked?: Promise<void>; 
   const h = { ...semantic, id: randomUUID(), fingerprint: hypothesisFingerprint(semantic) };
   let open: readonly StrategyHypothesis[] = options.offerable === false ? [] : [h];
   const store = new FileTrialOfferStore({ projectsBaseDir });
+  let failPublication!: () => void;
+  if (options.publicationFailure) store.commitReserved = async () => {
+    await new Promise<void>((resolve) => { failPublication = resolve; });
+    throw new Error("Deterministic finalization failure after render");
+  };
   let published!: () => void, failed!: (error: unknown) => void, releasePreparation!: () => void;
   const publication = new Promise<void>((resolve, reject) => { published = resolve; failed = reject; });
   void publication.catch(() => undefined);
@@ -86,6 +92,8 @@ async function fixture(options: { offerable?: boolean; blocked?: Promise<void>; 
           ...(options.experienceFailure ? { experienceStore: { save: async () => { throw new Error("Experience fixture save failure"); } } } : {}),
           resolveProjectRoot: async () => cwd, now: () => now, subscriptionUsageProvider: { fetchUsage: async () => null } });
         if (withTrials) integration = registered;
+        if (options.stripContext) pi.on("context_with_system", (event) => ({ messages: event.messages.filter((m) =>
+          !(m.role === "user" && typeof m.content === "string" && m.content.includes("<PINDIE_EXPERIMENTAL_TRIAL>"))) }));
         if (options.boundaryChange) pi.on("tool_result", async (event) => { if (event.toolName === "pindie_task_start") await change(options.boundaryChange!); });
       }] });
     await loader.reload();
@@ -105,7 +113,8 @@ async function fixture(options: { offerable?: boolean; blocked?: Promise<void>; 
     const dir = join(projectsBaseDir, projectId, "learning-v1", "hypotheses");
     await mkdir(dir, { recursive: true }); await writeFile(join(dir, `${"a".repeat(64)}.json.${randomUUID()}.tmp`), "changed eligibility\n");
   };
-  return { session, createNativeSession, faux, offers, h, claims, integration, change,
+  return { session, createNativeSession, faux, offers, h, claims, integration, change, store, cwd, projectsBaseDir, globalBaseDir,
+    failPublication: () => failPublication(),
     readExperiences: () => new FileRunExperienceReader({ baseDir: projectsBaseDir }).read(cwd),
     setNow: (value: number) => { now = value; }, releasePreparation, preparationReturned: () => preparationReturned,
     async close() { releasePreparation(); offers.dispose(); sessions.forEach((session) => session.dispose()); await offers.settled(); await rm(cwd, { recursive: true, force: true, maxRetries: 5 }); } };
@@ -138,10 +147,10 @@ test("T2 real Pi no assignment has identical context content and active tool sur
 const selectionNames = (ctx: unknown) => (getCurrentSystemMessage((ctx as { messages: any[] }).messages)?.toolsAdded ?? [])
   .filter((tool) => tool.name === "pindie_trial_select").map((tool) => tool.name);
 const trialFacts = (f: Awaited<ReturnType<typeof fixture>>) => {
-  const assignment = f.claims[0]!.commit.assignment!, run = f.integration.core.run;
+  const run = f.integration.core.run;
   return run.trialAttribution.settle({ sessionId: f.session.sessionManager.getSessionId(),
     agentRunGeneration: run.activeAgentRunGeneration!, occurrenceEpoch: f.integration.runtime.taskOccurrenceEpoch },
-    assignment.workEpisodeId, (claim) => f.offers.resolvePublished(claim), () => true);
+    (claim) => f.offers.resolvePublished(claim), () => true);
 };
 
 for (const decision of ["select", "decline"] as const) test(`T2 real production Pi pulse records ${decision}, duplicate and conflicting declaration without work tax`, async () => {
@@ -183,11 +192,12 @@ for (const decision of ["select", "decline"] as const) test(`T2 real production 
     assert.equal(saved.invalid, 0); assert.equal(saved.unsupportedSchema, 0);
     assert.equal(saved.records.length, 1);
     const experience = saved.records[0]!.experience;
-    assert.equal(experience.schemaVersion, 6);
-    if (experience.schemaVersion !== 6) assert.fail("Exposed Run must persist v6");
-    assert.equal(experience.trialAttribution.declaration, decision);
-    assert.equal(experience.trialAttribution.assignment.id, id);
-    assert.equal(experience.trialAttribution.postSelection.toolCalls, decision === "select" ? 1 : 0);
+    assert.equal(experience.schemaVersion, 7);
+    if (experience.schemaVersion !== 7) assert.fail("Rendered Run must persist conservative v7");
+    assert.equal(experience.trialAttempt.delivery, "unknown");
+    assert.equal(experience.trialAttempt.declaration, decision);
+    assert.equal(experience.trialAttempt.assignmentProposal.id, id);
+    assert.equal(experience.trialAttempt.postSelection.toolCalls, decision === "select" ? 1 : 0);
     const results = f.session.messages.filter((m) => m.role === "toolResult" && m.toolName === "pindie_trial_select");
     assert.deepEqual(results.map((m) => m.role === "toolResult" && Boolean(m.isError)), [false, false, true]);
     assert.ok(!f.session.getActiveToolNames().includes("pindie_trial_select"));
@@ -224,6 +234,11 @@ for (const invalidation of ["lineage", "steer", "expiry"] as const) test(`T2 pro
     await f.session.prompt("Start real work.");
     assert.ok(f.session.messages.some((m) => m.role === "toolResult" && m.toolName === "pindie_trial_select" && m.isError), JSON.stringify(f.session.messages.filter((m) => m.role === "toolResult")));
     assert.ok(!f.session.getActiveToolNames().includes("pindie_trial_select"));
+    const partial = (await f.readExperiences()).records[0]!.experience;
+    if (partial.schemaVersion !== 7) assert.fail("Preempted/expired partial rendering disappeared");
+    assert.equal(partial.trialAttempt.delivery, "unknown");
+    assert.equal(partial.trialAttempt.declaration, "none");
+    assert.equal(partial.trialAttempt.authorityCurrent, false);
   } finally { await f.close(); }
 });
 
@@ -243,7 +258,7 @@ test("T2 Experience save failure cannot roll back committed ordinary Task progre
   } finally { await f.close(); }
 });
 
-test("T2 native retry keeps one exposure and no durable transient tool declaration", async () => {
+test("T2 native retry keeps one rendering and no durable transient tool declaration", async () => {
   const f = await fixture();
   try {
     let exposure: unknown;
@@ -251,13 +266,13 @@ test("T2 native retry keeps one exposure and no durable transient tool declarati
       () => fauxAssistantMessage(fauxToolCall("pindie_task_start", { goal: "Real Task", successCriteria: ["done"] }), { stopReason: "toolUse" }),
       async (ctx) => {
         assert.deepEqual(selectionNames(ctx), ["pindie_trial_select"]);
-        exposure = (await trialFacts(f))!.exposure;
+        exposure = (await trialFacts(f))!.rendered;
         return fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded" });
       },
       async (ctx) => {
         assert.equal(blocks(ctx), 1);
         assert.deepEqual(selectionNames(ctx), ["pindie_trial_select"]);
-        assert.deepEqual((await trialFacts(f))?.exposure, exposure);
+        assert.deepEqual((await trialFacts(f))?.rendered, exposure);
         return fauxAssistantMessage(fauxToolCall("pindie_trial_select", { assignmentId: f.claims[0]!.commit.assignment!.id, decision: "select" }), { stopReason: "toolUse" });
       },
       async () => {
@@ -324,13 +339,14 @@ test("T1 ten real Pi start/replace continuations reach the advisory without wait
       const saved = await f.readExperiences();
       assert.equal(saved.records.length, 1);
       const experience = saved.records[0]!.experience;
-      // Existing settlement deliberately does not assign a mixed replacement
-      // Run to either episode. Keep v4 rather than fabricate an exact v6 binding.
-      assert.equal(experience.schemaVersion, i % 2 ? 4 : 6);
-      if (experience.schemaVersion === 6) {
-        assert.equal(experience.trialAttribution.declaration, "none");
-        assert.equal(experience.trialAttribution.declaredAt, null);
-      } else assert.ok(!("trialAttribution" in experience));
+      // The aggregate remains v4/mixed for replacement, independently of the
+      // exact assignment-specific partial record. Never fabricate episode counters.
+      assert.equal(experience.schemaVersion, 7);
+      if (experience.schemaVersion !== 7) assert.fail("Rendered attempt missing");
+      assert.equal(experience.aggregateSchemaVersion, i % 2 ? 4 : 5);
+      assert.equal(experience.workEpisodeId === null, Boolean(i % 2));
+      assert.equal(experience.trialAttempt.declaration, "none");
+      assert.equal(experience.trialAttempt.declaredAt, null);
       assert.equal(JSON.stringify(f.session.sessionManager.getBranch()).includes("PINDIE_EXPERIMENTAL_TRIAL"), false);
     } finally { await f.close(); }
   }
@@ -428,5 +444,113 @@ test("T1 no open hypothesis keeps native Pi contexts and tools free of experimen
     assert.equal(f.faux.state.callCount, 3);
     assert.deepEqual(f.session.getActiveToolNames().filter((n) => n.includes("trial")), tools.filter((n) => n.includes("trial")));
     assert.equal(JSON.stringify(f.session.sessionManager.getBranch()).includes("PINDIE_EXPERIMENTAL_TRIAL"), false);
+  } finally { await f.close(); }
+});
+
+test("T2 public downstream context removal cannot be persisted as actual exposure", async () => {
+  const f = await fixture({ stripContext: true });
+  try {
+    f.faux.setResponses([
+      () => fauxAssistantMessage(fauxToolCall("pindie_task_start", { goal: "Real Task", successCriteria: ["done"] }), { stopReason: "toolUse" }),
+      (ctx) => {
+        assert.equal(blocks(ctx), 0, "later native context handler removed the rendered advisory");
+        // Deliberately supply an identifier the fixture knows. The declaration may
+        // record model intent, but cannot establish delivery/exposure/material use.
+        return fauxAssistantMessage(fauxToolCall("pindie_trial_select", { assignmentId: f.claims[0]!.commit.assignment!.id, decision: "select" }), { stopReason: "toolUse" });
+      },
+      () => fauxAssistantMessage("No material work."),
+    ]);
+    await f.session.prompt("Start real work.");
+    const e = (await f.readExperiences()).records[0]!.experience;
+    assert.equal(e.schemaVersion, 7);
+    if (e.schemaVersion !== 7) assert.fail("Partial attempt missing");
+    assert.equal(e.trialAttempt.delivery, "unknown");
+    assert.equal(e.trialAttempt.declaration, "select");
+    assert.equal(e.trialAttempt.postSelection.toolCalls, 0);
+    assert.ok(!("trialAttribution" in e), "never write the legacy actual-exposure claim");
+  } finally { await f.close(); }
+});
+
+test("T2 delivered-before-publication-failure retains an unconfirmed partial rendering without select authority", async () => {
+  const f = await fixture({ publicationFailure: true });
+  try {
+    f.faux.setResponses([
+      () => fauxAssistantMessage(fauxToolCall("pindie_task_start", { goal: "Real Task", successCriteria: ["done"] }), { stopReason: "toolUse" }),
+      (ctx) => {
+        assert.equal(blocks(ctx), 1, "immediate continuation must not await pending finalization");
+        f.failPublication();
+        return fauxAssistantMessage(fauxToolCall("pindie_trial_select", { assignmentId: f.claims[0]!.commit.assignment!.id, decision: "select" }), { stopReason: "toolUse" });
+      },
+      () => fauxAssistantMessage("Ordinary work unaffected."),
+    ]);
+    await f.session.prompt("Start real work.");
+    const e = (await f.readExperiences()).records[0]!.experience;
+    assert.equal(e.schemaVersion, 7);
+    if (e.schemaVersion !== 7) assert.fail("Partial rendering disappeared");
+    assert.equal(e.trialAttempt.publication, "unconfirmed");
+    assert.equal(e.trialAttempt.delivery, "unknown");
+    assert.equal(e.trialAttempt.declaration, "none");
+    assert.equal(e.trialAttempt.authorityCurrent, false);
+    assert.ok(f.session.messages.some((m) => m.role === "toolResult" && m.toolName === "pindie_trial_select" && m.isError));
+    assert.equal(f.integration.runtime.state?.task?.goal, "Real Task");
+  } finally { await f.close(); }
+});
+
+test("T2 replacement selection survives independently of a v4 mixed aggregate", async () => {
+  const f = await fixture({ active: true });
+  try {
+    f.faux.setResponses([
+      () => fauxAssistantMessage(fauxToolCall("pindie_task_replace", { goal: "Replacement Task", successCriteria: ["done"] }), { stopReason: "toolUse" }),
+      (ctx) => { assert.equal(blocks(ctx), 1); return fauxAssistantMessage(fauxToolCall("pindie_trial_select", {
+        assignmentId: f.claims[0]!.commit.assignment!.id, decision: "select" }), { stopReason: "toolUse" }); },
+      () => fauxAssistantMessage(fauxToolCall("pindie_task_progress", { blockers: ["Human dependency"], questions: [] }), { stopReason: "toolUse" }),
+      () => fauxAssistantMessage("Waiting for Human input."),
+    ]);
+    await f.session.prompt("Replace the Task.");
+    const e = (await f.readExperiences()).records[0]!.experience;
+    if (e.schemaVersion !== 7) assert.fail("Accepted replacement selection disappeared");
+    assert.equal(e.aggregateSchemaVersion, 4);
+    assert.equal(e.workEpisodeId, null);
+    assert.equal(e.trialAttempt.assignmentProposal.workEpisodeId, f.claims[0]!.commit.assignment!.workEpisodeId);
+    assert.equal(e.trialAttempt.declaration, "select");
+    assert.equal(e.trialAttempt.counterScope, "run");
+    assert.equal(e.trialAttempt.postSelection.toolCalls, 1);
+    assert.ok(f.session.messages.some((m) => m.role === "toolResult" && m.toolName === "pindie_trial_select" && !m.isError));
+  } finally { await f.close(); }
+});
+
+test("T2 real Pi selected record survives ordinary pruning; malformed offer support refuses pruning, not save", async () => {
+  const f = await fixture();
+  try {
+    f.faux.setResponses([
+      () => fauxAssistantMessage(fauxToolCall("pindie_task_start", { goal: "Real Task", successCriteria: ["done"] }), { stopReason: "toolUse" }),
+      () => fauxAssistantMessage(fauxToolCall("pindie_trial_select", { assignmentId: f.claims[0]!.commit.assignment!.id, decision: "select" }), { stopReason: "toolUse" }),
+      () => fauxAssistantMessage("No material work."),
+    ]);
+    await f.session.prompt("Start real work.");
+    const original = (await f.readExperiences()).records[0]!;
+    const e = original.experience;
+    if (e.schemaVersion !== 7) assert.fail("Partial attempt missing");
+    const { trialAttempt: _attempt, aggregateSchemaVersion: _version, ...fields } = e;
+    const ordinary = { ...fields, schemaVersion: 5 as const, workEpisodeId: e.trialAttempt.assignmentProposal.workEpisodeId };
+    const store = new FileRunExperienceStore({ baseDir: f.projectsBaseDir });
+    const a = e.trialAttempt;
+    await store.save(f.cwd, { ...ordinary, schemaVersion: 6, trialAttribution: {
+      assignment: a.assignmentProposal, exposure: a.rendered, declaration: a.declaration, declaredAt: a.declaredAt,
+      declarationFrontier: a.declarationFrontier, postSelection: a.postSelection, authorityCurrent: a.authorityCurrent,
+    } }); // Frozen legacy v6 must be protected too; never rewrite its audited bytes.
+    for (let i = 0; i < 257; ++i) await store.save(f.cwd, { ...ordinary,
+      recordedAt: new Date(Date.parse(e.recordedAt) + i + 1).toISOString() });
+    const maintenance = new FileRunExperienceMaintenance({ projectsBaseDir: f.projectsBaseDir, globalBaseDir: f.globalBaseDir });
+    assert.equal(await maintenance.prune(f.cwd), 1, "only unprotected ordinary history is pruned");
+    const retained = (await f.readExperiences()).records;
+    assert.ok(retained.some((r) => r.recordId === original.recordId));
+    assert.equal(retained.filter((r) => r.experience.schemaVersion === 6).length, 1);
+    const path = join(f.projectsBaseDir, getProjectId(f.cwd), "learning-v1", "trial-offers", `${e.trialAttempt.assignmentProposal.workEpisodeId}.json`);
+    await writeFile(path, "broken supporting artifact");
+    await assert.rejects(maintenance.prune(f.cwd));
+    const savingWithMaintenance = new FileRunExperienceStore({ baseDir: f.projectsBaseDir, onSaved: (root) => maintenance.prune(root).then(() => undefined) });
+    await savingWithMaintenance.save(f.cwd, ordinary);
+    assert.equal((await f.readExperiences()).records.length, 259, "maintenance failure leaves ordinary save committed");
   } finally { await f.close(); }
 });

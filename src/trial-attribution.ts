@@ -9,12 +9,28 @@ export interface TrialRunBinding {
   readonly agentRunGeneration: number;
   readonly occurrenceEpoch: number;
 }
-/** Factual declarations and observed operations, never a claim of causal strategy use. */
+/** Frozen v6 shape; historical exposure came from rendering, not final delivery. */
 export interface TrialRunAttribution {
   readonly assignment: TrialAssignment;
   readonly exposure: TrialRunBinding & { readonly at: number; readonly order: number };
   readonly declaration: "none" | "select" | "decline";
   readonly declaredAt: number | null;
+  readonly declarationFrontier: RunExperienceExecution | null;
+  readonly postSelection: RunExperienceExecution;
+  readonly authorityCurrent: boolean;
+}
+
+/** Conservative T2 fallback: rendering and model declaration are observable;
+ * final provider delivery is not observable through Pi 0.99.1 public hooks. */
+export interface TrialRunAttempt {
+  readonly assignmentProposal: TrialAssignment;
+  readonly rendered: TrialRunBinding & { readonly at: number; readonly order: number };
+  readonly delivery: "unknown";
+  readonly publication: "confirmed" | "unconfirmed";
+  readonly declaration: "none" | "select" | "decline";
+  readonly declaredAt: number | null;
+  /** Run-level chronological counters, never assignment-episode or causal use. */
+  readonly counterScope: "run";
   readonly declarationFrontier: RunExperienceExecution | null;
   readonly postSelection: RunExperienceExecution;
   readonly authorityCurrent: boolean;
@@ -29,6 +45,7 @@ export class TrialAttributionHolder {
   private declaredAt: number | null = null;
   private frontier: RunExperienceExecution | null = null;
   private enabled = false;
+  private publicationConfirmed = false;
   private epoch = 0;
   private readonly subsequent = new RunExperienceTracker();
 
@@ -39,14 +56,15 @@ export class TrialAttributionHolder {
     this.declaredAt = null;
     this.frontier = null;
     this.enabled = false;
+    this.publicationConfirmed = false;
     this.subsequent.reset();
   }
 
   /** Preserve partial historical facts, but never restore declaration authority. */
   invalidate(): void { ++this.epoch; this.enabled = false; }
 
-  /** Called only at the successful synchronous context-return boundary. */
-  expose(claim: ClaimedTrialOffer, binding: TrialRunBinding, at: number, order: number): boolean {
+  /** Records only a proposed render; later public Pi handlers can remove it. */
+  render(claim: ClaimedTrialOffer, binding: TrialRunBinding, at: number, order: number): boolean {
     const assignment = claim.commit.assignment;
     if (!assignment || !validateTrialAssignment(assignment) || assignment.sessionId !== binding.sessionId ||
       !Number.isSafeInteger(binding.agentRunGeneration) || binding.agentRunGeneration < 0 ||
@@ -75,6 +93,7 @@ export class TrialAttributionHolder {
     if (!published || !validateTrialOfferCommit(published) || canonicalJson(published) !== canonicalJson(exposure.claim.commit) ||
       this.exposure !== exposure || epoch !== this.epoch || !this.enabled || !isCurrent() ||
       !Number.isFinite(at) || at < exposure.at || at >= exposure.claim.expiresAt) return false;
+    this.publicationConfirmed = true;
     if (this.declaration !== "none") return this.declaration === decision;
     this.declaration = decision;
     this.declaredAt = at;
@@ -94,22 +113,28 @@ export class TrialAttributionHolder {
     this.subsequent.recordToolResult(id, isError);
   }
 
-  async settle(binding: TrialRunBinding, workEpisodeId: string, resolve: Resolve, isCurrent: () => boolean): Promise<TrialRunAttribution | null> {
+  async settle(binding: TrialRunBinding, resolve: Resolve, isCurrent: () => boolean): Promise<TrialRunAttempt | null> {
     const exposure = this.exposure;
-    if (!exposure || canonicalJson(binding) !== canonicalJson(exposure.binding) ||
-      exposure.claim.commit.assignment?.workEpisodeId !== workEpisodeId) return null;
-    let published: TrialOfferCommit | null;
-    try { published = await resolve(exposure.claim); } catch { return null; }
-    if (this.exposure !== exposure || !published?.assignment || !validateTrialOfferCommit(published) ||
-      canonicalJson(published) !== canonicalJson(exposure.claim.commit)) return null;
+    // Settlement may follow Task replacement. The original occurrence remains an
+    // exact historical binding; never assign the mixed aggregate Run to it.
+    if (!exposure || binding.sessionId !== exposure.binding.sessionId ||
+      binding.agentRunGeneration !== exposure.binding.agentRunGeneration) return null;
+    let published: TrialOfferCommit | null = null;
+    try { published = await resolve(exposure.claim); } catch { /* retain partial rendering */ }
+    if (this.exposure !== exposure) return null;
+    const confirmedNow = published !== null && validateTrialOfferCommit(published) &&
+      canonicalJson(published) === canonicalJson(exposure.claim.commit);
     return Object.freeze({
-      assignment: Object.freeze(structuredClone(published.assignment)),
-      exposure: Object.freeze({ ...exposure.binding, at: exposure.at, order: exposure.order }),
+      assignmentProposal: Object.freeze(structuredClone(exposure.claim.commit.assignment!)),
+      rendered: Object.freeze({ ...exposure.binding, at: exposure.at, order: exposure.order }),
+      delivery: "unknown",
+      publication: confirmedNow || this.publicationConfirmed ? "confirmed" : "unconfirmed",
+      counterScope: "run",
       declaration: this.declaration,
       declaredAt: this.declaredAt,
       declarationFrontier: this.frontier,
       postSelection: this.subsequent.execution,
-      authorityCurrent: this.enabled && isCurrent(),
+      authorityCurrent: confirmedNow && this.enabled && isCurrent(),
     });
   }
 }
