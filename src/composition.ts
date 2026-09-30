@@ -23,6 +23,7 @@ import { FileStrategyKnowledge } from "./strategy-knowledge-file.ts";
 import { FileRunExperienceMaintenance } from "./experience-lifecycle.ts";
 import { FileWorkEpisodeLedger } from "./work-episode.ts";
 import { TrialOffers } from "./trial-offers.ts";
+import { trialEligibilityObserver } from "./trial-eligibility-watch.ts";
 import { FileTrialOfferStore } from "./trial-offer-store.ts";
 import { D2OpenHypothesisReader } from "./open-hypotheses.ts";
 import { FileDiscoveryHypothesisStore } from "./discovery-hypotheses.ts";
@@ -489,7 +490,8 @@ export function composePindieExtension(
     trialOffers: input.trialOffers ?? (stateStore instanceof FileStateStore && stateStore.storageBaseDir === roots.projectsBaseDir
       ? new TrialOffers(new FileTrialOfferStore({ projectsBaseDir: roots.projectsBaseDir }),
           new D2OpenHypothesisReader(new FileDiscoveryHypothesisStore({ projectsBaseDir: roots.projectsBaseDir }),
-            new FileProjectTrustedStrategyPortfolioReader({ projectsBaseDir: roots.projectsBaseDir, globalBaseDir: roots.globalBaseDir })), input.trialOfferPolicy, input.now)
+            new FileProjectTrustedStrategyPortfolioReader({ projectsBaseDir: roots.projectsBaseDir, globalBaseDir: roots.globalBaseDir }),
+            trialEligibilityObserver(roots.projectsBaseDir, roots.globalBaseDir)), input.trialOfferPolicy, input.now)
       : undefined),
     store: stateStore,
     continuityStore,

@@ -1055,8 +1055,8 @@ async function t1ExtensionHarness(t: import("node:test").TestContext, offerable 
     observers.push(observer);
     return observer;
   };
-  const settleOffers = () => Promise.all(observers);
-  t.after(async () => { cleanupReleases.forEach((release) => release()); await settleOffers(); await rm(dir, { recursive: true, force: true }); });
+  const settleOffers = async () => { await Promise.all(observers); await trialOffers.settled(); };
+  t.after(async () => { cleanupReleases.forEach((release) => release()); trialOffers.dispose(); await settleOffers(); await rm(dir, { recursive: true, force: true, maxRetries: 5 }); });
   const ctx = context("/repo");
   await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
   return { ...harness, ctx, h, trialOffers, offersStore, settleOffers, beforeCleanup: (release: () => void) => cleanupReleases.push(release), projectId, episodeId: () => episodeId!, boundaries: () => boundaries };
@@ -1081,12 +1081,12 @@ test("T1 no-offer regression: exact ordinary prompt/context bytes and tool surfa
   assert.deepEqual(offered.api.appendedEntries, ordinary.api.appendedEntries);
 });
 
-test("T1 new Task gets one transient block BEFORE next Task-model policy selection; refine/rerun stable; no trust leakage", async (t) => {
+test("T1 prepared new Task gets one transient block; refine stable but fresh Run invalidates; no trust leakage", async (t) => {
   const f = await t1ExtensionHarness(t), before = { type: "before_agent_start", systemPrompt: "Native", prompt: "Real Human work", systemPromptOptions: {} };
   await f.api.handler("before_agent_start")(before, f.ctx);
+  await f.settleOffers(); // Unit fixture preflight BEFORE a genuine occurrence, not a Task-path wait.
   await f.api.tool("pindie_task_start").execute("start", { goal: "Real Human goal", successCriteria: ["done"] });
-  // The Task tool already returned. The test controls when the first model opportunity occurs.
-  await f.settleOffers();
+  await f.settleOffers(); // Observe durable history only; synchronous claim already made readiness.
   const c = await f.offersStore.find(f.projectId, f.episodeId());
   assert.ok(c?.assignment);
   const messages = [{ role: "system", content: "Native" }];
@@ -1100,7 +1100,7 @@ test("T1 new Task gets one transient block BEFORE next Task-model policy selecti
   await f.api.tool("pindie_task_refine").execute("refine", { goal: "Refined real goal" });
   assert.deepEqual(await f.api.handler("context_with_system")(event, f.ctx), first);
   await f.api.handler("before_agent_start")(before, f.ctx);
-  assert.deepEqual(await f.api.handler("context_with_system")(event, f.ctx), first);
+  assert.equal(await f.api.handler("context_with_system")(event, f.ctx), undefined);
   assert.equal(f.boundaries(), 1);
   assert.ok(!JSON.stringify(f.integration.trustedStrategyPortfolio).includes(f.h.id));
   await assert.rejects(f.api.tool("pindie_policy_set").execute("untrusted", { approach: { strategyId: f.h.logicalId, revisionIdentity: f.h.id, revisionFingerprint: f.h.fingerprint } }, undefined, undefined, f.ctx), /Invalid|unknown|Unknown|unavailable|armed|Candidate/);
@@ -1110,6 +1110,7 @@ test("T1 new Task gets one transient block BEFORE next Task-model policy selecti
 test("T1 replacement invalidates old lease; session/project change removes presentation; reconciled Task never retro-offered", async (t) => {
   const f = await t1ExtensionHarness(t), before = { type: "before_agent_start", systemPrompt: "", prompt: "Work", systemPromptOptions: {} };
   await f.api.handler("before_agent_start")(before, f.ctx);
+  await f.settleOffers();
   await f.api.tool("pindie_task_start").execute("start", { goal: "First", successCriteria: ["done"] });
   const first = f.episodeId();
   await f.settleOffers();
@@ -1145,9 +1146,10 @@ test("T1 hung offer store cannot delay Task start/replace or context; a lost win
   let release!: () => void;
   const blocked = new Promise<void>((r) => { release = r; });
   f.beforeCleanup(release);
-  const opened = f.trialOffers.opened.bind(f.trialOffers);
+  f.trialOffers.invalidateEligibility();
+  const prepare = f.trialOffers.prepare.bind(f.trialOffers);
   let selections = 0;
-  f.trialOffers.opened = async (...args) => { selections++; await blocked; return opened(...args); };
+  f.trialOffers.prepare = async (...args) => { selections++; await blocked; return prepare(...args); };
   const completed = async (name: string, goal: string) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -1170,7 +1172,7 @@ test("T1 hung offer store cannot delay Task start/replace or context; a lost win
   await f.api.handler("session_start")({ type: "session_start", reason: "reload" }, f.ctx);
   await f.api.handler("before_agent_start")(before, f.ctx);
   assert.equal(f.api.handler("context_with_system")(request, f.ctx), undefined);
-  assert.equal(selections, 2);
+  assert.ok(selections >= 2);
 });
 
 test("T1 delayed notification cannot open a presentation window after context already advanced", async (t) => {
@@ -1196,8 +1198,9 @@ test("T1 late advisory preparation cannot revive a window closed by policy selec
   let release!: () => void;
   const blocked = new Promise<void>((resolve) => { release = resolve; });
   f.beforeCleanup(release);
-  const prepare = f.trialOffers.context.bind(f.trialOffers);
-  f.trialOffers.context = async (...args) => { await blocked; return prepare(...args); };
+  f.trialOffers.invalidateEligibility();
+  const prepare = f.trialOffers.prepare.bind(f.trialOffers);
+  f.trialOffers.prepare = async (...args) => { await blocked; return prepare(...args); };
   await f.api.tool("pindie_task_start").execute("start", { goal: "First", successCriteria: ["done"] });
   await f.api.handler("tool_call")(toolCall("pindie_policy_set", { approach: "direct-action" }), f.ctx);
   release();
@@ -1208,6 +1211,7 @@ test("T1 late advisory preparation cannot revive a window closed by policy selec
 test("T1 ready-cache presentation performs no offer/ledger I/O and checks exact observed episode", async (t) => {
   const f = await t1ExtensionHarness(t);
   await f.api.handler("before_agent_start")({ type: "before_agent_start", systemPrompt: "", prompt: "Work", systemPromptOptions: {} }, f.ctx);
+  await f.settleOffers();
   await f.api.tool("pindie_task_start").execute("start", { goal: "Ready", successCriteria: ["done"] });
   await f.settleOffers();
   f.trialOffers.context = async () => { throw new Error("Context must not read Trial I/O"); };

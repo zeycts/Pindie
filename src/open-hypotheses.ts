@@ -1,17 +1,22 @@
 import { FileDiscoveryHypothesisStore, MAX_OPEN_HYPOTHESES } from "./discovery-hypotheses.ts";
 import { matchesLearningArtifactRef, validateStrategyHypothesis, type StrategyHypothesis } from "./learning-v1-contract.ts";
 import type { ProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safety.ts";
-import { MAX_TRUSTED_PORTFOLIO_ENTRIES, trustedPortfolioFingerprint } from "./strategy-portfolio.ts";
+import { MAX_TRUSTED_PORTFOLIO_ENTRIES, trustedPortfolioFingerprint, type TrustedStrategyPortfolio } from "./strategy-portfolio.ts";
 
 /** Lifecycle projection, not immutable history. Future Evaluation/Decision readers close entries here. */
 export interface OpenHypothesisReader {
+  /** Subscribe before detached snapshot reads; errors disable readiness. No request-time I/O. */
+  observe?(projectId: string, invalidate: (unavailable?: boolean) => void): Promise<() => void>;
   readOpen(projectId: string): Promise<readonly StrategyHypothesis[]>;
 }
 /** D2 has no lifecycle closure yet. Never reads legacy SI/CPL Candidate stores. */
 export class D2OpenHypothesisReader implements OpenHypothesisReader {
   private readonly history: Pick<FileDiscoveryHypothesisStore, "list">;
   private readonly portfolio: ProjectTrustedStrategyPortfolioReader | undefined;
-  constructor(history: Pick<FileDiscoveryHypothesisStore, "list">, portfolio?: ProjectTrustedStrategyPortfolioReader) { this.history = history; this.portfolio = portfolio; }
+  readonly observe: OpenHypothesisReader["observe"];
+  constructor(history: Pick<FileDiscoveryHypothesisStore, "list">, portfolio?: ProjectTrustedStrategyPortfolioReader, observe?: OpenHypothesisReader["observe"]) {
+    this.history = history; this.portfolio = portfolio; this.observe = observe;
+  }
   async readOpen(projectId: string): Promise<readonly StrategyHypothesis[]> {
     const entries = await this.history.list(projectId);
     validateOpenHypotheses(entries, projectId);
@@ -27,11 +32,17 @@ export class D2OpenHypothesisReader implements OpenHypothesisReader {
       // Preserve all competing entries so the deterministic selector omits the WHOLE
       // lineage, even when one competing revision also has a stale trusted base.
       if (entries.filter((other) => other.logicalId === h.logicalId).length > 1) return true;
-      const bases = trust.entries.filter((entry) => entry.strategyId === h.logicalId);
-      return h.baseRevisionFingerprint === null ? bases.length === 0 : bases.length === 1 &&
-        bases[0]!.kind === h.kind && bases[0]!.revisionFingerprint === h.baseRevisionFingerprint;
+      return matchesCurrentTrustedBase(h, trust);
     });
   }
+}
+/** Pure check against an already-observed coherent current portfolio; no storage access. */
+export function matchesCurrentTrustedBase(h: StrategyHypothesis, trust: TrustedStrategyPortfolio): boolean {
+  if (trust.projectId !== (h.scope.kind === "project" ? h.scope.projectId : null) ||
+    trust.fingerprint !== trustedPortfolioFingerprint(trust.projectId, trust.entries) || trust.entries.length !== trust.resolvedEntries.length) return false;
+  const bases = trust.entries.filter((entry) => entry.strategyId === h.logicalId);
+  return h.baseRevisionFingerprint === null ? bases.length === 0 : bases.length === 1 &&
+    bases[0]!.kind === h.kind && bases[0]!.revisionFingerprint === h.baseRevisionFingerprint;
 }
 export function validateOpenHypotheses(entries: readonly StrategyHypothesis[], projectId: string): void {
   if (!Array.isArray(entries) || entries.length > MAX_OPEN_HYPOTHESES ||
