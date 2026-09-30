@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { EXPERIENCE_RECORD_ID, FINGERPRINT, PROJECT_ID, UUID_V4 } from "./exact-identity.ts";
 
-/** Pure versioned operational/artifact contracts. No Pi, Host or Task authority fields. */
+/** Pure versioned operational/artifact contracts. Operational bindings grant no authority or Task truth. */
 export { FINGERPRINT, PROJECT_ID, UUID_V4 } from "./exact-identity.ts";
 export const WORK_EPISODE_ID = UUID_V4; // compatibility name for the operational binding
 export const LEARNING_V1_SCHEMA = 1 as const;
@@ -242,16 +242,21 @@ export interface TrialAssignment {
   readonly schemaVersion: 1; readonly id: string; readonly fingerprint: string;
   readonly projectId: string; readonly workEpisodeId: string; readonly sessionId: string;
   readonly hypothesis: LearningArtifactRef; readonly comparison: readonly ExactEvidenceRef[];
-  readonly offerPolicyFingerprint: string; readonly expiresAt: number;
+  readonly offerPolicyFingerprint: string; readonly offerPolicyVersion: 1;
+  readonly hostId: string; readonly authorityGeneration: number;
+  readonly createdAt: number; readonly expiresAt: number;
+  readonly status: "untrusted-advisory";
 }
 export function validateTrialAssignment(v: unknown): v is TrialAssignment {
   return object(v) && exact(v, ["schemaVersion", "id", "fingerprint", "projectId", "workEpisodeId", "sessionId",
-    "hypothesis", "comparison", "offerPolicyFingerprint", "expiresAt"]) && v.schemaVersion === 1 &&
+    "hypothesis", "comparison", "offerPolicyFingerprint", "offerPolicyVersion", "hostId", "authorityGeneration", "createdAt", "expiresAt", "status"]) && v.schemaVersion === 1 &&
     uuid(v.id) && typeof v.projectId === "string" && PROJECT_ID.test(v.projectId) && uuid(v.workEpisodeId) &&
     text(v.sessionId, 128) && validateLearningArtifactRef(v.hypothesis, "strategy-hypothesis") &&
-    ((v.hypothesis as LearningArtifactRef).scope.kind === "user-global" ||
-      ((v.hypothesis as LearningArtifactRef).scope as { projectId: string }).projectId === v.projectId) &&
-    hash(v.offerPolicyFingerprint) && uint(v.expiresAt) &&
+    (v.hypothesis as LearningArtifactRef).scope.kind === "project" &&
+    ((v.hypothesis as LearningArtifactRef).scope as { projectId: string }).projectId === v.projectId &&
+    hash(v.offerPolicyFingerprint) && v.offerPolicyVersion === 1 &&
+    uuid(v.hostId) && uint(v.authorityGeneration) && uint(v.createdAt) && uint(v.expiresAt) &&
+    v.expiresAt > v.createdAt && v.status === "untrusted-advisory" &&
     list(v.comparison, 8, validateExactEvidenceRef) && unique(v.comparison) &&
     (v.comparison as ExactEvidenceRef[]).every((ref) => ref.projectId === v.projectId) && authentic(v);
 }

@@ -90,6 +90,8 @@ function installProcessSemanticMutationFence(
 export class PindieRuntime {
   private readonly store: PindieStateStore;
   readonly workEpisodes: WorkEpisodeLedger | undefined;
+  /** Neutral post-binding operational observer. Never called for reconciled/current episodes. */
+  onWorkEpisodeOpened?: (projectRoot: string, episodeId: string) => Promise<void>;
   private currentProjectRoot: string | null = null;
   private currentState: PindieState = EMPTY_STATE;
   private currentExternalStateEpoch = 0;
@@ -209,7 +211,12 @@ export class PindieRuntime {
     this.currentState = result.state;
     if (event.type === "start_task" || event.type === "replace_task") this.occurrenceEpoch++;
     if (this.workEpisodes) {
-      try { await this.workEpisodes.committed(projectRoot, state, result.state, event); }
+      try {
+        const episodeId = await this.workEpisodes.committed(projectRoot, state, result.state, event);
+        if (episodeId && (event.type === "start_task" || event.type === "replace_task")) {
+          await this.onWorkEpisodeOpened?.(projectRoot, episodeId);
+        }
+      }
       catch (error) { console.warn(`[Pindie] WorkEpisode binding unavailable: ${String(error)}`); }
     }
     return result;
