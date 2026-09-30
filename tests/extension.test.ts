@@ -155,11 +155,11 @@ class CapturedExtensionAPI {
     this.handlers.set(eventName, handler);
   }
 
-  registerTool(tool: { name: string }): void {
+  registerTool(tool: { name: string; defaultActive?: boolean }): void {
     this.toolRegistrations.push(tool.name);
     this.tools.set(tool.name, tool);
     this.configuredToolNames.add(tool.name);
-    this.activeToolNames.push(tool.name);
+    if (tool.defaultActive !== false) this.activeToolNames.push(tool.name);
   }
 
   registerCommand(name: string, command: any): void {
@@ -202,7 +202,7 @@ class CapturedExtensionAPI {
   }
 
   getAllTools(): Array<{ name: string }> {
-    return [...this.configuredToolNames].map((name) => ({ name }));
+    return [...this.configuredToolNames].map((name) => this.tools.get(name) ?? { name });
   }
 
   setActiveTools(names: string[]): void {
@@ -1048,6 +1048,12 @@ async function t1ExtensionHarness(t: import("node:test").TestContext, offerable 
     committed: async (_root, _before, _after, event) => { if (event.type === "start_task" || event.type === "replace_task") { boundaries++; episodeId = randomUUID(); } return episodeId; },
   };
   const harness = createHarness(preexisting ? [["/repo", activeState()]] : [], {}, { workEpisodes, trialOffers });
+  // Exercise the pinned native staging order, not legacy context-time activation.
+  const contextHandler = harness.api.handler("context_with_system");
+  harness.api.handlers.set("context_with_system", (event, ctx) => {
+    harness.api.handler("turn_start")({ type: "turn_start" }, ctx);
+    return contextHandler(event, ctx);
+  });
   const observers: Promise<void>[] = [];
   const notify = harness.integration.runtime.onWorkEpisodeOpened!;
   harness.integration.runtime.onWorkEpisodeOpened = (root, id) => {
@@ -1092,10 +1098,11 @@ test("T1 prepared new Task gets one transient block; refine stable but fresh Run
   const messages = [{ role: "system", content: "Native" }];
   const event = { type: "context_with_system", messages };
   const first = await f.api.handler("context_with_system")(event, f.ctx) as any;
-  assert.equal(first.messages.length, 2);
+  assert.equal(first.messages.length, 3);
   assert.strictEqual(first.messages[0], messages[0]);
-  assert.match(first.messages[1].content, /UNTRUSTED \/ EXPERIMENTAL \/ ADVISORY/);
-  assert.ok(first.messages[1].content.includes(c.assignment.id));
+  assert.deepEqual(first.messages[1].toolsAdded.map((tool: { name: string }) => tool.name), ["pindie_trial_select"]);
+  assert.match(first.messages[2].content, /UNTRUSTED \/ EXPERIMENTAL \/ ADVISORY/);
+  assert.ok(first.messages[2].content.includes(c.assignment.id));
   assert.equal(messages.length, 1); // No persistent Human transcript mutation.
   await f.api.tool("pindie_task_refine").execute("refine", { goal: "Refined real goal" });
   assert.deepEqual(await f.api.handler("context_with_system")(event, f.ctx), first);

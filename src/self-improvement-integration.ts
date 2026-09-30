@@ -1232,7 +1232,8 @@ export class SelfImprovementIntegration {
     return "Pindie blocked this call: an adaptation Run is read-only and only permits observation or the active Candidate tool.";
   }
 
-  createSettlementObserver(): CoreSettlementObserver {
+  createSettlementObserver(resolveTrialAttribution?: (facts: CoreSettlementFacts, workEpisodeId: string) =>
+    Promise<import("./trial-attribution.ts").TrialRunAttribution | null>): CoreSettlementObserver {
     let isAdaptationRun = false;
     let isDerivationRun = false;
     let isGlobalDerivationRun = false;
@@ -1293,9 +1294,15 @@ export class SelfImprovementIntegration {
                 });
               } catch (error) { console.warn(`[Pindie] WorkEpisode attribution unavailable: ${errorMessage(error)}`); }
             }
+            let trialAttribution: import("./trial-attribution.ts").TrialRunAttribution | null = null;
+            if (resolveTrialAttribution && workEpisodeId !== null) {
+              try { trialAttribution = await resolveTrialAttribution(facts, workEpisodeId); }
+              catch (error) { console.warn(`[Pindie] Trial attribution unavailable: ${errorMessage(error)}`); }
+            }
             const experience = assembleRunExperience({
               task: facts.task!,
               workEpisodeId,
+              trialAttribution,
               runStart: {
                 taskStatus: facts.runStartTaskStatus,
                 taskGoal: facts.runStartTaskGoal,

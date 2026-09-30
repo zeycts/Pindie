@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
+import { canonicalJson } from "./learning-v1-contract.ts";
 import { parseRunExperience, type RunExperience } from "./run-experience.ts";
 
 /** Versioned exact canonical projection shared by legacy cross-project refs and v1. */
 export function runExperienceRecordFingerprint(value: unknown): string {
   const record = parseRunExperience(value);
-  if (record === null) throw new Error("Invalid schema-v4/v5 Run Experience artifact.");
+  if (record === null) throw new Error("Invalid schema-v4/v5/v6 Run Experience artifact.");
   const selection = (selected: NonNullable<RunExperience["policy"]["finalSnapshot"]>) => {
     const revision = (v: any) => ({
       strategyId: v.strategyId, kind: v.kind, revisionIdentity: v.revisionIdentity,
@@ -17,7 +18,8 @@ export function runExperienceRecordFingerprint(value: unknown): string {
   // Preserve the exact v4 ordering and projection used by cross-project-experience.ts.
   const canonical = {
     schemaVersion: record.schemaVersion,
-    ...(record.schemaVersion === 5 ? { workEpisodeId: record.workEpisodeId } : {}),
+    ...(record.schemaVersion !== 4 ? { workEpisodeId: record.workEpisodeId } : {}),
+    ...(record.schemaVersion === 6 ? { trialAttribution: JSON.parse(canonicalJson(record.trialAttribution)) } : {}),
     recordedAt: record.recordedAt,
     runStart: { taskStatus: record.runStart.taskStatus, taskGoal: record.runStart.taskGoal },
     task: { goal: record.task.goal, taskRelation: record.task.taskRelation },

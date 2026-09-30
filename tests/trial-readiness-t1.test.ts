@@ -42,12 +42,17 @@ test("T1 preflight publishes only a scheduling hold, then synchronously claims o
   block = true;
   const ready = f.offers.claim(f.authority);
   assert.ok(ready && !(ready instanceof Promise));
+  let published = false;
+  void ready.publication.then(() => { published = true; });
+  assert.equal(published, false, "synchronous readiness must not claim publication");
   assert.match(ready.content, /UNTRUSTED \/ EXPERIMENTAL \/ ADVISORY/);
   assert.equal(ready.commit.assignment?.workEpisodeId, f.authority.workEpisodeId);
   await reached; // Observation AFTER the synchronous claim, not a presentation-path wait.
   const { readFile } = await import("node:fs/promises");
   await assert.rejects(readFile(join(f.root, f.projectId, "learning-v1", "trial-offers", `${f.authority.workEpisodeId}.json`)), { code: "ENOENT" });
   release(); await f.offers.settled();
+  assert.deepEqual(await ready.publication, ready.commit);
+  assert.deepEqual(await f.offers.resolvePublished(ready), ready.commit);
   assert.deepEqual(await f.store.find(f.projectId, f.authority.workEpisodeId), ready.commit);
   await f.offers.prepare(f.base, () => true);
   assert.equal(f.offers.claim(f.authority), null); // Even a refill cannot offer twice to the same episode.
@@ -159,8 +164,49 @@ test("T1 finalization is intent-fenced when Human/eligibility authority is inval
   const ready = f.offers.claim(f.authority); assert.ok(ready);
   await f.offers.settled();
   assert.equal(f.offers.isEligibilityCurrent(ready.epoch), false);
+  assert.equal(await ready.publication, null);
+  assert.equal(await f.offers.resolvePublished(ready), null);
   assert.equal((await f.store.find(f.projectId, f.authority.workEpisodeId))?.receipt.reason, "interrupted");
   assert.equal(f.offers.claim(f.authority), null);
+});
+
+test("T2 publication confirmation rejects an existing terminal no-offer returned by successful I/O", async (t) => {
+  const f = await fixture(t);
+  await f.offers.prepare(f.base, () => true);
+  const original = f.store.commitReserved.bind(f.store);
+  f.store.commitReserved = async (commit, signal, isCurrent) => {
+    const { fingerprintOfferReceipt } = await import("../src/trial-offer-store.ts");
+    const receipt = fingerprintOfferReceipt({ ...commit.receipt, outcome: "no-offer", reason: "interrupted", assignment: null });
+    await f.store.decide(receipt, async () => ({ schemaVersion: 1, receipt, assignment: null }), signal);
+    return original(commit, signal, isCurrent);
+  };
+  const ready = f.offers.claim(f.authority); assert.ok(ready);
+  assert.equal(await ready.publication, null);
+  assert.equal(await f.offers.resolvePublished(ready), null);
+  assert.equal(f.offers.isEligibilityCurrent(ready.epoch), false);
+  assert.equal((await f.store.find(f.projectId, f.authority.workEpisodeId))?.assignment, null);
+});
+
+test("T2 confirmed publication remains a historical fact after eligibility closes, not a restored lease", async (t) => {
+  const f = await fixture(t);
+  await f.offers.prepare(f.base, () => true);
+  const ready = f.offers.claim(f.authority); assert.ok(ready);
+  assert.deepEqual(await ready.publication, ready.commit);
+  f.offers.invalidateEligibility();
+  assert.equal(f.offers.isEligibilityCurrent(ready.epoch), false);
+  assert.deepEqual(await f.offers.resolvePublished(ready), ready.commit);
+  assert.equal(f.offers.claim(f.authority), null);
+});
+
+test("T2 fresh publication resolution rejects corruption without erasing historical confirmed publication", async (t) => {
+  const f = await fixture(t);
+  await f.offers.prepare(f.base, () => true);
+  const ready = f.offers.claim(f.authority); assert.ok(ready);
+  assert.deepEqual(await ready.publication, ready.commit);
+  assert.deepEqual(await f.offers.resolvePublished(ready), ready.commit);
+  await writeFile(join(f.root, f.projectId, "learning-v1", "trial-offers", `${f.authority.workEpisodeId}.json`), "null");
+  assert.equal(await f.offers.resolvePublished(ready), null);
+  assert.deepEqual(await ready.publication, ready.commit);
 });
 
 test("T1 monitor failure disables future readiness rather than silently using an unwatched snapshot", async (t) => {

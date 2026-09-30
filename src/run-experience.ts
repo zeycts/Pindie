@@ -1,5 +1,7 @@
 import type { ToolEffect } from "./execution-semantics.ts";
 import { UUID_V4 } from "./exact-identity.ts";
+import { validateTrialAssignment } from "./learning-v1-contract.ts";
+import type { TrialRunAttribution } from "./trial-attribution.ts";
 import {
   createStrategyRevisionSelection,
   policySnapshotIdentity,
@@ -20,6 +22,7 @@ import {
 
 export const RUN_EXPERIENCE_SCHEMA_VERSION = 5 as const;
 export const LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION = 4 as const;
+export const TRIAL_RUN_EXPERIENCE_SCHEMA_VERSION = 6 as const;
 
 /** Bounded execution facts collected for one Agent Run. */
 export interface RunExperienceExecution {
@@ -78,7 +81,13 @@ export interface EpisodeRunExperience extends RunExperienceFields {
   readonly schemaVersion: typeof RUN_EXPERIENCE_SCHEMA_VERSION;
   readonly workEpisodeId: string;
 }
-export type RunExperience = LegacyRunExperience | EpisodeRunExperience;
+/** v6 adds exact factual experimental attribution only to exposed Runs. */
+export interface TrialRunExperience extends RunExperienceFields {
+  readonly schemaVersion: typeof TRIAL_RUN_EXPERIENCE_SCHEMA_VERSION;
+  readonly workEpisodeId: string;
+  readonly trialAttribution: TrialRunAttribution;
+}
+export type RunExperience = LegacyRunExperience | EpisodeRunExperience | TrialRunExperience;
 
 const ZERO_EXECUTION: RunExperienceExecution = Object.freeze({
   toolCalls: 0,
@@ -282,6 +291,7 @@ export interface AssembleRunExperienceInput {
   readonly cost: number | null;
   readonly recordedAt?: string;
   readonly workEpisodeId?: string | null;
+  readonly trialAttribution?: TrialRunAttribution | null;
 }
 
 function metric(value: number | null): number | null {
@@ -293,10 +303,15 @@ export function assembleRunExperience(
   input: AssembleRunExperienceInput,
 ): RunExperience {
   if (input.workEpisodeId != null && !UUID_V4.test(input.workEpisodeId)) throw new Error("Invalid WorkEpisodeId.");
+  // Ambiguous learning bookkeeping never drops otherwise valid ordinary facts.
+  const trialAttribution = input.workEpisodeId == null ? null
+    : parseTrialAttribution(input.trialAttribution, input.workEpisodeId, input.execution);
   const record: RunExperience = {
     ...(input.workEpisodeId == null
       ? { schemaVersion: LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION }
-      : { schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION, workEpisodeId: input.workEpisodeId }),
+      : trialAttribution === null
+        ? { schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION, workEpisodeId: input.workEpisodeId }
+        : { schemaVersion: TRIAL_RUN_EXPERIENCE_SCHEMA_VERSION, workEpisodeId: input.workEpisodeId, trialAttribution }),
     recordedAt: input.recordedAt ?? new Date().toISOString(),
     runStart: Object.freeze({
       taskStatus: input.runStart.taskStatus,
@@ -548,13 +563,49 @@ function countersEqual(
   return EXECUTION_COUNTERS.every((counter) => left[counter] === right[counter]);
 }
 
-/** Validate and defensively copy one immutable schema-v4 or schema-v5 Experience record. */
+/** Strict factual trial record. Existence means exposure, not offer or causal use. */
+function parseTrialAttribution(value: unknown, workEpisodeId: string, execution: RunExperienceExecution): TrialRunAttribution | null {
+  if (!isRecord(value) || !hasExactFields(value, ["assignment", "exposure", "declaration", "declaredAt",
+    "declarationFrontier", "postSelection", "authorityCurrent"]) ||
+    !validateTrialAssignment(value.assignment) || value.assignment.workEpisodeId !== workEpisodeId ||
+    typeof value.authorityCurrent !== "boolean" || !isOneOf(value.declaration, ["none", "select", "decline"])) return null;
+  const assignment = value.assignment, exposure = value.exposure;
+  if (!isRecord(exposure) || !hasExactFields(exposure, ["sessionId", "agentRunGeneration", "occurrenceEpoch", "at", "order"]) ||
+    exposure.sessionId !== assignment.sessionId || !isNonNegativeSafeInteger(exposure.agentRunGeneration) ||
+    !isNonNegativeSafeInteger(exposure.occurrenceEpoch) || !isNonNegativeSafeInteger(exposure.order) ||
+    !isNonNegativeFiniteNumber(exposure.at) || exposure.at < assignment.createdAt || exposure.at >= assignment.expiresAt) return null;
+  const postSelection = parseExecution(value.postSelection);
+  if (!postSelection || !countersAtOrBefore(postSelection, execution)) return null;
+  const declarationFrontier = value.declarationFrontier === null ? null : parseExecution(value.declarationFrontier);
+  if (value.declaration === "none") {
+    if (value.declaredAt !== null || value.declarationFrontier !== null || !countersEqual(postSelection, ZERO_EXECUTION)) return null;
+  } else {
+    if (!isNonNegativeFiniteNumber(value.declaredAt) || value.declaredAt < exposure.at || value.declaredAt >= assignment.expiresAt ||
+      !declarationFrontier || !countersAtOrBefore(declarationFrontier, execution) ||
+      !EXECUTION_COUNTERS.every((counter) => declarationFrontier[counter] + postSelection[counter] <= execution[counter]) ||
+      (value.declaration === "decline" && !countersEqual(postSelection, ZERO_EXECUTION))) return null;
+  }
+  return Object.freeze({
+    assignment: Object.freeze(structuredClone(assignment)),
+    exposure: Object.freeze({ sessionId: assignment.sessionId, agentRunGeneration: exposure.agentRunGeneration,
+      occurrenceEpoch: exposure.occurrenceEpoch, at: exposure.at, order: exposure.order }),
+    declaration: value.declaration,
+    declaredAt: value.declaredAt as number | null,
+    declarationFrontier,
+    postSelection,
+    authorityCurrent: value.authorityCurrent,
+  });
+}
+
+/** Validate and defensively copy immutable v4/v5/v6; never rewrite older audited bytes. */
 export function parseRunExperience(value: unknown): RunExperience | null {
   if (!isRecord(value) ||
-    (value.schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION && value.schemaVersion !== LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION) ||
+    (value.schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION && value.schemaVersion !== LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION &&
+      value.schemaVersion !== TRIAL_RUN_EXPERIENCE_SCHEMA_VERSION) ||
     typeof value.recordedAt !== "string" || value.recordedAt.length === 0 ||
-    !hasExactFields(value, value.schemaVersion === 5 ? [...V4_ROOT_FIELDS, "workEpisodeId"] : V4_ROOT_FIELDS) ||
-    (value.schemaVersion === 5 && (typeof value.workEpisodeId !== "string" || !UUID_V4.test(value.workEpisodeId)))) {
+    !hasExactFields(value, value.schemaVersion === 6 ? [...V4_ROOT_FIELDS, "workEpisodeId", "trialAttribution"]
+      : value.schemaVersion === 5 ? [...V4_ROOT_FIELDS, "workEpisodeId"] : V4_ROOT_FIELDS) ||
+    (value.schemaVersion !== 4 && (typeof value.workEpisodeId !== "string" || !UUID_V4.test(value.workEpisodeId)))) {
     return null;
   }
 
@@ -675,10 +726,15 @@ export function parseRunExperience(value: unknown): RunExperience | null {
     return null;
   }
 
+  const trialAttribution = value.schemaVersion === 6
+    ? parseTrialAttribution(value.trialAttribution, value.workEpisodeId as string, execution) : null;
+  if (value.schemaVersion === 6 && trialAttribution === null) return null;
   return Object.freeze({
-    ...(value.schemaVersion === 5
-      ? { schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION, workEpisodeId: value.workEpisodeId as string }
-      : { schemaVersion: LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION }),
+    ...(value.schemaVersion === 6
+      ? { schemaVersion: TRIAL_RUN_EXPERIENCE_SCHEMA_VERSION, workEpisodeId: value.workEpisodeId as string, trialAttribution: trialAttribution! }
+      : value.schemaVersion === 5
+        ? { schemaVersion: RUN_EXPERIENCE_SCHEMA_VERSION, workEpisodeId: value.workEpisodeId as string }
+        : { schemaVersion: LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION }),
     recordedAt: value.recordedAt,
     runStart: Object.freeze({
       taskStatus: runStart.taskStatus,

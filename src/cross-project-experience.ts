@@ -69,7 +69,7 @@ function validateFingerprint(value: unknown): string {
 
 export function crossProjectExperienceRecordFingerprint(value: unknown): string {
   try { return runExperienceRecordFingerprint(value); }
-  catch { return invalid("record must be a valid schema-v4/v5 Experience artifact."); }
+  catch { return invalid("record must be a valid schema-v4/v5/v6 Experience artifact."); }
 }
 
 export const crossProjectExperienceFingerprint = crossProjectExperienceRecordFingerprint;

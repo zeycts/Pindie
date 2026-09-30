@@ -19,6 +19,7 @@ import {
   type RunExperiencePolicy,
   RunExperienceTracker,
 } from "./run-experience.ts";
+import { TrialAttributionHolder } from "./trial-attribution.ts";
 /** Pi-facing ownership for runtime-only Agent Run authority state. */
 export class RunIntegration {
   readonly runtime: PindieRuntime;
@@ -30,6 +31,7 @@ export class RunIntegration {
   private agentRunGeneration = 0;
   private agentRunSettlementInProgress = false;
   readonly experience = new RunExperienceTracker();
+  readonly trialAttribution = new TrialAttributionHolder();
 
   constructor(runtime: PindieRuntime) {
     this.runtime = runtime;
@@ -114,6 +116,7 @@ export class RunIntegration {
     this.clearAgentRunBookkeeping();
     this.clearPolicySnapshot();
     this.experience.reset();
+    this.trialAttribution.reset();
   }
 
   deriveSnapshot(): SemanticDerivationResult {
@@ -124,11 +127,13 @@ export class RunIntegration {
   }
 
   resetStateAuthority(): void {
+    this.trialAttribution.invalidate();
     this.runtime.unload();
     this.unavailableReason = null;
   }
 
   async loadProject(projectRoot: string, signal?: AbortSignal): Promise<void> {
+    this.trialAttribution.invalidate();
     await this.runtime.load(projectRoot, signal);
   }
 
@@ -143,6 +148,7 @@ export class RunIntegration {
   }
 
   clearAgentRunBookkeeping(): void {
+    this.trialAttribution.invalidate();
     this.agentRunFactsContext = null;
     this.continuationAttempted = false;
     this.agentRunActive = false;
@@ -150,6 +156,7 @@ export class RunIntegration {
   }
 
   beginAgentRunFacts(): void {
+    this.trialAttribution.reset();
     this.agentRunGeneration += 1;
     this.agentRunActive = true;
     this.agentRunSettlementInProgress = false;
@@ -163,16 +170,19 @@ export class RunIntegration {
 
   recordAuthorizedCall(toolCallId: string, effect: ToolEffect): void {
     this.experience.recordAuthorizedCall(toolCallId, effect);
+    this.trialAttribution.recordAuthorizedCall(toolCallId, effect);
   }
 
   recordDeniedCall(effect: ToolEffect): void {
     this.experience.recordDeniedCall(effect);
+    this.trialAttribution.recordDeniedCall(effect);
   }
 
   recordToolResult(
     toolCallId: string,
     isError: boolean,
   ): "execution" | "policy" | "self-improvement" | "memory" | null {
+    this.trialAttribution.recordToolResult(toolCallId, isError);
     return this.experience.recordToolResult(toolCallId, isError);
   }
 

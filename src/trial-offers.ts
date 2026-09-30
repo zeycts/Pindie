@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hypothesisRef } from "./discovery-hypotheses.ts";
-import { learningArtifactFingerprint, matchesLearningArtifactRef, validateTrialAssignment, type StrategyHypothesis, type TrialAssignment } from "./learning-v1-contract.ts";
+import { canonicalJson, learningArtifactFingerprint, matchesLearningArtifactRef, validateTrialAssignment, type StrategyHypothesis, type TrialAssignment } from "./learning-v1-contract.ts";
 import { nonconflictingOpenHypotheses, validateOpenHypotheses, type OpenHypothesisReader } from "./open-hypotheses.ts";
 import { DEFAULT_TRIAL_OFFER_POLICY, trialOfferPolicyFingerprint, trialOperationalId, type TrialOfferPolicy, type TrialOfferReceipt } from "./trial-offer-contract.ts";
 import { fingerprintOfferReceipt, validateTrialOfferCommit, type TrialOfferReservation, type TrialOfferCommit, type TrialOfferStore } from "./trial-offer-store.ts";
@@ -24,6 +24,16 @@ export function selectTrialHypothesis(open: readonly StrategyHypothesis[], histo
   }).sort((a, b) => count(a).length - count(b).length || (a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0))[0] ?? null;
 }
 interface PreparedTrialReadiness { key: string; epoch: number; validUntil: number; claimed: boolean; reservation: TrialOfferReservation | null; hypothesis: StrategyHypothesis | null }
+/** Readiness is not publication. Only exact confirmed co-commit can support attribution. */
+export interface ClaimedTrialOffer {
+  readonly commit: TrialOfferCommit;
+  readonly content: string;
+  readonly expiresAt: number;
+  readonly epoch: number;
+  readonly hypothesis: StrategyHypothesis;
+  /** Detached bounded finalization; never awaited by Task dispatch or context projection. */
+  readonly publication: Promise<TrialOfferCommit | null>;
+}
 export class TrialOffers {
   private readonly store: TrialOfferStore;
   private readonly hypotheses: OpenHypothesisReader;
@@ -116,7 +126,7 @@ export class TrialOffers {
     return work;
   }
   /** Synchronous once-only claim at the committed genuine episode, with detached immutable finalization. */
-  claim(authority: TrialOfferAuthority, isCurrent: () => boolean = () => true): { commit: TrialOfferCommit; content: string; expiresAt: number; epoch: number; hypothesis: StrategyHypothesis } | null {
+  claim(authority: TrialOfferAuthority, isCurrent: () => boolean = () => true): ClaimedTrialOffer | null {
     const episodeKey = `${authority.projectId}:${authority.workEpisodeId}`;
     if (this.claimedEpisodes.has(episodeKey) || this.claimedEpisodes.size >= 2048) return null;
     this.claimedEpisodes.add(episodeKey);
@@ -134,11 +144,34 @@ export class TrialOffers {
     if (!advisory) { this.recordNoOffer(authority); return null; }
     ready.claimed = true;
     const commit: TrialOfferCommit = { schemaVersion: 1, assignment, receipt: this.receipt(authority, assignment) };
-    void this.track(runBoundedOperation({ label: "Trial assignment finalization", timeoutMs: this.policy.operationTimeoutMs,
-      run: (signal) => this.store.commitReserved(commit, signal, () => isCurrent() && ready.epoch === this.eligibilityEpoch) }).catch(() => { if (isCurrent() && ready.epoch === this.eligibilityEpoch) this.invalidateEligibility(); }));
-    return { commit, content: advisory, expiresAt: assignment.expiresAt, epoch: ready.epoch, hypothesis: ready.hypothesis };
+    const publication = this.track(runBoundedOperation({ label: "Trial assignment finalization", timeoutMs: this.policy.operationTimeoutMs,
+      run: (signal) => this.store.commitReserved(commit, signal, () => isCurrent() && ready.epoch === this.eligibilityEpoch) }).then((published) => {
+        // decide may return an already-existing terminal no-offer. Successful I/O alone
+        // must not turn our proposed assignment into a durable attribution fact.
+        if (!validateTrialOfferCommit(published) || canonicalJson(published) !== canonicalJson(commit))
+          throw new Error("Trial assignment publication mismatch.");
+        return published;
+      }).catch(() => {
+        if (isCurrent() && ready.epoch === this.eligibilityEpoch) this.invalidateEligibility();
+        return null;
+      }));
+    return { commit, content: advisory, expiresAt: assignment.expiresAt, epoch: ready.epoch, hypothesis: ready.hypothesis, publication };
   }
   isEligibilityCurrent(epoch: number): boolean { return epoch === this.eligibilityEpoch; }
+  /** Recorder/settlement seam only: fresh exact immutable resolution, never context I/O.
+   * Does not restore a lease or assert current authority; the caller owns those checks.
+   */
+  async resolvePublished(claim: ClaimedTrialOffer): Promise<TrialOfferCommit | null> {
+    try {
+      const published = await claim.publication;
+      if (!published || !validateTrialOfferCommit(published) || !published.assignment ||
+        canonicalJson(published) !== canonicalJson(claim.commit)) return null;
+      return await runBoundedOperation({ label: "Trial assignment resolution", timeoutMs: this.policy.operationTimeoutMs, run: async () => {
+        const resolved = await this.store.find(published.assignment!.projectId, published.assignment!.workEpisodeId);
+        return resolved && validateTrialOfferCommit(resolved) && canonicalJson(resolved) === canonicalJson(published) ? resolved : null;
+      } });
+    } catch { return null; }
+  }
   private receipt(authority: TrialOfferAuthority, assignment: TrialAssignment | null): TrialOfferReceipt {
     const fp = trialOfferPolicyFingerprint(this.policy);
     return fingerprintOfferReceipt({ schemaVersion: 1, id: trialOperationalId({ projectId: authority.projectId, workEpisodeId: authority.workEpisodeId, offerPolicyFingerprint: fp }),

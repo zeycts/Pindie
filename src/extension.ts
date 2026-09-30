@@ -85,6 +85,7 @@ import type {
   TrustedStrategyPortfolio,
 } from "./strategy-portfolio.ts";
 import type { TrialRuntime } from "./strategy-trial.ts";
+import { Type } from "typebox";
 import type { DerivationRuntime } from "./strategy-derivation.ts";
 import type { GlobalDerivationRuntime } from "./strategy-global-derivation.ts";
 import type { RemoteCompanion, RemotePi, RemoteStatusFacts } from "./remote-companion.ts";
@@ -959,6 +960,17 @@ function registerComposedPindieExtension(
 
   // Request-local context is never persisted in the Human transcript or trusted portfolio.
   // Task start/replace never waits for offers. Only a ready advisory may win the first context opportunity.
+  const trialSelectionTool = "pindie_trial_select";
+  const deactivateTrialSelection = () => {
+    if (!options.trialOffers) return;
+    try {
+      const active = pi.getActiveTools();
+      if (active.includes(trialSelectionTool)) pi.setActiveTools(active.filter((name) => name !== trialSelectionTool));
+    } catch {
+      // A disposed/replaced Pi runtime rejects its captured API. Never let late
+      // learning cleanup fail Session shutdown or affect its successor loadout.
+    }
+  };
   const trialHostId = randomUUID();
   let trialAuthorityGeneration = 0;
   let trialSessionId: string | null = null;
@@ -966,7 +978,10 @@ function registerComposedPindieExtension(
   const closeTrialWindow = () => {
     lastTrialContextOccurrenceEpoch = Math.max(lastTrialContextOccurrenceEpoch, runtime.taskOccurrenceEpoch);
     trialContext = null;
+    run.trialAttribution.invalidate();
+    deactivateTrialSelection();
   };
+  let trialContextOrder = 0;
   let releaseTrialAbortObserver: (() => void) | null = null;
   let trialContext: { authority: TrialOfferAuthority; opening: boolean; ready: ReturnType<TrialOffers["claim"]>; occurrenceEpoch: number; externalEpoch: number; runGeneration: number | null; lifecycleGeneration: number } | null = null;
   let trialPreparationRoot: string | null = null;
@@ -986,7 +1001,48 @@ function registerComposedPindieExtension(
       (generation !== null && selfImprovement?.hasPacketForGeneration(generation))) return null;
     return { projectId: trialProjectId(root), workEpisodeId: id, sessionId: trialSessionId, hostId: trialHostId, authorityGeneration: trialAuthorityGeneration };
   };
+  // One predicate serves staging, actual exposure and execution. Executable Pi
+  // snapshots can outlive a loadout change; execute must re-authorize independently.
+  const currentTrialWindow = (ctx: ExtensionContext, portfolio = selfImprovement?.trustedStrategyPortfolio) => {
+    const window = trialContext, ready = window?.ready;
+    if (!window || !ready) return null;
+    try {
+      const root = runtime.projectRoot, authority = window.authority;
+      if (root === null || trialProjectId(root) !== authority.projectId ||
+        ctx.sessionManager.getSessionId() !== authority.sessionId || ordinaryTrialAuthority(root, authority.workEpisodeId) === null ||
+        authority.authorityGeneration !== trialAuthorityGeneration || authority.sessionId !== trialSessionId ||
+        window.occurrenceEpoch !== runtime.taskOccurrenceEpoch || window.externalEpoch !== runtime.externalStateEpoch ||
+        window.runGeneration === null || window.runGeneration !== run.activeAgentRunGeneration ||
+        window.lifecycleGeneration !== agentRunLifecycleGeneration || ctx.signal?.aborted ||
+        !options.trialOffers!.isEligibilityCurrent(ready.epoch) ||
+        (portfolio && !matchesCurrentTrustedBase(ready.hypothesis, portfolio)) ||
+        !ready.commit.assignment || !validTrialAssignment(ready.commit.assignment, authority, continuityNow())) {
+        closeTrialWindow(); return null;
+      }
+      return { window, ready };
+    } catch { closeTrialWindow(); return null; }
+  };
   if (options.trialOffers) {
+    pi.registerTool({
+      name: trialSelectionTool, label: "Experimental declaration",
+      description: "Declare select or decline for the exact exposed UNTRUSTED experimental advisory. Records a factual declaration only; grants no authority or trust and does not assert causal use.",
+      exposure: "model-only", defaultActive: false,
+      parameters: Type.Object({ assignmentId: Type.String({ minLength: 1, maxLength: 128 }),
+        decision: Type.Union([Type.Literal("select"), Type.Literal("decline")]) }, { additionalProperties: false }),
+      execute: async (_id, params, _signal, _update, ctx) => {
+        if (!currentTrialWindow(ctx) || !await run.trialAttribution.declare(params.assignmentId, params.decision,
+          (claim) => options.trialOffers!.resolvePublished(claim), () => currentTrialWindow(ctx) !== null,
+          () => run.executionCounters, continuityNow)) throw new Error("Experimental declaration rejected: stale, unexposed, unpublished or conflicting assignment.");
+        return { content: [{ type: "text", text: `Experimental declaration recorded: ${params.decision}. This is not proof of causal use.` }], details: undefined };
+      },
+    });
+    // Native declaration preparation precedes turn_start; executable preparation
+    // follows it. Pulse only that loadout, and supply the matching request-only delta.
+    pi.on("turn_start", (_event, ctx) => {
+      if (!currentTrialWindow(ctx)) { deactivateTrialSelection(); return; }
+      const active = pi.getActiveTools();
+      if (!active.includes(trialSelectionTool)) pi.setActiveTools([...active, trialSelectionTool]);
+    });
     options.trialOffers.onEligibilityInvalidated(closeTrialWindow);
     runtime.onWorkEpisodeOpened = async (root, id) => {
       if (runtime.taskOccurrenceEpoch <= lastTrialContextOccurrenceEpoch) return;
@@ -1019,25 +1075,27 @@ function registerComposedPindieExtension(
       window.opening = false; // First context/policy opportunity consumes the window, even when not ready.
       const ready = window.ready;
       if (!ready) return; // No await, store read, hypothesis read or later restore to compensate.
+      if (!currentTrialWindow(ctx)) return;
       try {
-        const root = runtime.projectRoot, authority = window.authority;
-        if (root === null || trialProjectId(root) !== authority.projectId ||
-          ctx.sessionManager.getSessionId() !== authority.sessionId || ordinaryTrialAuthority(root, authority.workEpisodeId) === null ||
-          authority.authorityGeneration !== trialAuthorityGeneration || authority.sessionId !== trialSessionId ||
-          window.occurrenceEpoch !== runtime.taskOccurrenceEpoch || window.externalEpoch !== runtime.externalStateEpoch ||
-          window.runGeneration !== run.activeAgentRunGeneration || window.lifecycleGeneration !== agentRunLifecycleGeneration || !options.trialOffers!.isEligibilityCurrent(ready.epoch) ||
-          (selfImprovement?.trustedStrategyPortfolio && !matchesCurrentTrustedBase(ready.hypothesis, selfImprovement.trustedStrategyPortfolio)) ||
-          !ready.commit.assignment || !validTrialAssignment(ready.commit.assignment, authority, continuityNow())) {
-          window.ready = null;
-          return;
+        const definition = pi.getAllTools().find((tool) => tool.name === trialSelectionTool);
+        if (!definition || !pi.getActiveTools().includes(trialSelectionTool)) { closeTrialWindow(); return; }
+        const messages = [...event.messages,
+          { role: "system" as const, content: "", timestamp: 0,
+            toolsAdded: [{ name: trialSelectionTool, description: definition.description, parameters: definition.parameters }] },
+          { role: "user" as const, content: ready.content, timestamp: 0 }];
+        // This synchronous successful return is the exposure boundary, not readiness.
+        if (!run.trialAttribution.expose(ready, { sessionId: window.authority.sessionId,
+          agentRunGeneration: window.runGeneration!, occurrenceEpoch: window.occurrenceEpoch }, continuityNow(), trialContextOrder++)) {
+          closeTrialWindow(); return;
         }
-        return { messages: [...event.messages, { role: "user" as const, content: ready.content, timestamp: 0 }] };
-      } catch { window.ready = null; /* Missing authority omits context without delaying Human work. */ }
+        return { messages };
+      } catch { closeTrialWindow(); /* Missing authority omits context without delaying Human work. */ }
     });
   }
 
   pi.on("before_agent_start", async (event, ctx) => {
     closeTrialWindow(); // Fresh Runs cannot claim delayed notifications or restore old leases.
+    trialContextOrder = 0;
     releaseTrialAbortObserver?.(); releaseTrialAbortObserver = null;
     if (runtime.projectRoot) kickTrialPreparation(runtime.projectRoot);
     ++agentRunLifecycleGeneration;
@@ -1317,6 +1375,9 @@ function registerComposedPindieExtension(
   }
 
   pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
+    // Recorder is neither a semantic transition nor ordinary work telemetry.
+    // Its execute predicate and publication confirmation are its authority boundary.
+    if (options.trialOffers && event.toolName === trialSelectionTool) return;
     if (event.toolName === "pindie_policy_set") {
       lastTrialContextOccurrenceEpoch = Math.max(lastTrialContextOccurrenceEpoch, runtime.taskOccurrenceEpoch);
       if (trialContext?.opening) { trialContext.opening = false; trialContext.ready = null; }
@@ -1472,6 +1533,7 @@ function registerComposedPindieExtension(
   });
 
   pi.on("tool_result", async (event, ctx) => {
+    if (options.trialOffers && event.toolName === trialSelectionTool) return;
     let handoffBinding: { sessionId: string; agentRunGeneration: number } | null | undefined;
     if (taskHandoffEnabled) {
       try {
@@ -1582,15 +1644,18 @@ function registerComposedPindieExtension(
     };
   });
 
-  if (featureSelection.presentation) {
+  if (featureSelection.presentation || options.trialOffers) {
     pi.on("turn_end", (event, ctx) => {
-      if (event.toolResults.length === 0) return;
+      deactivateTrialSelection();
+      if (!featureSelection.presentation || event.toolResults.length === 0) return;
       const state = runtime.projectRoot === null
         ? { task: null }
         : runtime.state;
       presentation.handleTurnEnd(state, event.toolResults, ctx);
     });
+  }
 
+  if (featureSelection.presentation) {
     pi.on("thinking_level_select", (event, ctx) => {
       presentation.synchronizeThinkingLevel(event.level, ctx);
     });
@@ -1602,6 +1667,7 @@ function registerComposedPindieExtension(
     // stale; that obsolete run must not touch or reset this runtime's state.
     const entries = safeSessionEntries(ctx);
     if (!entries) return;
+    deactivateTrialSelection();
 
     const settlementLifecycleGeneration = agentRunLifecycleGeneration;
     const settlementRemoteLease = liveRemoteSession;
@@ -1630,10 +1696,20 @@ function registerComposedPindieExtension(
     };
 
     presentation.setStatusContext(ctx);
+    // SI clears its Run-owned trusted projection in observer.begin. Freeze that
+    // exact factual base before cleanup; eligibility epochs remain live through I/O.
+    const settlementTrialPortfolio = selfImprovement?.trustedStrategyPortfolio;
     const result = await core.settleAgentRun(
       ctx,
       entries,
-      selfImprovement?.createSettlementObserver(),
+      selfImprovement?.createSettlementObserver(options.trialOffers ? async (facts, workEpisodeId) => {
+        if (settlementSessionId === null || facts.settlementGeneration === null ||
+          facts.projectRoot === null || facts.projectRoot !== runtime.projectRoot) return null;
+        return run.trialAttribution.settle({ sessionId: settlementSessionId,
+          agentRunGeneration: facts.settlementGeneration, occurrenceEpoch: facts.settlementOccurrenceEpoch },
+          workEpisodeId, (claim) => options.trialOffers!.resolvePublished(claim),
+          () => currentTrialWindow(ctx, settlementTrialPortfolio) !== null);
+      } : undefined),
     );
     if (result.status !== "settled") return;
 

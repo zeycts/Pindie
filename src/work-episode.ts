@@ -64,7 +64,7 @@ export class FileWorkEpisodeLedger implements WorkEpisodeLedger {
       if (ledger === null) {
         if (state.task === null || state.task.completed) return null;
         const experience = await this.experienceReader.read(root);
-        if (experience.invalid || experience.unsupportedSchema || experience.records.some((r) => r.experience.schemaVersion === 5)) return null;
+        if (experience.invalid || experience.unsupportedSchema || experience.records.some((r) => r.experience.schemaVersion !== 4)) return null;
         const binding = this.open(root, state);
         await this.save(root, { schemaVersion: 1, projectId: getProjectId(root), current: binding, lastClosed: null, transitionPending: false });
         return binding.episodeId;

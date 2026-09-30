@@ -44,7 +44,7 @@ export async function buildProjectDiscoveryPacket(projectId: string, dependencie
   // Sort before deduplication: identical Experience in multiple files must bind
   // the same exact record ID regardless of filesystem enumeration order.
   const records = read.records.flatMap(({ recordId, experience }) => {
-    if (experience.schemaVersion !== 5 || !experience.workEpisodeId) return [];
+    if (experience.schemaVersion === 4 || !experience.workEpisodeId) return [];
     // v5 parser enforces coherent episode/task linkage; no learning/internal Run is recorded by the Work Plane.
     const fingerprint = runExperienceRecordFingerprint(experience);
     const ref = { projectId, recordId, fingerprint };
