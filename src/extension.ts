@@ -942,57 +942,55 @@ function registerComposedPindieExtension(
   });
 
   // Request-local context is never persisted in the Human transcript or trusted portfolio.
-  // Task start/replace can occur mid-Run; the observer finishes before its tool result returns.
+  // Task start/replace never waits for offers. Only a ready advisory may win the first context opportunity.
   const trialHostId = randomUUID();
   let trialAuthorityGeneration = 0;
   let trialSessionId: string | null = null;
-  let trialContext: { authority: TrialOfferAuthority; content: string; expiresAt: number; occurrenceEpoch: number; externalEpoch: number } | null = null;
+  let lastTrialContextOccurrenceEpoch = -1;
+  let trialContext: { authority: TrialOfferAuthority; opening: boolean; ready: { content: string; expiresAt: number } | null; occurrenceEpoch: number; externalEpoch: number } | null = null;
   const ordinaryTrialAuthority = (root: string, id: string): TrialOfferAuthority | null => {
     const snapshot = run.deriveSnapshot();
     const generation = run.activeAgentRunGeneration;
-    if (!trialSessionId || root !== runtime.projectRoot || !snapshot.ok || snapshot.snapshot.authority !== "coherent" ||
+    if (!trialSessionId || root !== runtime.projectRoot || runtime.currentWorkEpisodeId !== id || !snapshot.ok || snapshot.snapshot.authority !== "coherent" ||
       !run.authoritativeState?.task || run.authoritativeState.task.completed ||
       (generation !== null && selfImprovement?.hasPacketForGeneration(generation))) return null;
     return { projectId: trialProjectId(root), workEpisodeId: id, sessionId: trialSessionId, hostId: trialHostId, authorityGeneration: trialAuthorityGeneration };
   };
-  const cacheTrialContext = async (authority: TrialOfferAuthority, commit?: import("./trial-offer-store.ts").TrialOfferCommit | null) => {
-    const occurrenceEpoch = runtime.taskOccurrenceEpoch, externalEpoch = runtime.externalStateEpoch;
-    const advisory = await options.trialOffers?.context(authority, commit);
-    if (!advisory || !runtime.projectRoot || trialProjectId(runtime.projectRoot) !== authority.projectId ||
-      trialSessionId !== authority.sessionId || trialAuthorityGeneration !== authority.authorityGeneration ||
-      runtime.taskOccurrenceEpoch !== occurrenceEpoch || runtime.externalStateEpoch !== externalEpoch) return;
-    trialContext = { authority, ...advisory, occurrenceEpoch, externalEpoch };
-  };
   if (options.trialOffers) {
     runtime.onWorkEpisodeOpened = async (root, id) => {
-      trialContext = null;
+      if (runtime.taskOccurrenceEpoch <= lastTrialContextOccurrenceEpoch) return;
       const authority = ordinaryTrialAuthority(root, id);
       if (!authority) return;
-      const epoch = runtime.taskOccurrenceEpoch;
-      const commit = await options.trialOffers!.opened(authority, () => runtime.taskOccurrenceEpoch === epoch &&
-        trialSessionId === authority.sessionId && trialAuthorityGeneration === authority.authorityGeneration && ordinaryTrialAuthority(root, id) !== null);
-      if (runtime.taskOccurrenceEpoch === epoch) await cacheTrialContext(authority, commit);
+      // This object is the runtime-only per-occurrence presentation generation. Never reopen it.
+      const window = { authority, opening: true, ready: null as { content: string; expiresAt: number } | null,
+        occurrenceEpoch: runtime.taskOccurrenceEpoch, externalEpoch: runtime.externalStateEpoch };
+      trialContext = window;
+      const isCurrent = () => trialContext === window && window.opening &&
+        window.occurrenceEpoch === runtime.taskOccurrenceEpoch && window.externalEpoch === runtime.externalStateEpoch &&
+        trialSessionId === authority.sessionId && trialAuthorityGeneration === authority.authorityGeneration && ordinaryTrialAuthority(root, id) !== null;
+      const commit = await options.trialOffers!.opened(authority, isCurrent);
+      if (!isCurrent()) return;
+      const advisory = await options.trialOffers!.context(authority, commit);
+      if (isCurrent()) window.ready = advisory;
     };
-    pi.on("context_with_system", async (event, ctx) => {
-      const current = trialContext;
-      if (!current) return; // No offer: exact unchanged bytes/tools, no per-request offer I/O.
+    pi.on("context_with_system", (event, ctx) => {
+      lastTrialContextOccurrenceEpoch = Math.max(lastTrialContextOccurrenceEpoch, runtime.taskOccurrenceEpoch);
+      const window = trialContext;
+      if (!window) return;
+      window.opening = false; // First context/policy opportunity consumes the window, even when not ready.
+      const ready = window.ready;
+      if (!ready) return; // No await, store read, hypothesis read or later restore to compensate.
       try {
-        const root = runtime.projectRoot, state = run.authoritativeState;
-        const isCurrent = () => root !== null && runtime.projectRoot === root && run.authoritativeState === state &&
-          trialProjectId(root) === current.authority.projectId && ctx.sessionManager.getSessionId() === current.authority.sessionId &&
-          ordinaryTrialAuthority(root, current.authority.workEpisodeId) !== null &&
-          current.authority.authorityGeneration === trialAuthorityGeneration && current.authority.sessionId === trialSessionId &&
-          current.occurrenceEpoch === runtime.taskOccurrenceEpoch && current.externalEpoch === runtime.externalStateEpoch && continuityNow() < current.expiresAt;
-        if (!isCurrent() || !state || !runtime.workEpisodes) return;
-        return await runBoundedOperation({ label: "Trial presentation authority", timeoutMs: 100, run: async (signal) => {
-          const episodeId = await runtime.workEpisodes!.current(root!, state);
-          if (episodeId !== current.authority.workEpisodeId || !isCurrent()) return;
-          const advisory = await options.trialOffers!.context(current.authority);
-          signal.throwIfAborted();
-          if (!advisory || !isCurrent()) return;
-          return { messages: [...event.messages, { role: "user" as const, content: advisory.content, timestamp: 0 }] };
-        } });
-      } catch { /* Stale/corrupt/unavailable assignment omits context, never blocks Human work. */ }
+        const root = runtime.projectRoot, authority = window.authority;
+        if (root === null || trialProjectId(root) !== authority.projectId ||
+          ctx.sessionManager.getSessionId() !== authority.sessionId || ordinaryTrialAuthority(root, authority.workEpisodeId) === null ||
+          authority.authorityGeneration !== trialAuthorityGeneration || authority.sessionId !== trialSessionId ||
+          window.occurrenceEpoch !== runtime.taskOccurrenceEpoch || window.externalEpoch !== runtime.externalStateEpoch || continuityNow() >= ready.expiresAt) {
+          window.ready = null;
+          return;
+        }
+        return { messages: [...event.messages, { role: "user" as const, content: ready.content, timestamp: 0 }] };
+      } catch { window.ready = null; /* Missing authority omits context without delaying Human work. */ }
     });
   }
 
@@ -1047,27 +1045,8 @@ function registerComposedPindieExtension(
             run: (signal) => selfImprovement.prepareAgentRun(ctx, signal),
           });
 
-      trialContext = null;
-      if (options.trialOffers && runtime.workEpisodes && runtime.projectRoot && run.authoritativeState?.task && !run.authoritativeState.task.completed) {
-        try {
-          await runBoundedOperation({ label: "Trial offer restore", timeoutMs: 100, run: async (signal) => {
-            const root = runtime.projectRoot!, state = run.authoritativeState!;
-            const occurrenceEpoch = runtime.taskOccurrenceEpoch, externalEpoch = runtime.externalStateEpoch;
-            const id = await runtime.workEpisodes!.current(root, state);
-            signal.throwIfAborted();
-            const authority = id ? ordinaryTrialAuthority(root, id) : null;
-            if (authority) {
-              const advisory = await options.trialOffers!.context(authority);
-              signal.throwIfAborted();
-              if (advisory && runtime.projectRoot === root && run.authoritativeState === state &&
-                runtime.taskOccurrenceEpoch === occurrenceEpoch && runtime.externalStateEpoch === externalEpoch &&
-                trialSessionId === authority.sessionId && trialAuthorityGeneration === authority.authorityGeneration) {
-                trialContext = { authority, ...advisory, occurrenceEpoch, externalEpoch };
-              }
-            }
-          } });
-        } catch { /* Existing/reconciled episodes NEVER get a new decision. */ }
-      }
+      // Never restore Trial I/O here. A missed presentation window stays closed across Runs;
+      // Session/reload invalidation clears its runtime cache without creating another offer.
       let derivation = run.deriveSnapshot();
       if (!derivation.ok) {
         markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
@@ -1293,6 +1272,10 @@ function registerComposedPindieExtension(
   }
 
   pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
+    if (event.toolName === "pindie_policy_set") {
+      lastTrialContextOccurrenceEpoch = Math.max(lastTrialContextOccurrenceEpoch, runtime.taskOccurrenceEpoch);
+      if (trialContext?.opening) { trialContext.opening = false; trialContext.ready = null; }
+    }
     const effect = core.classifyToolEffect(event.toolName);
     const isHandoffCall = taskHandoffEnabled &&
       event.toolName === PINDIE_TASK_HANDOFF_TOOL;

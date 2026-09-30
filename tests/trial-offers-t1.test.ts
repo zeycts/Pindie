@@ -177,7 +177,13 @@ test("T1 real WorkEpisode boundary: replacement rotates; refine/progress/reload 
   const ledger = new FileWorkEpisodeLedger({ projectsBaseDir: f.root, stateStore, experienceReader: new FileRunExperienceReader({ baseDir: f.root }) });
   const runtime = new PindieRuntime(stateStore, ledger), a = authority();
   let boundaries = 0;
-  runtime.onWorkEpisodeOpened = async (_root, id) => { boundaries++; await f.offers.opened({ ...a, workEpisodeId: id }, () => true); };
+  const observers: Promise<unknown>[] = [];
+  runtime.onWorkEpisodeOpened = async (_root, id) => {
+    boundaries++;
+    const offer = f.offers.opened({ ...a, workEpisodeId: id }, () => true);
+    observers.push(offer);
+    await offer;
+  };
   await runtime.load(ROOT);
   const start = { type: "start_task" as const, goal: "Real Human Task", constraints: [], successCriteria: ["done"] };
   await runtime.dispatch(start);
@@ -191,6 +197,7 @@ test("T1 real WorkEpisode boundary: replacement rotates; refine/progress/reload 
   const second = (await ledger.current(ROOT, runtime.state))!;
   assert.notEqual(second, first);
   assert.equal(boundaries, 2);
+  await Promise.all(observers); // Test observation only: dispatch already returned independently.
   assert.ok((await f.store.find(projectId, second))?.assignment);
   assert.equal(await f.offers.context({ ...a, workEpisodeId: first === second ? first : second }, await f.store.find(projectId, first)), null);
   assert.ok(await f.offers.context({ ...a, workEpisodeId: second }));

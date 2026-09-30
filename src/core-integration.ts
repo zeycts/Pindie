@@ -501,11 +501,13 @@ export class CoreIntegration {
     if (!ledger || generation === null || !root || !state || !derivation.ok || derivation.snapshot.authority !== "coherent") return;
     const taskWasOpen = state.task !== null && !state.task.completed;
     let episodeId: string | null = null;
+    const isCurrent = () => !signal?.aborted && this.run.isAgentRunCurrent(generation) &&
+      this.runtime.projectRoot === root && this.run.authoritativeState === state;
     try { if (taskWasOpen) episodeId = await ledger.current(root, state); }
-    catch { return; }
+    catch { if (isCurrent()) this.runtime.observeWorkEpisode(root, state, null); return; }
+    if (!isCurrent()) return;
+    this.runtime.observeWorkEpisode(root, state, episodeId);
     if (taskWasOpen && episodeId === null) return; // Ambiguous existing Task, not idle.
-    if (signal?.aborted || !this.run.isAgentRunCurrent(generation) || this.runtime.projectRoot !== root ||
-      this.run.authoritativeState !== state) return;
     this.runStartEpisode = {
       projectRoot: root, episodeId, taskWasOpen,
       occurrenceEpoch: this.runtime.taskOccurrenceEpoch,
