@@ -1,6 +1,8 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { trialEligibilityObserver } from "../src/trial-eligibility-watch.ts";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -170,6 +172,66 @@ test("T1 monitor failure disables future readiness rather than silently using an
   notify(true);
   await offers.prepare(f.base, () => true);
   assert.equal(offers.claim(f.authority), null);
+});
+
+test("T1 Node 22 scandir of removed operational locks preserves readiness and exact eligibility invalidation", async (t) => {
+  const f = await fixture(t);
+  class Watcher extends EventEmitter {
+    closed = false;
+    close() { this.closed = true; }
+    unref() { return this; }
+  }
+  const watchers: { root: string; watcher: Watcher; change: (event: string, name: string | Buffer | null) => void }[] = [];
+  const observe = trialEligibilityObserver(f.root, join(f.root, "global"), (root, change) => {
+    const watcher = new Watcher(); watchers.push({ root, watcher, change }); return watcher;
+  });
+  const offers = new TrialOffers(f.store, { readOpen: async () => [f.h], observe }, f.policy, () => f.now);
+  f.instances.push(offers);
+  await offers.prepare(f.base, () => true);
+  for (const { root, watcher } of watchers) {
+    const locks = ["writer.lock", "writer.lock/reclaim"];
+    if (root === f.root) locks.push(`${f.projectId}/state.lock`, `${getProjectId("other-project")}/state.lock/reclaim`);
+    for (const suffix of locks) {
+      // Replay the actual Node 22 stat -> remove -> scandir failure, not a sleep.
+      watcher.emit("error", Object.assign(new Error("removed operational directory"), {
+        code: "ENOENT", syscall: "scandir", path: join(root, suffix),
+      }));
+      assert.equal(watcher.closed, false);
+    }
+  }
+  const ready = offers.claim(f.authority); assert.ok(ready);
+  watchers[0]!.change("rename", `${f.projectId}/learning-v1/hypotheses/changed.json`);
+  assert.equal(offers.isEligibilityCurrent(ready.epoch), false);
+  await offers.prepare(f.base, () => true);
+  assert.equal(offers.claim(f.authority), null); // No revival of the invalidated occurrence.
+  assert.ok(offers.claim({ ...f.authority, workEpisodeId: randomUUID() }));
+  offers.dispose(); await offers.settled();
+  assert.ok(watchers.every(({ watcher }) => watcher.closed));
+});
+
+for (const failure of [
+  { code: "ENOENT", syscall: "scandir", path: "" },
+  { code: "ENOENT", syscall: "scandir", path: "strategy-decisions" },
+  { code: "ENOENT", syscall: "scandir", path: "learning-v1/hypotheses" },
+  { code: "ENOENT", syscall: "scandir", path: "writer.lock-other" },
+  { code: "ENOENT", syscall: "scandir", path: "not-a-project/state.lock" },
+  { code: "ENOENT", syscall: "scandir", path: "../writer.lock" },
+  { code: "EACCES", syscall: "scandir", path: "writer.lock" },
+  { code: "ENOENT", syscall: "watch", path: "writer.lock" },
+]) test(`T1 genuine watcher failure stays closed: ${failure.code}/${failure.syscall}/${failure.path || "root"}`, async (t) => {
+  const f = await fixture(t);
+  class Watcher extends EventEmitter { close() {} unref() { return this; } }
+  const watchers: Watcher[] = [];
+  const observe = trialEligibilityObserver(f.root, join(f.root, "global"), () => {
+    const watcher = new Watcher(); watchers.push(watcher); return watcher;
+  });
+  const offers = new TrialOffers(f.store, { readOpen: async () => [f.h], observe }, f.policy, () => f.now);
+  f.instances.push(offers);
+  await offers.prepare(f.base, () => true);
+  watchers[0]!.emit("error", Object.assign(new Error("observation failure"), { ...failure, path: join(f.root, failure.path) }));
+  assert.equal(offers.claim(f.authority), null);
+  await offers.prepare(f.base, () => true);
+  assert.equal(offers.claim({ ...f.authority, workEpisodeId: randomUUID() }), null);
 });
 
 test("T1 restart preflight repeatedly reclaims expired holds beyond retained capacity without dropping a live Host hold", async (t) => {

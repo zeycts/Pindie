@@ -19,7 +19,7 @@ import { createPromotedStrategyRevisionCatalog } from "../src/strategy-decisions
 import { reduceState } from "../src/transitions.ts";
 import { EMPTY_STATE } from "../src/state.ts";
 
-async function fixture(options: { offerable?: boolean; blocked?: Promise<void>; active?: boolean; revision?: boolean; boundaryChange?: "lineage" | "trust" } = {}) {
+async function fixture(options: { offerable?: boolean; blocked?: Promise<void>; active?: boolean; revision?: boolean; holdPreparation?: boolean; boundaryChange?: "lineage" | "trust" } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), "pindie-t1-pi-")), agentDir = join(cwd, "agent"), projectsBaseDir = join(cwd, "projects"), globalBaseDir = join(cwd, "global");
   await mkdir(agentDir, { recursive: true });
   const projectId = getProjectId(cwd);
@@ -32,6 +32,24 @@ async function fixture(options: { offerable?: boolean; blocked?: Promise<void>; 
   const h = { ...semantic, id: randomUUID(), fingerprint: hypothesisFingerprint(semantic) };
   let open: readonly StrategyHypothesis[] = options.offerable === false ? [] : [h];
   const store = new FileTrialOfferStore({ projectsBaseDir });
+  let published!: () => void, failed!: (error: unknown) => void, releasePreparation!: () => void;
+  const publication = new Promise<void>((resolve, reject) => { published = resolve; failed = reject; });
+  void publication.catch(() => undefined);
+  const preparationGate = new Promise<void>((resolve) => { releasePreparation = resolve; });
+  let preparationReturned = false;
+  const reserve = store.reserve.bind(store);
+  store.reserve = async (projectId, now, select, signal, isCurrent, onReserved) => {
+    try {
+      const reservation = await reserve(projectId, now, select, signal, isCurrent, (r) => {
+        onReserved?.(r); // TrialOffers caches readiness at this exact durable publication event.
+        published();
+      });
+      if (!reservation) failed(new Error("Positive fixture did not publish a scheduling hold"));
+      if (options.holdPreparation) await preparationGate;
+      preparationReturned = true;
+      return reservation;
+    } catch (error) { failed(error); throw error; }
+  };
   const claims: ReturnType<TrialOffers["claim"]>[] = [];
   const offers = new TrialOffers(store, new D2OpenHypothesisReader({ list: async () => { await options.blocked; return open; } },
     { readProjectId: async () => trust }, trialEligibilityObserver(projectsBaseDir, globalBaseDir)), { ...DEFAULT_TRIAL_OFFER_POLICY, operationTimeoutMs: 1000, cooldownMs: 0 });
@@ -41,10 +59,17 @@ async function fixture(options: { offerable?: boolean; blocked?: Promise<void>; 
     const result = reduceState(EMPTY_STATE, { type: "start_task", goal: "Preexisting real Task", constraints: [], successCriteria: ["done"] });
     assert.ok(result.ok); await new FileStateStore({ baseDir: projectsBaseDir }).save(cwd, result.state);
   }
-  // Model the ordinary pre-Task token stream, not a readiness/settlement barrier.
-  // The continuation still builds its context immediately after the Task tool returns;
-  // delaying the FIRST response cannot rescue the old post-commit preparation design.
-  const faux = fauxProvider({ provider: `trial-t1-${randomUUID()}`, tokensPerSecond: 200 });
+  // Positive fixtures model a hold published BEFORE the model issues its Task tool.
+  // Synchronize that prerequisite on publication, not token rate, elapsed time or
+  // offers.settled(). The native Task dispatch and immediate continuation never wait.
+  // Slow/empty fixtures deliberately do not synchronize and must remain nonblocking.
+  const faux = fauxProvider({ provider: `trial-t1-${randomUUID()}` });
+  const setResponses = faux.setResponses.bind(faux);
+  faux.setResponses = (responses) => setResponses(responses.map((response, index) =>
+    index === 0 && !options.blocked && options.offerable !== false ? async (...args) => {
+      await publication;
+      return typeof response === "function" ? response(...args) : response;
+    } : response));
   const modelRuntime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
   modelRuntime.registerNativeProvider(faux.provider); await modelRuntime.refresh({ allowNetwork: false });
   const settingsManager = SettingsManager.create(cwd, agentDir);
@@ -66,18 +91,25 @@ async function fixture(options: { offerable?: boolean; blocked?: Promise<void>; 
     const dir = join(projectsBaseDir, projectId, "learning-v1", "hypotheses");
     await mkdir(dir, { recursive: true }); await writeFile(join(dir, `${"a".repeat(64)}.json.${randomUUID()}.tmp`), "changed eligibility\n");
   };
-  return { session, faux, offers, h, claims, change, async close() { offers.dispose(); session.dispose(); await offers.settled(); await rm(cwd, { recursive: true, force: true, maxRetries: 5 }); } };
+  return { session, faux, offers, h, claims, change, releasePreparation, preparationReturned: () => preparationReturned,
+    async close() { releasePreparation(); offers.dispose(); session.dispose(); await offers.settled(); await rm(cwd, { recursive: true, force: true, maxRetries: 5 }); } };
 }
 const blocks = (ctx: unknown) => (JSON.stringify(ctx).match(/<PINDIE_EXPERIMENTAL_TRIAL>/g) ?? []).length;
 
 test("T1 ten real Pi start/replace continuations reach the advisory without waiting for offer settlement", async () => {
   for (let i = 0; i < 10; i++) {
-    const f = await fixture({ active: i % 2 === 1 });
+    const f = await fixture({ active: i % 2 === 1, holdPreparation: true });
     try {
       const seen: number[] = [];
       f.faux.setResponses([
         (ctx) => { seen.push(blocks(ctx)); return fauxAssistantMessage(fauxToolCall(i % 2 ? "pindie_task_replace" : "pindie_task_start", { goal: "Real Human Task", successCriteria: ["done"] }), { stopReason: "toolUse" }); },
-        (ctx) => { seen.push(blocks(ctx)); return fauxAssistantMessage(fauxToolCall("pindie_task_progress", { blockers: ["Human dependency"], questions: [] }), { stopReason: "toolUse" }); },
+        (ctx) => {
+          seen.push(blocks(ctx));
+          assert.equal(f.preparationReturned(), false, "continuation must reach published readiness before preflight returns");
+          assert.ok(f.claims[0], "the Task must synchronously claim the published hold");
+          f.releasePreparation();
+          return fauxAssistantMessage(fauxToolCall("pindie_task_progress", { blockers: ["Human dependency"], questions: [] }), { stopReason: "toolUse" });
+        },
         (ctx) => { assert.equal(blocks(ctx), 1); return fauxAssistantMessage("Blocked on the Human dependency."); },
       ]);
       await f.session.prompt("Start or replace the real Human Task.");
