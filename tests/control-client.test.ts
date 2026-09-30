@@ -97,9 +97,9 @@ function fakeSession(
         if (listener === next) listener = undefined;
       };
     },
-    prompt: async (text: string, options?: { preflightResult?: (accepted: boolean) => void }) => {
+    prompt: async (text: string, options?: { preflightResult?: (disposition: "started" | "queued" | "handled") => void }) => {
       prompts.push(text);
-      options?.preflightResult?.(true);
+      options?.preflightResult?.("started");
     },
     steer: async (text: string) => {
       steers.push(text);
@@ -770,7 +770,7 @@ test("Control prompt input waits for preflight acceptance and cannot settle befo
     { current: () => ({ snapshot: () => presentation }) },
     { createLease: () => "lease-1" },
   );
-  let accept!: (accepted: boolean) => void;
+  let accept!: (disposition: "started" | "queued" | "handled") => void;
   runtime.prompt = async (text, options) => {
     session.prompts.push(text);
     accept = options!.preflightResult!;
@@ -788,7 +788,7 @@ test("Control prompt input waits for preflight acceptance and cannot settle befo
     assert.equal(completed, false);
     assert.equal(control.readTimeline().timeline.some((block) => block.type === "message" && block.role === "user" && block.text === "start work"), false);
 
-    accept(true);
+    accept("started");
     session.start();
     const delivered = await input;
     assert.equal(delivered.delivery, "prompt");
@@ -809,6 +809,29 @@ test("Control prompt input waits for preflight acceptance and cannot settle befo
   }
 });
 
+test("Control Pi 0.99 handled dispositions never fabricate prompt or queued timeline deliveries", async () => {
+  const session = fakeSession("session-1", branchEntries());
+  const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+  const control = new PindieControlClient(runtime,
+    { current: () => ({ snapshot: () => presentationFor(activeState()) }) });
+  runtime.prompt = async (_text, options) => { options!.preflightResult!("handled"); };
+  runtime.steer = async () => "handled";
+  runtime.followUp = async () => "handled";
+  await control.start();
+  try {
+    const lease = control.observe().lease;
+    await assert.rejects(control.input({ lease, text: "consumed prompt" }), (error: unknown) =>
+      error instanceof PindieControlError && error.code === "delivery_failed");
+    session.start();
+    for (const timing of ["now", "after_current_run"] as const) {
+      await assert.rejects(control.input({ lease, text: `consumed ${timing}`, timing }), (error: unknown) =>
+        error instanceof PindieControlError && error.code === "delivery_failed");
+    }
+    assert.equal(control.readTimeline().timeline.some((block) =>
+      block.type === "message" && block.role === "user" && block.text.startsWith("consumed")), false);
+  } finally { control.dispose(); }
+});
+
 test("Control rejected prompt preflight returns delivery_failed without a timeline echo", async () => {
   const session = fakeSession("session-1", branchEntries());
   const native = fakeNativeRuntime(session);
@@ -820,7 +843,6 @@ test("Control rejected prompt preflight returns delivery_failed without a timeli
     { createLease: () => "lease-1" },
   );
   runtime.prompt = async (_text, options) => {
-    options!.preflightResult!(false);
     throw new Error("preflight rejected");
   };
 
@@ -845,7 +867,7 @@ test("Control Human Gate response waits for the same prompt preflight acceptance
     { current: () => ({ snapshot: () => presentation }) },
     { createLease: () => "lease-1" },
   );
-  let accept!: (accepted: boolean) => void;
+  let accept!: (disposition: "started" | "queued" | "handled") => void;
   runtime.prompt = async (_text, options) => { accept = options!.preflightResult!; };
 
   await control.start();
@@ -857,7 +879,7 @@ test("Control Human Gate response waits for the same prompt preflight acceptance
       .then((result) => { completed = true; return result; });
     await Promise.resolve();
     assert.equal(completed, false);
-    accept(true);
+    accept("started");
     session.start();
     assert.equal((await response).delivery, "prompt");
     assert.equal(control.observe().runtime.idle, false);

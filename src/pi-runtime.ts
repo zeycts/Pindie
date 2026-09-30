@@ -369,11 +369,11 @@ export class PiRuntimeAdapter {
     return this.activeSession.prompt(text, options);
   }
 
-  steer(text: string, images?: ImageContent[]): Promise<void> {
+  steer(text: string, images?: ImageContent[]): ReturnType<AgentSession["steer"]> {
     return this.activeSession.steer(text, images);
   }
 
-  followUp(text: string, images?: ImageContent[]): Promise<void> {
+  followUp(text: string, images?: ImageContent[]): ReturnType<AgentSession["followUp"]> {
     return this.activeSession.followUp(text, images);
   }
 

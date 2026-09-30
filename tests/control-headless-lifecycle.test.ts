@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { createAgentSessionServices, createAgentSessionFromServices, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 import { PindieControlClient, PindieControlError } from "../src/control-client.ts";
@@ -164,6 +164,65 @@ test("real pinned Pi Session events reach the live timeline and replacement rele
     const replacement = await control.freshSession({ lease: before.lease });
     assert.notEqual(replacement.snapshot.session.id, before.session.id);
     assert.equal((await pending).reason, "binding_changed");
+  } finally {
+    control?.dispose();
+    await host?.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi 0.99.1 real Control prompt disposition, observe/timeline/wait and replacement remain coherent", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pindie-control-pi099-"));
+  const project = join(root, "project");
+  const agentDir = join(root, "agent");
+  await mkdir(project);
+  await mkdir(agentDir);
+  const faux = fauxProvider({ provider: `control-pi099-${Date.now()}` });
+  const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null, refreshOnCreate: false });
+  modelRuntime.registerNativeProvider(faux.provider);
+  await modelRuntime.refresh({ allowNetwork: false });
+  let host: PindieHost | undefined;
+  let control: PindieControlClient | undefined;
+  try {
+    host = await createPindieHost({ cwd: project, agentDir, sessionManager: SessionManager.inMemory(project),
+      env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: "0" },
+      dependencies: {
+        createAgentSessionServices: (options) => createAgentSessionServices({ ...options, modelRuntime }),
+        createAgentSessionFromServices: (options) => createAgentSessionFromServices({ ...options, model: faux.getModel() }),
+        createInteractiveMode: () => ({ run: async () => {} }),
+      },
+    });
+    control = new PindieControlClient(host.runtime, host.presentation, {
+      bindActiveSession: () => host!.runtime.bindActiveSessionExtensions({ mode: "print" }),
+    });
+    await control.start();
+    const before = control.observe();
+    const allNames = host.runtime.activeSession.getAllTools().map((tool) => tool.name);
+    assert.equal(allNames.includes("codemode"), false);
+    assert.equal(allNames.includes("tool_search"), false);
+    assert.equal(host.runtime.activeSession.resourceLoader.getExtensions().extensions.some((extension) => extension.path.startsWith("builtin:")), false);
+    let finish!: (message: ReturnType<typeof fauxAssistantMessage>) => void;
+    const response = new Promise<ReturnType<typeof fauxAssistantMessage>>((resolve) => { finish = resolve; });
+    faux.setResponses([async () => response]);
+    const delivered = await control.input({ lease: before.lease, text: "Harmless compatibility observation" });
+    assert.equal(delivered.delivery, "prompt");
+    assert.equal(delivered.snapshot.runtime.automaticWorkSettled, false);
+    let resolved = false;
+    const settled = control.wait({ lease: before.lease, until: "settled", timeoutSeconds: 5 }).then((result) => { resolved = true; return result; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(resolved, false);
+    finish(fauxAssistantMessage("Compatibility observation complete"));
+    assert.equal((await settled).reason, "settled");
+    const after = control.observe();
+    assert.ok(after.revision > before.revision);
+    assert.equal(after.latestAssistant?.text, "Compatibility observation complete");
+    const timeline = control.readTimeline().timeline;
+    assert.equal(timeline.filter((block) => block.type === "message" && block.role === "user" && block.text === "Harmless compatibility observation").length, 1);
+    assert.equal(timeline.some((block) => block.type === "message" && block.text === "Compatibility observation complete"), true);
+    const replacement = await control.freshSession({ lease: after.lease });
+    assert.notEqual(replacement.snapshot.lease, after.lease);
+    assert.notEqual(replacement.snapshot.session.id, after.session.id);
+    assert.equal(replacement.snapshot.latestAssistant, null);
   } finally {
     control?.dispose();
     await host?.dispose();
