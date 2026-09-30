@@ -790,6 +790,15 @@ function registerComposedPindieExtension(
     options.trialOffers?.dispose();
     try { trialSessionId = options.trialOffers ? ctx.sessionManager.getSessionId() : null; }
     catch { trialSessionId = null; } // Missing authority disables experiments, not ordinary Session startup.
+    // Resolve the SAME ordinary root fact early; Trial preflight overlaps quota/Session/State setup.
+    const trialSessionGeneration = trialAuthorityGeneration;
+    const earlyProjectRoot = options.trialOffers ? runBoundedOperation({
+      label: "Pindie project root resolution", timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
+      run: (signal) => resolveProjectRoot(ctx.cwd, signal),
+    }) : null;
+    if (earlyProjectRoot) void earlyProjectRoot.then((root) => {
+      if (trialSessionGeneration === trialAuthorityGeneration) kickTrialPreparation(root);
+    }).catch(() => undefined);
     ++agentRunLifecycleGeneration;
     await quotaResume.restoreSession(ctx);
     await quotaFallback.restoreSession(ctx);
@@ -810,11 +819,11 @@ function registerComposedPindieExtension(
 
     let projectRoot: string | null = null;
     try {
-      projectRoot = await runBoundedOperation({
+      projectRoot = await (earlyProjectRoot ?? runBoundedOperation({
         label: "Pindie project root resolution",
         timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
         run: (signal) => resolveProjectRoot(ctx.cwd, signal),
-      });
+      }));
     } catch (error) {
       core.resetTaskMetrics();
       markUnavailable(
@@ -960,12 +969,14 @@ function registerComposedPindieExtension(
   };
   let releaseTrialAbortObserver: (() => void) | null = null;
   let trialContext: { authority: TrialOfferAuthority; opening: boolean; ready: ReturnType<TrialOffers["claim"]>; occurrenceEpoch: number; externalEpoch: number; runGeneration: number | null; lifecycleGeneration: number } | null = null;
+  let trialPreparationRoot: string | null = null;
   const kickTrialPreparation = (root: string) => {
     const offers = options.trialOffers;
     if (!offers || !trialSessionId) return;
+    trialPreparationRoot = root;
     const authority = { projectId: trialProjectId(root), sessionId: trialSessionId, hostId: trialHostId, authorityGeneration: trialAuthorityGeneration };
     void offers.prepare(authority, () => trialSessionId === authority.sessionId && trialAuthorityGeneration === authority.authorityGeneration &&
-      (runtime.projectRoot === null || runtime.projectRoot === root)).catch(() => undefined);
+      trialPreparationRoot === root).catch(() => undefined);
   };
   const ordinaryTrialAuthority = (root: string, id: string): TrialOfferAuthority | null => {
     const snapshot = run.deriveSnapshot();

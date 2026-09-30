@@ -22,7 +22,7 @@ export const MAX_RETAINED_TRIAL_OFFER_DECISIONS = 2048;
 export interface TrialOfferCommit { readonly schemaVersion: 1; readonly receipt: TrialOfferReceipt; readonly assignment: TrialAssignment | null }
 export interface TrialOfferStore {
   find(projectId: string, episodeId: string): Promise<TrialOfferCommit | null>;
-  reserve(projectId: string, now: number, select: (history: readonly TrialOfferCommit[], held: readonly TrialOfferReservation[]) => Promise<TrialOfferReservation | null>, signal: AbortSignal, isCurrent: () => boolean): Promise<TrialOfferReservation | null>;
+  reserve(projectId: string, now: number, select: (history: readonly TrialOfferCommit[], held: readonly TrialOfferReservation[]) => Promise<TrialOfferReservation | null>, signal: AbortSignal, isCurrent: () => boolean, onReserved?: (reservation: TrialOfferReservation) => void): Promise<TrialOfferReservation | null>;
   commitReserved(commit: TrialOfferCommit, signal: AbortSignal, isCurrent?: () => boolean): Promise<TrialOfferCommit>;
   releaseUnusedReservation(reservation: TrialOfferReservation): Promise<void>;
   decide(interrupted: TrialOfferReceipt, select: (history: readonly TrialOfferCommit[]) => Promise<TrialOfferCommit>, signal: AbortSignal, isCurrent?: () => boolean): Promise<TrialOfferCommit>;
@@ -126,7 +126,7 @@ export class FileTrialOfferStore implements TrialOfferStore {
     return entries;
   }
   /** All disk-backed selection happens ahead of the Task boundary, under the existing writer lock. */
-  async reserve(projectId: string, now: number, select: (history: readonly TrialOfferCommit[], held: readonly TrialOfferReservation[]) => Promise<TrialOfferReservation | null>, signal: AbortSignal, isCurrent: () => boolean): Promise<TrialOfferReservation | null> {
+  async reserve(projectId: string, now: number, select: (history: readonly TrialOfferCommit[], held: readonly TrialOfferReservation[]) => Promise<TrialOfferReservation | null>, signal: AbortSignal, isCurrent: () => boolean, onReserved?: (reservation: TrialOfferReservation) => void): Promise<TrialOfferReservation | null> {
     return this.lock.withLock(async () => {
       signal.throwIfAborted();
       const history = await this.history(projectId), reservations = await this.reservations(projectId);
@@ -135,7 +135,7 @@ export class FileTrialOfferStore implements TrialOfferStore {
       const r = await select(history, held);
       if (!r) return null;
       if (!validateTrialOfferReservation(r) || r.projectId !== projectId) throw new Error("Invalid reservation.");
-      await this.atomic(this.reservationPath(projectId, r.id), r, signal, isCurrent);
+      await this.atomic(this.reservationPath(projectId, r.id), r, signal, isCurrent, () => onReserved?.(r));
       return r;
     });
   }
@@ -166,7 +166,7 @@ export class FileTrialOfferStore implements TrialOfferStore {
       return commit;
     }, signal, isCurrent);
   }
-  private async atomic(path: string, value: unknown, signal?: AbortSignal, canCommit?: () => boolean): Promise<void> {
+  private async atomic(path: string, value: unknown, signal?: AbortSignal, canCommit?: () => boolean, onPublished?: () => void): Promise<void> {
     await mkdir(join(path, ".."), { recursive: true });
     const tmp = `${path}.${randomUUID()}.tmp`;
     try {
@@ -176,6 +176,7 @@ export class FileTrialOfferStore implements TrialOfferStore {
       if (canCommit && !canCommit()) throw new Error("Stale offer publication authority.");
       // No await between final abort/authority validation and unique publication.
       linkSync(tmp, path);
+      onPublished?.(); // Cache readiness only AFTER durable publication, before detached cleanup/unlock.
     } finally { await rm(tmp, { force: true }); }
   }
   private async publishUnlocked(commit: TrialOfferCommit, signal?: AbortSignal, isCurrent?: () => boolean): Promise<TrialOfferCommit> {

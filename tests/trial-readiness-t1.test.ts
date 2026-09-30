@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { TrialOffers, type TrialOfferAuthority } from "../src/trial-offers.ts";
 import { FileTrialOfferStore, MAX_RETAINED_TRIAL_OFFER_DECISIONS, validateTrialOfferReservation } from "../src/trial-offer-store.ts";
 import { DEFAULT_TRIAL_OFFER_POLICY } from "../src/trial-offer-contract.ts";
-import { getProjectId } from "../src/store.ts";
+import { getProjectId, FileGlobalWriterLock } from "../src/store.ts";
 import { hypothesisFingerprint, learningArtifactFingerprint, type StrategyHypothesis } from "../src/learning-v1-contract.ts";
 
 async function fixture(t: TestContext, options: { maxOffers?: number; barrier?: () => Promise<void> } = {}) {
@@ -49,6 +49,27 @@ test("T1 preflight publishes only a scheduling hold, then synchronously claims o
   assert.deepEqual(await f.store.find(f.projectId, f.authority.workEpisodeId), ready.commit);
   await f.offers.prepare(f.base, () => true);
   assert.equal(f.offers.claim(f.authority), null); // Even a refill cannot offer twice to the same episode.
+});
+
+test("T1 readiness at durable publication does not await unlock or re-publish a consumed hold", async (t) => {
+  const f = await fixture(t);
+  let release!: () => void, reached!: () => void;
+  const held = new Promise<void>((r) => { release = r; }), frontier = new Promise<void>((r) => { reached = r; });
+  const writer = new FileGlobalWriterLock({ baseDir: f.root });
+  let block = true;
+  const store = new FileTrialOfferStore({ projectsBaseDir: f.root, lock: {
+    withLock: (operation) => writer.withLock(async () => { const value = await operation(); if (block) { reached(); await held; } return value; }),
+  } });
+  const offers = new TrialOffers(store, { readOpen: async () => [f.h] }, f.policy, () => f.now);
+  f.instances.push(offers);
+  const preparation = offers.prepare(f.base, () => true);
+  await frontier;
+  try {
+    const ready = offers.claim(f.authority); assert.ok(ready);
+    block = false; release(); await preparation; await offers.settled();
+    assert.deepEqual(await store.find(f.projectId, f.authority.workEpisodeId), ready.commit);
+    assert.equal(offers.claim({ ...f.authority, workEpisodeId: randomUUID() }), null);
+  } finally { block = false; release(); }
 });
 
 test("T1 preparation completing after an unready claim never retro-offers to that episode", async (t) => {

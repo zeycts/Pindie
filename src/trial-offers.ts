@@ -23,6 +23,7 @@ export function selectTrialHypothesis(open: readonly StrategyHypothesis[], histo
       offers.every((c) => now - c.createdAt >= policy.cooldownMs);
   }).sort((a, b) => count(a).length - count(b).length || (a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0))[0] ?? null;
 }
+interface PreparedTrialReadiness { key: string; epoch: number; validUntil: number; claimed: boolean; reservation: TrialOfferReservation | null; hypothesis: StrategyHypothesis | null }
 export class TrialOffers {
   private readonly store: TrialOfferStore;
   private readonly hypotheses: OpenHypothesisReader;
@@ -32,7 +33,7 @@ export class TrialOffers {
   private monitorUnavailable = false;
   private monitorGeneration = 0;
   private readonly claimedEpisodes = new Set<string>();
-  private ready: { key: string; epoch: number; validUntil: number; reservation: TrialOfferReservation | null; hypothesis: StrategyHypothesis | null } | null = null;
+  private ready: PreparedTrialReadiness | null = null;
   private preparing: { key: string; epoch: number; work: Promise<void> } | null = null;
   private monitor: { projectId: string; stop: Promise<() => void> } | null = null;
   private readonly invalidationListeners = new Set<() => void>();
@@ -87,6 +88,11 @@ export class TrialOffers {
         if (this.monitor) await this.monitor.stop; // Detached only. Watch BEFORE snapshot reads.
         if (!current()) return;
         let hypothesis: StrategyHypothesis | null = null;
+        let published: PreparedTrialReadiness | null = null;
+        const publish = (reservation: TrialOfferReservation | null) => {
+          if (current()) this.ready = published = { key, epoch, claimed: false,
+            validUntil: reservation?.expiresAt ?? this.now() + this.policy.operationTimeoutMs, reservation, hypothesis };
+        };
         const reservation = this.policy.enabled ? await runBoundedOperation({ label: "Trial preflight", timeoutMs: this.policy.operationTimeoutMs, run: (signal) =>
           this.store.reserve(authority.projectId, this.now(), async (history, held) => {
             const open = await this.hypotheses.readOpen(authority.projectId);
@@ -97,9 +103,11 @@ export class TrialOffers {
               hypothesis: hypothesisRef(hypothesis), offerPolicyFingerprint: fp, offerPolicyVersion: this.policy.version,
               createdAt: this.now(), expiresAt: this.now() + this.policy.leaseMs };
             return { ...content, fingerprint: learningArtifactFingerprint(content) };
-          }, signal, current) }) : null;
-        if (current()) this.ready = { key, epoch, validUntil: reservation?.expiresAt ?? this.now() + this.policy.operationTimeoutMs, reservation, hypothesis };
-        else if (reservation) void this.track(this.store.releaseUnusedReservation(reservation).catch(() => undefined));
+          }, signal, current, publish) }) : null;
+        // Do not re-publish a slot already synchronously claimed while its disk cleanup/unlock ran.
+        if (!published && current()) publish(reservation);
+        else if (reservation && !current() && !(published as PreparedTrialReadiness | null)?.claimed)
+          void this.track(this.store.releaseUnusedReservation(reservation).catch(() => undefined));
       } catch { /* Unready means no offer, never Task failure or a blocking retry. */ }
     })();
     this.track(work);
@@ -124,6 +132,7 @@ export class TrialOffers {
     if (!validTrialAssignment(assignment, authority, this.now())) { this.recordNoOffer(authority); return null; }
     const advisory = experimentalTrialContext(assignment, ready.hypothesis);
     if (!advisory) { this.recordNoOffer(authority); return null; }
+    ready.claimed = true;
     const commit: TrialOfferCommit = { schemaVersion: 1, assignment, receipt: this.receipt(authority, assignment) };
     void this.track(runBoundedOperation({ label: "Trial assignment finalization", timeoutMs: this.policy.operationTimeoutMs,
       run: (signal) => this.store.commitReserved(commit, signal, () => isCurrent() && ready.epoch === this.eligibilityEpoch) }).catch(() => { if (isCurrent() && ready.epoch === this.eligibilityEpoch) this.invalidateEligibility(); }));
