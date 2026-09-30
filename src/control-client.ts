@@ -352,11 +352,13 @@ export class PindieControlClient {
         await this.launchPrompt(text);
         this.requireSameBinding(binding);
       } else if (delivery === "steer") {
-        await this.runtime.steer(text);
+        const disposition = await this.runtime.steer(text);
         this.requireSameBinding(binding);
+        this.requireQueuedDelivery(disposition);
       } else {
-        await this.runtime.followUp(text);
+        const disposition = await this.runtime.followUp(text);
         this.requireSameBinding(binding);
+        this.requireQueuedDelivery(disposition);
       }
       this.appendDelivery(text, delivery);
     } catch (error) {
@@ -789,7 +791,14 @@ export class PindieControlClient {
     for (const waiter of [...this.waiters]) this.resolveWaiter(waiter, result);
   }
 
+  private requireQueuedDelivery(disposition: Awaited<ReturnType<PiRuntimeAdapter["steer"]>>): void {
+    if (disposition === "handled") {
+      throw new PindieControlError("delivery_failed", "Pi consumed the input without queuing it.", this.safeSnapshot());
+    }
+  }
+
   private async launchPrompt(text: string): Promise<void> {
+    const binding = this.binding;
     let reportPreflight!: (accepted: boolean) => void;
     let preflightReported = false;
     const preflight = new Promise<boolean>((resolve) => {
@@ -802,7 +811,16 @@ export class PindieControlClient {
 
     let pending: Promise<void>;
     try {
-      pending = this.runtime.prompt(text, { preflightResult: reportPreflight } satisfies PromptOptions);
+      pending = this.runtime.prompt(text, {
+        // Pi 0.99 distinguishes extension-consumed input from an actual run/queue.
+        preflightResult: (disposition) => {
+          const accepted = disposition === "started" || disposition === "queued";
+          // Preflight precedes agent_start. Do not expose a settled wait window
+          // between accepting the input and Pi emitting its first Run event.
+          if (accepted && this.binding === binding) this.automaticWorkSettled = false;
+          reportPreflight(accepted);
+        },
+      } satisfies PromptOptions);
     } catch (error) {
       throw new PindieControlError(
         "delivery_failed",
