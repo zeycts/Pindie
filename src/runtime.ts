@@ -90,11 +90,21 @@ function installProcessSemanticMutationFence(
 export class PindieRuntime {
   private readonly store: PindieStateStore;
   readonly workEpisodes: WorkEpisodeLedger | undefined;
+  /** Neutral post-binding operational observer. Never called for reconciled/current episodes. */
+  onWorkEpisodeOpened?: (projectRoot: string, episodeId: string) => Promise<void>;
   private currentProjectRoot: string | null = null;
   private currentState: PindieState = EMPTY_STATE;
   private currentExternalStateEpoch = 0;
   private occurrenceEpoch = 0;
   private authorityGeneration = 0;
+  private observedWorkEpisodeId: string | null = null;
+  /** Latest coherently observed operational binding, never Task truth or persisted State. */
+  get currentWorkEpisodeId(): string | null { return this.observedWorkEpisodeId; }
+  observeWorkEpisode(root: string, state: PindieState, id: string | null): void {
+    if (this.currentProjectRoot === root && this.currentState === state) {
+      this.observedWorkEpisodeId = state.task && !state.task.completed ? id : null;
+    }
+  }
 
   constructor(store: PindieStateStore, workEpisodes?: WorkEpisodeLedger) { this.store = store; this.workEpisodes = workEpisodes; }
   get state(): PindieState { return this.currentState; }
@@ -105,6 +115,7 @@ export class PindieRuntime {
   unload(): void {
     this.authorityGeneration += 1;
     this.currentProjectRoot = null;
+    this.observedWorkEpisodeId = null;
     this.currentState = EMPTY_STATE;
     this.currentExternalStateEpoch = 0;
   }
@@ -119,7 +130,7 @@ export class PindieRuntime {
     this.currentProjectRoot = projectRoot;
     this.currentState = state;
     if (this.workEpisodes) {
-      try { await this.workEpisodes.reconcile(projectRoot, state); }
+      try { this.observeWorkEpisode(projectRoot, state, await this.workEpisodes.reconcile(projectRoot, state)); }
       catch (error) { console.warn(`[Pindie] WorkEpisode reconciliation unavailable: ${String(error)}`); }
     }
   }
@@ -209,8 +220,22 @@ export class PindieRuntime {
     this.currentState = result.state;
     if (event.type === "start_task" || event.type === "replace_task") this.occurrenceEpoch++;
     if (this.workEpisodes) {
-      try { await this.workEpisodes.committed(projectRoot, state, result.state, event); }
-      catch (error) { console.warn(`[Pindie] WorkEpisode binding unavailable: ${String(error)}`); }
+      try {
+        const episodeId = await this.workEpisodes.committed(projectRoot, state, result.state, event);
+        this.observeWorkEpisode(projectRoot, result.state, episodeId);
+        const observer = this.onWorkEpisodeOpened;
+        if (episodeId && observer && (event.type === "start_task" || event.type === "replace_task")) {
+          // Operational notification only. No observer Promise belongs to dispatch or its State lock.
+          void Promise.resolve().then(() => {
+            if (this.currentProjectRoot === projectRoot && this.authorityGeneration === generation &&
+              this.observedWorkEpisodeId === episodeId) return observer(projectRoot, episodeId);
+          }).catch((error: unknown) => {
+            try { console.warn(`[Pindie] WorkEpisode observer unavailable: ${String(error).slice(0, 512)}`); }
+            catch { /* Diagnostic failure cannot become an unhandled observer rejection. */ }
+          });
+        }
+      }
+      catch (error) { this.observeWorkEpisode(projectRoot, result.state, null); console.warn(`[Pindie] WorkEpisode binding unavailable: ${String(error)}`); }
     }
     return result;
   }
@@ -218,6 +243,7 @@ export class PindieRuntime {
   private adoptExternal(latest: PindieState): boolean {
     if (isDeepStrictEqual(latest, this.currentState)) return false;
     this.currentState = latest;
+    this.observedWorkEpisodeId = null;
     this.currentExternalStateEpoch += 1;
     return true;
   }

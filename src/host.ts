@@ -116,6 +116,8 @@ export interface PindieHostOptions {
   learningModel?: { readonly provider: string; readonly modelId: string; readonly thinkingLevel?: "off" | "low" | "medium" };
   /** Human-controlled v1 local discovery threshold/corpus configuration. */
   discoveryPolicy?: ProjectDiscoveryPolicy;
+  /** Strict Human-configurable deterministic real-Task offer policy; invalid policy disables offers, not Tasks. */
+  trialOfferPolicy?: import("./trial-offer-contract.ts").TrialOfferPolicy;
   env?: Record<string, string | undefined>;
   dependencies?: PindieHostDependencies;
 }
@@ -158,6 +160,7 @@ export function createPindieRuntimeFactory(
     readonly browserExtensionFactory?: (pi: ExtensionAPI) => void;
     readonly onPresentationReaderChange?: (reader: PindiePresentationReader | null) => void;
     readonly onExperienceSaved?: (projectRoot: string) => void;
+    readonly trialOfferPolicy?: import("./trial-offer-contract.ts").TrialOfferPolicy;
     readonly onHumanRunStart?: () => void;
     readonly onHumanRunSettled?: () => void;
     readonly onSessionChange?: () => void;
@@ -192,6 +195,7 @@ export function createPindieRuntimeFactory(
               featureSelection: compositionOptions.featureSelection,
               storageRoots: compositionOptions.storageRoots,
               onExperienceSaved: compositionOptions.onExperienceSaved,
+              trialOfferPolicy: compositionOptions.trialOfferPolicy,
             });
             pendingPresentationReader = integration.presentation;
             return integration;
@@ -346,6 +350,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
     nativeRuntime = await createRuntime(createPindieRuntimeFactory(dependencies, taskMetrics, {
       featureSelection: options.featureSelection,
       storageRoots: options.storageRoots,
+      trialOfferPolicy: options.trialOfferPolicy,
       ...(browserReality
         ? {
             browserExtensionFactory: (pi) => registerBrowserRealityExtension(pi, {

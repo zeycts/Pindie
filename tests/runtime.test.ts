@@ -140,6 +140,53 @@ function nextTurn(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+function observerLedger(): import("../src/work-episode.ts").WorkEpisodeLedger {
+  let id: string | null = null;
+  return { reconcile: async () => id, current: async () => id, prepared: async () => undefined,
+    committed: async (_root, _before, _after, event) => {
+      if (event.type === "start_task" || event.type === "replace_task") id = event.type;
+      return id;
+    } };
+}
+
+test("T1 dispatch never waits for a hung episode observer; refine/progress/reload never notify", async () => {
+  const store = new FakeStateStore(), runtime = new PindieRuntime(store, observerLedger());
+  let calls = 0;
+  runtime.onWorkEpisodeOpened = async () => { calls++; await new Promise(() => {}); };
+  await runtime.load("/repo");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([(async () => {
+      assert.ok((await runtime.dispatch(START_EVENT)).ok);
+      assert.ok((await runtime.dispatch({ ...START_EVENT, type: "replace_task", goal: "Replacement" })).ok);
+      await runtime.dispatch({ type: "refine_task", goal: "Refined" });
+      await runtime.dispatch({ type: "set_open_loops", blockers: [], questions: [], nextIntent: null });
+      await runtime.load("/repo");
+    })(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Dispatch awaited observer")), 250); })]);
+  } finally { clearTimeout(timer); }
+  assert.equal(calls, 2);
+  assert.equal(runtime.state.task?.goal, "Refined");
+});
+
+test("T1 detached observer synchronous throws and async rejections are contained and bounded", async (t) => {
+  const warnings: string[] = [], unhandled: unknown[] = [];
+  t.mock.method(console, "warn", (message: string) => { warnings.push(message); });
+  const onUnhandled = (error: unknown) => { unhandled.push(error); };
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  const runtime = new PindieRuntime(new FakeStateStore(), observerLedger());
+  await runtime.load("/repo");
+  runtime.onWorkEpisodeOpened = () => { throw new Error("sync failure".repeat(100)); };
+  assert.ok((await runtime.dispatch(START_EVENT)).ok);
+  runtime.onWorkEpisodeOpened = async () => { throw new Error("async failure".repeat(100)); };
+  assert.ok((await runtime.dispatch({ ...START_EVENT, type: "replace_task", goal: "Replacement" })).ok);
+  await nextTurn();
+  assert.equal(warnings.length, 2);
+  assert.ok(warnings.every((message) => message.length < 600));
+  assert.deepEqual(unhandled, []);
+  assert.equal(runtime.state.task?.goal, "Replacement");
+});
+
 test("R01 load stores State and the active project root", async () => {
   const store = new FakeStateStore();
   store.loadState = { task: null };

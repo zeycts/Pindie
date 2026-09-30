@@ -296,7 +296,8 @@ test("F1 all frozen artifact shells reject extra fields, malformed IDs and incon
   assert.equal(validateDiscoveryReceipt(seal({ ...receipt, outcome: "covered", hypotheses: [] })), false);
   assert.equal(validateDiscoveryReceipt({ ...receipt, id: "arbitrary" }), false);
   const assignment = seal({ schemaVersion: 1, id, projectId, workEpisodeId: other, sessionId: "session",
-    hypothesis: hyp, comparison: [ref], offerPolicyFingerprint: fp, expiresAt: 100 });
+    hypothesis: hyp, comparison: [ref], offerPolicyFingerprint: fp, offerPolicyVersion: 1,
+    hostId: id, authorityGeneration: 1, createdAt: 1, expiresAt: 100, status: "untrusted-advisory" });
   const assignmentRef = { schemaVersion: 1 as const, family: "trial-assignment" as const, scope, id, fingerprint: assignment.fingerprint };
   assert.equal(validateTrialAssignment(assignment), true);
   assert.equal(validateTrialAssignment(seal({ ...assignment, comparison: [{ ...ref, projectId: "b".repeat(64) }] })), false);
