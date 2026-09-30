@@ -112,16 +112,27 @@ export class FileTrialOfferStore implements TrialOfferStore {
     if (!UUID_V4.test(id)) throw new Error("Invalid reservation identity.");
     return join(this.dir(projectId), "reservations", `${id}.json`);
   }
-  private async reservations(projectId: string): Promise<readonly TrialOfferReservation[]> {
+  /** Reconcile operational expiry under the writer lock, never at a Task/context boundary. */
+  private async reservations(projectId: string, now: number, signal: AbortSignal): Promise<readonly TrialOfferReservation[]> {
     let names: string[];
     try { names = await readdir(join(this.dir(projectId), "reservations")); }
     catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; throw e; }
-    if (names.length > MAX_RETAINED_TRIAL_OFFER_DECISIONS * 2 || names.some((n) => !/^[0-9a-f-]{36}\.json(?:\.[0-9a-f-]{36}\.tmp)?$/.test(n))) throw new Error("Malformed reservation history.");
+    // Raw retained count cannot fence recovery: a crashed Host may leave more than
+    // capacity worth of expired holds. Validate before deleting; only LIVE holds
+    // consume capacity. Aborted scans may safely resume at the next preflight.
+    if (names.some((n) => !/^[0-9a-f-]{36}\.json(?:\.[0-9a-f-]{36}\.tmp)?$/.test(n))) throw new Error("Malformed reservation history.");
     const entries: TrialOfferReservation[] = [];
     for (const name of names.filter((n) => n.endsWith(".json")).sort()) {
-      const r = await this.json(join(this.dir(projectId), "reservations", name));
+      signal.throwIfAborted();
+      const path = join(this.dir(projectId), "reservations", name);
+      const r = await this.json(path);
       if (!validateTrialOfferReservation(r) || r.projectId !== projectId || `${r.id}.json` !== name) throw new Error("Malformed reservation.");
-      entries.push(r);
+      signal.throwIfAborted();
+      if (now >= r.expiresAt) await rm(path); // Holds are not episode dedupe or cognition.
+      else {
+        entries.push(r);
+        if (entries.length >= MAX_RETAINED_TRIAL_OFFER_DECISIONS) throw new Error("Retained preparation capacity.");
+      }
     }
     return entries;
   }
@@ -129,7 +140,7 @@ export class FileTrialOfferStore implements TrialOfferStore {
   async reserve(projectId: string, now: number, select: (history: readonly TrialOfferCommit[], held: readonly TrialOfferReservation[]) => Promise<TrialOfferReservation | null>, signal: AbortSignal, isCurrent: () => boolean, onReserved?: (reservation: TrialOfferReservation) => void): Promise<TrialOfferReservation | null> {
     return this.lock.withLock(async () => {
       signal.throwIfAborted();
-      const history = await this.history(projectId), reservations = await this.reservations(projectId);
+      const history = await this.history(projectId), reservations = await this.reservations(projectId, now, signal);
       if (history.length >= MAX_RETAINED_TRIAL_OFFER_DECISIONS || reservations.length >= MAX_RETAINED_TRIAL_OFFER_DECISIONS) throw new Error("Retained preparation capacity.");
       const held = reservations.filter((r) => now < r.expiresAt && !history.some((c) => c.assignment?.id === r.id));
       const r = await select(history, held);

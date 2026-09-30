@@ -1,7 +1,7 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TrialOffers, type TrialOfferAuthority } from "../src/trial-offers.ts";
@@ -170,6 +170,121 @@ test("T1 monitor failure disables future readiness rather than silently using an
   notify(true);
   await offers.prepare(f.base, () => true);
   assert.equal(offers.claim(f.authority), null);
+});
+
+test("T1 restart preflight repeatedly reclaims expired holds beyond retained capacity without dropping a live Host hold", async (t) => {
+  const f = await fixture(t, { maxOffers: 1 });
+  await f.offers.prepare(f.base, () => true);
+  const directory = join(f.root, f.projectId, "learning-v1", "trial-offers", "reservations");
+  const name = (await readdir(directory))[0]!;
+  const live = JSON.parse(await readFile(join(directory, name), "utf8"));
+  assert.ok(validateTrialOfferReservation(live));
+  // Simulate abandoned Hosts, including more files than the former raw scan bound.
+  for (const count of [MAX_RETAINED_TRIAL_OFFER_DECISIONS * 2 + 1, MAX_RETAINED_TRIAL_OFFER_DECISIONS + 1]) {
+    await Promise.all(Array.from({ length: count }, async () => {
+      const content = { ...live, id: randomUUID(), createdAt: f.now - 2, expiresAt: f.now - 1 };
+      await writeFile(join(directory, `${content.id}.json`), JSON.stringify({ ...content, fingerprint: learningArtifactFingerprint(content) }));
+    }));
+    // Fresh store = restart; no original Host cache is needed for reconciliation.
+    const reload = new FileTrialOfferStore({ projectsBaseDir: f.root });
+    let selected = false;
+    await reload.reserve(f.projectId, f.now, async (history, held) => {
+      selected = true;
+      assert.equal(history.length, 0);
+      assert.deepEqual(held, [live]);
+      return null;
+    }, new AbortController().signal, () => true);
+    assert.equal(selected, true);
+    assert.deepEqual(await readdir(directory), [name]);
+    assert.deepEqual(JSON.parse(await readFile(join(directory, name), "utf8")), live);
+  }
+  // The surviving live hold still fences max-offer capacity across Hosts.
+  const other = new TrialOffers(new FileTrialOfferStore({ projectsBaseDir: f.root }), { readOpen: async () => [f.h] }, f.policy, () => f.now);
+  f.instances.push(other);
+  const base = { ...f.base, hostId: randomUUID() };
+  await other.prepare(base, () => true);
+  assert.equal(other.claim({ ...base, workEpisodeId: randomUUID() }), null);
+  assert.ok(f.offers.claim(f.authority));
+});
+
+test("T1 expiry boundary recovers crash hold capacity and cannot finalize the expired reservation", async (t) => {
+  const f = await fixture(t, { maxOffers: 1 });
+  await f.offers.prepare(f.base, () => true);
+  const ready = f.offers.claim(f.authority); assert.ok(ready);
+  await f.offers.settled();
+  const directory = join(f.root, f.projectId, "learning-v1", "trial-offers", "reservations");
+  const live = JSON.parse(await readFile(join(directory, (await readdir(directory))[0]!), "utf8"));
+  // An unbound crash hold has no episode decision to preserve.
+  const content = { ...live, id: randomUUID() };
+  const abandoned = { ...content, fingerprint: learningArtifactFingerprint(content) };
+  await writeFile(join(directory, `${abandoned.id}.json`), JSON.stringify(abandoned));
+  const reload = new FileTrialOfferStore({ projectsBaseDir: f.root });
+  await reload.reserve(f.projectId, live.expiresAt - 1, async (_history, held) => {
+    assert.deepEqual(held, [abandoned]); return null;
+  }, new AbortController().signal, () => true);
+  await reload.reserve(f.projectId, live.expiresAt, async (history, held) => {
+    assert.equal(history.length, 1); assert.equal(held.length, 0); return null;
+  }, new AbortController().signal, () => true);
+  assert.deepEqual(await readdir(directory), []);
+  assert.deepEqual(await reload.find(f.projectId, f.authority.workEpisodeId), ready.commit);
+  assert.deepEqual(await reload.commitReserved(ready.commit, new AbortController().signal), ready.commit);
+  // A late claimant cannot resurrect the removed hold; its intent becomes no-offer.
+  const authority = { ...f.authority, workEpisodeId: randomUUID() };
+  const assignmentContent = { ...ready.commit.assignment!, id: abandoned.id, workEpisodeId: authority.workEpisodeId };
+  const assignment = { ...assignmentContent, fingerprint: learningArtifactFingerprint(assignmentContent) };
+  const { fingerprintOfferReceipt } = await import("../src/trial-offer-store.ts");
+  const receipt = fingerprintOfferReceipt({ ...ready.commit.receipt, workEpisodeId: authority.workEpisodeId,
+    assignment: { ...ready.commit.receipt.assignment!, id: assignment.id, fingerprint: assignment.fingerprint } });
+  await assert.rejects(reload.commitReserved({ schemaVersion: 1, receipt, assignment }, new AbortController().signal), /scheduling hold/);
+  assert.equal((await reload.find(f.projectId, authority.workEpisodeId))?.receipt.reason, "interrupted");
+  assert.deepEqual(await reload.find(f.projectId, f.authority.workEpisodeId), ready.commit);
+  const restarted = new TrialOffers(reload, { readOpen: async () => [f.h] }, { ...f.policy, maxOffersPerHypothesis: 2 }, () => live.expiresAt);
+  f.instances.push(restarted);
+  const base = { ...f.base, hostId: randomUUID() };
+  await restarted.prepare(base, () => true);
+  assert.ok(restarted.claim({ ...base, workEpisodeId: randomUUID() }));
+});
+
+test("T1 expired hold cleanup preserves exact offered/no-offer decisions, committed cooldown and max-offer accounting", async (t) => {
+  const f = await fixture(t);
+  let now = f.now;
+  const policy = { ...f.policy, leaseMs: 1000, cooldownMs: 10_000, maxOffersPerHypothesis: 1 };
+  const first = new TrialOffers(f.store, { readOpen: async () => [f.h] }, policy, () => now);
+  f.instances.push(first);
+  await first.prepare(f.base, () => true);
+  const ready = first.claim(f.authority); assert.ok(ready);
+  await first.settled();
+  const noAuthority = { ...f.authority, workEpisodeId: randomUUID() };
+  await first.prepare(f.base, () => true);
+  assert.equal(first.claim(noAuthority), null);
+  await first.settled();
+  const no = await f.store.find(f.projectId, noAuthority.workEpisodeId); assert.ok(no);
+  const directory = join(f.root, f.projectId, "learning-v1", "trial-offers");
+  const decisions = await Promise.all([f.authority.workEpisodeId, noAuthority.workEpisodeId].flatMap((id) => [".json", ".pending.json"].map(async (suffix) => {
+    const path = join(directory, `${id}${suffix}`); return { path, bytes: await readFile(path, "utf8") };
+  })));
+  const reloadStore = new FileTrialOfferStore({ projectsBaseDir: f.root });
+  // Use a larger offer limit to isolate committed cooldown after hold expiry.
+  const reload = new TrialOffers(reloadStore, { readOpen: async () => [f.h] }, { ...policy, maxOffersPerHypothesis: 2 }, () => now);
+  f.instances.push(reload);
+  now += policy.leaseMs;
+  const base = { ...f.base, hostId: randomUUID() };
+  await reload.prepare(base, () => true);
+  assert.equal(reload.claim({ ...base, workEpisodeId: randomUUID() }), null);
+  assert.deepEqual(await readdir(join(directory, "reservations")), []);
+  await reload.settled();
+  for (const { path, bytes } of decisions) assert.equal(await readFile(path, "utf8"), bytes);
+  assert.deepEqual(await reloadStore.find(f.projectId, f.authority.workEpisodeId), ready.commit);
+  assert.deepEqual(await reloadStore.find(f.projectId, noAuthority.workEpisodeId), no);
+  assert.equal(first.claim(f.authority), null); // Cleanup never resets the runtime episode fuse.
+  // Once cooldown ends, the original policy's max-offer count still excludes it.
+  now = f.now + policy.cooldownMs;
+  const limited = new TrialOffers(reloadStore, { readOpen: async () => [f.h] }, policy, () => now);
+  f.instances.push(limited);
+  await limited.prepare(base, () => true);
+  assert.equal(limited.claim({ ...base, workEpisodeId: randomUUID() }), null);
+  await reload.prepare(base, () => true);
+  assert.ok(reload.claim({ ...base, workEpisodeId: randomUUID() }));
 });
 
 test("T1 malformed/capacity scheduling history fails closed without evicting durable dedupe or selecting", async (t) => {
