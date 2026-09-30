@@ -41,7 +41,10 @@ async function fixture(options: { offerable?: boolean; blocked?: Promise<void>; 
     const result = reduceState(EMPTY_STATE, { type: "start_task", goal: "Preexisting real Task", constraints: [], successCriteria: ["done"] });
     assert.ok(result.ok); await new FileStateStore({ baseDir: projectsBaseDir }).save(cwd, result.state);
   }
-  const faux = fauxProvider({ provider: `trial-t1-${randomUUID()}` });
+  // Model the ordinary pre-Task token stream, not a readiness/settlement barrier.
+  // The continuation still builds its context immediately after the Task tool returns;
+  // delaying the FIRST response cannot rescue the old post-commit preparation design.
+  const faux = fauxProvider({ provider: `trial-t1-${randomUUID()}`, tokensPerSecond: 200 });
   const modelRuntime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
   modelRuntime.registerNativeProvider(faux.provider); await modelRuntime.refresh({ allowNetwork: false });
   const settingsManager = SettingsManager.create(cwd, agentDir);
