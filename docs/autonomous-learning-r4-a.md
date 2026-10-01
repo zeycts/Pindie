@@ -30,7 +30,7 @@ Exact fields (unknown keys rejected):
 
 The packet is bounded to 128KiB canonical UTF-8 bytes, including snapshots, not merely entry count. Factual counters/outcome/verification/error/duration/cost are carried verbatim in each TrialEvidence snapshot. Duration/cost describe whole Runs, counters describe post-declaration work; do not attribute whole-Run cost or Task outcome to the Strategy. No aggregate effect metric is invented. Current trust/lineage snapshots, exclusion windows and sufficiency policies are deliberately deferred to a later versioned design; gate v1 cannot authorize promotion.
 
-A future packet builder accepts only exact immutable TrialEvidence refs and resolves them with `FileTrialEvidenceV2Store.readExact`, plus an exact immutable hypothesis for semantic context. It never accepts a live Experience reader. Frozen snapshots are copied into the packet once exact lookup passes. A standalone schema validator checks internal consistency, not filesystem provenance; publication must perform exact immutable resolution. The future model receives only this frozen bounded packet, never the Human transcript or live stores.
+The [R4-B builder foundation](autonomous-learning-r4-b.md) now accepts only exact immutable TrialEvidence refs and resolves them with `FileTrialEvidenceV2Store.readExact`, plus an exact immutable hypothesis for semantic context. It never accepts a live Experience reader. Frozen snapshots are copied into the packet once exact lookup passes. A standalone schema validator checks internal consistency, not filesystem provenance; publication must perform exact immutable resolution. The future model receives only this frozen bounded packet, never the Human transcript or live stores.
 
 ## EvaluationResult v1
 
