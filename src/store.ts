@@ -377,11 +377,12 @@ export class FileGlobalWriterLock {
     return this.baseDir;
   }
 
-  async withLock<T>(operation: () => Promise<T>): Promise<T> {
+  async withLock<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const lockPath = this.lockPath();
     const token = randomUUID();
-    await this.acquireLock(lockPath, token);
+    await this.acquireLock(lockPath, token, signal);
     try {
+      signal?.throwIfAborted();
       return await operation();
     } finally {
       await this.releaseLock(lockPath, token);
@@ -396,10 +397,12 @@ export class FileGlobalWriterLock {
     return this.lockPath();
   }
 
-  private async acquireLock(lockPath: string, token: string): Promise<void> {
+  private async acquireLock(lockPath: string, token: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     await mkdir(this.baseDir, { recursive: true });
     const deadline = this.now() + this.lockTimeoutMs;
     while (true) {
+      signal?.throwIfAborted();
       try {
         await mkdir(lockPath);
         try {
@@ -420,7 +423,7 @@ export class FileGlobalWriterLock {
       }
       await this.reclaimIfSafe(lockPath);
       if (this.now() >= deadline) throw new GlobalWriterLockBusyError();
-      await sleep(this.lockRetryMs);
+      await sleep(this.lockRetryMs, signal);
     }
   }
 

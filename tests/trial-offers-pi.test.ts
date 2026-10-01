@@ -9,9 +9,7 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import { registerConfiguredPindieExtension } from "../src/extension.ts";
 import { FileDiscoveryHypothesisStore, hypothesisRef } from "../src/discovery-hypotheses.ts";
 import { D2OpenHypothesisReader } from "../src/open-hypotheses.ts";
-import { FileTrialOfferStore } from "../src/trial-offer-store.ts";
-import { TrialOffers } from "../src/trial-offers.ts";
-import { DEFAULT_TRIAL_OFFER_POLICY } from "../src/trial-offer-contract.ts";
+import { legacyTrialFixture } from "./fixtures/trial-v1.ts";
 import { FileStateStore, getProjectId } from "../src/store.ts";
 import { FileRunExperienceReader } from "../src/experience-store.ts";
 import { hypothesisFingerprint, learningFingerprint } from "../src/learning-v1-contract.ts";
@@ -50,13 +48,10 @@ for (const legacyHistory of [false, true]) test(`R0 native Pi ordinary work free
     const hypotheses = new FileDiscoveryHypothesisStore({ projectsBaseDir });
     assert.deepEqual(await new D2OpenHypothesisReader(hypotheses).readOpen(projectId), [h]);
     if (legacyHistory) {
-      // Legacy module is used only to seed valid historical v1 artifacts before production startup.
-      const offers = new TrialOffers(new FileTrialOfferStore({ projectsBaseDir }), new D2OpenHypothesisReader(hypotheses),
-        { ...DEFAULT_TRIAL_OFFER_POLICY, operationTimeoutMs: 1000 });
-      try {
-        const committed = await offers.opened({ projectId, workEpisodeId: randomUUID(), sessionId: "historical-session", hostId: randomUUID(), authorityGeneration: 1 }, () => true);
-        assert.ok(committed?.assignment);
-      } finally { offers.dispose(); await offers.settled(); }
+      const frozen = legacyTrialFixture(projectId, hypothesisRef(h));
+      await mkdir(trialDir, { recursive: true });
+      await writeFile(join(trialDir, `${frozen.commit.assignment.workEpisodeId}.json`), JSON.stringify(frozen.commit));
+      await writeFile(join(trialDir, `${frozen.commit.assignment.workEpisodeId}.pending.json`), JSON.stringify(frozen.pending));
     }
     const before = await artifactBytes(trialDir);
     assert.equal(Object.keys(before).length > 0, legacyHistory);

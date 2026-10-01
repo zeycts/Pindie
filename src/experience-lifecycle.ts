@@ -13,6 +13,8 @@ import { validateStrategyDerivationDecisionBinding } from "./strategy-derivation
 import { validateStrategyTrustScopeDecisionBinding } from "./strategy-trust-scope-decisions.ts";
 import { validateStrategySynthesisDecisionBinding } from "./strategy-synthesis-decisions.ts";
 import { strategySelectionRevisionFingerprint, strategySelectionRevisionIdentity, strategySelectionRevisionStatus } from "./policy.ts";
+import { FileDiscoveryHypothesisStore } from "./discovery-hypotheses.ts";
+import { isExecutableStrategyHypothesis } from "./learning-v1-contract.ts";
 import { FileV1HypothesisExperienceProtectionReader, type V1ExperienceProtectionReader } from "./v1-experience-protection.ts";
 
 export const MAX_LIVE_ORDINARY_EXPERIENCE_PER_PROJECT = 256;
@@ -140,8 +142,10 @@ export class FileRunExperienceMaintenance {
   private readonly reader: FileRunExperienceReader;
   private readonly knowledge: FileStrategyKnowledge;
   private readonly v1Protection: V1ExperienceProtectionReader;
+  private readonly hypotheses: FileDiscoveryHypothesisStore;
 
   constructor(options: { projectsBaseDir?: string; globalBaseDir?: string; v1Protection?: V1ExperienceProtectionReader } = {}) {
+    this.hypotheses = new FileDiscoveryHypothesisStore({ projectsBaseDir: options.projectsBaseDir });
     this.reader = new FileRunExperienceReader({ baseDir: options.projectsBaseDir });
     this.knowledge = new FileStrategyKnowledge(options);
     this.v1Protection = options.v1Protection ??
@@ -155,7 +159,11 @@ export class FileRunExperienceMaintenance {
     // Unresolved D2 hypotheses keep their exact source Experience live. A malformed
     // or ambiguous store throws here, before any deletion; Experience saves stay committed.
     for (const ref of await this.v1Protection.requiredSourceRefs(getProjectId(projectRoot))) protectedIds.add(ref.recordId);
-    const ordinary = read.records.filter((record) => !trial(record.experience))
+    // R2 ordinary-work experimental declarations are not legacy manual Candidate Trials.
+    // Keep their ordinary recent window; R3 exact evidence retention is deliberately separate.
+    const hypotheses = (await this.hypotheses.list(getProjectId(projectRoot))).filter(isExecutableStrategyHypothesis);
+    const ordinary = read.records.filter((record) => !trial(record.experience) || selections(record.experience).filter((s) => strategySelectionRevisionStatus(s) === "trial").every((s) =>
+      hypotheses.some((h) => h.id === strategySelectionRevisionIdentity(s) && h.fingerprint === strategySelectionRevisionFingerprint(s))))
       .sort((a, b) => instant(b.experience.recordedAt) - instant(a.experience.recordedAt) ||
         (a.recordId < b.recordId ? -1 : a.recordId > b.recordId ? 1 : 0));
     // Validate the timestamp of every record before any deletion, including old Trials.
