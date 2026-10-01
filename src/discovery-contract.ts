@@ -87,7 +87,7 @@ export function validateDiscoveryPacket(v: unknown): v is DiscoveryPacket {
       !Array.isArray(s.policy) || s.policy.length > 9 || !s.policy.every((p: unknown) => obj(p) && exact(p, ["strategyId", "revisionIdentity", "revisionFingerprint", "exposure"]) && string(p.strategyId, 64) && string(p.revisionIdentity, 128) && FINGERPRINT.test(p.revisionFingerprint as string) && string(p.exposure, 64)) ||
       !obj(s.execution) || !exact(s.execution, ["toolCalls", "consequentialCalls", "toolErrors", "deniedCalls", "verificationCalls"]) ||
       !Object.values(s.execution).every((x) => integer(x, 0, 1000000)) || !obj(s.metrics) || !exact(s.metrics, ["durationMs", "cost"]) ||
-      (s.metrics.durationMs !== null && !integer(s.metrics.durationMs, 0, 1000000000)) ||
+      (s.metrics.durationMs !== null && (typeof s.metrics.durationMs !== "number" || !Number.isFinite(s.metrics.durationMs) || s.metrics.durationMs < 0)) ||
       (s.metrics.cost !== null && (typeof s.metrics.cost !== "number" || !Number.isFinite(s.metrics.cost) || s.metrics.cost < 0))) return false;
     ids.add(s.ref.recordId); fingerprints.add(s.ref.fingerprint);
   }
