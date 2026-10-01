@@ -103,9 +103,11 @@ import {
 } from "./strategy-trust-safety.ts";
 import { getSeedStrategy, SEED_STRATEGIES } from "./strategies.ts";
 import { exactRunWorkEpisodeId } from "./work-episode-attribution.ts";
+import type { ExactEvidenceRef } from "./learning-v1-contract.ts";
 import {
   assembleRunExperience,
   isEligibleRunExperience,
+  type RunExperience,
 } from "./run-experience.ts";
 import {
   TrialRuntime,
@@ -1232,7 +1234,7 @@ export class SelfImprovementIntegration {
     return "Pindie blocked this call: an adaptation Run is read-only and only permits observation or the active Candidate tool.";
   }
 
-  createSettlementObserver(): CoreSettlementObserver {
+  createSettlementObserver(onCommitted?: (projectRoot: string, experience: RunExperience, ref: ExactEvidenceRef, signal?: AbortSignal) => Promise<void>): CoreSettlementObserver {
     let isAdaptationRun = false;
     let isDerivationRun = false;
     let isGlobalDerivationRun = false;
@@ -1306,7 +1308,11 @@ export class SelfImprovementIntegration {
               durationMs: facts.durationMs,
               cost: facts.cost,
             });
-            await this.experienceStore.save(facts.projectRoot!, experience, signal);
+            const ref = await this.experienceStore.save(facts.projectRoot!, experience, signal);
+            if (ref && onCommitted) {
+              try { await onCommitted(facts.projectRoot!, experience, ref, signal); }
+              catch (error) { console.warn(`[Pindie] Trial evidence unavailable: ${errorMessage(error)}`); }
+            }
           } catch (error) {
             console.warn(`[Pindie] Dropped Run Experience record: ${errorMessage(error)}`);
           }

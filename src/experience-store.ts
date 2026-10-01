@@ -11,11 +11,14 @@ import {
 } from "./run-experience.ts";
 import { getProjectId } from "./store.ts";
 import { EXPERIENCE_RECORD_ID, PROJECT_ID } from "./exact-identity.ts";
+import { runExperienceRecordFingerprint } from "./run-experience-fingerprint.ts";
+import type { ExactEvidenceRef } from "./learning-v1-contract.ts";
 
 export const EXPERIENCE_DIRECTORY_NAME = "experience";
 
 export interface RunExperienceStore {
-  save(projectRoot: string, experience: RunExperience, signal?: AbortSignal): Promise<void>;
+  /** Legacy/custom sinks may omit the ref; they cannot supply R3 evidence. */
+  save(projectRoot: string, experience: RunExperience, signal?: AbortSignal): Promise<ExactEvidenceRef | void>;
 }
 
 export interface FileRunExperienceStoreOptions {
@@ -201,11 +204,14 @@ export class FileRunExperienceStore implements RunExperienceStore {
     projectRoot: string,
     experience: RunExperience,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<ExactEvidenceRef> {
     if (experience.schemaVersion !== RUN_EXPERIENCE_SCHEMA_VERSION && experience.schemaVersion !== LEGACY_RUN_EXPERIENCE_SCHEMA_VERSION ||
       parseRunExperience(experience) === null) {
       throw new Error("Could not save Pindie Run Experience: invalid record.");
     }
+    // Freeze the validated bytes and digest before awaiting caller-controlled I/O.
+    const text = `${JSON.stringify(experience, null, 2)}\n`;
+    const fingerprint = runExperienceRecordFingerprint(JSON.parse(text));
     signal?.throwIfAborted();
     const directory = this.experienceDirectory(projectRoot);
     const recordId = randomUUID();
@@ -216,7 +222,7 @@ export class FileRunExperienceStore implements RunExperienceStore {
       signal?.throwIfAborted();
       await writeFile(
         temporaryPath,
-        `${JSON.stringify(experience, null, 2)}\n`,
+        text,
         { encoding: "utf8", flag: "wx", signal },
       );
       signal?.throwIfAborted();
@@ -236,6 +242,7 @@ export class FileRunExperienceStore implements RunExperienceStore {
       // successful normal Run into a failed save; report partial deletion explicitly.
       console.warn(`[Pindie] Experience maintenance failed: ${errorMessage(error)}`);
     }
+    return Object.freeze({ projectId: getProjectId(projectRoot), recordId: `${recordId}.json`, fingerprint });
   }
 
   experienceDirectory(projectRoot: string): string {

@@ -167,6 +167,9 @@ import { D2OpenHypothesisReader, type OpenHypothesisReader } from "./open-hypoth
 import { FileProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safety.ts";
 import { FileTrialAssignmentStore, type TrialAssignmentStore, type AssignmentPolicy } from "./trial-assignment-v2.ts";
 import { OrdinaryTrialOverlay, type OrdinaryTrialBinding, type TrialDiagnostic } from "./ordinary-trial-overlay.ts";
+import { FileTrialEvidenceV2Store, materializeTrialEvidenceV2 } from "./trial-evidence-v2.ts";
+import { runExperienceRecordFingerprint } from "./run-experience-fingerprint.ts";
+import { isExecutableStrategyHypothesis } from "./learning-v1-contract.ts";
 
 type ProjectRootResolver = (cwd: string, signal?: AbortSignal) => Promise<string>;
 
@@ -744,8 +747,10 @@ function registerComposedPindieExtension(
   };
 
   const trialRoots = resolvePindieStorageRoots(options.storageRoots);
+  const trialAssignments = featureSelection.selfImprovement ? options.trialAssignmentStore ?? new FileTrialAssignmentStore({ projectsBaseDir: trialRoots.projectsBaseDir }) : null;
+  const trialEvidence = featureSelection.selfImprovement ? new FileTrialEvidenceV2Store({ projectsBaseDir: trialRoots.projectsBaseDir }) : null;
   const ordinaryTrial = featureSelection.selfImprovement ? new OrdinaryTrialOverlay({
-    store: options.trialAssignmentStore ?? new FileTrialAssignmentStore({ projectsBaseDir: trialRoots.projectsBaseDir }),
+    store: trialAssignments!,
     reader: options.trialHypothesisReader ?? new D2OpenHypothesisReader(new FileDiscoveryHypothesisStore({ projectsBaseDir: trialRoots.projectsBaseDir }),
       new FileProjectTrustedStrategyPortfolioReader({ projectsBaseDir: trialRoots.projectsBaseDir, globalBaseDir: trialRoots.globalBaseDir })),
     ...(options.trialAssignmentPolicy ? { policy: options.trialAssignmentPolicy } : {}),
@@ -1566,6 +1571,8 @@ function registerComposedPindieExtension(
     // stale; that obsolete run must not touch or reset this runtime's state.
     const entries = safeSessionEntries(ctx);
     if (!entries) return;
+    const frozenTrialBinding = currentTrialBinding(ctx);
+    const frozenAssignment = ordinaryTrial?.settlementAssignment(frozenTrialBinding) ?? null;
     clearOrdinaryTrial();
 
     const settlementLifecycleGeneration = agentRunLifecycleGeneration;
@@ -1594,11 +1601,39 @@ function registerComposedPindieExtension(
       return !options.remoteCompanion || liveRemoteSession === settlementRemoteLease;
     };
 
+    const trialSettlementCurrent = (): boolean => {
+      try {
+        return frozenTrialBinding !== null && agentRunLifecycleGeneration === settlementLifecycleGeneration &&
+          run.isAgentRunCurrent(frozenTrialBinding.generation) && ctx.sessionManager.getSessionId() === frozenTrialBinding.sessionId &&
+          runtime.projectRoot !== null && getProjectId(runtime.projectRoot) === frozenTrialBinding.projectId &&
+          runtime.taskOccurrenceEpoch === frozenTrialBinding.occurrenceEpoch && runtime.externalStateEpoch === frozenTrialBinding.externalStateEpoch;
+      } catch { return false; }
+    };
     presentation.setStatusContext(ctx);
     const result = await core.settleAgentRun(
       ctx,
       entries,
-      selfImprovement?.createSettlementObserver(),
+      selfImprovement?.createSettlementObserver(async (projectRoot, experience, ref, signal) => {
+        if (!frozenAssignment || !trialAssignments || !trialEvidence) return;
+        signal?.throwIfAborted();
+        if (!trialSettlementCurrent()) throw new Error("Stale Trial settlement.");
+        const assignment = await trialAssignments.readExact(frozenAssignment);
+        const hypotheses = await new FileDiscoveryHypothesisStore({ projectsBaseDir: trialRoots.projectsBaseDir }).list(assignment.projectId);
+        const hypothesis = hypotheses.find((h) => h.id === assignment.hypothesis.id && h.fingerprint === assignment.hypothesis.fingerprint);
+        if (!isExecutableStrategyHypothesis(hypothesis)) throw new Error("Missing exact executable Trial hypothesis.");
+        const evidence = materializeTrialEvidenceV2(assignment, hypothesis, ref, experience);
+        if (!evidence) return;
+        const records = (await options.experienceReader!.read(projectRoot)).records;
+        const live = records.find((r) => r.recordId === ref.recordId);
+        if (!live || runExperienceRecordFingerprint(live.experience) !== ref.fingerprint) throw new Error("Missing exact committed Trial Experience.");
+        for (const comparison of assignment.comparison) {
+          const record = records.find((r) => r.recordId === comparison.recordId);
+          if (!record || runExperienceRecordFingerprint(record.experience) !== comparison.fingerprint) throw new Error("Missing exact Trial comparison.");
+        }
+        signal?.throwIfAborted();
+        if (!trialSettlementCurrent()) throw new Error("Stale Trial settlement after read.");
+        await trialEvidence.publish(evidence, signal, trialSettlementCurrent);
+      }),
     );
     if (result.status !== "settled") return;
 

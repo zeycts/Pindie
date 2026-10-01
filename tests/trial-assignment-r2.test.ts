@@ -101,6 +101,10 @@ test("R2 corrupt/full history fail closed without deletion", async (t) => {
     const a = { ...content, fingerprint: learningArtifactFingerprint(content) };
     await writeFile(join(dir, `${a.workEpisodeId}.json`), JSON.stringify(a));
   }));
+  // Capacity/dedupe are semantic facts, not a disk-speed benchmark. Keep the
+  // scheduling clock fixed while reading 2048 files; deadline tests use real time.
+  const at = Date.now();
+  t.mock.method(Date, "now", () => at);
   await assert.rejects(store.assignIfAbsent(authority(), policy, open, Date.now), /capacity/);
   assert.equal((await store.assignIfAbsent(authority(first.assignment.workEpisodeId), policy, open, Date.now)).status, "existing");
 });

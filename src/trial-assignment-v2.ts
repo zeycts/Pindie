@@ -77,6 +77,8 @@ export class FileTrialAssignmentStore implements TrialAssignmentStore {
     if (new Set(result.map((a) => a.id)).size !== result.length || new Set(result.map((a) => a.fingerprint)).size !== result.length) throw new Error("Ambiguous assignment history.");
     return result;
   }
+  /** Strict full immutable history for R3 retention, not a scheduling projection. */
+  async list(projectId: string): Promise<readonly TrialAssignmentV2[]> { return this.history(projectId); }
   async readExact(a: TrialAssignmentV2): Promise<TrialAssignmentV2> {
     if (!validateTrialAssignmentV2(a)) throw new Error("Invalid exact assignment.");
     const found = (await this.history(a.projectId)).find((v) => v.workEpisodeId === a.workEpisodeId);
