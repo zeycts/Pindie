@@ -160,6 +160,14 @@ import {
   runBoundedOperation,
 } from "./liveness.ts";
 
+import { resolvePindieStorageRoots } from "./composition.ts";
+import { getProjectId } from "./store.ts";
+import { FileDiscoveryHypothesisStore } from "./discovery-hypotheses.ts";
+import { D2OpenHypothesisReader, type OpenHypothesisReader } from "./open-hypotheses.ts";
+import { FileProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safety.ts";
+import { FileTrialAssignmentStore, type TrialAssignmentStore, type AssignmentPolicy } from "./trial-assignment-v2.ts";
+import { OrdinaryTrialOverlay, type OrdinaryTrialBinding, type TrialDiagnostic } from "./ordinary-trial-overlay.ts";
+
 type ProjectRootResolver = (cwd: string, signal?: AbortSignal) => Promise<string>;
 
 export interface PindieExtensionOptions {
@@ -178,6 +186,10 @@ export interface PindieExtensionOptions {
   onExperienceSaved?: (projectRoot: string) => void;
   experienceReader?: RunExperienceReader;
   workEpisodes?: import("./work-episode.ts").WorkEpisodeLedger;
+  trialAssignmentStore?: TrialAssignmentStore;
+  trialHypothesisReader?: OpenHypothesisReader;
+  trialAssignmentPolicy?: AssignmentPolicy;
+  trialDiagnostic?: (diagnostic: TrialDiagnostic) => void;
   strategyCandidateStore?: StrategyCandidateStore;
   strategyCandidateReader?: StrategyCandidateReader;
   strategyDerivationCandidateStore?: StrategyDerivationCandidateStore;
@@ -731,6 +743,37 @@ function registerComposedPindieExtension(
     return renderCurrentPindieActionEligibility(derivation.snapshot);
   };
 
+  const trialRoots = resolvePindieStorageRoots(options.storageRoots);
+  const ordinaryTrial = featureSelection.selfImprovement ? new OrdinaryTrialOverlay({
+    store: options.trialAssignmentStore ?? new FileTrialAssignmentStore({ projectsBaseDir: trialRoots.projectsBaseDir }),
+    reader: options.trialHypothesisReader ?? new D2OpenHypothesisReader(new FileDiscoveryHypothesisStore({ projectsBaseDir: trialRoots.projectsBaseDir }),
+      new FileProjectTrustedStrategyPortfolioReader({ projectsBaseDir: trialRoots.projectsBaseDir, globalBaseDir: trialRoots.globalBaseDir })),
+    ...(options.trialAssignmentPolicy ? { policy: options.trialAssignmentPolicy } : {}),
+    ...(options.trialDiagnostic ? { diagnostic: options.trialDiagnostic } : {}),
+    ...(options.now ? { now: options.now } : {}),
+  }) : null;
+  let ordinaryTrialRun = false;
+  const trialStartAdmissions = new Map<string, { generation: number; sessionId: string; projectRoot: string; occurrenceEpoch: number; externalStateEpoch: number }>();
+  const currentTrialBinding = (ctx: ExtensionContext): OrdinaryTrialBinding | null => {
+    try {
+      const generation = run.activeAgentRunGeneration;
+      if (!ordinaryTrialRun || generation === null || ctx.signal?.aborted || selfImprovement?.hasPacketForGeneration(generation) === true) return null;
+      const episode = core.getOrdinaryRunEpisode();
+      if (!episode) return null;
+      return {
+        projectId: getProjectId(episode.projectRoot), workEpisodeId: episode.episodeId,
+        sessionId: ctx.sessionManager.getSessionId(), generation,
+        occurrenceEpoch: episode.occurrenceEpoch, externalStateEpoch: episode.externalStateEpoch,
+      };
+    } catch { return null; }
+  };
+  const clearOrdinaryTrial = (): void => { ordinaryTrialRun = false; ordinaryTrial?.reset(); trialStartAdmissions.clear(); };
+  if (ordinaryTrial) pi.on("context_with_system", (event, ctx) => {
+    const advisory = ordinaryTrial?.render(currentTrialBinding(ctx));
+    if (!advisory) return;
+    return { messages: [...event.messages, { role: "user" as const, content: [{ type: "text" as const, text: advisory }], timestamp: Date.now() }] };
+  });
+
   core.registerTools(pi, {
     onSemanticStateChange: () => {
       presentation.refreshStatus();
@@ -744,7 +787,10 @@ function registerComposedPindieExtension(
     },
     resolveRevisionSelector: selfImprovement === null
       ? undefined
-      : (selector, kind, ctx) => selfImprovement!.resolveRevisionSelector(selector, kind, ctx),
+      : async (selector, kind, ctx) => {
+          const experimental = await ordinaryTrial?.resolve(selector, kind, () => currentTrialBinding(ctx), ctx.signal);
+          return experimental ?? selfImprovement!.resolveRevisionSelector(selector, kind, ctx);
+        },
   });
   selfImprovement?.registerTools();
   crossProjectLearning?.registerTools();
@@ -778,6 +824,7 @@ function registerComposedPindieExtension(
 
   pi.on("session_start", async (_event, ctx) => {
     ++agentRunLifecycleGeneration;
+    clearOrdinaryTrial();
     await quotaResume.restoreSession(ctx);
     await quotaFallback.restoreSession(ctx);
     const nativeSessionId = options.remoteCompanion || taskHandoffEnabled
@@ -845,8 +892,15 @@ function registerComposedPindieExtension(
     }
   });
 
+  if (ordinaryTrial) {
+    pi.on("session_before_switch", () => { clearOrdinaryTrial(); });
+    pi.on("session_before_fork", () => { clearOrdinaryTrial(); });
+    pi.on("session_before_tree", () => { clearOrdinaryTrial(); });
+  }
+
   pi.on("session_tree", async (_event, ctx) => {
     ++agentRunLifecycleGeneration;
+    clearOrdinaryTrial();
     cancelQuotaResume(ctx);
     try { fallbackController?.cancel(ctx.sessionManager.getSessionId()); } catch { /* Released Host. */ }
     await quotaResume.restoreBranch(ctx);
@@ -894,6 +948,7 @@ function registerComposedPindieExtension(
 
   pi.on("session_shutdown", (event, ctx) => {
     ++agentRunLifecycleGeneration;
+    clearOrdinaryTrial();
     cancelQuotaResume(ctx);
     releaseQuotaStatusObserver?.();
     releaseQuotaStatusObserver = null;
@@ -927,6 +982,7 @@ function registerComposedPindieExtension(
 
   pi.on("before_agent_start", async (event, ctx) => {
     ++agentRunLifecycleGeneration;
+    clearOrdinaryTrial();
     remoteCompletionReport = null;
     let preparationGeneration: number | null = null;
     try {
@@ -975,6 +1031,13 @@ function registerComposedPindieExtension(
             timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
             run: (signal) => selfImprovement.prepareAgentRun(ctx, signal),
           });
+
+      ordinaryTrialRun = selfImprovementRun.adaptationLease === null && selfImprovementRun.trialLease === null &&
+        selfImprovementRun.derivationLease === null && selfImprovementRun.globalDerivationLease === null;
+      const placement = currentTrialBinding(ctx);
+      if (ordinaryTrial && placement && core.getRunStartEpisode()?.taskWasOpen) {
+        await ordinaryTrial.prepare(placement, () => currentTrialBinding(ctx), ctx.signal);
+      }
 
       let derivation = run.deriveSnapshot();
       if (!derivation.ok) {
@@ -1044,6 +1107,7 @@ function registerComposedPindieExtension(
         ),
       };
     } catch (error) {
+      if (preparationGeneration === run.activeAgentRunGeneration) clearOrdinaryTrial();
       if (preparationGeneration !== null) {
         selfImprovement?.abortAgentRunPreparation(preparationGeneration);
         core.abortAgentRunPreparation(preparationGeneration);
@@ -1200,7 +1264,7 @@ function registerComposedPindieExtension(
     });
   }
 
-  pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
+  pi.on("tool_call", async (event, ctx): Promise<ToolCallEventResult | void> => {
     const effect = core.classifyToolEffect(event.toolName);
     const isHandoffCall = taskHandoffEnabled &&
       event.toolName === PINDIE_TASK_HANDOFF_TOOL;
@@ -1349,6 +1413,16 @@ function registerComposedPindieExtension(
       capabilities,
     );
     run.recordAuthorizedCall(event.toolCallId, effect);
+    if (ordinaryTrial && ordinaryTrialRun && effect.requiredCapability === "task.start") {
+      const start = core.getRunStartEpisode(), generation = run.activeAgentRunGeneration;
+      if (start && !start.taskWasOpen && start.episodeId === null && generation !== null && runtime.projectRoot === start.projectRoot &&
+        runtime.taskOccurrenceEpoch === start.occurrenceEpoch && runtime.externalStateEpoch === start.externalStateEpoch) {
+        try {
+          trialStartAdmissions.set(event.toolCallId, { generation, sessionId: ctx.sessionManager.getSessionId(), projectRoot: start.projectRoot,
+            occurrenceEpoch: start.occurrenceEpoch, externalStateEpoch: start.externalStateEpoch });
+        } catch { /* Missing native binding skips learning, not authorized Human work. */ }
+      }
+    }
   });
 
   pi.on("tool_result", async (event, ctx) => {
@@ -1397,6 +1471,16 @@ function registerComposedPindieExtension(
     if (telemetryKind === "self-improvement" || telemetryKind === "memory") return;
     if (!authorizedExecution) return;
     const { effect } = authorizedExecution;
+    const startAdmission = trialStartAdmissions.get(event.toolCallId);
+    trialStartAdmissions.delete(event.toolCallId);
+    if (ordinaryTrial && !event.isError && effect.requiredCapability === "task.start" && startAdmission) {
+      const placement = currentTrialBinding(ctx);
+      if (placement && placement.generation === startAdmission.generation && placement.sessionId === startAdmission.sessionId && runtime.projectRoot === startAdmission.projectRoot &&
+        placement.externalStateEpoch === startAdmission.externalStateEpoch && placement.occurrenceEpoch === startAdmission.occurrenceEpoch + 1) {
+        await ordinaryTrial.prepare(placement, () => currentTrialBinding(ctx), ctx.signal);
+      }
+    }
+    if (!event.isError && effect.requiredCapability === "task.replace") ordinaryTrial?.invalidate();
 
     if (
       !event.isError &&
@@ -1482,6 +1566,7 @@ function registerComposedPindieExtension(
     // stale; that obsolete run must not touch or reset this runtime's state.
     const entries = safeSessionEntries(ctx);
     if (!entries) return;
+    clearOrdinaryTrial();
 
     const settlementLifecycleGeneration = agentRunLifecycleGeneration;
     const settlementRemoteLease = liveRemoteSession;

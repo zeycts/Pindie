@@ -2409,7 +2409,7 @@ test("adaptation, derivation, global derivation and Trial completions stay termi
   }
 });
 
-test("Remote-disabled baseline registers only core and quota lifecycle hooks", () => {
+test("Remote-disabled SI baseline registers core, quota and R2 transient lifecycle hooks",  () => {
   const { api } = createHarness();
 
   assert.equal(api.entryRenderers.has(PINDIE_REMOTE_NOTICE_TYPE), true);
@@ -2435,8 +2435,12 @@ test("Remote-disabled baseline registers only core and quota lifecycle hooks", (
     "agent_settled",
     "before_agent_start",
     "context",
+    "context_with_system",
     "input",
     "model_select",
+    "session_before_fork",
+    "session_before_switch",
+    "session_before_tree",
     "session_compact",
     "session_compact_failed",
     "session_shutdown",

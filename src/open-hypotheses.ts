@@ -7,17 +7,14 @@ import { hypothesisLeaves } from "./hypothesis-lineage.ts";
 
 /** Lifecycle projection, not immutable history. Future Evaluation/Decision readers close entries here. */
 export interface OpenHypothesisReader {
-  /** Subscribe before detached snapshot reads; errors disable readiness. No request-time I/O. */
-  observe?(projectId: string, invalidate: (unavailable?: boolean) => void): Promise<() => void>;
   readOpen(projectId: string): Promise<readonly StrategyHypothesis[]>;
 }
 /** Exact revise parents close in the leaf projection; no Evaluation/Decision closure yet. Never reads legacy SI/CPL Candidate stores. */
 export class D2OpenHypothesisReader implements OpenHypothesisReader {
   private readonly history: Pick<FileDiscoveryHypothesisStore, "list">;
   private readonly portfolio: ProjectTrustedStrategyPortfolioReader | undefined;
-  readonly observe: OpenHypothesisReader["observe"];
-  constructor(history: Pick<FileDiscoveryHypothesisStore, "list">, portfolio?: ProjectTrustedStrategyPortfolioReader, observe?: OpenHypothesisReader["observe"]) {
-    this.history = history; this.portfolio = portfolio; this.observe = observe;
+  constructor(history: Pick<FileDiscoveryHypothesisStore, "list">, portfolio?: ProjectTrustedStrategyPortfolioReader) {
+    this.history = history; this.portfolio = portfolio;
   }
   async readOpen(projectId: string): Promise<readonly StrategyHypothesis[]> {
     const entries = hypothesisLeaves(await this.history.list(projectId), projectId);

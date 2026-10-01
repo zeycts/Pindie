@@ -491,6 +491,20 @@ export class CoreIntegration {
     }
   }
 
+  /** Read-only exact whole-Run episode eligibility; optional features never own ledger truth. */
+  getOrdinaryRunEpisode(): { projectRoot: string; episodeId: string; occurrenceEpoch: number; externalStateEpoch: number } | null {
+    const start = this.runStartEpisode, r = this.runtime, state = this.run.authoritativeState;
+    const d = this.run.deriveSnapshot();
+    if (!start || !state?.task || state.task.completed || !r.projectRoot || !r.currentWorkEpisodeId || !this.run.hasActiveAgentRun || !d.ok || d.snapshot.authority !== "coherent" || start.projectRoot !== r.projectRoot || start.externalStateEpoch !== r.externalStateEpoch) return null;
+    const delta = r.taskOccurrenceEpoch - start.occurrenceEpoch;
+    if (start.taskWasOpen ? delta !== 0 || start.episodeId !== r.currentWorkEpisodeId : start.episodeId !== null || delta !== 1) return null;
+    return { projectRoot: r.projectRoot, episodeId: r.currentWorkEpisodeId, occurrenceEpoch: r.taskOccurrenceEpoch, externalStateEpoch: r.externalStateEpoch };
+  }
+
+  getRunStartEpisode(): import("./work-episode-attribution.ts").RunStartEpisodeBinding | null {
+    return this.runStartEpisode === null ? null : Object.freeze({ ...this.runStartEpisode });
+  }
+
   /** Capture exact operational identity after pre-Run State refresh, without adding model context. */
   async captureRunStartEpisode(signal?: AbortSignal): Promise<void> {
     const ledger = this.runtime.workEpisodes;
