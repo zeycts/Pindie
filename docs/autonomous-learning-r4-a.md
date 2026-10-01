@@ -46,11 +46,11 @@ Exact fields:
 
 Canonical result size <=16KiB. Standalone validation checks shape/digest; `matchesEvaluationResultPacket` additionally validates the complete packet, exact packet/hypothesis/scope/gate identity and citation membership. A valid digest alone proves neither provenance nor semantic correctness. No model identity/job key is invented in this foundation; future execution must separately design immutable operational provenance and retries before production publication.
 
-## Reserved storage and future publication (not implemented)
+## Reserved storage and publication boundary
 
 Reserve project-local `learning-v1/evaluation-packets-v1/<UUID>.json` and `learning-v1/evaluation-results-v1/<UUID>.json`. Dedicated schema-1 refs include their family and project scope, with exact canonical persisted-content digest. No lookup may fall through to `strategy-evaluation`, v1 TrialEvidence, live Experience or a different version namespace.
 
-Future stores must freeze canonical validated bytes before I/O, enforce size/capacity bounds and use `FileGlobalWriterLock` at the namespace directory plus atomic unique creation, following R3. Under lock revalidate exact refs and publication authority; identical retries preserve the same ID/bytes, conflicting retries fail closed. Durable job-to-output identity, capacity limits, cross-store crash reconciliation, result model provenance and retention protection must be approved before runtime implementation. Packet/result history must not be pruned opportunistically; this slice creates no stored artifacts and changes no retention behavior.
+[R4-C1](autonomous-learning-r4-c1.md) implements the standalone packet store in the reserved namespace with a strict schema-1 `{ schemaVersion, createdAt, packet }` storage envelope; packet schemas/refs/fingerprints remain unchanged. Result storage and production execution remain unimplemented. Stores must freeze canonical validated bytes before I/O, enforce size/capacity bounds and use `FileGlobalWriterLock` at the namespace directory plus atomic unique creation, following R3. Under lock revalidate exact refs and publication authority; identical retries preserve the same ID/bytes, conflicting retries fail closed. Durable job-to-output identity, capacity limits, cross-store crash reconciliation, result model provenance and retention protection must be approved before runtime implementation. Packet/result history must not be pruned opportunistically; this slice creates no stored artifacts and changes no retention behavior.
 
 ## Contract acceptance
 
