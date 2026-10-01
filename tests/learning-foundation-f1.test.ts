@@ -256,7 +256,9 @@ test("F1 hypothesis contract rejects authority-bearing fields and fingerprint dr
     sources: [{ projectId: "a".repeat(64), recordId: "00000000-0000-4000-8000-000000000000.json", fingerprint: `sha256:${"b".repeat(64)}` }],
     discoveryPacketFingerprint: `sha256:${"c".repeat(64)}` };
   const hypothesis = { ...semantic, id: "00000000-0000-4000-8000-000000000000", fingerprint: hypothesisFingerprint(semantic as Parameters<typeof hypothesisFingerprint>[0]) };
+  assert.equal(hypothesis.fingerprint, "sha256:2ca67d281c20cf1afefd6e98fe3fba20f91e8cbef8f27f3d2f023dbe066212e1"); // frozen pre-R1 canonical identity
   assert.equal(validateStrategyHypothesis(hypothesis), true);
+  assert.equal(validateStrategyHypothesis({ ...hypothesis, principles: ["Not a v1 field"] }), false);
   assert.equal(validateStrategyHypothesis({ ...hypothesis, capability: "task.complete" }), false);
   assert.equal(validateStrategyHypothesis({ ...hypothesis, expectedEffect: "" }), false);
   assert.equal(validateStrategyHypothesis({ ...hypothesis, fingerprint: `sha256:${"d".repeat(64)}` }), false);

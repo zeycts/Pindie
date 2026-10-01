@@ -202,7 +202,7 @@ export function validateDiscoveryReceipt(v: unknown): v is DiscoveryReceipt {
     unique(v.sources) && (v.scope.kind !== "project" || (v.sources as DiscoveryReceipt["sources"]).every((source) => source.projectId === (v.scope as { projectId: string }).projectId)) &&
     (v.outcome === "none" ? v.hypotheses.length === 0 : v.hypotheses.length > 0) && authentic(v);
 }
-export interface StrategyHypothesis {
+export interface StrategyHypothesisV1 {
   readonly schemaVersion: 1; readonly id: string; readonly fingerprint: string; readonly scope: LearningScope;
   readonly logicalId: string; readonly kind: "approach" | "modifier";
   readonly lineage: "new" | "revise"; readonly parent: LearningArtifactRef | null; readonly baseRevisionFingerprint: string | null;
@@ -210,7 +210,17 @@ export interface StrategyHypothesis {
   readonly expectedEffect: string; readonly failureSignals: readonly string[]; readonly trialHints: readonly string[];
   readonly sources: readonly ExactEvidenceRef[]; readonly discoveryPacketFingerprint: string;
 }
-export function hypothesisFingerprint(value: Omit<StrategyHypothesis, "id" | "fingerprint">): string {
+export interface StrategyHypothesisV2 extends Omit<StrategyHypothesisV1, "schemaVersion"> {
+  readonly schemaVersion: 2;
+  readonly principles: readonly string[];
+}
+export type StrategyHypothesis = StrategyHypothesisV1 | StrategyHypothesisV2;
+export type StrategyHypothesisSemantics = Omit<StrategyHypothesisV1, "id" | "fingerprint"> | Omit<StrategyHypothesisV2, "id" | "fingerprint">;
+/** Executable shape only: grants no trust, selection, assignment or Trial eligibility. */
+export function isExecutableStrategyHypothesis(value: unknown): value is StrategyHypothesisV2 {
+  return validateStrategyHypothesis(value) && value.schemaVersion === 2;
+}
+export function hypothesisFingerprint(value: StrategyHypothesisSemantics): string {
   // Packet provenance is not cognition: a changed comparison catalog must not create a new semantic identity.
   const { discoveryPacketFingerprint: _packet, ...semantic } = value;
   return learningFingerprint(semantic);
@@ -219,8 +229,9 @@ export function hypothesisFingerprint(value: Omit<StrategyHypothesis, "id" | "fi
 export function validateStrategyHypothesis(value: unknown): value is StrategyHypothesis {
   if (!object(value) || !exact(value, ["schemaVersion", "id", "fingerprint", "scope", "logicalId", "kind", "lineage",
     "parent", "baseRevisionFingerprint", "summary", "useWhen", "avoidWhen",
-    "expectedEffect", "failureSignals", "trialHints", "sources", "discoveryPacketFingerprint"]) ||
-    value.schemaVersion !== 1 || !uuid(value.id) || !hash(value.fingerprint) || !validateLearningScope(value.scope) ||
+    "expectedEffect", "failureSignals", "trialHints", "sources", "discoveryPacketFingerprint", ...(value.schemaVersion === 2 ? ["principles"] : [])]) ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
+    (value.schemaVersion === 2 && !list(value.principles, 8, (x) => text(x, 256), 1)) || !uuid(value.id) || !hash(value.fingerprint) || !validateLearningScope(value.scope) ||
     (value.kind !== "approach" && value.kind !== "modifier") ||
     (value.lineage !== "new" && value.lineage !== "revise") ||
     (value.lineage === "new" ? value.parent !== null || value.baseRevisionFingerprint !== null
@@ -235,7 +246,7 @@ export function validateStrategyHypothesis(value: unknown): value is StrategyHyp
     !list(value.useWhen, 8, (x) => text(x, 256), 1) || !list(value.avoidWhen, 8, (x) => text(x, 256)) ||
     !list(value.trialHints, 8, (x) => text(x, 256)) || !list(value.failureSignals, 8, (x) => text(x, 256), 1) ||
     !list(value.sources, 8, validateExactEvidenceRef, 1) || !unique(value.sources)) return false;
-  try { const { id: _id, fingerprint, ...semantic } = value; return fingerprint === hypothesisFingerprint(semantic as unknown as Omit<StrategyHypothesis, "id" | "fingerprint">); }
+  try { const { id: _id, fingerprint, ...semantic } = value; return fingerprint === hypothesisFingerprint(semantic as unknown as StrategyHypothesisSemantics); }
   catch { return false; }
 }
 export interface TrialAssignment {

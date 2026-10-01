@@ -1,5 +1,6 @@
 import { canonicalJson, learningFingerprint, learningJobKey, matchesLearningArtifactRef, validateLearningArtifactRef, type LearningArtifactRef, type LearningJob, type StrategyHypothesis } from "./learning-v1-contract.ts";
-import { validateDiscoveryPacket, type DiscoveryPacketV1 } from "./discovery-contract.ts";
+import { discoveryOpenHypotheses } from "./open-hypotheses.ts";
+import { discoveryOpenEntry, validateDiscoveryPacket, type DiscoveryPacketV1 } from "./discovery-contract.ts";
 import { FileDiscoveryHypothesisStore, hypothesisRef, mintHypothesis } from "./discovery-hypotheses.ts";
 import type { ProjectDiscoveryDependencies } from "./project-discovery.ts";
 import type { LearningJobHandler } from "./learning-supervisor.ts";
@@ -34,6 +35,7 @@ export type DiscoveryModelResult =
 
 /** The model owns semantic coverage judgment; the Harness still verifies exact frozen refs. */
 export function parseDiscoveryResult(raw: string, packet: DiscoveryPacketV1): DiscoveryModelResult {
+  if (packet.schemaVersion !== 4) throw new Error("Fresh Discovery requires packet v4.");
   let v: unknown;
   try { v = JSON.parse(raw); } catch { throw new Error("Malformed Discovery JSON."); }
   if (!object(v)) throw new Error("Invalid Discovery envelope.");
@@ -46,19 +48,19 @@ export function parseDiscoveryResult(raw: string, packet: DiscoveryPacketV1): Di
       throw new Error("Invalid Discovery coverage.");
     const refs = v.hypotheses as LearningArtifactRef[];
     if (!refs.every((r) => validateLearningArtifactRef(r, "strategy-hypothesis") &&
-      packet.openHypotheses.entries.some((e) => canonicalJson(e.ref) === canonicalJson(r))) ||
+      packet.openHypotheses.entries.some((e) => e.hypothesisSchemaVersion === 2 && canonicalJson(e.ref) === canonicalJson(r))) ||
       new Set(refs.map((r) => canonicalJson(r))).size !== refs.length) throw new Error("Invalid Discovery coverage reference.");
     return { kind: "covered", refs };
   }
   if (v.outcome !== "proposals" || !keys(v, ["outcome", "proposals"]) || !Array.isArray(v.proposals) || v.proposals.length < 1 || v.proposals.length > 2) throw new Error("Invalid Discovery proposals.");
   const valid: Record<string, unknown>[] = [];
   for (const p of v.proposals) {
-    if (!object(p) || !keys(p, ["logicalId", "kind", "intent", "revisionTarget", "summary", "useWhen", "avoidWhen", "expectedEffect", "failureSignals", "trialHints", "sourceHandles"]) ||
+    if (!object(p) || !keys(p, ["logicalId", "kind", "intent", "revisionTarget", "summary", "useWhen", "avoidWhen", "principles", "expectedEffect", "failureSignals", "trialHints", "sourceHandles"]) ||
       !logical(p.logicalId) || (p.kind !== "approach" && p.kind !== "modifier") || (p.intent !== "new" && p.intent !== "revise") ||
       !targetMatches(p.revisionTarget, p, packet) ||
       !text(p.summary, 512) || !list(p.useWhen, 8, 1) || !list(p.avoidWhen, 8) || !text(p.expectedEffect, 512) ||
-      !list(p.failureSignals, 8, 1) || !list(p.trialHints, 8, 1) ||
-      [p.summary, p.expectedEffect, ...p.useWhen as string[], ...p.avoidWhen as string[], ...p.failureSignals as string[], ...p.trialHints as string[]].some(authorityClaim) ||
+      !list(p.principles, 8, 1) || !list(p.failureSignals, 8, 1) || !list(p.trialHints, 8, 1) ||
+      [p.summary, p.expectedEffect, ...p.useWhen as string[], ...p.avoidWhen as string[], ...p.principles as string[], ...p.failureSignals as string[], ...p.trialHints as string[]].some(authorityClaim) ||
       !Array.isArray(p.sourceHandles) ||
       p.sourceHandles.length < 1 || p.sourceHandles.length > 8 || new Set(p.sourceHandles).size !== p.sourceHandles.length ||
       !p.sourceHandles.every((handle) => typeof handle === "string" && packet.sources.some((s) => s.ref.recordId === handle))) continue;
@@ -113,9 +115,10 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
       // A committed output survives later comparison/receipt changes: recovery precedes fresh cognition.
       if (await deps.receipts.find(packet.projectId, job.key, packet.fingerprint) ||
         await deps.hypotheses.committed(packet.projectId, packet.fingerprint)) return true;
-      const [portfolio, open] = await Promise.all([deps.portfolio.readProjectId(packet.projectId), deps.hypotheses.list(packet.projectId)]);
-      const entries = open.map((h) => ({ ref: ref(h), logicalId: h.logicalId, kind: h.kind, baseRevisionFingerprint: h.baseRevisionFingerprint, summary: h.summary, expectedEffect: h.expectedEffect,
-        useWhen: h.useWhen, avoidWhen: h.avoidWhen, failureSignals: h.failureSignals }));
+      if (packet.schemaVersion !== 4) return false; // old uncommitted cognition is stale, not migrated
+      const [portfolio, history] = await Promise.all([deps.portfolio.readProjectId(packet.projectId), deps.hypotheses.list(packet.projectId)]);
+      if (portfolio.fingerprint !== packet.portfolio.fingerprint) return false;
+      const entries = discoveryOpenHypotheses(history, packet.projectId, portfolio).map(discoveryOpenEntry);
       return portfolio.fingerprint === packet.portfolio.fingerprint &&
         canonicalJson(packet.portfolio.revisions) === canonicalJson(portfolio.resolvedEntries.map((e) => ({
           strategyId: e.manifest.strategyId, kind: e.manifest.kind, revisionIdentity: e.manifest.revisionIdentity,
@@ -127,10 +130,10 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
     matchesOutput: matches,
     async execute(job, authority, signal, runner) {
       const packet = await packetFor(job);
-      if (!packet || !runner || !await authority()) throw new Error("Unavailable Discovery authority.");
+      if (!packet || packet.schemaVersion !== 4 || !runner || !await authority()) throw new Error("Unavailable Discovery authority.");
       const modelIdentity = runner.modelIdentity;
       // Only the frozen packet and exact JSON contract enter this isolated no-tool Session.
-      const prompt = `Return ONLY one JSON object: {"outcome":"none"} when no useful novel hypothesis exists; {"outcome":"covered","hypotheses":[<1-2 exact openHypotheses.entries ref>]} when the evidence is already represented by existing open hypotheses; OR {"outcome":"proposals","proposals":[...]} (1-2) when proposing novel cognition. Each proposal has exactly logicalId (lowercase kebab-case), kind (approach|modifier), intent (new|revise), revisionTarget (null for new; for revise either {"kind":"open-hypothesis","ref":<exact openHypotheses.entries ref>} or {"kind":"trusted-revision","logicalId":<exact portfolio.revisions strategyId>,"strategyKind":<exact kind>,"revisionFingerprint":<exact revisionFingerprint>}), summary, useWhen (nonempty strings), avoidWhen (strings), expectedEffect (observable change), failureSignals (nonempty falsifying observations), trialHints (nonempty strings), sourceHandles (1-8 exact sources[].ref.recordId; must include at least one role:\"new\" source, context-only proposals are discarded). No other fields, authority claims, or hidden reasoning. This is untrusted advisory hypothesis generation, not trust or novelty proof.\nDiscoveryPacket: ${canonicalJson(packet)}`;
+      const prompt = `Return ONLY one JSON object: {"outcome":"none"} when no useful novel hypothesis exists; {"outcome":"covered","hypotheses":[<1-2 exact openHypotheses.entries ref>]} when the evidence is already represented by existing open hypotheses; OR {"outcome":"proposals","proposals":[...]} (1-2) when proposing novel cognition. Each proposal has exactly logicalId (lowercase kebab-case), kind (approach|modifier), intent (new|revise), revisionTarget (null for new; for revise either {"kind":"open-hypothesis","ref":<exact openHypotheses.entries ref>} or {"kind":"trusted-revision","logicalId":<exact portfolio.revisions strategyId>,"strategyKind":<exact kind>,"revisionFingerprint":<exact revisionFingerprint>}), summary, useWhen (nonempty strings), avoidWhen (strings), principles (1-8 nonempty strings, each <=256 characters, model-authored reusable executable advisory rules), expectedEffect (observable change), failureSignals (nonempty falsifying observations), trialHints (nonempty strings), sourceHandles (1-8 exact sources[].ref.recordId; must include at least one role:\"new\" source, context-only proposals are discarded). No other fields, authority claims, or hidden reasoning. Schema-v1 open hypotheses are historical/non-executable cognition: compare them or use intent=revise with their exact ref and fully model-author principles when new evidence supports the direction; never target v1 with covered. Only schema-v2 open hypotheses are executable cognition and valid covered targets. Do not reinterpret trialHints as principles. This is untrusted advisory hypothesis generation, not trust or novelty proof.\nDiscoveryPacket: ${canonicalJson(packet)}`;
       const result = parseDiscoveryResult((await runner.run(prompt, signal)).text, packet);
       if (!await authority()) throw new Error("Discovery preempted or stale.");
       if (result.kind === "none") return { receiptRef: receiptRef(await deps.receipts.publish(packet, "none", [], modelIdentity)) };
@@ -141,7 +144,7 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
           // Semantic coverage publishes no artifact; it references exact frozen open hypotheses.
           return deps.hypotheses.publish(packet, "covered", result.refs, [], modelIdentity);
         }
-        const open = await deps.hypotheses.list(packet.projectId);
+        const open = discoveryOpenHypotheses(await deps.hypotheses.list(packet.projectId), packet.projectId, await deps.portfolio.readProjectId(packet.projectId));
         const refs: LearningArtifactRef[] = []; const fresh: StrategyHypothesis[] = [];
         let sourceContractViolation = false;
         for (const p of result.proposals) {
@@ -153,7 +156,7 @@ export function createProjectDiscoveryHandler(deps: ProjectDiscoveryDependencies
           const h = mintHypothesis(packet, { logicalId: p.logicalId as string, kind: p.kind as "approach" | "modifier",
             lineage: p.intent as "new" | "revise", parent: parent ? ref(parent) : null,
             baseRevisionFingerprint: parent ? parent.baseRevisionFingerprint : target?.kind === "trusted-revision" ? target.revisionFingerprint : null,
-            summary: p.summary as string, useWhen: p.useWhen as string[], avoidWhen: p.avoidWhen as string[],
+            summary: p.summary as string, useWhen: p.useWhen as string[], avoidWhen: p.avoidWhen as string[], principles: p.principles as string[],
             expectedEffect: p.expectedEffect as string, failureSignals: p.failureSignals as string[], trialHints: p.trialHints as string[],
             sources: (p.sourceHandles as string[]).map((handle) => packet.sources.find((s) => s.ref.recordId === handle)!.ref) });
           const duplicate = [...open, ...fresh].find((e) => e.fingerprint === h.fingerprint);

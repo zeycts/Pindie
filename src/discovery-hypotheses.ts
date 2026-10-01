@@ -5,17 +5,16 @@ import { join } from "node:path";
 import { FileGlobalWriterLock, type GlobalWriterLock } from "./store.ts";
 import { canonicalJson, hypothesisFingerprint, learningFingerprint, matchesLearningArtifactRef, validateLearningArtifactRef,
   validateLearningModelProvenance, validateStrategyHypothesis, type LearningArtifactRef, type LearningModelProvenance,
-  type StrategyHypothesis } from "./learning-v1-contract.ts";
-import { validateDiscoveryPacket, type DiscoveryPacketV1 } from "./discovery-contract.ts";
+  type StrategyHypothesis, type StrategyHypothesisV2 } from "./learning-v1-contract.ts";
+import { hypothesisLeaves } from "./hypothesis-lineage.ts";
+import { validateDiscoveryPacket, type DiscoveryPacketV1, type DiscoveryPacketV4 } from "./discovery-contract.ts";
 
 // Immutable packet commit/receipt history is bounded independently of cognition
 // capacity. Later Evaluation/Decision lifecycle projection will close hypotheses
 // without deleting history, so this history bound must never be read as a
 // lifetime hypothesis cap.
 export const MAX_DISCOVERY_COMMITS = 2048;
-// Bounds the current OPEN hypothesis catalog only. With no v1 Decision lifecycle
-// yet, every stored hypothesis is open; closing one later must not require
-// rewriting or deleting its immutable artifact.
+// Bounds open leaves only; exact revised parents remain immutable history.
 export const MAX_OPEN_HYPOTHESES = 64;
 export type DiscoveryCommit = { readonly schemaVersion: 2; readonly packetFingerprint: string;
   readonly outcome: "covered" | "published"; readonly refs: readonly LearningArtifactRef[];
@@ -75,18 +74,21 @@ export class FileDiscoveryHypothesisStore {
     if (published.length > MAX_DISCOVERY_COMMITS) throw new Error("Discovery commit history capacity exceeded.");
     const commits = await Promise.all(published.map((n) => this.committed(projectId, `sha256:${n.slice(0, -5)}`)));
     const hypotheses = commits.flatMap((c) => c!.newHypotheses);
-    if (hypotheses.length > MAX_OPEN_HYPOTHESES || new Set(hypotheses.map((h) => h.id)).size !== hypotheses.length ||
+    if (new Set(hypotheses.map((h) => h.id)).size !== hypotheses.length ||
       new Set(hypotheses.map((h) => h.fingerprint)).size !== hypotheses.length) throw new Error("Ambiguous hypothesis identity.");
     for (const commit of commits) for (const ref of commit!.refs) {
       if (!hypotheses.some((h) => matchesLearningArtifactRef(ref, h))) throw new Error("Unresolved hypothesis reference.");
     }
+    hypothesisLeaves(hypotheses, projectId); // strict history integrity, not open capacity
     return hypotheses.sort((a, b) => a.fingerprint.localeCompare(b.fingerprint) || a.id.localeCompare(b.id));
   }
   async publish(packet: DiscoveryPacketV1, outcome: DiscoveryCommit["outcome"], refs: readonly LearningArtifactRef[], newHypotheses: readonly StrategyHypothesis[], modelIdentity: LearningModelProvenance): Promise<DiscoveryCommit> {
     if (!validateLearningModelProvenance(modelIdentity)) throw new Error("Invalid hypothesis publication model provenance.");
     const content = { schemaVersion: 2 as const, packetFingerprint: packet.fingerprint, outcome, refs, newHypotheses, modelIdentity };
     const commit: DiscoveryCommit = { ...content, fingerprint: learningFingerprint(content) };
-    if (!validateDiscoveryPacket(packet) || !this.valid(commit, packet.projectId) ||
+    if (!validateDiscoveryPacket(packet) || packet.schemaVersion !== 4 || newHypotheses.some((h) => h.schemaVersion !== 2) ||
+      !this.valid(commit, packet.projectId) ||
+      (outcome === "covered" && refs.some((r) => !packet.openHypotheses.entries.some((e) => e.hypothesisSchemaVersion === 2 && canonicalJson(e.ref) === canonicalJson(r)))) ||
       refs.some((r) => !newHypotheses.some((h) => matchesLearningArtifactRef(r, h)) &&
         !packet.openHypotheses.entries.some((e) => canonicalJson(e.ref) === canonicalJson(r))) ||
       newHypotheses.some((h) => h.sources.some((s) => !packet.sources.some((p) => canonicalJson(p.ref) === canonicalJson(s))) ||
@@ -103,11 +105,16 @@ export class FileDiscoveryHypothesisStore {
       return previous;
     }
     const existing = await this.list(packet.projectId);
+    const leaves = hypothesisLeaves(existing, packet.projectId);
+    if (refs.some((r) => !newHypotheses.some((h) => matchesLearningArtifactRef(r, h)) &&
+        !leaves.some((h) => h.schemaVersion === 2 && matchesLearningArtifactRef(r, h))) ||
+      newHypotheses.some((h) => h.parent !== null && !leaves.some((parent) => matchesLearningArtifactRef(h.parent, parent))))
+      throw new Error("Publication references non-open cognition.");
     await mkdir(this.dir(packet.projectId), { recursive: true });
     const history = await readdir(this.dir(packet.projectId));
     if (history.filter((n) => n.endsWith(".json")).length >= MAX_DISCOVERY_COMMITS)
       throw new Error("Discovery commit history capacity exceeded.");
-    if (existing.length + newHypotheses.length > MAX_OPEN_HYPOTHESES) throw new Error("Open hypothesis capacity exceeded.");
+    if (hypothesisLeaves([...existing, ...newHypotheses], packet.projectId).length > MAX_OPEN_HYPOTHESES) throw new Error("Open hypothesis capacity exceeded.");
     if (newHypotheses.some((h) => existing.some((e) => e.id === h.id || e.fingerprint === h.fingerprint))) throw new Error("Conflicting hypothesis identity.");
     const path = this.path(packet.projectId, packet.fingerprint);
     await mkdir(this.dir(packet.projectId), { recursive: true });
@@ -120,8 +127,9 @@ export class FileDiscoveryHypothesisStore {
   }
 }
 
-export function mintHypothesis(packet: DiscoveryPacketV1, fields: Omit<StrategyHypothesis, "schemaVersion" | "id" | "fingerprint" | "scope" | "discoveryPacketFingerprint">): StrategyHypothesis {
-  const semantic = { schemaVersion: 1 as const, scope: { kind: "project" as const, projectId: packet.projectId }, ...fields, discoveryPacketFingerprint: packet.fingerprint };
+export function mintHypothesis(packet: DiscoveryPacketV4, fields: Omit<StrategyHypothesisV2, "schemaVersion" | "id" | "fingerprint" | "scope" | "discoveryPacketFingerprint">): StrategyHypothesisV2 {
+  if (packet.schemaVersion !== 4) throw new Error("New cognition requires DiscoveryPacket v4.");
+  const semantic = { schemaVersion: 2 as const, scope: { kind: "project" as const, projectId: packet.projectId }, ...fields, discoveryPacketFingerprint: packet.fingerprint };
   const hypothesis = { ...semantic, id: randomUUID(), fingerprint: hypothesisFingerprint(semantic) };
   if (!validateStrategyHypothesis(hypothesis) || hypothesis.sources.some((s) => !packet.sources.some((p) => canonicalJson(p.ref) === canonicalJson(s))))
     throw new Error("Invalid proposed hypothesis.");
