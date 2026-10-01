@@ -160,12 +160,6 @@ import {
   runBoundedOperation,
 } from "./liveness.ts";
 
-import { randomUUID } from "node:crypto";
-import { matchesCurrentTrustedBase } from "./open-hypotheses.ts";
-import { getProjectId as trialProjectId } from "./store.ts";
-import { validTrialAssignment, type TrialOffers, type TrialOfferAuthority } from "./trial-offers.ts";
-import type { TrialOfferPolicy } from "./trial-offer-contract.ts";
-
 type ProjectRootResolver = (cwd: string, signal?: AbortSignal) => Promise<string>;
 
 export interface PindieExtensionOptions {
@@ -184,8 +178,6 @@ export interface PindieExtensionOptions {
   onExperienceSaved?: (projectRoot: string) => void;
   experienceReader?: RunExperienceReader;
   workEpisodes?: import("./work-episode.ts").WorkEpisodeLedger;
-  trialOffers?: TrialOffers;
-  trialOfferPolicy?: TrialOfferPolicy;
   strategyCandidateStore?: StrategyCandidateStore;
   strategyCandidateReader?: StrategyCandidateReader;
   strategyDerivationCandidateStore?: StrategyDerivationCandidateStore;
@@ -785,20 +777,6 @@ function registerComposedPindieExtension(
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    ++trialAuthorityGeneration;
-    trialContext = null;
-    options.trialOffers?.dispose();
-    try { trialSessionId = options.trialOffers ? ctx.sessionManager.getSessionId() : null; }
-    catch { trialSessionId = null; } // Missing authority disables experiments, not ordinary Session startup.
-    // Resolve the SAME ordinary root fact early; Trial preflight overlaps quota/Session/State setup.
-    const trialSessionGeneration = trialAuthorityGeneration;
-    const earlyProjectRoot = options.trialOffers ? runBoundedOperation({
-      label: "Pindie project root resolution", timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
-      run: (signal) => resolveProjectRoot(ctx.cwd, signal),
-    }) : null;
-    if (earlyProjectRoot) void earlyProjectRoot.then((root) => {
-      if (trialSessionGeneration === trialAuthorityGeneration) kickTrialPreparation(root);
-    }).catch(() => undefined);
     ++agentRunLifecycleGeneration;
     await quotaResume.restoreSession(ctx);
     await quotaFallback.restoreSession(ctx);
@@ -819,11 +797,11 @@ function registerComposedPindieExtension(
 
     let projectRoot: string | null = null;
     try {
-      projectRoot = await (earlyProjectRoot ?? runBoundedOperation({
+      projectRoot = await runBoundedOperation({
         label: "Pindie project root resolution",
         timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
         run: (signal) => resolveProjectRoot(ctx.cwd, signal),
-      }));
+      });
     } catch (error) {
       core.resetTaskMetrics();
       markUnavailable(
@@ -831,7 +809,6 @@ function registerComposedPindieExtension(
       );
     }
     if (projectRoot !== null) {
-      kickTrialPreparation(projectRoot); // Detached: overlaps ordinary State/Session preparation.
       try {
         await runBoundedOperation({
           label: "Pindie project State load",
@@ -869,9 +846,6 @@ function registerComposedPindieExtension(
   });
 
   pi.on("session_tree", async (_event, ctx) => {
-    ++trialAuthorityGeneration;
-    trialContext = null;
-    options.trialOffers?.dispose();
     ++agentRunLifecycleGeneration;
     cancelQuotaResume(ctx);
     try { fallbackController?.cancel(ctx.sessionManager.getSessionId()); } catch { /* Released Host. */ }
@@ -880,7 +854,6 @@ function registerComposedPindieExtension(
   });
 
   pi.on("input", (event, ctx) => {
-    closeTrialWindow(); // Human steering/preemption also consumes delayed-notification windows.
     ++agentRunLifecycleGeneration;
     cancelQuotaResume(ctx);
     options.remoteCompanion?.companion.observeInput(event.source, event.streamingBehavior);
@@ -920,11 +893,6 @@ function registerComposedPindieExtension(
   }
 
   pi.on("session_shutdown", (event, ctx) => {
-    ++trialAuthorityGeneration;
-    trialSessionId = null;
-    trialContext = null;
-    releaseTrialAbortObserver?.();
-    options.trialOffers?.dispose();
     ++agentRunLifecycleGeneration;
     cancelQuotaResume(ctx);
     releaseQuotaStatusObserver?.();
@@ -957,89 +925,7 @@ function registerComposedPindieExtension(
     presentation.setStatusContext(null);
   });
 
-  // Request-local context is never persisted in the Human transcript or trusted portfolio.
-  // Task start/replace never waits for offers. Only a ready advisory may win the first context opportunity.
-  const trialHostId = randomUUID();
-  let trialAuthorityGeneration = 0;
-  let trialSessionId: string | null = null;
-  let lastTrialContextOccurrenceEpoch = -1;
-  const closeTrialWindow = () => {
-    lastTrialContextOccurrenceEpoch = Math.max(lastTrialContextOccurrenceEpoch, runtime.taskOccurrenceEpoch);
-    trialContext = null;
-  };
-  let releaseTrialAbortObserver: (() => void) | null = null;
-  let trialContext: { authority: TrialOfferAuthority; opening: boolean; ready: ReturnType<TrialOffers["claim"]>; occurrenceEpoch: number; externalEpoch: number; runGeneration: number | null; lifecycleGeneration: number } | null = null;
-  let trialPreparationRoot: string | null = null;
-  const kickTrialPreparation = (root: string) => {
-    const offers = options.trialOffers;
-    if (!offers || !trialSessionId) return;
-    trialPreparationRoot = root;
-    const authority = { projectId: trialProjectId(root), sessionId: trialSessionId, hostId: trialHostId, authorityGeneration: trialAuthorityGeneration };
-    void offers.prepare(authority, () => trialSessionId === authority.sessionId && trialAuthorityGeneration === authority.authorityGeneration &&
-      trialPreparationRoot === root).catch(() => undefined);
-  };
-  const ordinaryTrialAuthority = (root: string, id: string): TrialOfferAuthority | null => {
-    const snapshot = run.deriveSnapshot();
-    const generation = run.activeAgentRunGeneration;
-    if (!trialSessionId || root !== runtime.projectRoot || runtime.currentWorkEpisodeId !== id || !snapshot.ok || snapshot.snapshot.authority !== "coherent" ||
-      !run.authoritativeState?.task || run.authoritativeState.task.completed ||
-      (generation !== null && selfImprovement?.hasPacketForGeneration(generation))) return null;
-    return { projectId: trialProjectId(root), workEpisodeId: id, sessionId: trialSessionId, hostId: trialHostId, authorityGeneration: trialAuthorityGeneration };
-  };
-  if (options.trialOffers) {
-    options.trialOffers.onEligibilityInvalidated(closeTrialWindow);
-    runtime.onWorkEpisodeOpened = async (root, id) => {
-      if (runtime.taskOccurrenceEpoch <= lastTrialContextOccurrenceEpoch) return;
-      const authority = ordinaryTrialAuthority(root, id);
-      if (!authority) return;
-      // Claim an already-prepared durable scheduling hold; NO disk Promise precedes readiness.
-      // No hold means terminal no-offer, even if preflight finishes on a later turn.
-      const window: NonNullable<typeof trialContext> = { authority, opening: true, ready: null,
-        occurrenceEpoch: runtime.taskOccurrenceEpoch, externalEpoch: runtime.externalStateEpoch,
-        runGeneration: run.activeAgentRunGeneration, lifecycleGeneration: agentRunLifecycleGeneration };
-      trialContext = window;
-      window.ready = options.trialOffers!.claim(authority, () => trialContext === window &&
-        window.lifecycleGeneration === agentRunLifecycleGeneration && window.occurrenceEpoch === runtime.taskOccurrenceEpoch &&
-        window.externalEpoch === runtime.externalStateEpoch && trialAuthorityGeneration === authority.authorityGeneration &&
-        trialSessionId === authority.sessionId && ordinaryTrialAuthority(root, id) !== null);
-      kickTrialPreparation(root); // Refill only for a FUTURE new occurrence, never this episode.
-    };
-    pi.on("context_with_system", (event, ctx) => {
-      lastTrialContextOccurrenceEpoch = Math.max(lastTrialContextOccurrenceEpoch, runtime.taskOccurrenceEpoch);
-      // Pi exposes the live turn signal here (often absent during before_agent_start).
-      releaseTrialAbortObserver?.(); releaseTrialAbortObserver = null;
-      if (ctx.signal) {
-        const signal = ctx.signal, abort = closeTrialWindow;
-        signal.addEventListener("abort", abort, { once: true });
-        releaseTrialAbortObserver = () => signal.removeEventListener("abort", abort);
-        if (signal.aborted) { closeTrialWindow(); return; }
-      }
-      const window = trialContext;
-      if (!window) return;
-      window.opening = false; // First context/policy opportunity consumes the window, even when not ready.
-      const ready = window.ready;
-      if (!ready) return; // No await, store read, hypothesis read or later restore to compensate.
-      try {
-        const root = runtime.projectRoot, authority = window.authority;
-        if (root === null || trialProjectId(root) !== authority.projectId ||
-          ctx.sessionManager.getSessionId() !== authority.sessionId || ordinaryTrialAuthority(root, authority.workEpisodeId) === null ||
-          authority.authorityGeneration !== trialAuthorityGeneration || authority.sessionId !== trialSessionId ||
-          window.occurrenceEpoch !== runtime.taskOccurrenceEpoch || window.externalEpoch !== runtime.externalStateEpoch ||
-          window.runGeneration !== run.activeAgentRunGeneration || window.lifecycleGeneration !== agentRunLifecycleGeneration || !options.trialOffers!.isEligibilityCurrent(ready.epoch) ||
-          (selfImprovement?.trustedStrategyPortfolio && !matchesCurrentTrustedBase(ready.hypothesis, selfImprovement.trustedStrategyPortfolio)) ||
-          !ready.commit.assignment || !validTrialAssignment(ready.commit.assignment, authority, continuityNow())) {
-          window.ready = null;
-          return;
-        }
-        return { messages: [...event.messages, { role: "user" as const, content: ready.content, timestamp: 0 }] };
-      } catch { window.ready = null; /* Missing authority omits context without delaying Human work. */ }
-    });
-  }
-
   pi.on("before_agent_start", async (event, ctx) => {
-    closeTrialWindow(); // Fresh Runs cannot claim delayed notifications or restore old leases.
-    releaseTrialAbortObserver?.(); releaseTrialAbortObserver = null;
-    if (runtime.projectRoot) kickTrialPreparation(runtime.projectRoot);
     ++agentRunLifecycleGeneration;
     remoteCompletionReport = null;
     let preparationGeneration: number | null = null;
@@ -1090,8 +976,6 @@ function registerComposedPindieExtension(
             run: (signal) => selfImprovement.prepareAgentRun(ctx, signal),
           });
 
-      // Never restore Trial I/O here. A missed presentation window stays closed across Runs;
-      // Session/reload invalidation clears its runtime cache without creating another offer.
       let derivation = run.deriveSnapshot();
       if (!derivation.ok) {
         markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
@@ -1317,10 +1201,6 @@ function registerComposedPindieExtension(
   }
 
   pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
-    if (event.toolName === "pindie_policy_set") {
-      lastTrialContextOccurrenceEpoch = Math.max(lastTrialContextOccurrenceEpoch, runtime.taskOccurrenceEpoch);
-      if (trialContext?.opening) { trialContext.opening = false; trialContext.ready = null; }
-    }
     const effect = core.classifyToolEffect(event.toolName);
     const isHandoffCall = taskHandoffEnabled &&
       event.toolName === PINDIE_TASK_HANDOFF_TOOL;

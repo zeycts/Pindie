@@ -79,6 +79,14 @@ function hasRuntimeImport(source: string, moduleSpecifier: string): boolean {
 const projectRoot = "/workspace/composable-pindie";
 const execFileAsync = promisify(execFile);
 
+test("R0 production composition preserves WorkEpisode and Experience without legacy Trial wiring", () => {
+  const { extensionOptions } = composeConfiguredPindieExtension({ storageRoots: { projectsBaseDir: "/tmp/r0-projects", globalBaseDir: "/tmp/r0-global" } }, {});
+  assert.ok(extensionOptions.workEpisodes);
+  assert.ok(extensionOptions.experienceStore);
+  assert.equal("trialOffers" in extensionOptions, false);
+  assert.equal("trialOfferPolicy" in extensionOptions, false);
+});
+
 test("Slice A resolves stable startup defaults and explicit dependency roots", () => {
   assert.deepEqual(
     resolvePindieFeatureSelection({}, {}, {}),
