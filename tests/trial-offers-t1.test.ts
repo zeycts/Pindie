@@ -279,7 +279,7 @@ test("T1 open projection enforces current exact trusted-base facts and competing
   const validChild = { ...child, fingerprint: hypothesisFingerprint(childSemantic) };
   await assert.rejects(new D2OpenHypothesisReader({ list: async () => [validChild] }).readOpen(projectId), /Unresolved/);
   const both = await new D2OpenHypothesisReader({ list: async () => [parent, validChild] }).readOpen(projectId);
-  assert.equal(selectTrialHypothesis(both, [], DEFAULT_TRIAL_OFFER_POLICY, now), null);
+  assert.deepEqual(both, [validChild]); // exact parent is immutable history, not a competing open leaf
 });
 
 test("T1 actual malformed D2 store fails closed without interpreting partial history", async (t) => {

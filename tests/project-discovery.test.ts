@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm, readdir, copyFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, readdir, copyFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -14,14 +14,16 @@ import { FileRunExperienceMaintenance, MAX_LIVE_ORDINARY_EXPERIENCE_PER_PROJECT 
 import { FileProjectTrustedStrategyPortfolioReader } from "../src/strategy-trust-safety.ts";
 import { FileDiscoveryReceiptStore } from "../src/discovery-receipts.ts";
 import { FileDiscoveryPacketStore } from "../src/discovery-packets.ts";
-import { FileDiscoveryHypothesisStore, hypothesisRef, mintHypothesis, MAX_OPEN_HYPOTHESES } from "../src/discovery-hypotheses.ts";
+import { FileDiscoveryHypothesisStore, hypothesisRef, mintHypothesis, MAX_OPEN_HYPOTHESES, MAX_DISCOVERY_COMMITS } from "../src/discovery-hypotheses.ts";
 import { createProjectDiscoveryHandler, parseDiscoveryResult } from "../src/project-discovery-handler.ts";
 import { LearningSupervisor } from "../src/learning-supervisor.ts";
 import { FileLearningBudgetLedger } from "../src/learning-budget-store.ts";
 import { FileLearningJobLedger } from "../src/learning-job-store.ts";
 import { buildProjectDiscoveryPacket, enqueueProjectDiscovery } from "../src/project-discovery.ts";
-import { validateDiscoveryPacket, MAX_DISCOVERY_PACKET_CHARS_V3, DEFAULT_PROJECT_DISCOVERY_POLICY } from "../src/discovery-contract.ts";
-import { matchesLearningJobOutput, learningFingerprint, canonicalJson, type LearningModelProvenance } from "../src/learning-v1-contract.ts";
+import { discoveryOpenEntry, validateDiscoveryPacket, MAX_DISCOVERY_PACKET_CHARS_V3, DEFAULT_PROJECT_DISCOVERY_POLICY, type DiscoveryPacketV3, type DiscoveryPacketV4 } from "../src/discovery-contract.ts";
+import { hypothesisLeaves } from "../src/hypothesis-lineage.ts";
+import { FileV1HypothesisExperienceProtectionReader } from "../src/v1-experience-protection.ts";
+import { matchesLearningJobOutput, matchesLearningArtifactRef, hypothesisFingerprint, learningFingerprint, canonicalJson, type StrategyHypothesisV1, type LearningModelProvenance } from "../src/learning-v1-contract.ts";
 
 const MODEL: LearningModelProvenance = { provider: "test", modelId: "test-learning-model", thinkingLevel: "low" };
 const MODEL_B: LearningModelProvenance = { provider: "test", modelId: "other-learning-model", thinkingLevel: "off" };
@@ -249,7 +251,7 @@ test("D1 bounds and corrupted evidence/portfolio/receipt fail closed without blo
 
 const proposal = (packet: NonNullable<Awaited<ReturnType<typeof buildProjectDiscoveryPacket>>>, overrides: Record<string, unknown> = {}) => ({
   logicalId: "discovery-focus", kind: "approach", intent: "new", revisionTarget: null,
-  summary: "Focus on the immediate evidence", useWhen: ["Evidence is available"], avoidWhen: [],
+  summary: "Focus on the immediate evidence", useWhen: ["Evidence is available"], avoidWhen: [], principles: ["Check the immediate evidence before changing code"],
   expectedEffect: "Fewer failed verification checks on similar Tasks", failureSignals: ["More failed checks"],
   trialHints: ["Compare verified results"], sourceHandles: [packet.sources[0]!.ref.recordId], ...overrides,
 });
@@ -259,6 +261,8 @@ async function prepared(t: import("node:test").TestContext) {
   const key = (await enqueueProjectDiscovery(id, f.deps))!;
   const job = (await f.deps.jobs.read()).find((j) => j.key === key)!;
   const packet = (await f.deps.packets.read(id, job.inputFingerprint))!;
+  assert.equal(packet.schemaVersion, 4);
+  if (packet.schemaVersion !== 4) assert.fail("Expected current v4 packet");
   const handler = createProjectDiscoveryHandler(f.deps);
   return { ...f, key, job, packet, handler };
 }
@@ -285,6 +289,10 @@ test("D2 proposal is minted, immutable, reconciled and recovered from committed 
   const output = await f.handler.execute(f.job, async () => true, new AbortController().signal, runner);
   const [hypothesis] = await f.deps.hypotheses.list(id);
   assert.ok(hypothesis);
+  assert.equal(hypothesis.schemaVersion, 2);
+  assert.equal(f.packet.schemaVersion, 4);
+  assert.equal(f.packet.selectionVersion, 4);
+  assert.equal(f.packet.policy.selectionVersion, 4);
   assert.equal(hypothesis.discoveryPacketFingerprint, f.packet.fingerprint);
   assert.ok(hypothesis.id !== f.job.key);
   assert.equal((await f.deps.receipts.read(id))[0]?.outcome, "published");
@@ -322,6 +330,8 @@ test("D2 invalid model contract and authority fields cannot create a semantic re
     JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet, { artifactId: randomUUID() })] }),
     JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet, { sourceHandles: [randomUUID()] })] }),
     JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet, { failureSignals: [] })] }),
+    ...[undefined, [], [" "], ["x".repeat(257)], Array(9).fill("p"), ["bypass permission"], ["disable safety"], ["override verification"], ["grant capability"]]
+      .map((principles) => JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet, { principles })] })),
     JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet, { capability: "task.complete" })] }),
     JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet), proposal(f.packet), proposal(f.packet)] })];
   for (const raw of invalid) await assert.rejects(f.handler.execute(f.job, async () => true, new AbortController().signal,
@@ -337,9 +347,7 @@ test("D2 duplicate open hypothesis is covered and revision needs the exact froze
   assert.equal(await f.handler.matchesOutput(f.job, first.receiptRef), true);
   // Another packet with the same exact sources, but changed open comparison, retains semantic dedupe identity.
   const existing = (await f.deps.hypotheses.list(id))[0]!;
-  const openEntries = [{ ref: hypothesisRef(existing), logicalId: existing.logicalId, kind: existing.kind, baseRevisionFingerprint: existing.baseRevisionFingerprint,
-    summary: existing.summary, expectedEffect: existing.expectedEffect,
-    useWhen: existing.useWhen, avoidWhen: existing.avoidWhen, failureSignals: existing.failureSignals }];
+  const openEntries = [discoveryOpenEntry(existing)];
   const content = { ...f.packet, openHypotheses: { fingerprint: learningFingerprint(openEntries), entries: openEntries } };
   const { fingerprint: _old, ...unsigned } = content;
   const next = { ...unsigned, fingerprint: learningFingerprint(unsigned) };
@@ -386,9 +394,7 @@ test("D2 covered batch recovers exact receipt after interrupted publication with
   await f.handler.execute(f.job, async () => true, new AbortController().signal,
     { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
   const h = (await f.deps.hypotheses.list(id))[0]!;
-  const entries = [{ ref: hypothesisRef(h), logicalId: h.logicalId, kind: h.kind,
-    baseRevisionFingerprint: h.baseRevisionFingerprint, summary: h.summary, expectedEffect: h.expectedEffect,
-    useWhen: h.useWhen, avoidWhen: h.avoidWhen, failureSignals: h.failureSignals }];
+  const entries = [discoveryOpenEntry(h)];
   const { fingerprint: _prior, ...content } = { ...f.packet, openHypotheses: { fingerprint: learningFingerprint(entries), entries } };
   const packet = { ...content, fingerprint: learningFingerprint(content) };
   await f.deps.packets.publish(packet);
@@ -424,9 +430,7 @@ test("D2 trusted revision and chained open revision retain the exact trusted bas
   assert.equal(base.parent, null);
   assert.equal(base.baseRevisionFingerprint, trusted.revisionFingerprint);
   assert.equal(base.logicalId, trusted.strategyId);
-  const entries = [{ ref: hypothesisRef(base), logicalId: base.logicalId, kind: base.kind,
-    baseRevisionFingerprint: base.baseRevisionFingerprint, summary: base.summary, expectedEffect: base.expectedEffect,
-    useWhen: base.useWhen, avoidWhen: base.avoidWhen, failureSignals: base.failureSignals }];
+  const entries = [discoveryOpenEntry(base)];
   const unsigned = { ...f.packet, openHypotheses: { fingerprint: learningFingerprint(entries), entries } };
   const { fingerprint: _prior, ...content } = unsigned;
   const packet = { ...content, fingerprint: learningFingerprint(content) };
@@ -483,9 +487,7 @@ test("D2 commit history exceeds 64 covered packets without exhausting 64-hypothe
   await f.handler.execute(f.job, async () => true, new AbortController().signal,
     { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [proposal(f.packet)] }) }) });
   const h = (await f.deps.hypotheses.list(id))[0]!;
-  const entries = [{ ref: hypothesisRef(h), logicalId: h.logicalId, kind: h.kind,
-    baseRevisionFingerprint: h.baseRevisionFingerprint, summary: h.summary, expectedEffect: h.expectedEffect,
-    useWhen: h.useWhen, avoidWhen: h.avoidWhen, failureSignals: h.failureSignals }];
+  const entries = [discoveryOpenEntry(h)];
   for (let i = 0; i < 65; i++) {
     const { fingerprint: _prior, ...content } = { ...f.packet, eligibleCounts: { ...f.packet.eligibleCounts, new: 10 + i },
       openHypotheses: { fingerprint: learningFingerprint(entries), entries } };
@@ -510,12 +512,12 @@ test("D2 duplicate Experience exact ref is independent of reader enumeration ord
 test("D2 canonical open ordering survives reversed commit-file insertion and restart", async (t) => {
   const f = await prepared(t);
   const first = mintHypothesis(f.packet, { logicalId: "first-focus", kind: "approach", lineage: "new", parent: null,
-    baseRevisionFingerprint: null, summary: "First observation", useWhen: ["Observable work"], avoidWhen: [],
+    baseRevisionFingerprint: null, summary: "First observation", useWhen: ["Observable work"], avoidWhen: [], principles: ["Check observations"],
     expectedEffect: "Fewer failed checks", failureSignals: ["More failed checks"], trialHints: [], sources: [f.packet.sources[0]!.ref] });
   const { fingerprint: _prior, ...content } = { ...f.packet, eligibleCounts: { ...f.packet.eligibleCounts, new: 7 } };
   const next = { ...content, fingerprint: learningFingerprint(content) };
   const second = mintHypothesis(next, { logicalId: "second-focus", kind: "modifier", lineage: "new", parent: null,
-    baseRevisionFingerprint: null, summary: "Second observation", useWhen: ["Observable work"], avoidWhen: [],
+    baseRevisionFingerprint: null, summary: "Second observation", useWhen: ["Observable work"], avoidWhen: [], principles: ["Check observations"],
     expectedEffect: "Fewer tool errors", failureSignals: ["More tool errors"], trialHints: [], sources: [next.sources[1]!.ref] });
   const a = f.deps.hypotheses;
   const otherProjects = join(f.dir, "other-projects");
@@ -668,6 +670,7 @@ async function coveredPacket(t: import("node:test").TestContext) {
   const key = (await enqueueProjectDiscovery(id, f.deps))!;
   const job = (await f.deps.jobs.read()).find((j) => j.key === key)!;
   const packet = (await f.deps.packets.read(id, job.inputFingerprint))!;
+  if (packet.schemaVersion !== 4) assert.fail("Expected v4");
   assert.ok(packet.sources.some((s) => s.role === "new"));
   return { ...f, h, job, packet, coveredJson: JSON.stringify({ outcome: "covered", hypotheses: [packet.openHypotheses.entries[0]!.ref] }) };
 }
@@ -719,9 +722,9 @@ test("D2 open catalog capacity is separate from immutable commit history", async
   const source = packet.sources[0]!.ref;
   for (let i = 0; i < MAX_OPEN_HYPOTHESES / 2; i++) {
     const a = mintHypothesis(packet, { logicalId: `open-${i}-a`, kind: "approach", lineage: "new", parent: null, baseRevisionFingerprint: null,
-      summary: `Open ${i} a`, useWhen: ["u"], avoidWhen: [], expectedEffect: "e", failureSignals: ["f"], trialHints: [], sources: [source] });
+      summary: `Open ${i} a`, useWhen: ["u"], avoidWhen: [], principles: ["p"], expectedEffect: "e", failureSignals: ["f"], trialHints: [], sources: [source] });
     const b = mintHypothesis(packet, { logicalId: `open-${i}-b`, kind: "modifier", lineage: "new", parent: null, baseRevisionFingerprint: null,
-      summary: `Open ${i} b`, useWhen: ["u"], avoidWhen: [], expectedEffect: "e", failureSignals: ["f"], trialHints: [], sources: [source] });
+      summary: `Open ${i} b`, useWhen: ["u"], avoidWhen: [], principles: ["p"], expectedEffect: "e", failureSignals: ["f"], trialHints: [], sources: [source] });
     await f.deps.hypotheses.publish(packet, "published", [hypothesisRef(a), hypothesisRef(b)], [a, b], MODEL);
     const { fingerprint: _p, ...next } = { ...packet, eligibleCounts: { ...packet.eligibleCounts, new: packet.eligibleCounts.new + 1 } };
     packet = { ...next, fingerprint: learningFingerprint(next) };
@@ -731,15 +734,29 @@ test("D2 open catalog capacity is separate from immutable commit history", async
   const historyBefore = (await readdir(join(f.projects, id, "learning-v1", "hypotheses"))).filter((n) => n.endsWith(".json")).length;
   assert.equal(historyBefore, MAX_OPEN_HYPOTHESES / 2); // one immutable commit file per two-hypothesis batch
   // At open capacity, a covered receipt may still append history without new cognition.
-  const entry = { ref: hypothesisRef(last), logicalId: last.logicalId, kind: last.kind, baseRevisionFingerprint: null,
-    summary: last.summary, expectedEffect: last.expectedEffect, useWhen: last.useWhen, avoidWhen: last.avoidWhen, failureSignals: last.failureSignals };
+  const entry = discoveryOpenEntry(last);
   const { fingerprint: _cov, ...cov } = { ...packet, openHypotheses: { fingerprint: learningFingerprint([entry]), entries: [entry] } };
   await f.deps.hypotheses.publish({ ...cov, fingerprint: learningFingerprint(cov) }, "covered", [hypothesisRef(last)], [], MODEL);
   assert.equal((await readdir(join(f.projects, id, "learning-v1", "hypotheses"))).filter((n) => n.endsWith(".json")).length, historyBefore + 1);
   const overflow = mintHypothesis(packet, { logicalId: "open-overflow", kind: "approach", lineage: "new", parent: null, baseRevisionFingerprint: null,
-    summary: "Overflow", useWhen: ["u"], avoidWhen: [], expectedEffect: "e", failureSignals: ["f"], trialHints: [], sources: [source] });
+    summary: "Overflow", useWhen: ["u"], avoidWhen: [], principles: ["p"], expectedEffect: "e", failureSignals: ["f"], trialHints: [], sources: [source] });
   await assert.rejects(f.deps.hypotheses.publish(packet, "published", [hypothesisRef(overflow)], [overflow], MODEL), /Open hypothesis capacity/);
   assert.equal((await f.deps.hypotheses.list(id)).length, MAX_OPEN_HYPOTHESES);
+  // Replacing a parent at capacity consumes no extra leaf slot, and deletes no history.
+  const { fingerprint: _rev, ...revContent } = { ...packet, openHypotheses: { fingerprint: learningFingerprint([entry]), entries: [entry] } };
+  const revisionPacket = { ...revContent, fingerprint: learningFingerprint(revContent) };
+  const child = mintHypothesis(revisionPacket, { logicalId: last.logicalId, kind: last.kind, lineage: "revise", parent: hypothesisRef(last),
+    baseRevisionFingerprint: last.baseRevisionFingerprint, summary: "Revised at capacity", useWhen: ["u"], avoidWhen: [], principles: ["p"],
+    expectedEffect: "e", failureSignals: ["f"], trialHints: [], sources: [source] });
+  // Use a distinct packet key from the previously committed covered batch.
+  const { fingerprint: _cp, ...cp } = { ...revisionPacket, eligibleCounts: { ...revisionPacket.eligibleCounts, new: 100 } };
+  const revisedPacket = { ...cp, fingerprint: learningFingerprint(cp) };
+  const revisedChild = { ...child, discoveryPacketFingerprint: revisedPacket.fingerprint };
+  await f.deps.hypotheses.publish(revisedPacket, "published", [hypothesisRef(revisedChild)], [revisedChild], MODEL);
+  const all = await f.deps.hypotheses.list(id);
+  assert.equal(all.length, MAX_OPEN_HYPOTHESES + 1);
+  assert.equal(hypothesisLeaves(all, id).length, MAX_OPEN_HYPOTHESES);
+  assert.ok(all.some((h) => matchesLearningArtifactRef(hypothesisRef(last), h)));
 });
 test("D2 terminal receipts persist exact model provenance and reject conflicting provenance", async (t) => {
   const f = await prepared(t);
@@ -778,4 +795,155 @@ test("D2 covered commit recovers original model provenance across restart", asyn
   const receipt = await f.deps.receipts.resolve(recovered!, f.job.key, f.packet.fingerprint);
   assert.equal(receipt?.outcome, "covered");
   assert.deepEqual(receipt?.modelIdentity, MODEL);
+});
+
+/** Seed exact pre-upgrade bytes, not a production migration/publication path. */
+async function historicalV3(f: Awaited<ReturnType<typeof prepared>>, commit: boolean) {
+  const { fingerprint: _fp, ...content } = f.packet;
+  const unsigned = { ...content, schemaVersion: 3 as const, selectionVersion: 3 as const,
+    policy: { ...content.policy, selectionVersion: 3 as const } };
+  const packet: DiscoveryPacketV3 = { ...unsigned, fingerprint: learningFingerprint(unsigned) };
+  assert.ok(validateDiscoveryPacket(packet));
+  await f.deps.packets.publish(packet);
+  const job = await f.deps.jobs.enqueue("project-discovery", { kind: "project", projectId: id }, packet.fingerprint, 3, Date.now());
+  const v2 = mintHypothesis(f.packet, { logicalId: "discovery-focus", kind: "approach", lineage: "new", parent: null,
+    baseRevisionFingerprint: null, summary: "Historical direction", useWhen: ["Evidence exists"], avoidWhen: [], principles: ["Not copied into v1"],
+    expectedEffect: "Fewer regressions", failureSignals: ["More regressions"], trialHints: ["Compare Tasks"], sources: [packet.sources[0]!.ref] });
+  const { principles: _p, id: _id, fingerprint: _hfp, ...old } = v2;
+  const semantic = { ...old, schemaVersion: 1 as const, discoveryPacketFingerprint: packet.fingerprint };
+  const h: StrategyHypothesisV1 = { ...semantic, id: v2.id, fingerprint: hypothesisFingerprint(semantic) };
+  if (commit) {
+    const batch = { schemaVersion: 2, packetFingerprint: packet.fingerprint, outcome: "published", refs: [hypothesisRef(h)], newHypotheses: [h], modelIdentity: MODEL };
+    const dir = join(f.projects, id, "learning-v1", "hypotheses");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, `${packet.fingerprint.slice(7)}.json`), JSON.stringify({ ...batch, fingerprint: learningFingerprint(batch) }) + "\n");
+  }
+  return { packet, job, h };
+}
+for (const hasReceipt of [false, true]) test(`R1 committed v3 restart recovers without model call (receipt=${hasReceipt})`, async (t) => {
+  const f = await prepared(t), old = await historicalV3(f, true);
+  await f.deps.jobs.cancel(f.key, null, "explicit-cancel"); // isolate the historical pending job
+  if (hasReceipt) await f.deps.receipts.publish(old.packet, "published", [hypothesisRef(old.h)], MODEL);
+  const packetPath = join(f.projects, id, "learning-v1", "packets", `${old.packet.fingerprint.slice(7)}.json`);
+  const before = await readFile(packetPath, "utf8");
+  const restarted = createProjectDiscoveryHandler({ ...f.deps, hypotheses: new FileDiscoveryHypothesisStore({ projectsBaseDir: f.projects }) });
+  let calls = 0;
+  const supervisor = new LearningSupervisor({ ledger: f.deps.jobs, budget: new FileLearningBudgetLedger({ globalBaseDir: f.global }),
+    handlers: [restarted], authority: { idle: () => true, generation: () => 0 },
+    runner: { modelIdentity: MODEL_B, run: async () => { calls++; throw new Error("No second call"); } } });
+  await supervisor.kick(); await supervisor.dispose();
+  assert.equal(calls, 0);
+  assert.equal((await f.deps.jobs.read()).find((j) => j.key === old.job.key)?.state, "completed");
+  const ref = await restarted.resolveCommitted(old.job);
+  assert.ok(ref && await restarted.matchesOutput(old.job, ref));
+  assert.deepEqual(await f.deps.packets.read(id, old.packet.fingerprint), old.packet);
+  assert.equal(await readFile(packetPath, "utf8"), before);
+  assert.deepEqual(await f.deps.hypotheses.list(id), [old.h]);
+});
+test("R1 uncommitted v3 job is stale, cannot invoke model or mint new v1", async (t) => {
+  const f = await prepared(t), old = await historicalV3(f, false);
+  await f.deps.jobs.cancel(f.key, null, "explicit-cancel");
+  assert.equal(await f.handler.isCurrent(old.job), false);
+  let calls = 0;
+  const runner = { modelIdentity: MODEL, run: async () => { calls++; return { text: '{"outcome":"none"}' }; } };
+  await assert.rejects(f.handler.execute(old.job, async () => true, new AbortController().signal, runner));
+  await assert.rejects(f.deps.hypotheses.publish(old.packet, "published", [hypothesisRef(old.h)], [old.h], MODEL));
+  const supervisor = new LearningSupervisor({ ledger: f.deps.jobs, budget: new FileLearningBudgetLedger({ globalBaseDir: f.global }),
+    handlers: [f.handler], authority: { idle: () => true, generation: () => 0 }, runner });
+  await supervisor.kick(); await supervisor.dispose();
+  const terminal = (await f.deps.jobs.read()).find((j) => j.key === old.job.key)!;
+  assert.equal(terminal.state, "cancelled"); assert.equal(terminal.stopReason, "stale-input");
+  assert.equal(calls, 0); assert.deepEqual(await f.deps.hypotheses.list(id), []);
+  assert.equal((await buildProjectDiscoveryPacket(id, f.deps))?.schemaVersion, 4);
+});
+test("R1 v1 -> v2 only through normal Discovery with new evidence; history provenance stays protected", async (t) => {
+  const f = await prepared(t), old = await historicalV3(f, true);
+  const recovered = await f.handler.resolveCommitted(old.job); assert.ok(recovered);
+  for (let i = 6; i < 12; i++) await f.add(i);
+  const key = (await enqueueProjectDiscovery(id, f.deps))!;
+  const job = (await f.deps.jobs.read()).find((j) => j.key === key)!;
+  const packet = (await f.deps.packets.read(id, job.inputFingerprint))!;
+  if (packet.schemaVersion !== 4) assert.fail("Expected v4");
+  assert.equal(packet.openHypotheses.entries.length, 1);
+  assert.deepEqual(packet.openHypotheses.entries[0], discoveryOpenEntry(old.h));
+  const covered = JSON.stringify({ outcome: "covered", hypotheses: [hypothesisRef(old.h)] });
+  assert.throws(() => parseDiscoveryResult(covered, packet), /coverage reference/);
+  await assert.rejects(f.deps.hypotheses.publish(packet, "covered", [hypothesisRef(old.h)], [], MODEL));
+  const newSource = packet.sources.find((s) => s.role === "new")!.ref;
+  const rules = ["Verify the narrow evidence before choosing a change"];
+  const revise = proposal(packet, { intent: "revise", revisionTarget: { kind: "open-hypothesis", ref: hypothesisRef(old.h) },
+    principles: rules, sourceHandles: [newSource.recordId] });
+  const contextOnly = { ...revise, sourceHandles: [old.h.sources[0]!.recordId] };
+  await assert.rejects(f.handler.execute(job, async () => true, new AbortController().signal,
+    { modelIdentity: MODEL, run: async () => ({ text: JSON.stringify({ outcome: "proposals", proposals: [contextOnly] }) }) }), /new source/);
+  await f.handler.execute(job, async () => true, new AbortController().signal,
+    { modelIdentity: MODEL, run: async (prompt) => {
+      assert.ok(prompt.includes("never target v1 with covered"));
+      return { text: JSON.stringify({ outcome: "proposals", proposals: [revise] }) };
+    } });
+  const history = await f.deps.hypotheses.list(id);
+  const child = history.find((h) => h.schemaVersion === 2)!;
+  assert.ok(child && child.schemaVersion === 2);
+  assert.deepEqual(child.principles, rules); assert.deepEqual(child.parent, hypothesisRef(old.h));
+  assert.equal(child.logicalId, old.h.logicalId); assert.equal(child.kind, old.h.kind);
+  assert.equal(child.baseRevisionFingerprint, old.h.baseRevisionFingerprint);
+  assert.deepEqual(child.sources, [newSource]); assert.notEqual(child.fingerprint, old.h.fingerprint);
+  assert.ok(matchesLearningArtifactRef(hypothesisRef(old.h), history.find((h) => h.id === old.h.id)));
+  assert.deepEqual(hypothesisLeaves(history, id), [child]);
+  for (let i = 12; i < 18; i++) await f.add(i);
+  const next = (await buildProjectDiscoveryPacket(id, f.deps))!;
+  assert.deepEqual(next.openHypotheses.entries, [discoveryOpenEntry(child)]);
+  const nextKey = (await enqueueProjectDiscovery(id, f.deps))!;
+  const nextJob = (await f.deps.jobs.read()).find((j) => j.key === nextKey)!;
+  assert.equal(await f.handler.isCurrent(nextJob), true); // shared builder/freshness projection
+  const { fingerprint: _pfp, ...changedContent } = { ...next, openHypotheses: { ...next.openHypotheses,
+    entries: [{ ...discoveryOpenEntry(child), hypothesisSchemaVersion: 2 as const, principles: ["Changed frozen principle"] }] } };
+  assert.equal(validateDiscoveryPacket({ ...changedContent, fingerprint: learningFingerprint(changedContent) }), false); // comparison digest covers rules
+  const protectedRefs = await new FileV1HypothesisExperienceProtectionReader({ projectsBaseDir: f.projects }).requiredSourceRefs(id);
+  assert.ok(protectedRefs.some((r) => r.recordId === old.h.sources[0]!.recordId));
+  assert.ok(protectedRefs.some((r) => r.recordId === newSource.recordId));
+  for (let i = 18; i < MAX_LIVE_ORDINARY_EXPERIENCE_PER_PROJECT + 25; i++) await f.add(i);
+  const maintenance = new FileRunExperienceMaintenance({ projectsBaseDir: f.projects, globalBaseDir: f.global });
+  await maintenance.prune(ROOT);
+  const names = await readdir(join(f.projects, id, "experience"));
+  assert.ok(names.includes(old.h.sources[0]!.recordId)); assert.ok(names.includes(newSource.recordId));
+});
+test("R1 immutable history remains independently commit-bounded", async (t) => {
+  const f = await setup(t), dir = join(f.projects, id, "learning-v1", "hypotheses");
+  await mkdir(dir, { recursive: true });
+  await Promise.all(Array.from({ length: MAX_DISCOVERY_COMMITS + 1 }, (_, i) =>
+    writeFile(join(dir, `${i.toString(16).padStart(64, "0")}.json`), "{}")));
+  await assert.rejects(f.deps.hypotheses.list(id), /commit history capacity/);
+});
+test("R1 v3 and v4 comparison entries keep distinct exact versioned shapes", async (t) => {
+  const f = await prepared(t), old = await historicalV3(f, false);
+  const { hypothesisSchemaVersion: _v, principles: _p, ...v3Entry } = discoveryOpenEntry(old.h);
+  const sealPacket = (packet: DiscoveryPacketV3 | DiscoveryPacketV4, entries: unknown[]) => {
+    const { fingerprint: _fp, ...content } = { ...packet, openHypotheses: { fingerprint: learningFingerprint(entries), entries } };
+    return { ...content, fingerprint: learningFingerprint(content) };
+  };
+  assert.ok(validateDiscoveryPacket(sealPacket(old.packet, [v3Entry])));
+  assert.equal(validateDiscoveryPacket(sealPacket(old.packet, [discoveryOpenEntry(old.h)])), false);
+  assert.ok(validateDiscoveryPacket(sealPacket(f.packet, [discoveryOpenEntry(old.h)])));
+  for (const entry of [v3Entry, { ...discoveryOpenEntry(old.h), principles: ["Not v1 rules"] },
+    { ...discoveryOpenEntry(old.h), hypothesisSchemaVersion: 2, principles: null },
+    { ...discoveryOpenEntry(old.h), hypothesisSchemaVersion: 2, principles: [] },
+    { ...discoveryOpenEntry(old.h), hypothesisSchemaVersion: 2, principles: ["x".repeat(257)] },
+    { ...discoveryOpenEntry(old.h), extra: true }]) assert.equal(validateDiscoveryPacket(sealPacket(f.packet, [entry])), false);
+  const first = sealPacket(f.packet, [{ ...discoveryOpenEntry(old.h), hypothesisSchemaVersion: 2, principles: ["First rule"] }]);
+  const second = sealPacket(f.packet, [{ ...discoveryOpenEntry(old.h), hypothesisSchemaVersion: 2, principles: ["Other rule"] }]);
+  assert.notEqual(first.openHypotheses.fingerprint, second.openHypotheses.fingerprint);
+});
+test("R1 malformed exact lineage refuses pruning even when individual historical artifacts are valid", async (t) => {
+  const f = await prepared(t), old = await historicalV3(f, true);
+  const { id: _id, fingerprint: _fp, ...content } = old.h;
+  const semantic = { ...content, lineage: "revise" as const, parent: { ...hypothesisRef(old.h), id: randomUUID() } };
+  const orphan = { ...semantic, id: old.h.id, fingerprint: hypothesisFingerprint(semantic) };
+  const batch = { schemaVersion: 2, packetFingerprint: old.packet.fingerprint, outcome: "published", refs: [hypothesisRef(orphan)],
+    newHypotheses: [orphan], modelIdentity: MODEL };
+  await writeFile(join(f.projects, id, "learning-v1", "hypotheses", `${old.packet.fingerprint.slice(7)}.json`),
+    JSON.stringify({ ...batch, fingerprint: learningFingerprint(batch) }));
+  await assert.rejects(f.deps.hypotheses.list(id), /Unresolved hypothesis lineage/);
+  await assert.rejects(new FileRunExperienceMaintenance({ projectsBaseDir: f.projects, globalBaseDir: f.global }).prune(ROOT), /Unresolved/);
+  assert.equal((await readdir(join(f.projects, id, "experience"))).length, 6);
 });

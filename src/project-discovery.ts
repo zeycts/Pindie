@@ -5,10 +5,11 @@ import type { ProjectTrustedStrategyPortfolioReader } from "./strategy-trust-saf
 import { MAX_TRUSTED_PORTFOLIO_ENTRIES, trustedPortfolioFingerprint } from "./strategy-portfolio.ts";
 import { canonicalJson, learningFingerprint, learningJobKey } from "./learning-v1-contract.ts";
 import { DEFAULT_PROJECT_DISCOVERY_POLICY, MAX_DISCOVERY_PACKET_CHARS_V3, discoveryPacketFingerprint, validateDiscoveryPacket, validateProjectDiscoveryPolicy,
-  type DiscoveryPacketV1, type DiscoverySourceSummary, type ProjectDiscoveryPolicy } from "./discovery-contract.ts";
+  discoveryOpenEntry, type DiscoveryPacketV4, type DiscoverySourceSummary, type ProjectDiscoveryPolicy } from "./discovery-contract.ts";
 import { FileDiscoveryPacketStore } from "./discovery-packets.ts";
 import { FileDiscoveryReceiptStore } from "./discovery-receipts.ts";
-import { FileDiscoveryHypothesisStore, hypothesisRef } from "./discovery-hypotheses.ts";
+import { discoveryOpenHypotheses } from "./open-hypotheses.ts";
+import { FileDiscoveryHypothesisStore } from "./discovery-hypotheses.ts";
 import type { LearningJobLedger } from "./learning-job-store.ts";
 
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
@@ -23,9 +24,9 @@ export interface ProjectDiscoveryDependencies {
   policy?: ProjectDiscoveryPolicy;
 }
 /** Purely factual, project-scoped eligibility. A corrupt store is not a partially eligible corpus. */
-export async function buildProjectDiscoveryPacket(projectId: string, dependencies: Omit<ProjectDiscoveryDependencies, "jobs">): Promise<DiscoveryPacketV1 | null> {
+export async function buildProjectDiscoveryPacket(projectId: string, dependencies: Omit<ProjectDiscoveryDependencies, "jobs">): Promise<DiscoveryPacketV4 | null> {
   const policy = dependencies.policy ?? DEFAULT_PROJECT_DISCOVERY_POLICY;
-  if (!validateProjectDiscoveryPolicy(policy)) throw new Error("Invalid project discovery policy.");
+  if (!validateProjectDiscoveryPolicy(policy) || policy.selectionVersion !== 4) throw new Error("Invalid project discovery policy.");
   const [read, portfolio, receipts, open] = await Promise.all([
     dependencies.reader.readProjectId(projectId), dependencies.portfolio.readProjectId(projectId), dependencies.receipts.read(projectId), dependencies.hypotheses.list(projectId),
   ]);
@@ -104,9 +105,8 @@ export async function buildProjectDiscoveryPacket(projectId: string, dependencie
       metrics: experience.metrics,
     };
   });
-  const openEntries = open.map((h) => ({ ref: hypothesisRef(h), logicalId: h.logicalId, kind: h.kind, baseRevisionFingerprint: h.baseRevisionFingerprint, summary: h.summary, expectedEffect: h.expectedEffect,
-    useWhen: h.useWhen, avoidWhen: h.avoidWhen, failureSignals: h.failureSignals }));
-  const comparison = { schemaVersion: 3 as const, selectionVersion: 3 as const, projectId, policy,
+  const openEntries = discoveryOpenHypotheses(open, projectId, portfolio).map(discoveryOpenEntry);
+  const comparison = { schemaVersion: 4 as const, selectionVersion: 4 as const, projectId, policy: { ...policy, selectionVersion: 4 as const },
     eligibleCounts: { new: fresh.length, episodes: episodes.size, outcomes: outcomes.size },
     portfolio: { fingerprint: portfolio.fingerprint, revisions: portfolio.resolvedEntries.map((entry) => ({
       strategyId: entry.manifest.strategyId, kind: entry.manifest.kind, revisionIdentity: entry.manifest.revisionIdentity,
@@ -116,7 +116,7 @@ export async function buildProjectDiscoveryPacket(projectId: string, dependencie
   const enoughNew = () => chosen.length >= policy.minNewExperiences &&
     new Set(chosen.map((r) => r.experience.workEpisodeId)).size >= policy.minWorkEpisodes &&
     new Set(chosen.map((r) => `${r.experience.outcome.taskStatus}/${r.experience.outcome.verificationStatus}`)).size >= policy.minOutcomes;
-  let content: Omit<DiscoveryPacketV1, "fingerprint">;
+  let content: Omit<DiscoveryPacketV4, "fingerprint">;
   for (;;) {
     const sources = [...summarize(chosen, "new"), ...summarize(context, "context")]
       .sort((a, b) => compare(position({ ...a, recordId: a.ref.recordId }), position({ ...b, recordId: b.ref.recordId })));

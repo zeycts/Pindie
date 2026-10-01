@@ -1,7 +1,9 @@
 import { FileDiscoveryHypothesisStore, MAX_OPEN_HYPOTHESES } from "./discovery-hypotheses.ts";
-import { matchesLearningArtifactRef, validateStrategyHypothesis, type StrategyHypothesis } from "./learning-v1-contract.ts";
+import { validateStrategyHypothesis, type StrategyHypothesis } from "./learning-v1-contract.ts";
 import type { ProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safety.ts";
 import { MAX_TRUSTED_PORTFOLIO_ENTRIES, trustedPortfolioFingerprint, type TrustedStrategyPortfolio } from "./strategy-portfolio.ts";
+
+import { hypothesisLeaves } from "./hypothesis-lineage.ts";
 
 /** Lifecycle projection, not immutable history. Future Evaluation/Decision readers close entries here. */
 export interface OpenHypothesisReader {
@@ -9,7 +11,7 @@ export interface OpenHypothesisReader {
   observe?(projectId: string, invalidate: (unavailable?: boolean) => void): Promise<() => void>;
   readOpen(projectId: string): Promise<readonly StrategyHypothesis[]>;
 }
-/** D2 has no lifecycle closure yet. Never reads legacy SI/CPL Candidate stores. */
+/** Exact revise parents close in the leaf projection; no Evaluation/Decision closure yet. Never reads legacy SI/CPL Candidate stores. */
 export class D2OpenHypothesisReader implements OpenHypothesisReader {
   private readonly history: Pick<FileDiscoveryHypothesisStore, "list">;
   private readonly portfolio: ProjectTrustedStrategyPortfolioReader | undefined;
@@ -18,9 +20,8 @@ export class D2OpenHypothesisReader implements OpenHypothesisReader {
     this.history = history; this.portfolio = portfolio; this.observe = observe;
   }
   async readOpen(projectId: string): Promise<readonly StrategyHypothesis[]> {
-    const entries = await this.history.list(projectId);
+    const entries = hypothesisLeaves(await this.history.list(projectId), projectId);
     validateOpenHypotheses(entries, projectId);
-    validateD2HistoryLineage(entries);
     if (!this.portfolio || entries.length === 0) return entries;
     const trust = await this.portfolio.readProjectId(projectId);
     if (trust.projectId !== projectId || trust.entries.length > MAX_TRUSTED_PORTFOLIO_ENTRIES ||
@@ -50,22 +51,14 @@ export function validateOpenHypotheses(entries: readonly StrategyHypothesis[], p
     new Set(entries.map((h) => h.id)).size !== entries.length || new Set(entries.map((h) => h.fingerprint)).size !== entries.length)
     throw new Error("Malformed/ambiguous open hypothesis projection.");
 }
-// Integrity is the reader's job: future lifecycle readers can resolve CLOSED immutable parents
-// without making those parents offerable or rewriting their artifacts.
-function validateD2HistoryLineage(entries: readonly StrategyHypothesis[]): void {
-  // Today all D2 parents are open.
-  for (const h of entries) {
-    const seen = new Set<string>();
-    let current = h;
-    while (current.parent !== null) {
-      if (seen.has(current.id)) throw new Error("Cyclic hypothesis lineage.");
-      seen.add(current.id);
-      const parent = entries.find((p) => matchesLearningArtifactRef(current.parent, p));
-      if (!parent || parent.logicalId !== h.logicalId || parent.kind !== h.kind || parent.baseRevisionFingerprint !== h.baseRevisionFingerprint)
-        throw new Error("Unresolved hypothesis lineage.");
-      current = parent;
-    }
-  }
+/** Shared Discovery comparison projection: strict leaves, then trusted-base and conflict gates. */
+export function discoveryOpenHypotheses(history: readonly StrategyHypothesis[], projectId: string, trust: TrustedStrategyPortfolio): readonly StrategyHypothesis[] {
+  const leaves = hypothesisLeaves(history, projectId);
+  validateOpenHypotheses(leaves, projectId);
+  if (trust.projectId !== projectId || trust.entries.length > MAX_TRUSTED_PORTFOLIO_ENTRIES ||
+    trust.entries.length !== trust.resolvedEntries.length || trust.fingerprint !== trustedPortfolioFingerprint(projectId, trust.entries))
+    throw new Error("Incoherent discovery lineage trust facts.");
+  return nonconflictingOpenHypotheses(leaves).filter((h) => matchesCurrentTrustedBase(h, trust));
 }
 /** Competing open revisions are not a Harness semantic choice. Omit the entire conflicted lineage. */
 export function nonconflictingOpenHypotheses(entries: readonly StrategyHypothesis[]): readonly StrategyHypothesis[] {
