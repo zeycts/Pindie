@@ -194,6 +194,40 @@ Budget per job, per day and per scope; packet/portfolio/record limits and expone
 
 ## 10. Dependency-ordered implementation and acceptance
 
+For the Trial reset, do not jump directly from this document into a large replacement implementation. The migration order inside the existing dependency chain is:
+
+```text
+R0  Freeze legacy Trial execution
+    → disable/remove T1 automatic scheduling/presentation from the active path
+    → leave T1 persisted v1 history untouched
+    → PR #241 remains unmerged
+
+R1  Executable Hypothesis v2
+    → add principles[] to model-owned Discovery output and immutable semantics
+    → v1 remains readable/non-executable
+    → v2 child may explicitly revise an exact v1 parent
+
+R2  TrialAssignment v2 + ordinary-work overlay
+    → atomic assignIfAbsent
+    → Run-start placement for preexisting WorkEpisode
+    → post-task_start placement for one newly introduced WorkEpisode
+    → one-shot transient context projection
+    → exact selector resolution through pindie_policy_set
+    → remove obsolete T1 reservation/watcher/preflight machinery
+
+R3  TrialEvidence v2
+    → Experience save returns exact committed ref/fingerprint
+    → deterministic assignment + final trial Policy + subsequent-work gate
+    → immutable factual TrialEvidence v2
+    → retention/pruning protects exact decision support
+
+then
+Evaluation / autonomous trust
+```
+
+Each reset Slice must leave normal Human work usable on its own. R0 intentionally creates a period with Discovery but no automatic real-task Trial; that is safer than continuing an architecture already known to have incorrect attribution assumptions. Do not keep legacy T1 active merely to avoid a temporary capability gap.
+
+
 1. **Compatibility audit and clean Work Plane (complete):** read-only audit existing stores and trust bindings; remove single-Run `learningDisposition`, signal/holder, admission and prompt/capability wiring early, before Discovery/Trials. Preserve factual Experience and legacy SI/CPL artifact readers as needed; update current docs/tests in that implementation slice. Ordinary completion becomes learning-free.
 2. **Foundation:** establish restart-stable WorkEpisodeId bindings outside State before Trials; freeze v1 schemas/identities, factual Experience protection, strict stores and portfolio migration rules; add bounded persistent scheduler/locks/budget/preemption, isolated internal Pi Sessions and crash/idempotence tests.
 3. **Local discovery:** nonblocking deterministic enqueue hooks, corpus triggers, deterministic packet/receipt and isolated native Pi Run; test none/duplicate/restart, no ordinary Run tax.
