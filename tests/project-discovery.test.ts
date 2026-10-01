@@ -44,13 +44,13 @@ async function setup(t: import("node:test").TestContext) {
   const jobs = new FileLearningJobLedger({ globalBaseDir: global });
   const hypotheses = new FileDiscoveryHypothesisStore({ projectsBaseDir: projects });
   const deps = { reader, portfolio, receipts, packets, hypotheses, jobs };
-  const add = async (index: number, schema: 4 | 5 = 5, episode = randomUUID(), successful = false) => {
+  const add = async (index: number, schema: 4 | 5 = 5, episode = randomUUID(), successful = false, durationMs: number | null = 1) => {
     const record = assembleRunExperience({ task: runtime.state.task!, runStart: { taskStatus: "active", taskGoal: "goal" },
       snapshot: { authority: "coherent", taskStatus: "active", verificationStatus: "pending", hasBlockers: false,
         hasQuestions: false, completionReady: false, taskRelation: "preexisting_untouched", completionRelation: "not_completed", gateRelation: "none" },
       policy: { finalSnapshot: null, declarationCount: 0, finalPolicyDeclarationCount: 0, finalPolicyFirstDeclaredAfter: null, finalPolicyLastDeclaredAfter: null },
       execution: { toolCalls: 1, observations: 1, consequentialCalls: 0, projectMutationEffectCalls: 0, verificationCalls: 0, toolErrors: index % 2, deniedCalls: 0 },
-      durationMs: 1, cost: 0, recordedAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+      durationMs, cost: 0, recordedAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
       ...(schema === 5 ? { workEpisodeId: episode } : {}),
     });
     // Outcome diversity is factual and validated: active/pending vs active/failed verification.
@@ -84,6 +84,23 @@ test("D1 legacy v4-only evidence never triggers, v5 deterministic packet/job sur
   await f.add(7);
   assert.notEqual(await enqueueProjectDiscovery(id, restarted), key);
   assert.equal((await restarted.jobs.read()).length, 2);
+});
+test("D1 preserves finite nonnegative Experience durations including fractional runtime milliseconds", async (t) => {
+  const f = await setup(t);
+  const durations = [0.125, 1234.56789, 0, null, 1, 1_000_000_000.5];
+  for (const [index, duration] of durations.entries()) await f.add(index, 5, randomUUID(), false, duration);
+  const packet = await buildProjectDiscoveryPacket(id, f.deps);
+  assert.ok(packet && validateDiscoveryPacket(packet));
+  assert.deepEqual(packet.sources.map((s) => s.metrics.durationMs), durations);
+  assert.ok(await enqueueProjectDiscovery(id, f.deps));
+  assert.deepEqual(await f.deps.packets.read(id, packet.fingerprint), packet);
+  for (const durationMs of [-1, NaN, Infinity, -Infinity, "1", undefined]) {
+    const sources = packet.sources.map((s, i) => i === 0 ? { ...s, metrics: { ...s.metrics, durationMs } } : s);
+    const { fingerprint: _, ...content } = { ...packet, sources };
+    const fingerprint = typeof durationMs === "number" && Number.isFinite(durationMs) || typeof durationMs === "string"
+      ? learningFingerprint(content) : packet.fingerprint;
+    assert.equal(validateDiscoveryPacket({ ...content, fingerprint }), false);
+  }
 });
 test("D2 new-only trigger reuses assessed A context alongside B and never counts it as new", async (t) => {
   const f = await setup(t);
