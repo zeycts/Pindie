@@ -114,6 +114,19 @@ export class FileTrialEvidenceV2Store {
     if (!found) throw new Error("Missing exact Trial evidence.");
     return found;
   }
+  /** One validated history scan per batch; no cache survives the read operation. */
+  async readExactMany(refs: readonly LearningArtifactRef[]): Promise<readonly TrialEvidenceV2[]> {
+    const request: unknown = JSON.parse(canonicalJson(refs));
+    if (!Array.isArray(request) || request.length < 1 || request.length > MAX_TRIAL_EVIDENCE_V2 ||
+      !request.every((ref) => validateLearningArtifactRef(ref, "trial-evidence") && ref.scope.kind === "project" &&
+        ref.scope.projectId === request[0].scope.projectId)) throw new Error("Invalid exact Trial evidence batch refs.");
+    const history = new Map((await this.list(request[0].scope.projectId)).map((e) => [e.id, e]));
+    return request.map((ref) => {
+      const found = history.get(ref.id);
+      if (!found || found.fingerprint !== ref.fingerprint) throw new Error("Missing exact Trial evidence.");
+      return found;
+    });
+  }
   async publish(evidence: TrialEvidenceV2, signal?: AbortSignal, isCurrent: () => boolean = () => true): Promise<TrialEvidenceV2> {
     // Freeze before await; callers cannot mutate publication under the writer lock.
     const text = canonicalJson(evidence), frozen: unknown = JSON.parse(text);

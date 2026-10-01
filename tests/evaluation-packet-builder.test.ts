@@ -128,3 +128,43 @@ test("R4-B filesystem exact adapters resolve only immutable artifacts, without r
   const path = join(root, projectId, "learning-v1", "trial-evidence-v2", `${f.evidence[0].id}.json`);
   await writeFile(path, "null"); await assert.rejects(buildEvaluationPacket(f.input(), { hypothesis, evidence }));
 });
+test("R4-B filesystem batch scans history once per build and revalidates later reads", async (t) => {
+  const f = fixture(128), root = await mkdtemp(join(tmpdir(), "r4b-batch-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dir = join(root, projectId, "learning-v1", "trial-evidence-v2"); await mkdir(dir, { recursive: true });
+  await Promise.all(f.evidence.map((e) => writeFile(join(dir, `${e.id}.json`), canonicalJson(e))));
+  const evidence = new FileTrialEvidenceV2Store({ projectsBaseDir: root }), list = evidence.list.bind(evidence);
+  let scans = 0;
+  evidence.list = async (id) => { scans++; return list(id); };
+  const readers = { hypothesis: f.readers.hypothesis, evidence }, config = { maxTrials: 1, maxPacketBytes: MAX_EVALUATION_PACKET_BYTES };
+  const packet = await buildEvaluationPacket(f.input(), readers, config);
+  assert.equal(scans, 1);
+  assert.deepEqual(packet, await buildEvaluationPacket(f.input(), f.readers, config));
+  const last = [...f.evidence].sort((a, b) => a.id < b.id ? -1 : 1).at(-1)!;
+  await assert.rejects(buildEvaluationPacket({ ...f.input(), trialEvidence: [...f.input().trialEvidence, { ...trialEvidenceRef(last), id: randomUUID() }] }, readers, config), /Missing exact/);
+  await assert.rejects(evidence.readExactMany([{ ...trialEvidenceRef(last), fingerprint: hash }]), /Missing exact/);
+  for (const refs of [[], [{ ...trialEvidenceRef(last), family: "strategy-hypothesis" }],
+    [trialEvidenceRef(last), { ...trialEvidenceRef(last), scope: { kind: "project", projectId: "c".repeat(64) } }]]) {
+    const before = scans;
+    await assert.rejects(evidence.readExactMany(refs as LearningArtifactRef[]), /Invalid exact/);
+    assert.equal(scans, before);
+  }
+  // Even history outside the requested subset is still checked, without a persistent cache.
+  await writeFile(join(dir, `${last.id}.json`), "null");
+  await assert.rejects(buildEvaluationPacket({ ...f.input(), trialEvidence: [packet.trials[0].ref] }, readers, config), /Corrupt/);
+  assert.equal(scans, 4);
+});
+test("R4-B batch lookup validates every result and fences asynchronous authority", async () => {
+  const f = fixture(), ordered = [...f.evidence].sort((a, b) => a.id < b.id ? -1 : 1);
+  const config = { maxTrials: 1, maxPacketBytes: MAX_EVALUATION_PACKET_BYTES };
+  const withBatch = (readExactMany: NonNullable<EvaluationPacketReaders["evidence"]["readExactMany"]>) =>
+    ({ ...f.readers, evidence: { readExact: async () => { throw new Error("Unexpected individual read"); }, readExactMany } });
+  for (const snapshots of [ordered.slice(1), [...ordered].reverse(), [...ordered.slice(0, -1), null],
+    [...ordered.slice(0, -1), { ...ordered.at(-1), fingerprint: hash }]]) {
+    await assert.rejects(buildEvaluationPacket(f.input(), withBatch(async () => snapshots), config), /Invalid exact/);
+  }
+  let current = true;
+  await assert.rejects(buildEvaluationPacket(f.input(), withBatch(async () => { current = false; return ordered; }), config, { isCurrent: () => current }), /Stale/);
+  const controller = new AbortController();
+  await assert.rejects(buildEvaluationPacket(f.input(), withBatch(async () => { controller.abort(); return ordered; }), config, { signal: controller.signal }));
+});

@@ -5,7 +5,10 @@ import { MAX_EVALUATION_PACKET_BYTES, validateEvaluationPacket, type EvaluationP
 
 export interface EvaluationPacketReaders {
   readonly hypothesis: { readExact(ref: LearningArtifactRef): Promise<unknown> };
-  readonly evidence: { readExact(ref: LearningArtifactRef): Promise<unknown> };
+  readonly evidence: {
+    readExact(ref: LearningArtifactRef): Promise<unknown>;
+    readExactMany?(refs: readonly LearningArtifactRef[]): Promise<readonly unknown[]>;
+  };
 }
 export interface EvaluationPacketBuilderConfig {
   readonly maxTrials: number; readonly maxPacketBytes: number;
@@ -53,8 +56,13 @@ export async function buildEvaluationPacket(
   const hypothesisSnapshot = copy(await readers.hypothesis.readExact(request.hypothesis)); check();
   if (!isExecutableStrategyHypothesis(hypothesisSnapshot) || !same(hypothesisRef(hypothesisSnapshot), request.hypothesis)) throw new Error("Unresolved exact executable hypothesis.");
   const candidates: TrialEvidenceV2[] = [];
-  for (const ref of refs) {
-    check(); const snapshot = copy(await readers.evidence.readExact(ref)); check();
+  let batch: readonly unknown[] | undefined;
+  if (readers.evidence.readExactMany) {
+    check(); batch = copy(await readers.evidence.readExactMany(freeze(refs))); check();
+    if (!Array.isArray(batch) || batch.length !== refs.length) throw new Error("Invalid exact TrialEvidence batch.");
+  }
+  for (const [index, ref] of refs.entries()) {
+    check(); const snapshot = batch ? batch[index] : copy(await readers.evidence.readExact(ref)); check();
     if (!validateTrialEvidenceV2(snapshot) || !same(trialEvidenceRef(snapshot), ref) || Buffer.byteLength(canonicalJson(snapshot)) > 16_384) throw new Error("Invalid exact TrialEvidence snapshot.");
     candidates.push(snapshot);
   }
