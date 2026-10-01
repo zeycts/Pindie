@@ -67,6 +67,10 @@ export class OrdinaryTrialOverlay {
       this.report({ event: "failure", latencyMs: Date.now() - started, reason: String(e).slice(0, 256) });
     }
   }
+  /** Freeze the exact placement before clearing the one-Run lease at settlement. */
+  settlementAssignment(binding: OrdinaryTrialBinding | null): TrialAssignmentV2 | null {
+    return this.matches(binding) ? structuredClone(this.active!.assignment) : null;
+  }
   render(binding: OrdinaryTrialBinding | null): string | null {
     if (!this.matches(binding)) { this.invalidate(); return null; }
     const active = this.active!;

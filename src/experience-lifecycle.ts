@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { FileRunExperienceReader, type RunExperienceReadResult } from "./experience-store.ts";
 import { FileStrategyKnowledge } from "./strategy-knowledge-file.ts";
 import { getProjectId } from "./store.ts";
@@ -14,7 +15,10 @@ import { validateStrategyTrustScopeDecisionBinding } from "./strategy-trust-scop
 import { validateStrategySynthesisDecisionBinding } from "./strategy-synthesis-decisions.ts";
 import { strategySelectionRevisionFingerprint, strategySelectionRevisionIdentity, strategySelectionRevisionStatus } from "./policy.ts";
 import { FileDiscoveryHypothesisStore } from "./discovery-hypotheses.ts";
-import { isExecutableStrategyHypothesis } from "./learning-v1-contract.ts";
+import { isExecutableStrategyHypothesis, canonicalJson } from "./learning-v1-contract.ts";
+import { FileTrialAssignmentStore } from "./trial-assignment-v2.ts";
+import { FileTrialEvidenceV2Store, materializeTrialEvidenceV2, matchesTrialEvidenceV2Assignment } from "./trial-evidence-v2.ts";
+import { runExperienceRecordFingerprint } from "./run-experience-fingerprint.ts";
 import { FileV1HypothesisExperienceProtectionReader, type V1ExperienceProtectionReader } from "./v1-experience-protection.ts";
 
 export const MAX_LIVE_ORDINARY_EXPERIENCE_PER_PROJECT = 256;
@@ -143,8 +147,13 @@ export class FileRunExperienceMaintenance {
   private readonly knowledge: FileStrategyKnowledge;
   private readonly v1Protection: V1ExperienceProtectionReader;
   private readonly hypotheses: FileDiscoveryHypothesisStore;
+  private readonly assignments: FileTrialAssignmentStore;
+  private readonly trialEvidence: FileTrialEvidenceV2Store;
 
   constructor(options: { projectsBaseDir?: string; globalBaseDir?: string; v1Protection?: V1ExperienceProtectionReader } = {}) {
+    const projectsBaseDir = options.projectsBaseDir ?? join(homedir(), ".pindie", "projects");
+    this.assignments = new FileTrialAssignmentStore({ projectsBaseDir });
+    this.trialEvidence = new FileTrialEvidenceV2Store({ projectsBaseDir });
     this.hypotheses = new FileDiscoveryHypothesisStore({ projectsBaseDir: options.projectsBaseDir });
     this.reader = new FileRunExperienceReader({ baseDir: options.projectsBaseDir });
     this.knowledge = new FileStrategyKnowledge(options);
@@ -159,9 +168,41 @@ export class FileRunExperienceMaintenance {
     // Unresolved D2 hypotheses keep their exact source Experience live. A malformed
     // or ambiguous store throws here, before any deletion; Experience saves stay committed.
     for (const ref of await this.v1Protection.requiredSourceRefs(getProjectId(projectRoot))) protectedIds.add(ref.recordId);
-    // R2 ordinary-work experimental declarations are not legacy manual Candidate Trials.
-    // Keep their ordinary recent window; R3 exact evidence retention is deliberately separate.
-    const hypotheses = (await this.hypotheses.list(getProjectId(projectRoot))).filter(isExecutableStrategyHypothesis);
+    // Strict complete R3 history before deletion. Unmaterialized selected support
+    // stays live; immutable snapshots release only their exact source, not comparisons.
+    const projectId = getProjectId(projectRoot);
+    const hypotheses = (await this.hypotheses.list(projectId)).filter(isExecutableStrategyHypothesis);
+    const assignments = await this.assignments.list(projectId);
+    const evidence = await this.trialEvidence.list(projectId);
+    if ((assignments.length > 0 || evidence.length > 0) && read.invalid > 0) throw new Error("Corrupt live Trial support; pruning refused.");
+    for (const assignment of assignments) {
+      if (!hypotheses.some((h) => h.id === assignment.hypothesis.id && h.fingerprint === assignment.hypothesis.fingerprint)) throw new Error("Missing exact assigned hypothesis; pruning refused.");
+      for (const ref of assignment.comparison) {
+        const comparison = read.records.find((r) => r.recordId === ref.recordId);
+        if (!comparison || runExperienceRecordFingerprint(comparison.experience) !== ref.fingerprint) throw new Error("Missing exact Trial comparison; pruning refused.");
+        protectedIds.add(ref.recordId);
+      }
+    }
+    for (const item of evidence) {
+      const assignment = assignments.find((a) => a.id === item.assignment.id);
+      const hypothesis = hypotheses.find((h) => h.id === item.hypothesis.id && h.fingerprint === item.hypothesis.fingerprint);
+      if (!assignment || !hypothesis || !matchesTrialEvidenceV2Assignment(item, assignment) || item.selection.strategyId !== hypothesis.logicalId || item.selection.kind !== hypothesis.kind) throw new Error("Orphan/conflicting Trial evidence; pruning refused.");
+      const source = read.records.find((r) => r.recordId === item.source.recordId);
+      if (source && canonicalJson(materializeTrialEvidenceV2(assignment, hypothesis, item.source, source.experience)) !== canonicalJson(item)) throw new Error("Changed Trial support; pruning refused.");
+    }
+    for (const record of read.records) {
+      const experience = record.experience;
+      if (experience.schemaVersion !== 5) continue;
+      const assignment = assignments.find((a) => a.workEpisodeId === experience.workEpisodeId);
+      if (!assignment) continue;
+      const hypothesis = hypotheses.find((h) => h.id === assignment.hypothesis.id && h.fingerprint === assignment.hypothesis.fingerprint);
+      if (!hypothesis) throw new Error("Missing exact assigned hypothesis; pruning refused.");
+      const ref = { projectId, recordId: record.recordId, fingerprint: runExperienceRecordFingerprint(experience) };
+      const support = materializeTrialEvidenceV2(assignment, hypothesis, ref, experience);
+      // Matching Experience alone cannot create evidence: only settlement owns placement.
+      if (support && !evidence.some((e) => e.source.recordId === ref.recordId && e.source.fingerprint === ref.fingerprint)) protectedIds.add(record.recordId);
+    }
+    // R2 experimental declarations retain the same bounded ordinary recent window.
     const ordinary = read.records.filter((record) => !trial(record.experience) || selections(record.experience).filter((s) => strategySelectionRevisionStatus(s) === "trial").every((s) =>
       hypotheses.some((h) => h.id === strategySelectionRevisionIdentity(s) && h.fingerprint === strategySelectionRevisionFingerprint(s))))
       .sort((a, b) => instant(b.experience.recordedAt) - instant(a.experience.recordedAt) ||
