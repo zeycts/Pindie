@@ -1,17 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { linkSync } from "node:fs";
 import { open, readFile, readdir, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { FileGlobalWriterLock } from "./store.ts";
 import { canonicalJson, learningFingerprint, PROJECT_ID, UUID_V4, FINGERPRINT } from "./learning-v1-contract.ts";
-import { createExecutionLease, validateExecutionLease, isExecutionLeaseHeartbeat, type ExecutionLeaseV1 } from "./evaluation-execution-lease.ts";
+import { createExecutionLease, validateExecutionLease, isExecutionLeaseHeartbeat, validateExecutionLeaseRef, type ExecutionLeaseV1, type ExecutionLeaseRef } from "./evaluation-execution-lease.ts";
+export { validateExecutionLeaseRef, type ExecutionLeaseRef } from "./evaluation-execution-lease.ts";
+import { evaluationRunWriterDirectory, assertExecutionAuthority } from "./evaluation-execution-authority-store.ts";
 import { evaluationRunRef, validateEvaluationRunRef, type EvaluationRunRef } from "./evaluation-run.ts";
 import { readEvaluationExecutionClaim, type EvaluationExecutionClaim } from "./evaluation-run-store.ts";
 
-export interface ExecutionLeaseRef {
-  readonly schemaVersion: 1; readonly family: "execution-lease";
-  readonly projectId: string; readonly runId: string; readonly fingerprint: string;
-}
 interface LeaseContent {
   readonly schemaVersion: 1; readonly lease: ExecutionLeaseV1;
   readonly runningRef: EvaluationRunRef; readonly previousFingerprint: string | null;
@@ -31,13 +29,6 @@ function freeze<T>(v: T): T {
   return v;
 }
 const detach = <T>(v: T): T => freeze(JSON.parse(canonicalJson(v)));
-export function validateExecutionLeaseRef(v: unknown): v is ExecutionLeaseRef {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
-  const r = v as Record<string, unknown>;
-  return Object.keys(r).sort().join() === "family,fingerprint,projectId,runId,schemaVersion" && r.schemaVersion === 1 && r.family === "execution-lease" &&
-    typeof r.projectId === "string" && PROJECT_ID.test(r.projectId) && typeof r.runId === "string" && UUID_V4.test(r.runId) &&
-    typeof r.fingerprint === "string" && FINGERPRINT.test(r.fingerprint);
-}
 function snapshot(content: LeaseContent): ExecutionLeaseSnapshot {
   return freeze({ ...content, ref: { schemaVersion: 1, family: "execution-lease", projectId: content.runningRef.projectId,
     runId: content.lease.runId, fingerprint: learningFingerprint(content) } });
@@ -45,12 +36,17 @@ function snapshot(content: LeaseContent): ExecutionLeaseSnapshot {
 
 /** Isolated immutable ownership metadata. No evaluator or semantic-store capability. */
 export class FileExecutionLeaseStore implements ExecutionLeaseStore {
+  readonly storageBaseDir: string;
   private readonly options: {
     projectsBaseDir: string;
     /** Test-only transaction barriers. */
     beforePublish?: () => Promise<void>; afterPublish?: () => Promise<void>;
   };
-  constructor(options: FileExecutionLeaseStore["options"]) { this.options = options; }
+  constructor(options: FileExecutionLeaseStore["options"]) { this.options = { ...options }; this.storageBaseDir = resolve(options.projectsBaseDir); }
+  private withWriterLock<T>(projectId: string, operation: () => Promise<T>): Promise<T> {
+    return new FileGlobalWriterLock({ baseDir: evaluationRunWriterDirectory(this.storageBaseDir, projectId) }).withLock(() =>
+      new FileGlobalWriterLock({ baseDir: this.dir(projectId) }).withLock(operation));
+  }
   private dir(projectId: string): string {
     if (!PROJECT_ID.test(projectId)) throw new Error("Invalid ExecutionLease namespace.");
     return join(this.options.projectsBaseDir, projectId, "learning-v1", "execution-leases-v1");
@@ -130,7 +126,8 @@ export class FileExecutionLeaseStore implements ExecutionLeaseStore {
   async createLease(claim: EvaluationExecutionClaim, ownerId: string): Promise<ExecutionLeaseSnapshot> {
     const running = readEvaluationExecutionClaim(claim, this.options.projectsBaseDir);
     const initial = snapshot({ schemaVersion: 1, lease: createExecutionLease(running, ownerId), runningRef: evaluationRunRef(running), previousFingerprint: null });
-    return new FileGlobalWriterLock({ baseDir: this.dir(initial.ref.projectId) }).withLock(async () => {
+    return this.withWriterLock(initial.ref.projectId, async () => {
+      await assertExecutionAuthority(this.storageBaseDir, initial.runningRef);
       const history = await this.history(initial.ref.projectId), chain = history.get(initial.lease.runId);
       if (chain) {
         if (same(chain[0], initial)) return chain[0];
@@ -143,10 +140,11 @@ export class FileExecutionLeaseStore implements ExecutionLeaseStore {
   async heartbeat(previous: ExecutionLeaseRef, next: ExecutionLeaseV1): Promise<ExecutionLeaseSnapshot> {
     const ref = this.request(previous), lease = detach(next);
     if (!validateExecutionLease(lease)) throw new Error("Invalid ExecutionLease heartbeat write.");
-    return new FileGlobalWriterLock({ baseDir: this.dir(ref.projectId) }).withLock(async () => {
+    return this.withWriterLock(ref.projectId, async () => {
       const history = await this.history(ref.projectId), chain = history.get(ref.runId), current = chain?.[chain.length - 1];
       if (!current || !same(current.ref, ref) || !isExecutionLeaseHeartbeat(current.lease, lease) ||
         Date.parse(lease.heartbeatAt) <= Date.parse(current.lease.heartbeatAt)) throw new Error("Stale/invalid ExecutionLease heartbeat.");
+      await assertExecutionAuthority(this.storageBaseDir, current.runningRef);
       if ([...history.values()].reduce((n, c) => n + c.length, 0) >= MAX_EXECUTION_LEASE_SNAPSHOTS_V1) throw new Error("ExecutionLease capacity; no pruning.");
       return this.write(snapshot({ schemaVersion: 1, lease, runningRef: current.runningRef, previousFingerprint: ref.fingerprint }));
     });

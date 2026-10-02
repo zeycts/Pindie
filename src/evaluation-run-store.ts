@@ -6,6 +6,8 @@ import { FileGlobalWriterLock } from "./store.ts";
 import { canonicalJson, PROJECT_ID, UUID_V4, learningFingerprint } from "./learning-v1-contract.ts";
 import { evaluationPacketRef, validateEvaluationPacket, type EvaluationPacket, type EvaluationRef } from "./evaluation-contract.ts";
 import { evaluationRunRef, validateEvaluationRun, validateEvaluationRunRef, isEvaluationRunTransition, transitionEvaluationRun, MAX_EVALUATION_RUN_BYTES, type EvaluationRunV1, type EvaluationRunRef } from "./evaluation-run.ts";
+import { initializeExecutionAuthority, assertExecutionAuthority } from "./evaluation-execution-authority-store.ts";
+import type { ExecutionAuthorityRef } from "./evaluation-stale-confirmation.ts";
 
 export const MAX_EVALUATION_RUNS_V1 = 4096;
 /** Only the caller that uniquely publishes running receives this settlement capability. */
@@ -15,6 +17,7 @@ export interface EvaluationExecutionClaim {
 }
 // Process-local provenance only: persisted running bytes never reconstruct a live claim.
 const executionClaims = new WeakMap<EvaluationExecutionClaim, { root: string; running: EvaluationExecutionClaim["running"] }>();
+const executionIncarnation = randomUUID();
 /** Metadata publication may consume a genuine claim, but never mint execution authority. */
 export function readEvaluationExecutionClaim(claim: EvaluationExecutionClaim, projectsBaseDir: string): EvaluationExecutionClaim["running"] {
   const binding = executionClaims.get(claim);
@@ -34,13 +37,14 @@ function freeze<T>(v: T): T {
 }
 /** Only injected capability is exact packet READ. No evaluator, runtime or semantic-store writes. */
 export class FileEvaluationRunStore implements EvaluationRunStore {
+  readonly storageBaseDir: string;
   private readonly options: {
     projectsBaseDir: string;
     packets: { get(ref: EvaluationRef): Promise<EvaluationPacket> };
     /** Test-only transaction barriers. */
     beforePublish?: () => Promise<void>; afterPublish?: () => Promise<void>;
   };
-  constructor(options: FileEvaluationRunStore["options"]) { this.options = options; }
+  constructor(options: FileEvaluationRunStore["options"]) { this.options = { ...options }; this.storageBaseDir = resolve(options.projectsBaseDir); }
   private dir(projectId: string): string {
     if (!PROJECT_ID.test(projectId)) throw new Error("Invalid EvaluationRun namespace.");
     return join(this.options.projectsBaseDir, projectId, "learning-v1", "evaluation-runs-v1");
@@ -109,6 +113,7 @@ export class FileEvaluationRunStore implements EvaluationRunStore {
     const request = freeze(value);
     const running = freeze(transitionEvaluationRun(request, "running", startedAt)) as EvaluationExecutionClaim["running"];
     const dir = this.dir(request.packetRef.scope.projectId);
+    let authority: ExecutionAuthorityRef;
     await new FileGlobalWriterLock({ baseDir: dir }).withLock(async () => {
       const chain = (await this.history(request.packetRef.scope.projectId)).get(request.runId);
       if (!chain || !same(chain[0], request)) throw new Error("Missing/mismatched committed EvaluationRun.");
@@ -117,18 +122,21 @@ export class FileEvaluationRunStore implements EvaluationRunStore {
       // Created publication already validated the exact packet binding. Claim before loading it so
       // missing/corrupt packets can leave a durable execution failure rather than a stranded created run.
       await this.writeSnapshot(running);
+      authority = (await initializeExecutionAuthority(this.storageBaseDir, { schemaVersion: 1, kind: "owned", epoch: 0,
+        runningRef: evaluationRunRef(running), claimId: randomUUID(), incarnation: executionIncarnation })).ref;
     });
-    const claim = Object.freeze({ running, publishTerminal: (run: EvaluationRunV1) => this.publishExecutionTerminal(running, run) });
+    const claim = Object.freeze({ running, publishTerminal: (run: EvaluationRunV1) => this.publishExecutionTerminal(running, authority!, run) });
     executionClaims.set(claim, { root: resolve(this.options.projectsBaseDir), running });
     return claim;
   }
-  private async publishExecutionTerminal(running: EvaluationExecutionClaim["running"], terminal: EvaluationRunV1): Promise<EvaluationRunV1> {
+  private async publishExecutionTerminal(running: EvaluationExecutionClaim["running"], authority: ExecutionAuthorityRef, terminal: EvaluationRunV1): Promise<EvaluationRunV1> {
     const value: unknown = JSON.parse(canonicalJson(terminal));
     if (!validateEvaluationRun(value) || !isEvaluationRunTransition(running, value)) throw new Error("Invalid claimed EvaluationRun terminal transition.");
     const run = freeze(value), dir = this.dir(run.packetRef.scope.projectId);
     return new FileGlobalWriterLock({ baseDir: dir }).withLock(async () => {
       const chain = (await this.history(run.packetRef.scope.projectId)).get(run.runId);
       if (!chain || !same(chain[1], running)) throw new Error("Missing/mismatched EvaluationRun execution claim.");
+      await assertExecutionAuthority(this.storageBaseDir, evaluationRunRef(running), authority);
       const current = chain[chain.length - 1];
       if (current.status !== "running") {
         if (same(current, run)) return current;
@@ -151,6 +159,13 @@ export class FileEvaluationRunStore implements EvaluationRunStore {
       const existing = chain?.find((v) => v.status === r.status);
       if (existing && !same(existing, r)) throw new Error("Conflicting EvaluationRun publication.");
       if (!existing && (chain ? !isEvaluationRunTransition(chain[chain.length - 1], r) : r.status !== "created")) throw new Error("Invalid EvaluationRun transition.");
+      // Terminal writes cannot bypass a revoked claim through the ordinary publisher.
+      // Legacy unfenced running history remains readable, but cannot settle online.
+      if (r.status === "completed" || r.status === "failed" || r.status === "running" && chain?.some(v => v.status === "running")) {
+        const running = chain?.find(v => v.status === "running");
+        if (!running) throw new Error("Missing EvaluationRun execution authority.");
+        await assertExecutionAuthority(this.storageBaseDir, evaluationRunRef(running));
+      }
       if (!chain && history.size >= MAX_EVALUATION_RUNS_V1) throw new Error("EvaluationRun capacity; no pruning.");
       // Read only the immutable packet, including retries; never re-resolve live/raw sources.
       const packet: unknown = JSON.parse(canonicalJson(await this.options.packets.get(r.packetRef))); check();

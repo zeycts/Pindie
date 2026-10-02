@@ -55,7 +55,7 @@ test("R4-C2 immutable snapshots, exact lookup, lifecycle and retry after termina
   const created = await f.store.publish(f.run), bytes = await readFile(f.path(f.run), "utf8");
   assert.ok(Object.isFrozen(created.packetRef.scope));
   const running = transitionEvaluationRun(f.run, "running", start), completed = transitionEvaluationRun(running, "completed", end);
-  await f.store.publish(running); await f.store.publish(completed);
+  await f.store.claimExecution(f.run, start); await f.store.publish(completed);
   assert.deepEqual(await f.store.getCurrent(projectId, f.run.runId), completed);
   for (const r of [f.run, running, completed]) { assert.deepEqual(await f.store.get(evaluationRunRef(r)), r); assert.deepEqual(await f.store.publish(r), r); }
   assert.equal(await readFile(f.path(f.run), "utf8"), bytes); assert.equal((await readdir(f.dir)).length, 3);
@@ -68,7 +68,7 @@ test("R4-C2 failed branch, skipped edges and changed identity/evaluator fail clo
   await assert.rejects(f.store.publish(running), /transition/);
   await f.store.publish(f.run);
   for (const change of [{ evaluator: { name: "other", version: "1" } }, { createdAt: "2025-01-01T00:00:00.000Z" }]) await assert.rejects(f.store.publish({ ...running, ...change }), /transition/);
-  await f.store.publish(running);
+  await f.store.claimExecution(f.run, start);
   const failed = transitionEvaluationRun(running, "failed", end, { code: "ERROR", message: "Failed" }); await f.store.publish(failed);
   assert.deepEqual(await f.store.getCurrent(projectId, f.run.runId), failed);
   await assert.rejects(f.store.publish(transitionEvaluationRun(running, "completed", end)), /transition/);
@@ -94,7 +94,7 @@ test("R4-C2 concurrent identical/conflicting publication and terminal races", as
   const fresh = { ...f.run, runId: randomUUID() }, changed = { ...fresh, evaluator: conflict.evaluator };
   const results = await Promise.allSettled([f.store.publish(fresh), other.publish(changed)]);
   assert.equal(results.filter((r) => r.status === "fulfilled").length, 1); assert.equal(results.filter((r) => r.status === "rejected").length, 1);
-  const running = transitionEvaluationRun(f.run, "running", start); await f.store.publish(running);
+  const running = transitionEvaluationRun(f.run, "running", start); await f.store.claimExecution(f.run, start);
   const terminals = await Promise.allSettled([f.store.publish(transitionEvaluationRun(running, "completed", end)), other.publish(transitionEvaluationRun(running, "failed", end, { code: "x", message: "x" }))]);
   assert.equal(terminals.filter((r) => r.status === "fulfilled").length, 1); assert.equal(terminals.filter((r) => r.status === "rejected").length, 1);
 });
@@ -126,7 +126,7 @@ test("R4-C2 isolated writes leave packets and all semantic/runtime namespaces un
   const protectedNames = ["experience", "trial-evidence-v2", "strategy", "policy", "trust", "decision"];
   for (const name of protectedNames) { await mkdir(join(base, name)); await writeFile(join(base, name, "sentinel"), name); }
   const packetPath = join(base, "evaluation-packets-v1", `${f.packet.id}.json`), before = await readFile(packetPath, "utf8");
-  await f.store.publish(f.run); const running = transitionEvaluationRun(f.run, "running", start); await f.store.publish(running); await f.store.publish(transitionEvaluationRun(running, "completed", end));
+  await f.store.publish(f.run); const running = transitionEvaluationRun(f.run, "running", start); await f.store.claimExecution(f.run, start); await f.store.publish(transitionEvaluationRun(running, "completed", end));
   for (const name of protectedNames) { assert.deepEqual(await readdir(join(base, name)), ["sentinel"]); assert.equal(await readFile(join(base, name, "sentinel"), "utf8"), name); }
   assert.equal(await readFile(packetPath, "utf8"), before);
   // Module is standalone: no production imports and no execution/mutation capability dependency.
@@ -142,7 +142,7 @@ test("R4-C2 capacity rejects new attempts but preserves lifecycle completion and
   }
   await assert.rejects(f.store.publish({ ...f.run, runId: randomUUID() }), /capacity/);
   await f.store.publish(f.run); const running = transitionEvaluationRun(f.run, "running", start);
-  await f.store.publish(running); await f.store.publish(transitionEvaluationRun(running, "completed", end));
+  await f.store.claimExecution(f.run, start); await f.store.publish(transitionEvaluationRun(running, "completed", end));
   assert.equal((await readdir(f.dir)).length, MAX_EVALUATION_RUNS_V1 + 2);
 });
 test("R4-C2 real process death at publication frontiers preserves attempt identity", async (t) => {
