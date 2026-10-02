@@ -1,3 +1,4 @@
+import { recoveryCapacityReservations } from "./recovery-capacity.ts";
 import { randomUUID } from "node:crypto";
 import { linkSync } from "node:fs";
 import { open, readFile, readdir, rm, stat } from "node:fs/promises";
@@ -28,7 +29,7 @@ async function syncDirectory(path: string): Promise<void> {
 async function namesOrEmpty(path: string): Promise<string[]> {
   try { return await readdir(path); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; throw e; }
 }
-async function history(root: string, project: string): Promise<RecoveryAdmissionSnapshot[]> {
+export async function recoveryAdmissionHistory(root: string, project: string): Promise<RecoveryAdmissionSnapshot[]> {
   const path = dir(root, project), names = (await namesOrEmpty(path)).filter(n => n !== "writer.lock");
   if (names.length > MAX_RECOVERY_ADMISSIONS_V1) throw new Error("RecoveryAdmission capacity exceeded.");
   const snapshots: RecoveryAdmissionSnapshot[] = [], parents = new Set<string>(), slots = new Set<string>();
@@ -43,7 +44,7 @@ async function history(root: string, project: string): Promise<RecoveryAdmission
       throw new Error("Corrupt RecoveryAdmission envelope.");
     const s = recoveryAdmissionSnapshot(v.admission), b = s.admission.binding;
     if (s.ref.projectId !== project || slotName(s.ref) !== name || s.ref.fingerprint !== v.fingerprint) throw new Error("Corrupt RecoveryAdmission identity/digest.");
-    // C7-A has no recovered runs or successor bindings from which to prove later generations.
+    // Recovered execution is disabled; only root generation-one admissions are supported.
     if (b.generation !== 1 || b.previousAdmissionRef !== null) throw new Error("Unsupported/incomplete recovery lineage.");
     if (parents.has(b.oldRunningRef.runId) || slots.has(`${b.logicalEvaluationKey}.${b.generation}`)) throw new Error("Conflicting RecoveryAdmission parent/slot.");
     parents.add(b.oldRunningRef.runId); slots.add(`${b.logicalEvaluationKey}.${b.generation}`); snapshots.push(s);
@@ -58,23 +59,23 @@ export class FileRecoveryAdmissionStore {
     if (!validateRecoveryAdmissionRef(ref)) throw new Error("Invalid exact RecoveryAdmission ref.");
     const request = detachedRecoveryValue(ref);
     if (!validateRecoveryAdmissionRef(request)) throw new Error("Invalid detached RecoveryAdmission ref.");
-    const found = (await history(this.storageBaseDir, request.projectId)).find(s => same(s.ref, request));
+    const found = (await recoveryAdmissionHistory(this.storageBaseDir, request.projectId)).find(s => same(s.ref, request));
     if (!found) throw new Error("Missing/mismatched exact RecoveryAdmission.");
     return found;
   }
 }
-async function allHistory(root: string): Promise<RecoveryAdmissionSnapshot[]> {
+export async function allRecoveryAdmissionHistory(root: string): Promise<RecoveryAdmissionSnapshot[]> {
   const entries = await readdir(root, { withFileTypes: true }), result: RecoveryAdmissionSnapshot[] = [];
   const projects = entries.filter(e => PROJECT_ID.test(e.name));
   if (projects.length > MAX_RECOVERY_ADMISSIONS_V1) throw new Error("Oversized recovery project inventory.");
   for (const e of projects.sort((a, b) => a.name.localeCompare(b.name))) {
     if (!e.isDirectory()) throw new Error("Invalid recovery project inventory.");
-    result.push(...await history(root, e.name));
+    result.push(...await recoveryAdmissionHistory(root, e.name));
     if (result.length > MAX_RECOVERY_ADMISSIONS_V1) throw new Error("RecoveryAdmission global capacity exceeded.");
   }
   return result;
 }
-function fits(base: RecoveryUsageV1, reservations: readonly RecoveryUsageV1[], limit: RecoveryUsageV1): boolean {
+export function recoveryReservationsFit(base: RecoveryUsageV1, reservations: readonly RecoveryUsageV1[], limit: RecoveryUsageV1): boolean {
   return (["tokens", "costMicros", "durationMs"] as const).every(k => {
     let total = base[k];
     for (const r of reservations) { total += r[k]; if (!Number.isSafeInteger(total)) return false; }
@@ -110,7 +111,6 @@ export function createRecoveryAdmissionCoordinator(options: {
   const currentLease = options.leases.getCurrent.bind(options.leases), getPacket = options.packets.get.bind(options.packets);
   const inspect = options.reconciliation.inspect.bind(options.reconciliation), resources = options.resources.inspect.bind(options.resources);
   const now = options.now, authorized = options.isAuthorized, before = options.beforePublish, after = options.afterPublish;
-  const authorities = new FileExecutionAuthorityStore({ projectsBaseDir: root });
   return Object.freeze({ async admit(input: RecoveryAdmissionV1): Promise<RecoveryAdmissionSnapshot> {
     const s = recoveryAdmissionSnapshot(input), a = s.admission, b = a.binding;
     const context = detachedRecoveryValue({ binding: b, originAuthorityRef: a.originAuthorityRef });
@@ -126,26 +126,10 @@ export function createRecoveryAdmissionCoordinator(options: {
           new FileGlobalWriterLock({ baseDir: dir(root, b.projectId) }).withLock(async () => {
             const validateSources = async () => {
               checkAuthorization();
-              const run = await currentRun(b.projectId, b.oldRunningRef.runId), created = await getRun(b.rootCreatedRef);
-              if (run.status !== "running" || !same(evaluationRunRef(run), b.oldRunningRef) || !same(run.packetRef, b.packetRef) || run.packetFingerprint !== b.packetFingerprint ||
-                !same(run.evaluator, b.evaluator) || !same(created.packetRef, b.packetRef) || !same(created.evaluator, b.evaluator)) throw new Error("Changed old run/packet/evaluator binding.");
-              const revoked = await authorities.get(b.confirmationRef), current = await authorities.getCurrent(b.projectId, run.runId), origin = await authorities.get(a.originAuthorityRef);
-              if (!same(current, revoked) || revoked.record.kind !== "stale-confirmation" || origin.record.kind !== "owned" ||
-                !same(revoked.record.runningRef, b.oldRunningRef) || !same(revoked.record.previousAuthorityRef, a.originAuthorityRef) || revoked.record.newFencingEpoch !== b.fencingEpoch ||
-                !same(origin.record.runningRef, b.oldRunningRef) || origin.record.epoch !== 0) throw new Error("Missing/exact revoked authority required.");
-              const lease = await currentLease(b.projectId, run.runId);
-              if (!same(lease.ref, revoked.record.previousLeaseRef) || !same(lease.runningRef, b.oldRunningRef) || lease.lease.ownerId !== revoked.record.previousOwnerId || lease.lease.acquiredAt !== run.startedAt)
-                throw new Error("Changed stale-confirmation lease predecessor.");
-              const packet = await getPacket(b.packetRef);
-              if (!validateEvaluationPacket(packet) || !same(evaluationPacketRef(packet), b.packetRef)) throw new Error("Changed exact EvaluationPacket.");
-              if (Date.parse(a.admittedAt) < Date.parse(revoked.record.confirmedAt) || a.reconciliation.cessation.claimId !== origin.record.claimId ||
-                a.reconciliation.cessation.incarnation !== origin.record.incarnation || a.reconciliation.cessation.handleId !== revoked.record.evidence.handleId)
-                throw new Error("Incomplete/mismatched cessation provenance.");
-              // Acknowledge the exact validated fence's directory durability without writing authority bytes.
-              await syncDirectory(join(root, b.projectId, "learning-v1", "execution-authorities-v1"));
+              await validateRecoveryAdmissionSources(root, a, { runs: { get: getRun, getCurrent: currentRun }, leases: { getCurrent: currentLease }, packets: { get: getPacket } });
             };
             await validateSources();
-            const existingHistory = await allHistory(root);
+            const existingHistory = await allRecoveryAdmissionHistory(root);
             const existing = existingHistory.find(v => v.ref.projectId === b.projectId &&
               (v.admission.binding.oldRunningRef.runId === b.oldRunningRef.runId || v.ref.logicalEvaluationKey === b.logicalEvaluationKey && v.ref.generation === b.generation));
             if (existing) {
@@ -164,19 +148,19 @@ export function createRecoveryAdmissionCoordinator(options: {
               const r = a.resources, evaluationReservations = existingHistory.filter(v => v.ref.logicalEvaluationKey === b.logicalEvaluationKey).map(v => v.admission.resources.reservation);
               const globalReservations = existingHistory.map(v => v.admission.resources.reservation);
               if (!recoveryUsageWithin(r.oldAttemptUsage, r.evaluationBaseUsage) || !recoveryUsageWithin(r.evaluationBaseUsage, r.globalBaseUsage) ||
-                !recoveryUsageWithin(r.reservation, policy.perAdmission) || !fits(r.evaluationBaseUsage, [...evaluationReservations, r.reservation], policy.perEvaluation) ||
-                !fits(r.globalBaseUsage, [...globalReservations, r.reservation], policy.global) || evaluationReservations.length >= policy.maxRecoveryAdmissions)
+                !recoveryUsageWithin(r.reservation, policy.perAdmission) || !recoveryReservationsFit(r.evaluationBaseUsage, [...evaluationReservations, r.reservation], policy.perEvaluation) ||
+                !recoveryReservationsFit(r.globalBaseUsage, [...globalReservations, r.reservation], policy.global) || evaluationReservations.length >= policy.maxRecoveryAdmissions)
                 throw new Error("Recovery budget/attempt limit exceeded.");
-              const pending = existingHistory.filter(v => v.ref.projectId === b.projectId).length;
+              const pending = await recoveryCapacityReservations(root, b.projectId);
               const runNames = await namesOrEmpty(evaluationRunWriterDirectory(root, b.projectId));
               const authorityNames = await namesOrEmpty(join(root, b.projectId, "learning-v1", "execution-authorities-v1"));
               const leaseNames = await namesOrEmpty(join(root, b.projectId, "learning-v1", "execution-leases-v1"));
               const runCount = runNames.filter(n => n.endsWith(".created.json")).length;
               const authorityCount = new Set(authorityNames.map(n => n.split(".")[0])).size;
               const leaseCount = leaseNames.filter(n => n !== "writer.lock").length;
-              if (Math.min(r.capacity.runSlots, MAX_EVALUATION_RUNS_V1 - runCount) <= pending ||
-                Math.min(r.capacity.authoritySlots, MAX_EXECUTION_AUTHORITIES_V1 - authorityCount) <= pending ||
-                Math.min(r.capacity.leaseSlots, MAX_EXECUTION_LEASE_SNAPSHOTS_V1 - leaseCount) <= pending)
+              if (Math.min(r.capacity.runSlots, MAX_EVALUATION_RUNS_V1 - runCount) <= pending.runSlots ||
+                Math.min(r.capacity.authoritySlots, MAX_EXECUTION_AUTHORITIES_V1 - authorityCount) <= pending.authoritySlots ||
+                Math.min(r.capacity.leaseSlots, MAX_EXECUTION_LEASE_SNAPSHOTS_V1 - leaseCount) <= pending.leaseSlots)
                 throw new Error("Insufficient recovery capacity.");
               for (const family of ["evaluation-results-v1", "evaluation-outputs-v1"]) {
                 if ((await namesOrEmpty(join(root, b.projectId, "learning-v1", family))).length) throw new Error("Unsupported committed/ambiguous output surface.");
@@ -194,4 +178,32 @@ export function createRecoveryAdmissionCoordinator(options: {
             } finally { await rm(temp, { force: true }); }
           }))));
   } });
+}
+
+/** Source revalidation shared by permission and materialization; caller holds Run → Lease locks. */
+export async function validateRecoveryAdmissionSources(root: string, a: RecoveryAdmissionV1, readers: {
+  runs: Pick<EvaluationRunStore, "get" | "getCurrent">;
+  leases: Pick<ExecutionLeaseStore, "getCurrent">;
+  packets: Pick<EvaluationPacketStore, "get">;
+}): Promise<void> {
+  const b = a.binding, authorities = new FileExecutionAuthorityStore({ projectsBaseDir: root });
+  const currentRun = readers.runs.getCurrent.bind(readers.runs), getRun = readers.runs.get.bind(readers.runs);
+  const currentLease = readers.leases.getCurrent.bind(readers.leases), getPacket = readers.packets.get.bind(readers.packets);
+  const run = await currentRun(b.projectId, b.oldRunningRef.runId), created = await getRun(b.rootCreatedRef);
+  if (created.schemaVersion !== 1 || created.status !== "created" || run.schemaVersion !== 1 || b.generation !== 1 || b.previousAdmissionRef !== null || run.runId !== created.runId || run.status !== "running" || !same(evaluationRunRef(run), b.oldRunningRef) || !same(run.packetRef, b.packetRef) || run.packetFingerprint !== b.packetFingerprint ||
+    !same(run.evaluator, b.evaluator) || !same(created.packetRef, b.packetRef) || !same(created.evaluator, b.evaluator)) throw new Error("Changed old run/packet/evaluator binding.");
+  const revoked = await authorities.get(b.confirmationRef), current = await authorities.getCurrent(b.projectId, run.runId), origin = await authorities.get(a.originAuthorityRef);
+  if (!same(current, revoked) || revoked.record.kind !== "stale-confirmation" || origin.record.kind !== "owned" ||
+    !same(revoked.record.runningRef, b.oldRunningRef) || !same(revoked.record.previousAuthorityRef, a.originAuthorityRef) || revoked.record.newFencingEpoch !== b.fencingEpoch ||
+    !same(origin.record.runningRef, b.oldRunningRef) || origin.record.epoch !== 0) throw new Error("Missing/exact revoked authority required.");
+  const lease = await currentLease(b.projectId, run.runId);
+  if (!same(lease.ref, revoked.record.previousLeaseRef) || !same(lease.runningRef, b.oldRunningRef) || lease.lease.ownerId !== revoked.record.previousOwnerId || lease.lease.acquiredAt !== run.startedAt)
+    throw new Error("Changed stale-confirmation lease predecessor.");
+  const packet = await getPacket(b.packetRef);
+  if (!validateEvaluationPacket(packet) || !same(evaluationPacketRef(packet), b.packetRef)) throw new Error("Changed exact EvaluationPacket.");
+  if (Date.parse(a.admittedAt) < Date.parse(revoked.record.confirmedAt) || a.reconciliation.cessation.claimId !== origin.record.claimId ||
+    a.reconciliation.cessation.incarnation !== origin.record.incarnation || a.reconciliation.cessation.handleId !== revoked.record.evidence.handleId)
+    throw new Error("Incomplete/mismatched cessation provenance.");
+  // Acknowledge the exact validated fence's directory durability without writing authority bytes.
+  await syncDirectory(join(root, b.projectId, "learning-v1", "execution-authorities-v1"));
 }

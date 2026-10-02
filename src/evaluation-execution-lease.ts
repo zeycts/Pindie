@@ -35,7 +35,7 @@ export function validateExecutionLease(v: unknown): v is ExecutionLeaseV1 {
 
 /** Pure projection intended for the unique claim owner; no I/O or authority acquisition. */
 export function createExecutionLease(running: EvaluationRunV1, ownerId: string): ExecutionLeaseV1 {
-  if (!validateEvaluationRun(running) || running.status !== "running") throw new Error("ExecutionLease requires a valid running EvaluationRun.");
+  if (!validateEvaluationRun(running) || running.schemaVersion !== 1 || running.status !== "running") throw new Error("ExecutionLease requires a valid running EvaluationRun.");
   const lease = { schemaVersion: 1 as const, runId: running.runId, ownerId, acquiredAt: running.startedAt!, heartbeatAt: running.startedAt! };
   if (!validateExecutionLease(lease)) throw new Error("Invalid ExecutionLease.");
   return Object.freeze(lease);
