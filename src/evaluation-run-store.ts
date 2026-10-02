@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { linkSync } from "node:fs";
 import { open, readFile, readdir, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { FileGlobalWriterLock } from "./store.ts";
 import { canonicalJson, PROJECT_ID, UUID_V4, learningFingerprint } from "./learning-v1-contract.ts";
 import { evaluationPacketRef, validateEvaluationPacket, type EvaluationPacket, type EvaluationRef } from "./evaluation-contract.ts";
@@ -12,6 +12,14 @@ export const MAX_EVALUATION_RUNS_V1 = 4096;
 export interface EvaluationExecutionClaim {
   readonly running: EvaluationRunV1 & { readonly status: "running" };
   publishTerminal(run: EvaluationRunV1): Promise<EvaluationRunV1>;
+}
+// Process-local provenance only: persisted running bytes never reconstruct a live claim.
+const executionClaims = new WeakMap<EvaluationExecutionClaim, { root: string; running: EvaluationExecutionClaim["running"] }>();
+/** Metadata publication may consume a genuine claim, but never mint execution authority. */
+export function readEvaluationExecutionClaim(claim: EvaluationExecutionClaim, projectsBaseDir: string): EvaluationExecutionClaim["running"] {
+  const binding = executionClaims.get(claim);
+  if (!binding || binding.root !== resolve(projectsBaseDir)) throw new Error("Missing/foreign live EvaluationRun execution claim.");
+  return binding.running;
 }
 export interface EvaluationRunStore {
   publish(run: EvaluationRunV1, signal?: AbortSignal, isCurrent?: () => boolean): Promise<EvaluationRunV1>;
@@ -110,7 +118,9 @@ export class FileEvaluationRunStore implements EvaluationRunStore {
       // missing/corrupt packets can leave a durable execution failure rather than a stranded created run.
       await this.writeSnapshot(running);
     });
-    return Object.freeze({ running, publishTerminal: (run: EvaluationRunV1) => this.publishExecutionTerminal(running, run) });
+    const claim = Object.freeze({ running, publishTerminal: (run: EvaluationRunV1) => this.publishExecutionTerminal(running, run) });
+    executionClaims.set(claim, { root: resolve(this.options.projectsBaseDir), running });
+    return claim;
   }
   private async publishExecutionTerminal(running: EvaluationExecutionClaim["running"], terminal: EvaluationRunV1): Promise<EvaluationRunV1> {
     const value: unknown = JSON.parse(canonicalJson(terminal));
