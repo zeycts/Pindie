@@ -110,7 +110,7 @@ export interface RecoveryAccountingFactV1 { readonly schemaVersion: 1; readonly 
 export function validateRecoveryAccountingFact(v: unknown): v is RecoveryAccountingFactV1 { return obj(v) && keys(v, "schemaVersion,logicalEvaluationKey,opportunityKey,artifactCapacity,providerSpending,usageAccounting,observedAt,frontierFingerprint,evidenceFingerprint") && v.schemaVersion === 1 && fp(v.logicalEvaluationKey) && fp(v.opportunityKey) && ["SUFFICIENT", "EXHAUSTED", "UNKNOWN"].includes(v.artifactCapacity) && ["SUFFICIENT", "INSUFFICIENT", "UNKNOWN"].includes(v.providerSpending) && ["KNOWN", "CONSERVATIVE", "UNKNOWN"].includes(v.usageAccounting) && time(v.observedAt) && fp(v.frontierFingerprint) && fp(v.evidenceFingerprint) && Buffer.byteLength(canonicalJson(v)) <= MAX_RECOVERY_READINESS_FACT_BYTES; }
 
 export interface ReadinessLineageQueryV1 { readonly targetRunRef: EvaluationRunRef; readonly admissionRef: RecoveryAdmissionRef; readonly successorBindingRef: RecoverySuccessorBindingRef; readonly logicalEvaluationKey: string; readonly opportunityKey: string; readonly predecessorRunningRef: EvaluationRunRef; readonly rootCreatedRef: EvaluationRunRef; readonly packetRef: RecoveryAdmissionV1["binding"]["packetRef"]; readonly evaluator: { readonly name: string; readonly version: string }; readonly executionContractFingerprint: string; readonly generation: number }
-export interface ReadinessQueryV1 extends ReadinessLineageQueryV1 { readonly executionProfileFingerprint: string }
+export interface ReadinessQueryV1 extends ReadinessLineageQueryV1 { readonly executionProfileFingerprint: string; readonly observedAt: string }
 export interface LogicalEvaluationBindingReader { read(query: ReadinessLineageQueryV1): Promise<unknown> }
 export interface EvaluationRecoveryExecutionProfileReader { read(query: ReadinessQueryV1): Promise<unknown> }
 export interface RuntimeCessationInspector { inspect(query: ReadinessQueryV1): Promise<unknown> }
@@ -141,7 +141,7 @@ export async function projectRecoveryExecutionReadiness(input: { admission: Reco
   const validB = validateLogicalEvaluationBinding(bind) && bind.projectId === binding.projectId && bind.evaluationRequestKey.length > 0 && bind.logicalEvaluationKey === binding.logicalEvaluationKey && same(bind.rootCreatedRef, binding.rootCreatedRef) && same(bind.packetRef, binding.packetRef) && bind.packetFingerprint === binding.packetFingerprint && same(bind.evaluator, binding.evaluator);
   if (!validB) return emptyResult(lineageQuery, input.observedAt, "REQUEST_BINDING_UNKNOWN");
   const logicalBinding = bind as LogicalEvaluationBindingV1;
-  const query: ReadinessQueryV1 = freeze({ ...lineageQuery, executionProfileFingerprint: logicalBinding.executionProfileFingerprint });
+  const query: ReadinessQueryV1 = freeze({ ...lineageQuery, executionProfileFingerprint: logicalBinding.executionProfileFingerprint, observedAt: input.observedAt });
   const outcomes = await Promise.allSettled([Promise.resolve().then(() => readers.profile.read(query)), Promise.resolve().then(() => readers.cessation.inspect(query)), Promise.resolve().then(() => readers.isolation.inspect(query)), Promise.resolve().then(() => readers.publication.inspect(query)), Promise.resolve().then(() => readers.accounting.read(query))]);
   const get = (i: number) => outcomes[i].status === "fulfilled" ? detachReaderFact(outcomes[i].value) : null;
   const profile = get(0), cessation = get(1), isolation = get(2), publicationRaw = get(3), accounting = get(4);
@@ -150,7 +150,9 @@ export async function projectRecoveryExecutionReadiness(input: { admission: Reco
   let provenance: unknown = null;
   if (validatePublicationFrontierFact(frontier)) { try { provenance = detachReaderFact(await readers.provenance.read(query, frontier)); } catch { provenance = null; } }
   const validProfile = validateEvaluationRecoveryExecutionProfile(profile) && profile.fingerprint === logicalBinding.executionProfileFingerprint && profile.executionContractFingerprint === binding.executionContractFingerprint && same(profile.evaluator, run.evaluator);
-  const validC = validateRuntimeCessationFact(cessation) && cessation.observedAt === input.observedAt && same(cessation.predecessorRunningRef, binding.parentRunningRef) && cessation.claimId === admission.reconciliation.cessation.claimId && cessation.authorityFingerprint === admission.originAuthorityRef.fingerprint;
+  const validC = validateRuntimeCessationFact(cessation) && cessation.observedAt === input.observedAt && same(cessation.predecessorRunningRef, binding.parentRunningRef) &&
+    cessation.claimId === admission.reconciliation.cessation.claimId && cessation.runtimeHandleId === admission.reconciliation.cessation.handleId &&
+    cessation.runtimeIncarnation === admission.reconciliation.cessation.incarnation && cessation.authorityFingerprint === admission.originAuthorityRef.fingerprint;
   const validI = validateExecutionIsolationFact(isolation) && isolation.observedAt === input.observedAt && isolation.profileFingerprint === (validProfile ? profile.fingerprint : "") && same(isolation.targetRunRef, rr) && same(isolation.evaluator, binding.evaluator);
   const validM = validateEvaluationPublicationManifest(manifest) && validProfile && manifest.manifestId === profile.publicationManifestId;
   const validF = validatePublicationFrontierFact(frontier) && frontier.observedAt === input.observedAt && frontier.manifestFingerprint === manifest?.fingerprint && frontier.logicalEvaluationKey === binding.logicalEvaluationKey && same(frontier.predecessorAttemptRef, binding.parentRunningRef);

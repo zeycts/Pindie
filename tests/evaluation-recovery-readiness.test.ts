@@ -34,7 +34,7 @@ async function readinessFixture(t: Parameters<typeof admissionFixture>[0]) {
       executionProfileFingerprint: profileFingerprint, requestProvenance: { source: "test-request", fingerprint: fp("request-source") },
       policyProvenance: { policyFingerprint: f.admission.policyFingerprint, authorizationFingerprint: f.admission.controller.authorizationFingerprint } },
     cessation: { schemaVersion: 1 as const, state: "CEASED" as const, predecessorRunningRef: binding.parentRunningRef, claimId: f.admission.reconciliation.cessation.claimId, authorityFingerprint: f.admission.originAuthorityRef.fingerprint,
-      runtimeHandleId: "handle-1", runtimeIncarnation: "incarnation-1", predecessorFence: "FENCED" as const, observedAt: at, frontierFingerprint: fp("runtime-frontier"),
+      runtimeHandleId: f.admission.reconciliation.cessation.handleId, runtimeIncarnation: f.admission.reconciliation.cessation.incarnation, predecessorFence: "FENCED" as const, observedAt: at, frontierFingerprint: fp("runtime-frontier"),
       coverage: { children: "complete" as const, providers: "complete" as const, publications: "complete" as const }, evidenceFingerprint: fp("cessation") },
     isolation: { schemaVersion: 1 as const, state: "VERIFIED" as const, profileFingerprint, targetRunRef: query.targetRunRef, evaluator: binding.evaluator, observedAt: at, evidenceFingerprint: fp("isolation") },
     authorization: { schemaVersion: 1 as const, authorization: "VALID" as const, policy: "PERMITS" as const, registration: "MATCHED" as const,
@@ -155,6 +155,29 @@ test("mutable readiness facts must match the current projection observation time
     { name: "accounting", readers: { ...x.readers, accounting: { read: async () => ({ ...x.facts.accounting, observedAt: staleAt }) } } },
   ];
   for (const c of cases) { const result = await projectRecoveryExecutionReadiness({ ...input, readers: c.readers }); assert.equal(result.state, "UNKNOWN", c.name); }
+});
+
+test("runtime cessation must bind the exact predecessor claim, handle and incarnation", async t => {
+  const x = await readinessFixture(t), input = { admission: x.f.admission, binding: x.binding, run: x.run, readers: x.readers, observedAt: at };
+  assert.equal((await projectRecoveryExecutionReadiness(input)).state, "READY");
+  const cases = [
+    ["claim", { ...x.facts.cessation, claimId: "00000000-0000-4000-8000-000000000001" }],
+    ["runtime handle", { ...x.facts.cessation, runtimeHandleId: "other-handle" }],
+    ["runtime incarnation", { ...x.facts.cessation, runtimeIncarnation: "other-incarnation" }],
+  ] as const;
+  for (const [name, fact] of cases) {
+    const readers = { ...x.readers, cessation: { inspect: async () => fact } };
+    const result = await projectRecoveryExecutionReadiness({ ...input, readers });
+    assert.equal(result.state, "UNKNOWN", name);
+    assert.ok(result.reasons.includes("RUNTIME_CESSATION_UNKNOWN"), name);
+  }
+});
+
+test("readiness query gives factual readers the explicit projection observation time", async t => {
+  const x = await readinessFixture(t); let queriedAt: string | undefined;
+  const readers = { ...x.readers, cessation: { inspect: async query => { queriedAt = query.observedAt; return x.facts.cessation; } } };
+  const result = await projectRecoveryExecutionReadiness({ admission: x.f.admission, binding: x.binding, run: x.run, readers, observedAt: at });
+  assert.equal(result.state, "READY"); assert.equal(queriedAt, at);
 });
 
 test("lineage mismatch fails before any production fact reader is consulted", async t => {
