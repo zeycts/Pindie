@@ -5,11 +5,17 @@ import { join } from "node:path";
 import { FileGlobalWriterLock } from "./store.ts";
 import { canonicalJson, PROJECT_ID, UUID_V4, learningFingerprint } from "./learning-v1-contract.ts";
 import { evaluationPacketRef, validateEvaluationPacket, type EvaluationPacket, type EvaluationRef } from "./evaluation-contract.ts";
-import { evaluationRunRef, validateEvaluationRun, validateEvaluationRunRef, isEvaluationRunTransition, MAX_EVALUATION_RUN_BYTES, type EvaluationRunV1, type EvaluationRunRef } from "./evaluation-run.ts";
+import { evaluationRunRef, validateEvaluationRun, validateEvaluationRunRef, isEvaluationRunTransition, transitionEvaluationRun, MAX_EVALUATION_RUN_BYTES, type EvaluationRunV1, type EvaluationRunRef } from "./evaluation-run.ts";
 
 export const MAX_EVALUATION_RUNS_V1 = 4096;
+/** Only the caller that uniquely publishes running receives this settlement capability. */
+export interface EvaluationExecutionClaim {
+  readonly running: EvaluationRunV1 & { readonly status: "running" };
+  publishTerminal(run: EvaluationRunV1): Promise<EvaluationRunV1>;
+}
 export interface EvaluationRunStore {
   publish(run: EvaluationRunV1, signal?: AbortSignal, isCurrent?: () => boolean): Promise<EvaluationRunV1>;
+  claimExecution(created: EvaluationRunV1, startedAt: string): Promise<EvaluationExecutionClaim>;
   get(ref: EvaluationRunRef): Promise<EvaluationRunV1>;
   getCurrent(projectId: string, runId: string): Promise<EvaluationRunV1>;
 }
@@ -72,6 +78,57 @@ export class FileEvaluationRunStore implements EvaluationRunStore {
     if (!chain) throw new Error("Missing EvaluationRun.");
     return chain[chain.length - 1];
   }
+  /** Caller holds the namespace lock; all lifecycle writes share the same commit frontier. */
+  private async writeSnapshot(r: EvaluationRunV1, check: () => void = () => {}): Promise<EvaluationRunV1> {
+    const dir = this.dir(r.packetRef.scope.projectId);
+    const bytes = canonicalJson({ schemaVersion: 1, fingerprint: learningFingerprint(r), run: r });
+    const temp = join(dir, "writer.lock", `${randomUUID()}.tmp`);
+    try {
+      const file = await open(temp, "wx");
+      try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
+      if (await readFile(temp, "utf8") !== bytes) throw new Error("Invalid temporary EvaluationRun write.");
+      await this.options.beforePublish?.(); check();
+      linkSync(temp, join(dir, `${r.runId}.${r.status}.json`));
+      const directory = await open(dir, "r");
+      try { await directory.sync(); } finally { await directory.close(); }
+      await this.options.afterPublish?.();
+      return r;
+    } finally { await rm(temp, { force: true }); }
+  }
+  async claimExecution(created: EvaluationRunV1, startedAt: string): Promise<EvaluationExecutionClaim> {
+    const value: unknown = JSON.parse(canonicalJson(created));
+    if (!validateEvaluationRun(value) || value.status !== "created") throw new Error("Execution claim requires a valid created EvaluationRun.");
+    const request = freeze(value);
+    const running = freeze(transitionEvaluationRun(request, "running", startedAt)) as EvaluationExecutionClaim["running"];
+    const dir = this.dir(request.packetRef.scope.projectId);
+    await new FileGlobalWriterLock({ baseDir: dir }).withLock(async () => {
+      const chain = (await this.history(request.packetRef.scope.projectId)).get(request.runId);
+      if (!chain || !same(chain[0], request)) throw new Error("Missing/mismatched committed EvaluationRun.");
+      // An identical running publication is NOT an ownership retry. Only its unique creator may execute.
+      if (chain.length !== 1) throw new Error("EvaluationRun execution already claimed or terminal.");
+      // Created publication already validated the exact packet binding. Claim before loading it so
+      // missing/corrupt packets can leave a durable execution failure rather than a stranded created run.
+      await this.writeSnapshot(running);
+    });
+    return Object.freeze({ running, publishTerminal: (run: EvaluationRunV1) => this.publishExecutionTerminal(running, run) });
+  }
+  private async publishExecutionTerminal(running: EvaluationExecutionClaim["running"], terminal: EvaluationRunV1): Promise<EvaluationRunV1> {
+    const value: unknown = JSON.parse(canonicalJson(terminal));
+    if (!validateEvaluationRun(value) || !isEvaluationRunTransition(running, value)) throw new Error("Invalid claimed EvaluationRun terminal transition.");
+    const run = freeze(value), dir = this.dir(run.packetRef.scope.projectId);
+    return new FileGlobalWriterLock({ baseDir: dir }).withLock(async () => {
+      const chain = (await this.history(run.packetRef.scope.projectId)).get(run.runId);
+      if (!chain || !same(chain[1], running)) throw new Error("Missing/mismatched EvaluationRun execution claim.");
+      const current = chain[chain.length - 1];
+      if (current.status !== "running") {
+        if (same(current, run)) return current;
+        throw new Error("Conflicting EvaluationRun terminal publication.");
+      }
+      // Settlement attests execution of this exact committed attempt, not current packet availability.
+      // No packet/source read here: loss of immutable inputs must not prevent recording a failure.
+      return this.writeSnapshot(run);
+    });
+  }
   async publish(run: EvaluationRunV1, signal?: AbortSignal, isCurrent: () => boolean = () => true): Promise<EvaluationRunV1> {
     const value: unknown = JSON.parse(canonicalJson(run));
     if (!validateEvaluationRun(value)) throw new Error("Invalid EvaluationRun write.");
@@ -89,19 +146,7 @@ export class FileEvaluationRunStore implements EvaluationRunStore {
       const packet: unknown = JSON.parse(canonicalJson(await this.options.packets.get(r.packetRef))); check();
       if (!validateEvaluationPacket(packet) || !same(evaluationPacketRef(packet), r.packetRef) || packet.fingerprint !== r.packetFingerprint) throw new Error("Unresolved exact EvaluationRun packet.");
       if (existing) return existing;
-      const bytes = canonicalJson({ schemaVersion: 1, fingerprint: learningFingerprint(r), run: r });
-      const temp = join(dir, "writer.lock", `${randomUUID()}.tmp`);
-      try {
-        const file = await open(temp, "wx");
-        try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
-        if (await readFile(temp, "utf8") !== bytes) throw new Error("Invalid temporary EvaluationRun write.");
-        await this.options.beforePublish?.(); check();
-        linkSync(temp, join(dir, `${r.runId}.${r.status}.json`));
-        const directory = await open(dir, "r");
-        try { await directory.sync(); } finally { await directory.close(); }
-        await this.options.afterPublish?.();
-        return r;
-      } finally { await rm(temp, { force: true }); }
+      return this.writeSnapshot(r, check);
     }, signal);
   }
 }

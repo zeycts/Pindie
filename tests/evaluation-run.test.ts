@@ -169,3 +169,43 @@ test("R4-C2 packet-only reads survive unavailable original evidence and detach b
   assert.deepEqual(await store.publish(input), f.run);
   assert.deepEqual(await store.getCurrent(projectId, f.run.runId), f.run);
 });
+
+test("R4-C3-B claim requires exact committed created history and is never idempotent", async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(f.store.claimExecution(f.run, start), /committed/);
+  await f.store.publish(f.run);
+  await assert.rejects(f.store.claimExecution({ ...f.run, evaluator: { name: "foreign", version: "1" } }, start), /committed/);
+  await assert.rejects(f.store.claimExecution(f.run, at.slice(0, -1)), /transition/);
+  const other = new FileEvaluationRunStore({ projectsBaseDir: f.root, packets: f.packets });
+  const results = await Promise.allSettled([f.store.claimExecution(f.run, start), other.claimExecution(f.run, start)]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  assert.equal(results.filter((r) => r.status === "rejected").length, 1);
+  const claim = results.find((r) => r.status === "fulfilled")!;
+  if (claim.status !== "fulfilled") throw new Error("Missing winning claim");
+  assert.deepEqual(Object.keys(claim.value).sort(), ["publishTerminal", "running"]);
+  assert.ok(Object.isFrozen(claim.value)); assert.ok(Object.isFrozen(claim.value.running.packetRef.scope));
+  assert.deepEqual(await other.getCurrent(projectId, f.run.runId), claim.value.running);
+  await assert.rejects(other.claimExecution(f.run, start), /already claimed or terminal/);
+  await assert.rejects(other.claimExecution(claim.value.running, start), /valid created/);
+});
+
+test("R4-C3-B claim detaches identity and settlement is exact, immutable and independent of packet availability", async (t) => {
+  const f = await fixture(t); await f.store.publish(f.run);
+  const input = copy(f.run);
+  const store = new FileEvaluationRunStore({ projectsBaseDir: f.root, packets: f.packets, beforePublish: async () => { input.evaluator.name = "changed"; } });
+  const claim = await store.claimExecution(input, start);
+  assert.deepEqual(claim.running.evaluator, f.run.evaluator);
+  const failed = transitionEvaluationRun(claim.running, "failed", end, { code: "PACKET_LOAD_FAILED", message: "Packet unavailable" });
+  for (const invalid of [claim.running, f.run, { ...failed, evaluator: { name: "foreign", version: "1" } },
+    { ...failed, startedAt: end }, { ...failed, runId: randomUUID() }]) await assert.rejects(claim.publishTerminal(invalid), /terminal transition/);
+  await rm(join(f.root, projectId, "learning-v1", "evaluation-packets-v1", `${f.packet.id}.json`));
+  // Ordinary publication retains the R4-C2 packet revalidation contract.
+  await assert.rejects(f.store.publish(failed), /Missing/);
+  assert.deepEqual(await claim.publishTerminal(failed), failed);
+  const bytes = await readFile(f.path(failed), "utf8");
+  assert.deepEqual(await claim.publishTerminal(copy(failed)), failed);
+  assert.equal(await readFile(f.path(failed), "utf8"), bytes);
+  await assert.rejects(claim.publishTerminal(transitionEvaluationRun(claim.running, "completed", end)), /Conflicting/);
+  assert.deepEqual(await f.store.getCurrent(projectId, f.run.runId), failed);
+  assert.equal((await readdir(f.dir)).length, 3);
+});
