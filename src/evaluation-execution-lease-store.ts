@@ -1,3 +1,4 @@
+import { recoveryCapacityReservations } from "./recovery-capacity.ts";
 import { randomUUID } from "node:crypto";
 import { linkSync } from "node:fs";
 import { open, readFile, readdir, rm, stat } from "node:fs/promises";
@@ -133,7 +134,7 @@ export class FileExecutionLeaseStore implements ExecutionLeaseStore {
         if (same(chain[0], initial)) return chain[0];
         throw new Error("Conflicting ExecutionLease ownership.");
       }
-      if ([...history.values()].reduce((n, c) => n + c.length, 0) >= MAX_EXECUTION_LEASE_SNAPSHOTS_V1) throw new Error("ExecutionLease capacity; no pruning.");
+      if ([...history.values()].reduce((n, c) => n + c.length, 0) + (await recoveryCapacityReservations(this.storageBaseDir, initial.ref.projectId)).leaseSlots >= MAX_EXECUTION_LEASE_SNAPSHOTS_V1) throw new Error("ExecutionLease capacity; no pruning.");
       return this.write(initial);
     });
   }
@@ -145,7 +146,7 @@ export class FileExecutionLeaseStore implements ExecutionLeaseStore {
       if (!current || !same(current.ref, ref) || !isExecutionLeaseHeartbeat(current.lease, lease) ||
         Date.parse(lease.heartbeatAt) <= Date.parse(current.lease.heartbeatAt)) throw new Error("Stale/invalid ExecutionLease heartbeat.");
       await assertExecutionAuthority(this.storageBaseDir, current.runningRef);
-      if ([...history.values()].reduce((n, c) => n + c.length, 0) >= MAX_EXECUTION_LEASE_SNAPSHOTS_V1) throw new Error("ExecutionLease capacity; no pruning.");
+      if ([...history.values()].reduce((n, c) => n + c.length, 0) + (await recoveryCapacityReservations(this.storageBaseDir, ref.projectId)).leaseSlots >= MAX_EXECUTION_LEASE_SNAPSHOTS_V1) throw new Error("ExecutionLease capacity; no pruning.");
       return this.write(snapshot({ schemaVersion: 1, lease, runningRef: current.runningRef, previousFingerprint: ref.fingerprint }));
     });
   }

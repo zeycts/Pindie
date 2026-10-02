@@ -78,7 +78,7 @@ function freeze<T>(value: T): T {
 export function prepareEvaluationInput(packet: EvaluationPacket, run: EvaluationRunV1): {
   readonly packet: EvaluationPacket; readonly context: EvaluationExecutionContextV1;
 } {
-  if (!validateEvaluationPacket(packet) || !validateEvaluationRun(run) || run.status !== "running") throw new Error("Invalid Evaluation execution input.");
+  if (!validateEvaluationPacket(packet) || !validateEvaluationRun(run) || run.schemaVersion !== 1 || run.status !== "running") throw new Error("Invalid Evaluation execution input.");
   const context: EvaluationExecutionContextV1 = { schemaVersion: 1, runId: run.runId, packetRef: run.packetRef, packetFingerprint: run.packetFingerprint,
     evaluator: run.evaluator, execution: { startedAt: run.startedAt! } };
   if (!matchesEvaluationExecutionContext(context, packet)) throw new Error("Mismatched Evaluation execution packet.");

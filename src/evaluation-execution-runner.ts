@@ -40,7 +40,7 @@ export function createExecutionRunner(options: {
   const packets = options.packets, runs = options.runs, now = options.now ?? (() => new Date().toISOString());
   return Object.freeze({
     async execute(input: EvaluationRunV1): Promise<EvaluationExecutionOutcomeV1> {
-      if (!validateEvaluationRun(input) || input.status !== "created") throw new Error("ExecutionRunner requires a valid created EvaluationRun.");
+      if (!validateEvaluationRun(input) || input.schemaVersion !== 1 || input.status !== "created") throw new Error("ExecutionRunner requires a valid created EvaluationRun.");
       const created = detach(input);
       if (!same(created.evaluator, identity)) throw new Error("EvaluationRun does not match registered Evaluator.");
       // Claim rejection/publication errors propagate before any packet read or evaluator invocation.
