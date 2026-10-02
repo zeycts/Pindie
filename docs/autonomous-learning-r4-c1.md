@@ -1,6 +1,6 @@
 # Autonomous Learning R4-C1 — EvaluationPacket Store foundation
 
-Status: standalone immutable packet store implemented. No production registration, EvaluationRun, model invocation, EvaluationResult publication or authority-changing behavior.
+Status: standalone immutable packet store implemented. No production registration, model invocation, EvaluationResult publication or authority-changing behavior. The standalone EvaluationRun record/store foundation is now implemented separately in [R4-C2](autonomous-learning-r4-c2.md).
 
 ## Storage and identity
 
@@ -22,8 +22,8 @@ Failure/death before linking leaves no visible artifact; owned/dead-owner lock c
 
 `validate` returns frozen metadata: `createdAt`, exact `packetRef` (identity/scope/fingerprint), UTF-8 `artifactSize` and total `referencedEvidenceCount` (included plus excluded). Metadata does not confer evaluation/trust eligibility. No retention/deletion is implemented; current retention behavior is unchanged.
 
-## Verification and remaining R4-C2 boundary
+## Verification and subsequent execution boundary
 
 Tests cover deterministic round-trip/freezing, metadata and idempotent timestamp, conflicts, exact absence/wrong refs, strict envelope/packet corruption, independently rehashed hypothesis/evidence identity tampering, size/capacity, immutable source/batch rejection, abort/stale barriers, concurrent identical/conflicting writers and real process death on both sides of the link frontier with dead-owner recovery.
 
-R4-C2 requires separately approved production integration: durable job/input/output retry binding and reconciliation, fresh runtime lease/authority fencing, isolated native Pi EvaluationRun and bounded model provenance/execution, immutable EvaluationResult publication and exact packet/result binding, operational capacity/retention protection. None is implied by this store. Result recommendations must remain observational; Trust/Decision/Strategy/Policy mutation and promotion are separate later boundaries.
+The approved bounded [R4-C2](autonomous-learning-r4-c2.md) implements only standalone immutable EvaluationRun records and lifecycle management, superseding the earlier broader R4-C2 scope described here. R4-C3 still requires separately approved production integration: durable job/attempt/input/output retry binding and reconciliation, fresh runtime lease/authority fencing, isolated native Pi evaluator and bounded actual model provenance/execution, immutable EvaluationResult publication and exact packet/result binding, operational capacity/retention protection. None is implied by these stores. Result recommendations must remain observational; Trust/Decision/Strategy/Policy mutation and promotion are separate later boundaries.
