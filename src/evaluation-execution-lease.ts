@@ -1,4 +1,4 @@
-import { MAX_LEARNING_LEASE_OWNER_LENGTH, UUID_V4 } from "./learning-v1-contract.ts";
+import { MAX_LEARNING_LEASE_OWNER_LENGTH, UUID_V4, PROJECT_ID, FINGERPRINT } from "./learning-v1-contract.ts";
 import { validateEvaluationRun, type EvaluationRunV1 } from "./evaluation-run.ts";
 
 /** Ownership metadata only. Valid bytes do not acquire or prove an execution claim. */
@@ -8,6 +8,17 @@ export interface ExecutionLeaseV1 {
   readonly ownerId: string;
   readonly acquiredAt: string;
   readonly heartbeatAt: string;
+}
+export interface ExecutionLeaseRef {
+  readonly schemaVersion: 1; readonly family: "execution-lease";
+  readonly projectId: string; readonly runId: string; readonly fingerprint: string;
+}
+export function validateExecutionLeaseRef(v: unknown): v is ExecutionLeaseRef {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const r = v as Record<string, unknown>;
+  return Object.keys(r).sort().join() === "family,fingerprint,projectId,runId,schemaVersion" && r.schemaVersion === 1 && r.family === "execution-lease" &&
+    typeof r.projectId === "string" && PROJECT_ID.test(r.projectId) && typeof r.runId === "string" && UUID_V4.test(r.runId) &&
+    typeof r.fingerprint === "string" && FINGERPRINT.test(r.fingerprint);
 }
 const time = (v: unknown): v is string => typeof v === "string" && new Date(v).toISOString() === v;
 
