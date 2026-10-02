@@ -115,19 +115,23 @@ Evaluation observations remain separate from Trust/Decision. These envelopes gra
 
 There is no current Evaluation job/request identity. `FileLearningJobLedger` is for configured Learning kinds and keys jobs using kind, scope, input fingerprint and policy version. That key is not a suitable Evaluation identity unless an Evaluation-specific owner explicitly creates/binds it before the first root. Host currently does not schedule EvaluationRuns.
 
-The smallest required addition is an Evaluation-owned durable `LogicalEvaluationBindingV1` (or an Evaluation-specific LearningJob kind plus immutable binding) created by the authorized request boundary before dispatch. It contains a stable request/job UUID or caller-issued idempotency key, project, canonical request fingerprint, exact packet ref/fingerprint, evaluator/profile identity, policy generation and the unique root `EvaluationRunRef` once committed. A unique index prevents the same request key from binding to a second root; a unique root binding prevents one root from representing two request keys. Retries of enqueue/dispatch reconcile this binding, not create a new UUID/root.
+The existing `logicalEvaluationKey` is frozen and backward-compatible. C7-A/B already derives it from the versioned project identity, exact `rootCreatedRef`, exact packet ref/fingerprint and evaluator identity, and persists it in RecoveryAdmission, RecoverySuccessorBinding and EvaluationRun v2 lineage. C7-C preserves that derivation and every persisted key byte-for-byte. Neither a request/job binding nor an execution profile is added to its derivation.
+
+The smallest required addition is a separate stable Evaluation request/job identity, `evaluationRequestKey`, assigned by the authorized request boundary as a request UUID or caller-issued idempotency key. An Evaluation-owned immutable `LogicalEvaluationBindingV1` (or an Evaluation-specific LearningJob kind plus immutable binding) binds that request key to the exact existing `logicalEvaluationKey`, exact `rootCreatedRef`, project, packet ref/fingerprint, evaluator identity, execution profile identity and relevant policy/request provenance, including the canonical request fingerprint and policy generation. The complete binding must be durably resolved before dispatch; interrupted root/binding publication is reconciled without allocating another root.
+
+Enforce uniqueness in both directions: one `evaluationRequestKey` binds to exactly one `logicalEvaluationKey`/root, and one root/`logicalEvaluationKey` has at most one request binding. Retries of enqueue/dispatch reconcile the exact binding. They cannot allocate another root for the same request or attach a second request to an existing logical Evaluation.
 
 Required graph:
 
 ```text
-stable Evaluation request/job key
+stable evaluationRequestKey
         ↓ unique immutable binding
 one logicalEvaluationKey + one root created ref
         ↓
 zero or more linear recovered successors (generation 1, 2, ...)
 ```
 
-The logical key is derived from the stable binding plus exact root, packet, evaluator and execution profile as appropriate. Job identity is assigned before scheduling and is never inferred from timestamp, packet equality, evaluator equality, or a later result. Missing or conflicting binding is `UNKNOWN`. Existing v2 successors keep their current exact root/run lineage; they do not retroactively acquire a guessed job identity.
+The binding validates the existing logical key against its frozen C7-A/B derivation; it does not redefine or recompute that key from the request or execution profile. Profile changes participate in exact job-binding and readiness validation and may block dispatch; they never produce a replacement `logicalEvaluationKey` for the existing chain. Request identity is never inferred from timestamp, packet equality, evaluator equality, or a later result. Existing standalone recovered chains without a provable request binding remain non-executable / `UNKNOWN`; no heuristic backfill or artifact rewrite is permitted.
 
 ## 7. Resource and accounting source
 
@@ -183,12 +187,23 @@ narrow one-use recovery execution admission (internal to claim boundary)
 claimExecution(v2)
         |
         v
-new epoch-0 execution authority + fresh handle/incarnation
+running snapshot + new epoch-0 execution authority
+        |
+        v
+genuine process-local execution claim
+        |
+        v
+narrowly authorized fresh handle/incarnation and lease initialization
+        |
+        v
+evaluator invocation
 ```
 
 Immediately before the unique running/authority publication, revalidate exact v2 created ref, admission, successor binding, entire lineage/job root, predecessor fence and cessation receipt, isolation/profile registration, publication manifest/frontier, result/output unique slots, packet/evaluator, current authorization/policy and resource/accounting limits. Recheck shared versions/locks after any external read that cannot be performed under the local lock. No filesystem or provider scan can be treated as a snapshot unless its own revision/frontier is bound.
 
-The claim path must be extended narrowly to support v2 only with a private recovery-admission callback/token that is non-persistable, one-use and scoped to the genuine RunStore. It is not a bearer claim and is not accepted by ordinary `publish()`. Under the Run/result serialization lock it revalidates all local durable facts, then publishes the unique running snapshot and its fresh epoch-zero authority/lease origin in the documented order before returning the genuine process-local claim. These immutable files are not a cross-directory atomic transaction: if the running frontier commits but authority initialization or its durability acknowledgment is uncertain, the target is consumed without a returned claim and must not be replayed or reconstructed. `claimExecution()` remains the sole live-ownership grant. Any failure before the running frontier leaves v2 `created`; any uncertain failure after it is treated as consumed and cannot invoke the evaluator from reconstructed history.
+The claim path must be extended narrowly to support v2 only with a private recovery-admission callback/token that is non-persistable, one-use and scoped to the genuine RunStore. It is not a bearer claim and is not accepted by ordinary `publish()`. Under the Run/result serialization lock it revalidates all local durable facts, then publishes the unique running snapshot and its fresh epoch-zero authority in the documented order before returning the genuine process-local claim. These immutable files are not a cross-directory atomic transaction: if the running frontier commits but authority initialization or its durability acknowledgment is uncertain, the target is consumed without a returned claim and must not be replayed or reconstructed. `claimExecution()` remains the sole live-ownership grant. Any failure before the running frontier leaves v2 `created`; any uncertain failure after it is treated as consumed and cannot invoke the evaluator from reconstructed history.
+
+Preserve the current separation: `claimExecution() → running + epoch-0 authority → genuine claim`, followed by narrowly authorized handle/lease initialization before evaluator invocation. The Evaluation runtime supervisor registers a fresh handle/incarnation against that genuine claim; the lease writer uses the genuine claim and fresh supervisor owner identity bound to that handle to initialize liveness metadata under current authority checks. ExecutionLease remains liveness metadata and never grants or transfers ownership. Lease creation is outside the recovery claim transaction. If initialization fails or its acknowledgment is lost, evaluator invocation is withheld; a still-live genuine claimant may reconcile the exact handle/lease publication, but persisted metadata cannot reconstruct a lost claim. A crash after claim and before initialization leaves a consumed attempt requiring separate factual reconciliation, not a lease-based execution retry.
 
 A valid `RecoveryAdmission`, `RecoverySuccessorBinding`, or `EvaluationRun v2(created)` alone is never enough. If future design cannot make result publication and claim share one linearization point, result-bearing recovery remains disabled.
 
@@ -231,6 +246,7 @@ All ambiguous cases fail closed. No heartbeat threshold, elapsed time, process d
 ## 12. Legacy compatibility
 
 - Keep EvaluationRun v1 parsing, C6 authority history, C7-A admissions, C7-B bindings and all already-created v2 successor bytes immutable and readable. Do not rewrite, reclassify, backfill guessed job IDs, or republish them.
+- Preserve every existing `logicalEvaluationKey` and its C7-A/B derivation. A new `evaluationRequestKey` binding cannot assign a newly derived logical key to historical admissions, successor bindings or v2 lineage; execution profile changes are validated separately.
 - `claimExecution(v2)` continues to reject until a separately approved C7-D implementation integrates every readiness requirement and the result/claim linearization boundary.
 - Existing recovered successors remain `created` and non-executable whenever job/root binding, runtime handle/cessation, isolation, publication manifest, output/result provenance, current authorization, accounting, or fresh resource facts cannot be established. Current repository seams do not establish these production facts; therefore currently materialized v2 successors remain non-executable under this design.
 - Historical v1 root attempts may be given an explicit job/root binding only by an authorized future migration that can positively identify the original request. Otherwise the chain is `UNKNOWN`; packet/evaluator matching is insufficient.
@@ -243,7 +259,7 @@ The suggested C7-C1 / C7-C2 / C7-D / C7-E split is appropriate, with C7-C1 requi
 
 1. **C7-C1 — production readiness contracts and projection.** Add strict versioned facts, `EvaluationPublicationManifest`, `LogicalEvaluationBinding`, cessation/isolation/accounting/result provenance reader contracts, and deterministic `RecoveryExecutionReadiness`. Keep all injected C7-A/B contracts and v2 claim rejection unchanged. This slice should include no live provider execution and no new claim authority.
 2. **C7-C2 — bounded production adapters and operational provenance guards.** Add Evaluation-specific job/root binding at the actual request owner; process/attempt handle ledger and exact stop/cessation receipts; enforce the narrow recovery profile; add output receipt and result publication envelope/unique slot; connect provider request/accounting only where authoritative status and bounds exist; serialize every publisher/frontier with old-claim fencing. Keep recovered claim disabled until dogfood proves every surface.
-3. **C7-D — fresh pre-claim recovery execution admission.** Extend only the internal genuine RunStore claim path to revalidate readiness at the shared claim/result frontier, create fresh epoch-zero authority/lease/handle ownership, and make claim the sole execution grant. Keep normal v1 behavior and ordinary publication constrained; concurrent and crash-recovery cases must be covered before rollout.
+3. **C7-D — fresh pre-claim recovery execution admission.** Extend only the internal genuine RunStore claim path to revalidate readiness at the shared claim/result frontier and publish running plus fresh epoch-zero authority before returning the genuine execution claim. Follow with narrowly authorized handle/lease initialization before invocation; lease metadata grants no ownership. Keep normal v1 behavior and ordinary publication constrained; concurrent and crash-recovery cases must be covered before rollout.
 4. **C7-E — explicit isolated recovery dogfood.** Start with one deterministic offline evaluator and a single bounded project/job. Exercise restart, worker kill/reap, late publication, lost acknowledgment, duplicate dispatch and result races. Add model-backed execution only if its provider adapter proves request cessation, stable request identity and enforced accounting bounds. Human approval/Trust/Decision remains outside this execution path.
 
 The sequence is ordered: do not build a model-backed recovery adapter before the runtime and publication contracts close, and do not enable v2 claim after contracts alone. Production recovered execution remains disabled until C7-D and explicit C7-E evidence establish each fact at runtime.
