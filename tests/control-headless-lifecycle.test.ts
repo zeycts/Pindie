@@ -171,7 +171,7 @@ test("real pinned Pi Session events reach the live timeline and replacement rele
   }
 });
 
-test("Pi 0.99.1 real Control prompt disposition, observe/timeline/wait and replacement remain coherent", async () => {
+test("Pi 1.0.1 real Control prompt disposition, observe/timeline/wait and replacement remain coherent", async () => {
   const root = await mkdtemp(join(tmpdir(), "pindie-control-pi099-"));
   const project = join(root, "project");
   const agentDir = join(root, "agent");
@@ -187,7 +187,18 @@ test("Pi 0.99.1 real Control prompt disposition, observe/timeline/wait and repla
     host = await createPindieHost({ cwd: project, agentDir, sessionManager: SessionManager.inMemory(project),
       env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: "0" },
       dependencies: {
-        createAgentSessionServices: (options) => createAgentSessionServices({ ...options, modelRuntime }),
+        createAgentSessionServices: (options) => createAgentSessionServices({
+          ...options, modelRuntime,
+          resourceLoaderOptions: {
+            ...options.resourceLoaderOptions,
+            extensionFactories: [
+              ...options.resourceLoaderOptions?.extensionFactories ?? [],
+              { name: "compatibility-input", factory: (pi) => {
+                pi.on("input", (event) => event.text.startsWith("consume:") ? { action: "handled" } : undefined);
+              } },
+            ],
+          },
+        }),
         createAgentSessionFromServices: (options) => createAgentSessionFromServices({ ...options, model: faux.getModel() }),
         createInteractiveMode: () => ({ run: async () => {} }),
       },
@@ -200,19 +211,49 @@ test("Pi 0.99.1 real Control prompt disposition, observe/timeline/wait and repla
     const allNames = host.runtime.activeSession.getAllTools().map((tool) => tool.name);
     assert.equal(allNames.includes("codemode"), false);
     assert.equal(allNames.includes("tool_search"), false);
+    assert.equal(allNames.some((name) => name.startsWith("mcp__")), false);
+    assert.equal(host.runtime.activeSession.extensionRunner.getRegisteredCommands().some((command) => command.name === "mcp"), false);
     assert.equal(host.runtime.activeSession.resourceLoader.getExtensions().extensions.some((extension) => extension.path.startsWith("builtin:")), false);
+    await assert.rejects(control.input({ lease: before.lease, text: "consume:idle" }),
+      (error: unknown) => error instanceof PindieControlError && error.code === "delivery_failed");
+    assert.equal(control.observe().runtime.automaticWorkSettled, true);
+    assert.equal(host.runtime.getActiveSessionFacts().pendingMessageCount, 0);
+    assert.equal(control.readTimeline().timeline.some((block) => block.type === "message" && block.text === "consume:idle"), false);
+    let starts = 0;
+    const unsubscribe = host.runtime.activeSession.subscribe((event) => {
+      if (event.type === "agent_start") {
+        starts++;
+        assert.equal(control!.observe().runtime.automaticWorkSettled, false);
+      }
+    });
     let finish!: (message: ReturnType<typeof fauxAssistantMessage>) => void;
     const response = new Promise<ReturnType<typeof fauxAssistantMessage>>((resolve) => { finish = resolve; });
-    faux.setResponses([async () => response]);
+    let providerStarted!: () => void;
+    const providerReady = new Promise<void>((resolve) => { providerStarted = resolve; });
+    faux.setResponses([async () => { providerStarted(); return response; }]);
     const delivered = await control.input({ lease: before.lease, text: "Harmless compatibility observation" });
     assert.equal(delivered.delivery, "prompt");
     assert.equal(delivered.snapshot.runtime.automaticWorkSettled, false);
+    await providerReady;
+    for (const delivery of ["steer", "followUp"] as const) {
+      const timing = delivery === "steer" ? "now" : "after_current_run";
+      await assert.rejects(control.input({ lease: before.lease, text: `consume:${delivery}`, timing }),
+        (error: unknown) => error instanceof PindieControlError && error.code === "delivery_failed");
+      const queued = await control.input({ lease: before.lease, text: `queued:${delivery}`, timing });
+      assert.equal(queued.delivery, delivery);
+      assert.equal(control.readTimeline().timeline.filter((block) => block.type === "message" && block.text === `queued:${delivery}`).length, 1);
+      assert.equal(control.readTimeline().timeline.some((block) => block.type === "message" && block.text === `consume:${delivery}`), false);
+    }
+    assert.equal(host.runtime.getActiveSessionFacts().pendingMessageCount, 2);
+    host.runtime.clearActiveSessionQueue();
     let resolved = false;
     const settled = control.wait({ lease: before.lease, until: "settled", timeoutSeconds: 5 }).then((result) => { resolved = true; return result; });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(resolved, false);
     finish(fauxAssistantMessage("Compatibility observation complete"));
     assert.equal((await settled).reason, "settled");
+    assert.equal(starts, 1);
+    unsubscribe();
     const after = control.observe();
     assert.ok(after.revision > before.revision);
     assert.equal(after.latestAssistant?.text, "Compatibility observation complete");

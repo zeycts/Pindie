@@ -26,8 +26,8 @@
     "smoke": "node --experimental-strip-types scripts/pi-smoke.ts"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.99.1",
-    "@earendil-works/pi-coding-agent": "0.99.1",
+    "@earendil-works/pi-ai": "1.0.1",
+    "@earendil-works/pi-coding-agent": "1.0.1",
     "@modelcontextprotocol/client": "2.1.0",
     "@types/node": "^26.2.0",
     "@types/ws": "^8.18.1",
@@ -41,7 +41,7 @@
   },
   "dependencies": {
     "@amaster.ai/pi-browser-use": "0.1.15",
-    "@earendil-works/pi-tui": "0.99.1",
+    "@earendil-works/pi-tui": "1.0.1",
     "@modelcontextprotocol/node": "2.1.0",
     "@modelcontextprotocol/server": "2.1.0",
     "@notionhq/client": "5.26.0",

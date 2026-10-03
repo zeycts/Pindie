@@ -10,6 +10,7 @@ import {
   type CreateAgentSessionServicesOptions,
   type LoadExtensionsResult,
   SessionManager,
+  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 
 import {
@@ -255,6 +256,41 @@ test("Host creates one runtime and supplies that same runtime to InteractiveMode
 
   assert.equal(modeRuns, 1);
   assert.equal(disposeCalls(), 1);
+});
+
+test("Host preserves Pi TUI setting precedence and explicit overrides on both shells", async () => {
+  const cases = [
+    { label: "unset setting defaults regular", settings: {}, option: undefined, expected: "regular" },
+    { label: "settings regular", settings: { tuiMode: "regular" }, option: undefined, expected: "regular" },
+    { label: "settings fullscreen", settings: { tuiMode: "fullscreen" }, option: undefined, expected: "fullscreen" },
+    { label: "Host regular overrides settings fullscreen", settings: { tuiMode: "fullscreen" }, option: "regular", expected: "regular" },
+    { label: "Host fullscreen overrides settings regular", settings: { tuiMode: "regular" }, option: "fullscreen", expected: "fullscreen" },
+  ] as const;
+  for (const owned of [false, true]) {
+    for (const scenario of cases) {
+      const { runtime } = fakeRuntime();
+      runtime.session.settingsManager = SettingsManager.inMemory(scenario.settings);
+      let effectiveMode: string | undefined;
+      const host = await createPindieHost({
+        env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: owned ? "1" : "0" },
+        sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+        interactiveModeOptions: { tuiMode: scenario.option },
+        dependencies: {
+          createAgentSessionRuntime: async () => runtime,
+          createInteractiveMode: (_runtime, options) => {
+            effectiveMode = options.tuiMode;
+            return { run: async () => {} };
+          },
+          createPindieInteractiveMode: (_runtime, options) => {
+            effectiveMode = options.tuiMode;
+            return { run: async () => {} };
+          },
+        },
+      });
+      try { assert.equal(effectiveMode, scenario.expected, `${owned ? "owned" : "Pi"}: ${scenario.label}`); }
+      finally { await host.dispose(); }
+    }
+  }
 });
 
 test("PINDIE_TUI enables only the exact feature-gate value", () => {

@@ -462,6 +462,11 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       startupDiagnostics: [...nativeRuntime.diagnostics],
       modelFallbackMessage: nativeRuntime.modelFallbackMessage,
       ...options.interactiveModeOptions,
+      // Preserve Pi 0.99.1 precedence: explicit Host option, effective explicit
+      // Pi setting, then regular. Pi 1.x getTuiMode() cannot distinguish unset.
+      tuiMode: options.interactiveModeOptions?.tuiMode
+        ?? nativeRuntime.session.settingsManager?.getSettings().tuiMode
+        ?? "regular",
     };
     const activeRuntime = runtime;
     const interactiveMode = isPindieTuiEnabled(env)
