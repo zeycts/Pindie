@@ -79,10 +79,17 @@ function hasRuntimeImport(source: string, moduleSpecifier: string): boolean {
 const projectRoot = "/workspace/composable-pindie";
 const execFileAsync = promisify(execFile);
 
-test("R0 production composition preserves WorkEpisode and Experience without legacy Trial wiring", () => {
-  const { extensionOptions } = composeConfiguredPindieExtension({ storageRoots: { projectsBaseDir: "/tmp/r0-projects", globalBaseDir: "/tmp/r0-global" } }, {});
+test("Stable Mode production composition keeps Core WorkEpisode and excludes Learning dependencies", () => {
+  const { featureSelection, extensionOptions } = composeConfiguredPindieExtension(
+    { storageRoots: { projectsBaseDir: "/tmp/r0-projects", globalBaseDir: "/tmp/r0-global" } },
+    {},
+  );
+  assert.equal(featureSelection.selfImprovement, false);
+  assert.equal(featureSelection.crossProjectLearning, false);
   assert.ok(extensionOptions.workEpisodes);
-  assert.ok(extensionOptions.experienceStore);
+  assert.equal(extensionOptions.experienceStore, undefined);
+  assert.equal(extensionOptions.strategyCandidateStore, undefined);
+  assert.equal(extensionOptions.crossProjectExperienceReader, undefined);
   assert.equal("trialOffers" in extensionOptions, false);
   assert.equal("trialOfferPolicy" in extensionOptions, false);
 });
@@ -106,7 +113,10 @@ test("Slice A resolves stable startup defaults and explicit dependency roots", (
     globalBaseDir: "/tmp/pindie-global",
     remoteRoutingBaseDir: "/tmp/pindie-remote",
   } as const;
-  const composition = composePindieExtension({ storageRoots: roots });
+  const composition = composePindieExtension({
+    featureSelection: { selfImprovement: true, crossProjectLearning: true },
+    storageRoots: roots,
+  });
 
   assert.deepEqual(composition.storageRoots, roots);
   assert.equal(
@@ -186,6 +196,7 @@ test("Slice A gives configured Remote an explicit routing root", () => {
 
 test("Slice A never derives feature roots from an injected StateStore", () => {
   const composition = composePindieExtension({
+    featureSelection: { selfImprovement: true, crossProjectLearning: false },
     store: new FileStateStore({ baseDir: "/tmp/state-only" }),
     storageRoots: {
       projectsBaseDir: "/tmp/explicit-projects",
@@ -397,6 +408,51 @@ test("Slice F protects the final Core/SI/CPL and trust runtime import boundaries
   assert.equal(hasRuntimeImport(globalSource, "./strategy-portfolio.ts"), false);
   assert.equal(hasRuntimeImport(globalSource, "./strategy-trust-scope-trial.ts"), false);
   assert.equal(hasRuntimeImport(trustSafetySource, "./strategy-trust-scope-global.ts"), true);
+});
+
+test("Stable Mode master switch is off by default and is authoritative when explicitly disabled", () => {
+  assert.deepEqual(resolvePindieFeatureSelection({}, {}, {}), {
+    selfImprovement: false,
+    crossProjectLearning: false,
+    remote: false,
+    workMemory: false,
+    bundledSkills: true,
+    presentation: true,
+  });
+
+  assert.deepEqual(
+    resolvePindieFeatureSelection({}, {}, {
+      PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
+    }),
+    {
+      selfImprovement: true,
+      crossProjectLearning: true,
+      remote: false,
+      workMemory: false,
+      bundledSkills: true,
+      presentation: true,
+    },
+  );
+
+  assert.deepEqual(
+    resolvePindieFeatureSelection(
+      { selfImprovement: true, crossProjectLearning: true },
+      {},
+      {
+        PINDIE_AUTONOMOUS_LEARNING_ENABLED: "false",
+        PINDIE_SELF_IMPROVEMENT_ENABLED: "true",
+        PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "true",
+      },
+    ),
+    {
+      selfImprovement: false,
+      crossProjectLearning: false,
+      remote: false,
+      workMemory: false,
+      bundledSkills: true,
+      presentation: true,
+    },
+  );
 });
 
 test("Slice F preserves environment-driven selection and clearly rejects SI-off plus CPL-on", () => {
