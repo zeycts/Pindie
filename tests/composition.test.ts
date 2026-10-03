@@ -435,6 +435,15 @@ test("Stable Mode master switch is off by default and is authoritative when expl
   );
 
   assert.deepEqual(
+    resolvePindieFeatureSelection({}, {}, {
+      PINDIE_SELF_IMPROVEMENT_ENABLED: "true",
+      PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "true",
+    }),
+    DEFAULT_PINDIE_FEATURE_SELECTION,
+    "legacy fine-grained environment flags cannot silently leave Stable Mode",
+  );
+
+  assert.deepEqual(
     resolvePindieFeatureSelection(
       { selfImprovement: true, crossProjectLearning: true },
       {},
@@ -455,8 +464,9 @@ test("Stable Mode master switch is off by default and is authoritative when expl
   );
 });
 
-test("Slice F preserves environment-driven selection and clearly rejects SI-off plus CPL-on", () => {
+test("Slice F preserves opt-in environment selection and clearly rejects SI-off plus CPL-on", () => {
   const siOff = composeConfiguredPindieExtension({}, {
+    PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
     PINDIE_SELF_IMPROVEMENT_ENABLED: "false",
   });
   assert.equal(siOff.featureSelection.selfImprovement, false);
@@ -464,6 +474,7 @@ test("Slice F preserves environment-driven selection and clearly rejects SI-off 
   assert.equal(Object.hasOwn(siOff.extensionOptions, "experienceStore"), false);
 
   const bothOff = composeConfiguredPindieExtension({}, {
+    PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
     PINDIE_SELF_IMPROVEMENT_ENABLED: "off",
     PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "no",
   });
@@ -472,12 +483,14 @@ test("Slice F preserves environment-driven selection and clearly rejects SI-off 
 
   assert.throws(
     () => composeConfiguredPindieExtension({}, {
+      PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
       PINDIE_SELF_IMPROVEMENT_ENABLED: "false",
       PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "true",
     }),
     /Cross-Project Learning requires Self-Improvement/,
   );
   const siOnly = composeConfiguredPindieExtension({}, {
+    PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
     PINDIE_SELF_IMPROVEMENT_ENABLED: "true",
     PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "false",
   });
@@ -492,6 +505,7 @@ test("Slice F preserves environment-driven selection and clearly rejects SI-off 
       { selfImprovement: true, crossProjectLearning: false },
       {},
       {
+        PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
         PINDIE_SELF_IMPROVEMENT_ENABLED: "true",
         PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "false",
       },
