@@ -233,7 +233,7 @@ test("F2 Host kicks only after the replacement Session is bound, without another
   const jobHandler = handler(async (job) => { executed(); return { receiptRef: ref(job) }; });
   const host = await createPindieHost({ cwd, agentDir, sessionManager: SessionManager.inMemory(cwd),
     storageRoots: { globalBaseDir: join(root, "global"), projectsBaseDir: join(root, "projects") },
-    env: { PINDIE_BROWSER_ENABLED: "false" }, learningHandlers: [jobHandler],
+    env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true" }, learningHandlers: [jobHandler],
     dependencies: {
       createInteractiveMode: () => ({ run: async () => {} }),
       createAgentSessionServices: async (options) => {
