@@ -19,7 +19,7 @@ import {
   type InlineExtension,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, getSystemMessageText, type SystemMessage } from "@earendil-works/pi-ai";
 import { PINDIE_CONTINUATION_PROBE_MESSAGE, PINDIE_CONTINUATION_PROBE_TYPE } from "../src/continuation.ts";
 import { Type } from "typebox";
 import { PINDIE_QUOTA_FALLBACK_MESSAGE, PINDIE_QUOTA_FALLBACK_TYPE } from "../src/quota-fallback-supervisor.ts";
@@ -110,11 +110,10 @@ function providerSystemPrompt(context: { messages?: readonly unknown[] } | undef
     (message as { role?: unknown }).role === "system",
   );
   if (typeof systemMessage !== "object" || systemMessage === null) return undefined;
-  const content = (systemMessage as { content?: unknown }).content;
-  return typeof content === "string" ? content : undefined;
+  return getSystemMessageText(systemMessage as SystemMessage);
 }
 
-test("Pi 0.99.1 SDK defaults do not load new CLI extensions", async () => {
+test("Pi 1.0.1 SDK defaults do not load new CLI extensions", async () => {
   const harness = await createRealPiHarness(undefined, [compatibilityTool]);
   try {
     assert.deepEqual(harness.session.getAllTools().map((tool) => tool.name),
@@ -125,7 +124,7 @@ test("Pi 0.99.1 SDK defaults do not load new CLI extensions", async () => {
   } finally { await disposeHarness(harness); }
 });
 
-test("Pi 0.99.1 custom preflight explicit selectedTools edit wins over live loadout", async () => {
+test("Pi 1.0.1 custom preflight explicit selectedTools edit wins over live loadout", async () => {
   let context: unknown;
   const harness = await createRealPiHarness((event, _ctx, pi) => {
     pi.setActiveTools(["compatibility-tool"]);
@@ -140,7 +139,7 @@ test("Pi 0.99.1 custom preflight explicit selectedTools edit wins over live load
   } finally { await disposeHarness(harness); }
 });
 
-test("Pi 0.99.1 fallback hidden trigger gets one fresh preflight and settlement", async () => {
+test("Pi 1.0.1 fallback hidden trigger gets one fresh preflight and settlement", async () => {
   const prompts: string[] = [];
   let settlements = 0;
   const harness = await createRealPiHarness((event) => { prompts.push(event.prompt); return undefined; }, [], () => { settlements++; });
@@ -155,7 +154,7 @@ test("Pi 0.99.1 fallback hidden trigger gets one fresh preflight and settlement"
   } finally { await disposeHarness(harness); }
 });
 
-test("Pi 0.99.1 isolated learning startup executes with no tools/resources in a fresh Session", async () => {
+test("Pi 1.0.1 isolated learning startup executes with no tools/resources in a fresh Session", async () => {
   const harness = await createRealPiHarness();
   const sessions: AgentSession[] = [];
   try {
@@ -168,6 +167,10 @@ test("Pi 0.99.1 isolated learning startup executes with no tools/resources in a 
         sessions.push(session);
         assert.deepEqual(session.getAllTools(), []);
         assert.equal(session.resourceLoader.getExtensions().extensions.length, 0);
+        assert.deepEqual(session.extensionRunner.getRegisteredCommands(), []);
+        assert.deepEqual(session.resourceLoader.getSkills().skills, []);
+        assert.deepEqual(session.resourceLoader.getPrompts().prompts, []);
+        assert.deepEqual(session.resourceLoader.getThemes().themes, []);
         assert.deepEqual(session.messages, []);
       },
     });
@@ -191,7 +194,7 @@ const compatibilityTool: ToolDefinition = {
 
 // Temporary downstream compatibility contract for the idle custom-triggered
 // turn path. Remove the downstream patch once native Pi covers this preflight.
-test("Pi 0.99.1 compatibility: idle custom trigger runs before_agent_start preflight and applies its result", async () => {
+test("Pi 1.0.1 compatibility: idle custom trigger runs before_agent_start preflight and applies its result", async () => {
   let beforeAgentStartCalls = 0;
   let providerContext: { messages?: readonly unknown[] } | undefined;
   const harness = await createRealPiHarness(() => {
@@ -236,7 +239,30 @@ test("Pi 0.99.1 compatibility: idle custom trigger runs before_agent_start prefl
   }
 });
 
-test("Pi 0.99.1 compatibility: idle custom trigger preserves the live active tool loadout", async () => {
+test("Pi 1.0.1 custom system-prompt override does not replace the base for a successor Run", async () => {
+  let preflights = 0;
+  const contexts: { messages?: readonly unknown[] }[] = [];
+  const harness = await createRealPiHarness(() => ++preflights === 1
+    ? { systemPrompt: "one-run override" } : undefined);
+  try {
+    const basePrompt = harness.session.systemPrompt;
+    harness.faux.setResponses([
+      (context) => { contexts.push(context); return fauxAssistantMessage("first"); },
+      (context) => { contexts.push(context); return fauxAssistantMessage("second"); },
+    ]);
+    for (const content of ["first", "second"]) {
+      await harness.session.sendCustomMessage({ customType: "runtime-trigger", content, display: false }, { triggerTurn: true });
+    }
+    assert.equal(preflights, 2);
+    assert.equal(providerSystemPrompt(contexts[0]), "one-run override");
+    assert.equal(providerSystemPrompt(contexts[1]), basePrompt);
+    const triggers = harness.session.sessionManager.getBranch().filter((entry) => entry.type === "custom_message" && entry.customType === "runtime-trigger");
+    assert.equal(triggers.length, 2);
+    assert.equal(harness.session.messages.some((message) => message.role === "user"), false);
+  } finally { await disposeHarness(harness); }
+});
+
+test("Pi 1.0.1 compatibility: idle custom trigger preserves the live active tool loadout", async () => {
   let providerContext: { messages?: readonly unknown[] } | undefined;
   const harness = await createRealPiHarness((_event, _ctx, pi) => {
     pi.setActiveTools(["compatibility-tool"]);
@@ -264,7 +290,7 @@ test("Pi 0.99.1 compatibility: idle custom trigger preserves the live active too
   }
 });
 
-test("Pi 0.99.1 settled custom successor runs preflight with the current tool loadout", async () => {
+test("Pi 1.0.1 settled custom successor runs preflight with the current tool loadout", async () => {
   const prompts: string[] = [];
   const providerContexts: { messages?: readonly unknown[] }[] = [];
   let settlements = 0;
@@ -305,7 +331,7 @@ test("Pi 0.99.1 settled custom successor runs preflight with the current tool lo
   }
 });
 
-test("Pi 0.99.1 boundary probe continues once within the same Run and settles after the final pass", async () => {
+test("Pi 1.0.1 boundary probe continues once within the same Run and settles after the final pass", async () => {
   let preflights = 0;
   let boundaries = 0;
   let settlements = 0;
@@ -345,7 +371,7 @@ test("Pi 0.99.1 boundary probe continues once within the same Run and settles af
   }
 });
 
-test("characterizes Pi 0.99.1 quota trigger: preflight exposes the hidden content before branch append", async () => {
+test("characterizes Pi 1.0.1 quota trigger: preflight exposes the hidden content before branch append", async () => {
   let preflightPrompt: string | undefined;
   let preflightBranch: readonly unknown[] | undefined;
   const harness = await createRealPiHarness((event, ctx) => {
@@ -374,7 +400,7 @@ test("characterizes Pi 0.99.1 quota trigger: preflight exposes the hidden conten
   }
 });
 
-test("characterizes Pi 0.99.1: custom trigger Promise covers the full Agent Run", async () => {
+test("characterizes Pi 1.0.1: custom trigger Promise covers the full Agent Run", async () => {
   let resolveResponse: ((message: ReturnType<typeof fauxAssistantMessage>) => void) | undefined;
   const responseSettled = new Promise<ReturnType<typeof fauxAssistantMessage>>((resolve) => {
     resolveResponse = resolve;

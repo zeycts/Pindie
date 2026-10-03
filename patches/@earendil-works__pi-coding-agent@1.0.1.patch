@@ -1,6 +1,6 @@
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -1734,10 +1734,10 @@
+@@ -1766,10 +1766,10 @@
          }
          else if (options?.triggerTurn) {
              if (this._isEmittingAgentSettled) {
@@ -13,7 +13,7 @@
          }
          else if (this.isStreaming) {
              // Appending now would put the message between an assistant tool call and its
-@@ -1750,6 +1750,35 @@
+@@ -1782,6 +1782,35 @@
              this._appendCustomMessage(appMessage);
          }
      }

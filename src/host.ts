@@ -462,6 +462,8 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       startupDiagnostics: [...nativeRuntime.diagnostics],
       modelFallbackMessage: nativeRuntime.modelFallbackMessage,
       ...options.interactiveModeOptions,
+      // Preserve normal terminal scrollback despite Pi 1.x's fullscreen default.
+      tuiMode: options.interactiveModeOptions?.tuiMode ?? "regular",
     };
     const activeRuntime = runtime;
     const interactiveMode = isPindieTuiEnabled(env)

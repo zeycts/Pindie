@@ -257,6 +257,33 @@ test("Host creates one runtime and supplies that same runtime to InteractiveMode
   assert.equal(disposeCalls(), 1);
 });
 
+test("Host preserves regular TUI mode by default and honors explicit overrides on both shells", async () => {
+  for (const owned of [false, true]) {
+    for (const tuiMode of [undefined, "regular", "fullscreen"] as const) {
+      const { runtime } = fakeRuntime();
+      let effectiveMode: string | undefined;
+      const host = await createPindieHost({
+        env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: owned ? "1" : "0" },
+        sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+        interactiveModeOptions: { tuiMode },
+        dependencies: {
+          createAgentSessionRuntime: async () => runtime,
+          createInteractiveMode: (_runtime, options) => {
+            effectiveMode = options.tuiMode;
+            return { run: async () => {} };
+          },
+          createPindieInteractiveMode: (_runtime, options) => {
+            effectiveMode = options.tuiMode;
+            return { run: async () => {} };
+          },
+        },
+      });
+      try { assert.equal(effectiveMode, tuiMode ?? "regular"); }
+      finally { await host.dispose(); }
+    }
+  }
+});
+
 test("PINDIE_TUI enables only the exact feature-gate value", () => {
   assert.equal(isPindieTuiEnabled({}), false);
   assert.equal(isPindieTuiEnabled({ PINDIE_TUI: "0" }), false);

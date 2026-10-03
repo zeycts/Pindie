@@ -46,11 +46,15 @@ function assertPindieSurface(session: AgentSession): void {
   const toolNames = new Set(session.getAllTools().map((tool) => tool.name));
   for (const name of PINDIE_STABLE_TOOL_NAMES) assert.equal(toolNames.has(name), true, `missing ${name}`);
   assert.equal(toolNames.has("pindie_strategy_candidate_create"), false, "Stable Mode must not expose SI Candidate creation");
+  for (const name of ["codemode", "tool_search"]) assert.equal(toolNames.has(name), false);
+  assert.equal([...toolNames].some((name) => name.startsWith("mcp__")), false);
+  assert.equal(session.resourceLoader.getExtensions().extensions.some((extension) => extension.path.startsWith("builtin:")), false);
 
   const commandNames = new Set(session.extensionRunner.getRegisteredCommands().map((command) => command.name));
   assert.equal(commandNames.has("experience"), false);
   assert.equal(commandNames.has("adapt"), false);
   assert.equal(commandNames.has("trial"), false);
+  assert.equal(commandNames.has("mcp"), false);
   assert.equal(session.resourceLoader.getSkills().skills.some((skill) => skill.name === "git-workflow"), true);
 }
 
