@@ -187,20 +187,22 @@ export function resolvePindieFeatureSelection(
     env,
     "PINDIE_AUTONOMOUS_LEARNING_ENABLED",
   );
-  // An explicit master false is authoritative. When the master switch is
-  // absent, explicit fine-grained overrides remain available for tests and
-  // advanced composition. Master true restores the historical SI+CPL default.
+  // Stable Mode is the environment default. Legacy fine-grained environment
+  // flags cannot silently re-enable Learning; production must opt in through
+  // the master switch. Direct composition overrides remain available for
+  // isolated tests and advanced embedding.
   const selfImprovement = autonomousLearning === false
     ? false
     : overrides.selfImprovement ??
-      configuredFlag(env, "PINDIE_SELF_IMPROVEMENT_ENABLED") ??
-      autonomousLearning ??
-      DEFAULT_PINDIE_FEATURE_SELECTION.selfImprovement;
+      (autonomousLearning === true
+        ? configuredFlag(env, "PINDIE_SELF_IMPROVEMENT_ENABLED") ?? true
+        : DEFAULT_PINDIE_FEATURE_SELECTION.selfImprovement);
   const requestedCrossProjectLearning = autonomousLearning === false
     ? false
     : overrides.crossProjectLearning ??
-      configuredFlag(env, "PINDIE_CROSS_PROJECT_LEARNING_ENABLED") ??
-      autonomousLearning;
+      (autonomousLearning === true
+        ? configuredFlag(env, "PINDIE_CROSS_PROJECT_LEARNING_ENABLED") ?? true
+        : undefined);
   const crossProjectLearning = requestedCrossProjectLearning ?? selfImprovement;
   if (!selfImprovement && crossProjectLearning) {
     throw new Error(
