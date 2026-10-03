@@ -149,8 +149,11 @@ export interface PindieComposition {
 }
 
 const DEFAULT_PINDIE_FEATURE_SELECTION: PindieFeatureSelection = Object.freeze({
-  selfImprovement: true,
-  crossProjectLearning: true,
+  // Stable Mode is the production default. Autonomous Learning must be an
+  // explicit opt-in so ordinary Pindie work never depends on experimental
+  // learning/trial state.
+  selfImprovement: false,
+  crossProjectLearning: false,
   remote: false,
   workMemory: false,
   bundledSkills: true,
@@ -180,11 +183,26 @@ export function resolvePindieFeatureSelection(
   availability: PindieFeatureAvailability = {},
   env: Record<string, string | undefined> = process.env,
 ): PindieFeatureSelection {
-  const selfImprovement = overrides.selfImprovement ??
-    configuredFlag(env, "PINDIE_SELF_IMPROVEMENT_ENABLED") ??
-    DEFAULT_PINDIE_FEATURE_SELECTION.selfImprovement;
-  const requestedCrossProjectLearning = overrides.crossProjectLearning ??
-    configuredFlag(env, "PINDIE_CROSS_PROJECT_LEARNING_ENABLED");
+  const autonomousLearning = configuredFlag(
+    env,
+    "PINDIE_AUTONOMOUS_LEARNING_ENABLED",
+  );
+  // Stable Mode is the environment default. Legacy fine-grained environment
+  // flags cannot silently re-enable Learning; production must opt in through
+  // the master switch. Direct composition overrides remain available for
+  // isolated tests and advanced embedding.
+  const selfImprovement = autonomousLearning === false
+    ? false
+    : overrides.selfImprovement ??
+      (autonomousLearning === true
+        ? configuredFlag(env, "PINDIE_SELF_IMPROVEMENT_ENABLED") ?? true
+        : DEFAULT_PINDIE_FEATURE_SELECTION.selfImprovement);
+  const requestedCrossProjectLearning = autonomousLearning === false
+    ? false
+    : overrides.crossProjectLearning ??
+      (autonomousLearning === true
+        ? configuredFlag(env, "PINDIE_CROSS_PROJECT_LEARNING_ENABLED")
+        : undefined);
   const crossProjectLearning = requestedCrossProjectLearning ?? selfImprovement;
   if (!selfImprovement && crossProjectLearning) {
     throw new Error(

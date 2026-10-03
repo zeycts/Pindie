@@ -38,7 +38,7 @@ async function fixture(t: any, kind: "approach" | "modifier" = "approach", optio
   let integration!: ReturnType<typeof registerConfiguredPindieExtension>;
   const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noSkills: true, noPromptTemplates: true, noContextFiles: true, noThemes: true,
     extensionFactories: [(pi) => {
-      integration = registerConfiguredPindieExtension(pi, { storageRoots: { projectsBaseDir, globalBaseDir }, featureSelection: { crossProjectLearning: false }, resolveProjectRoot: async () => cwd,
+      integration = registerConfiguredPindieExtension(pi, { storageRoots: { projectsBaseDir, globalBaseDir }, featureSelection: { selfImprovement: true, crossProjectLearning: false }, resolveProjectRoot: async () => cwd,
         subscriptionUsageProvider: { fetchUsage: async () => null }, trialAssignmentPolicy: { ...DEFAULT_ASSIGNMENT_POLICY, cooldownMs: 0, operationTimeoutMs: 1000 }, trialDiagnostic: (d) => diagnostics.push(d), ...options });
       if (deleteAdvisory) pi.on("context_with_system", (event) => ({ messages: event.messages.filter((m) => !hasAdvisory(m)) }));
     }] });

@@ -32,6 +32,8 @@ If those sources conflict, report the contradiction before widening scope. Do no
 
 Pindie must not implement a second Agent Loop, general workflow engine, persisted Work Plane phase machine or Task queue, planner framework, memory database, verification-log database, or second Skill runtime. Approved Autonomous Learning v1 permits a tiny persistent domain-specific LearningJob scheduler/ledger separate from user Task State; this exception is not a general task queue or second LLM Agent Loop.
 
+**Stable Mode is the production default.** Autonomous Learning is experimental and opt-in through `PINDIE_AUTONOMOUS_LEARNING_ENABLED=1`. With it disabled, ordinary Pindie work must not construct or depend on Self-Improvement, Cross-Project Learning, LearningSupervisor/Discovery jobs, ordinary Trial overlays, or Learning data. Existing Learning artifacts remain preserved on disk but inert.
+
 ## Design principles
 
 - **Deterministic closure:** if authoritative facts uniquely determine a constraint, encode it in the Harness.

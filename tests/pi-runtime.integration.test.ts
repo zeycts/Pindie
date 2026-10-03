@@ -28,12 +28,11 @@ import { PINDIE_RUN_BASELINE_START } from "../src/context.ts";
 import { FileStateStore } from "../src/store.ts";
 import { createTaskContinuity } from "../src/task-continuity.ts";
 
-const PINDIE_TOOL_NAMES = [
+const PINDIE_STABLE_TOOL_NAMES = [
   "pindie_gate_open",
   "pindie_gate_resolve",
   "pindie_git_observe",
   "pindie_policy_set",
-  "pindie_strategy_candidate_create",
   "pindie_task_complete",
   "pindie_task_progress",
   "pindie_task_refine",
@@ -45,12 +44,13 @@ const PINDIE_TOOL_NAMES = [
 
 function assertPindieSurface(session: AgentSession): void {
   const toolNames = new Set(session.getAllTools().map((tool) => tool.name));
-  for (const name of PINDIE_TOOL_NAMES) assert.equal(toolNames.has(name), true, `missing ${name}`);
+  for (const name of PINDIE_STABLE_TOOL_NAMES) assert.equal(toolNames.has(name), true, `missing ${name}`);
+  assert.equal(toolNames.has("pindie_strategy_candidate_create"), false, "Stable Mode must not expose SI Candidate creation");
 
   const commandNames = new Set(session.extensionRunner.getRegisteredCommands().map((command) => command.name));
-  assert.equal(commandNames.has("experience"), true);
-  assert.equal(commandNames.has("adapt"), true);
-  assert.equal(commandNames.has("trial"), true);
+  assert.equal(commandNames.has("experience"), false);
+  assert.equal(commandNames.has("adapt"), false);
+  assert.equal(commandNames.has("trial"), false);
   assert.equal(session.resourceLoader.getSkills().skills.some((skill) => skill.name === "git-workflow"), true);
 }
 

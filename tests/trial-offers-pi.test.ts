@@ -62,6 +62,7 @@ for (const legacyHistory of [false, true]) test(`R0 native Pi ordinary work free
     const settingsManager = SettingsManager.create(cwd, agentDir);
     const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noSkills: true, noPromptTemplates: true, noContextFiles: true, noThemes: true,
       extensionFactories: [(pi) => { registerConfiguredPindieExtension(pi, { storageRoots: { projectsBaseDir, globalBaseDir },
+        featureSelection: { selfImprovement: true, crossProjectLearning: false },
         resolveProjectRoot: async () => cwd, subscriptionUsageProvider: { fetchUsage: async () => null } }); }] });
     await loader.reload();
     ({ session } = await createAgentSession({ cwd, agentDir, modelRuntime, model: faux.getModel(), resourceLoader: loader, sessionManager: SessionManager.inMemory(cwd), noTools: "builtin" }));

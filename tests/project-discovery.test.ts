@@ -191,6 +191,31 @@ test("D1 duplicates, terminal receipt and cancellation without receipt", async (
   assert.equal(await buildProjectDiscoveryPacket(id, f.deps), null); // one remaining new source
   assert.equal(await enqueueProjectDiscovery(id, f.deps), null);
 });
+test("Stable Mode Host does not enqueue discovery or start a learning runtime by default", async (t) => {
+  const f = await setup(t);
+  for (let i = 0; i < 6; i++) await f.add(i);
+  const cwd = join(f.dir, "stable-project"), agentDir = join(f.dir, "stable-agent");
+  await mkdir(cwd); await mkdir(agentDir);
+  const target = join(f.projects, getProjectId(cwd), "experience");
+  await mkdir(target, { recursive: true });
+  for (const name of await readdir(join(f.projects, id, "experience")))
+    await copyFile(join(f.projects, id, "experience", name), join(target, name));
+  const host = await createPindieHost({
+    cwd,
+    agentDir,
+    sessionManager: SessionManager.inMemory(cwd),
+    storageRoots: { projectsBaseDir: f.projects, globalBaseDir: f.global },
+    learningModel: { provider: "anthropic", modelId: "claude-sonnet-4-5", thinkingLevel: "off" },
+    env: { PINDIE_BROWSER_ENABLED: "false" },
+    dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
+  });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(host.learningModelIdentity, null);
+    assert.equal((await f.deps.jobs.read()).length, 0);
+  } finally { await host.dispose(); }
+});
+
 test("D1 Host startup enqueue does not start a model or change the Human Session surface", async (t) => {
   const f = await setup(t);
   for (let i = 0; i < 6; i++) await f.add(i);
@@ -203,7 +228,7 @@ test("D1 Host startup enqueue does not start a model or change the Human Session
   const host = await createPindieHost({ cwd, agentDir, sessionManager: SessionManager.inMemory(cwd),
     storageRoots: { projectsBaseDir: f.projects, globalBaseDir: f.global },
     learningHandlers: [], // D1 enqueue-only compatibility seam; D2 registers a production handler by default.
-    env: { PINDIE_BROWSER_ENABLED: "false" },
+    env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true" },
     dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
   });
   try {
@@ -224,7 +249,7 @@ test("D2 Host freezes the explicit learning model identity, independent of the H
     storageRoots: { projectsBaseDir: f.projects, globalBaseDir: f.global },
     learningHandlers: [], // no model invocation; identity resolution is independent of handlers.
     learningModel: { provider: "anthropic", modelId: "claude-sonnet-4-5", thinkingLevel: "off" },
-    env: { PINDIE_BROWSER_ENABLED: "false" },
+    env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true" },
     dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
   });
   try {
@@ -239,7 +264,7 @@ test("D2 Host leaves learning unavailable when the requested learning model cann
     storageRoots: { projectsBaseDir: f.projects, globalBaseDir: f.global },
     learningHandlers: [],
     learningModel: { provider: "pindie-nonexistent", modelId: "no-such-model" },
-    env: { PINDIE_BROWSER_ENABLED: "false" },
+    env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true" },
     dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
   });
   try {
