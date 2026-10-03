@@ -149,8 +149,11 @@ export interface PindieComposition {
 }
 
 const DEFAULT_PINDIE_FEATURE_SELECTION: PindieFeatureSelection = Object.freeze({
-  selfImprovement: true,
-  crossProjectLearning: true,
+  // Stable Mode is the production default. Autonomous Learning must be an
+  // explicit opt-in so ordinary Pindie work never depends on experimental
+  // learning/trial state.
+  selfImprovement: false,
+  crossProjectLearning: false,
   remote: false,
   workMemory: false,
   bundledSkills: true,
@@ -180,11 +183,24 @@ export function resolvePindieFeatureSelection(
   availability: PindieFeatureAvailability = {},
   env: Record<string, string | undefined> = process.env,
 ): PindieFeatureSelection {
-  const selfImprovement = overrides.selfImprovement ??
-    configuredFlag(env, "PINDIE_SELF_IMPROVEMENT_ENABLED") ??
-    DEFAULT_PINDIE_FEATURE_SELECTION.selfImprovement;
-  const requestedCrossProjectLearning = overrides.crossProjectLearning ??
-    configuredFlag(env, "PINDIE_CROSS_PROJECT_LEARNING_ENABLED");
+  const autonomousLearning = configuredFlag(
+    env,
+    "PINDIE_AUTONOMOUS_LEARNING_ENABLED",
+  );
+  // An explicit master false is authoritative. When the master switch is
+  // absent, explicit fine-grained overrides remain available for tests and
+  // advanced composition. Master true restores the historical SI+CPL default.
+  const selfImprovement = autonomousLearning === false
+    ? false
+    : overrides.selfImprovement ??
+      configuredFlag(env, "PINDIE_SELF_IMPROVEMENT_ENABLED") ??
+      autonomousLearning ??
+      DEFAULT_PINDIE_FEATURE_SELECTION.selfImprovement;
+  const requestedCrossProjectLearning = autonomousLearning === false
+    ? false
+    : overrides.crossProjectLearning ??
+      configuredFlag(env, "PINDIE_CROSS_PROJECT_LEARNING_ENABLED") ??
+      autonomousLearning;
   const crossProjectLearning = requestedCrossProjectLearning ?? selfImprovement;
   if (!selfImprovement && crossProjectLearning) {
     throw new Error(
