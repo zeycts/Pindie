@@ -203,7 +203,7 @@ test("D1 Host startup enqueue does not start a model or change the Human Session
   const host = await createPindieHost({ cwd, agentDir, sessionManager: SessionManager.inMemory(cwd),
     storageRoots: { projectsBaseDir: f.projects, globalBaseDir: f.global },
     learningHandlers: [], // D1 enqueue-only compatibility seam; D2 registers a production handler by default.
-    env: { PINDIE_BROWSER_ENABLED: "false" },
+    env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true" },
     dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
   });
   try {
@@ -224,7 +224,7 @@ test("D2 Host freezes the explicit learning model identity, independent of the H
     storageRoots: { projectsBaseDir: f.projects, globalBaseDir: f.global },
     learningHandlers: [], // no model invocation; identity resolution is independent of handlers.
     learningModel: { provider: "anthropic", modelId: "claude-sonnet-4-5", thinkingLevel: "off" },
-    env: { PINDIE_BROWSER_ENABLED: "false" },
+    env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true" },
     dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
   });
   try {
@@ -239,7 +239,7 @@ test("D2 Host leaves learning unavailable when the requested learning model cann
     storageRoots: { projectsBaseDir: f.projects, globalBaseDir: f.global },
     learningHandlers: [],
     learningModel: { provider: "pindie-nonexistent", modelId: "no-such-model" },
-    env: { PINDIE_BROWSER_ENABLED: "false" },
+    env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true" },
     dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
   });
   try {
