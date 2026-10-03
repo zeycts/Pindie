@@ -236,6 +236,12 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   const sessionManager = options.sessionManager ?? SessionManager.create(cwd);
   const dependencies = options.dependencies ?? {};
   const env = options.env ?? process.env;
+  const featureSelection = resolvePindieFeatureSelection(
+    options.featureSelection,
+    {},
+    env,
+  );
+  const autonomousLearningEnabled = featureSelection.selfImprovement;
   const createRuntime = dependencies.createAgentSessionRuntime ?? createAgentSessionRuntime;
   const createMode =
     dependencies.createInteractiveMode ??
@@ -257,22 +263,30 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   let releaseFallbackBridge: (() => void) | undefined;
   let currentPresentationReader: PindiePresentationReader | null = null;
   let learningSupervisor: LearningSupervisor | undefined;
+  let learningModelIdentity: LearningModelPolicy | null = null;
   let learningGeneration = 0;
   let learningHumanActive = false;
   let learningBoundSession: AgentSession | null = null;
   if (options.discoveryPolicy && !validateProjectDiscoveryPolicy(options.discoveryPolicy)) throw new Error("Invalid project discovery policy.");
   const roots = resolvePindieStorageRoots(options.storageRoots);
-  const jobs = new FileLearningJobLedger({ globalBaseDir: roots.globalBaseDir });
-  const discovery = {
-    reader: new FileRunExperienceReader({ baseDir: roots.projectsBaseDir }),
-    portfolio: new FileProjectTrustedStrategyPortfolioReader({ projectsBaseDir: roots.projectsBaseDir, globalBaseDir: roots.globalBaseDir }),
-    receipts: new FileDiscoveryReceiptStore({ projectsBaseDir: roots.projectsBaseDir }),
-    packets: new FileDiscoveryPacketStore(roots.projectsBaseDir),
-    hypotheses: new FileDiscoveryHypothesisStore({ projectsBaseDir: roots.projectsBaseDir }),
-    jobs,
-    ...(options.discoveryPolicy ? { policy: options.discoveryPolicy } : {}),
+  const jobs = autonomousLearningEnabled
+    ? new FileLearningJobLedger({ globalBaseDir: roots.globalBaseDir })
+    : null;
+  const discovery = autonomousLearningEnabled && jobs !== null
+    ? {
+        reader: new FileRunExperienceReader({ baseDir: roots.projectsBaseDir }),
+        portfolio: new FileProjectTrustedStrategyPortfolioReader({ projectsBaseDir: roots.projectsBaseDir, globalBaseDir: roots.globalBaseDir }),
+        receipts: new FileDiscoveryReceiptStore({ projectsBaseDir: roots.projectsBaseDir }),
+        packets: new FileDiscoveryPacketStore(roots.projectsBaseDir),
+        hypotheses: new FileDiscoveryHypothesisStore({ projectsBaseDir: roots.projectsBaseDir }),
+        jobs,
+        ...(options.discoveryPolicy ? { policy: options.discoveryPolicy } : {}),
+      }
+    : null;
+  const enqueue = (projectRoot: string) => {
+    if (discovery === null) return;
+    void enqueueProjectDiscovery(getProjectId(projectRoot), discovery);
   };
-  const enqueue = (projectRoot: string) => { void enqueueProjectDiscovery(getProjectId(projectRoot), discovery); };
   let currentProjectRoot: string | null = null;
   const preemptLearning = (reason: "human-work" | "session-change") => {
     ++learningGeneration;
@@ -344,7 +358,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       }
     }
     nativeRuntime = await createRuntime(createPindieRuntimeFactory(dependencies, taskMetrics, {
-      featureSelection: options.featureSelection,
+      featureSelection,
       storageRoots: options.storageRoots,
       ...(browserReality
         ? {
@@ -357,72 +371,79 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       onPresentationReaderChange: (reader) => {
         currentPresentationReader = reader;
       },
-      onExperienceSaved: (root) => { if (root === currentProjectRoot) enqueue(root); },
-      onHumanRunStart: () => {
-        learningHumanActive = true;
-        preemptLearning("human-work");
-      },
-      onHumanRunSettled: () => {
-        learningHumanActive = false;
-        if (currentProjectRoot) enqueue(currentProjectRoot);
-        queueMicrotask(kickLearning);
-      },
-      onSessionChange: () => {
-        learningHumanActive = true;
-        learningBoundSession = null;
-        preemptLearning("session-change");
-      },
-      onSessionReady: (session) => {
-        // Pi's apply(await createRuntime(...)) publishes the new Session in
-        // the await continuation, before the next event-loop turn. A one-shot
-        // macrotask therefore observes binding (even if later setup awaits),
-        // without kicking against the outgoing Session or polling on failure.
-        setTimeout(() => {
-          if (!runtime || runtime.activeSession !== session) return;
-          learningBoundSession = session;
-          // Do not clear a Human Run that began on the newly bound Session.
-          if (runtime.getActiveSessionFacts().isIdle) learningHumanActive = false;
-          if (currentProjectRoot) enqueue(currentProjectRoot);
-          kickLearning();
-        }, 0).unref();
-      },
+      ...(autonomousLearningEnabled
+        ? {
+            onExperienceSaved: (root: string) => { if (root === currentProjectRoot) enqueue(root); },
+            onHumanRunStart: () => {
+              learningHumanActive = true;
+              preemptLearning("human-work");
+            },
+            onHumanRunSettled: () => {
+              learningHumanActive = false;
+              if (currentProjectRoot) enqueue(currentProjectRoot);
+              queueMicrotask(kickLearning);
+            },
+            onSessionChange: () => {
+              learningHumanActive = true;
+              learningBoundSession = null;
+              preemptLearning("session-change");
+            },
+            onSessionReady: (session: AgentSession) => {
+              // Pi's apply(await createRuntime(...)) publishes the new Session in
+              // the await continuation, before the next event-loop turn. A one-shot
+              // macrotask therefore observes binding (even if later setup awaits),
+              // without kicking against the outgoing Session or polling on failure.
+              setTimeout(() => {
+                if (!runtime || runtime.activeSession !== session) return;
+                learningBoundSession = session;
+                // Do not clear a Human Run that began on the newly bound Session.
+                if (runtime.getActiveSessionFacts().isIdle) learningHumanActive = false;
+                if (currentProjectRoot) enqueue(currentProjectRoot);
+                kickLearning();
+              }, 0).unref();
+            },
+          }
+        : {}),
     }), {
       cwd,
       agentDir,
       sessionManager,
     });
     runtime = new PiRuntimeAdapter(nativeRuntime);
-    try { currentProjectRoot = await resolveProjectRoot(cwd); }
-    catch { console.warn("[Pindie] Project discovery root unavailable; enqueue skipped."); }
-    // Learning model identity is frozen once at Host start; it never follows the
-    // mutable Human Session model/fallback. A startup fallback is not a baseline,
-    // and absence fails closed so jobs stay pending.
-    const learningSession = runtime.activeSession;
-    const resolvedLearningModel = resolveLearningModel({
-      ...(options.learningModel ? { requested: options.learningModel } : {}),
-      baseline: learningSession.model,
-      startupFellBack: nativeRuntime.modelFallbackMessage !== undefined,
-      resolve: (provider, modelId) => learningSession.modelRuntime?.getModel(provider, modelId),
-    });
-    const learningRunner = resolvedLearningModel
-      ? createLearningSessionRunner({ cwd, model: resolvedLearningModel.model, policy: resolvedLearningModel.policy })
-      : undefined;
-    if (!learningRunner) console.warn("[Pindie] Learning model unavailable (explicit config missing/unresolved or startup fallback); learning jobs remain pending.");
-    learningSupervisor = new LearningSupervisor({
-      ledger: jobs,
-      budget: new FileLearningBudgetLedger({ globalBaseDir: roots.globalBaseDir }),
-      handlers: options.learningHandlers ?? [createProjectDiscoveryHandler(discovery)],
-      runner: learningRunner,
-      authority: {
-        generation: () => learningGeneration,
-        idle: () => {
-          if (learningHumanActive || !runtime || runtime.activeSession !== learningBoundSession) return false;
-          const facts = runtime.getActiveSessionFacts();
-          return facts.isIdle && !facts.isStreaming && !facts.isCompacting && facts.pendingMessageCount === 0;
+    if (autonomousLearningEnabled) {
+      try { currentProjectRoot = await resolveProjectRoot(cwd); }
+      catch { console.warn("[Pindie] Project discovery root unavailable; enqueue skipped."); }
+      // Learning model identity is frozen once at Host start; it never follows the
+      // mutable Human Session model/fallback. A startup fallback is not a baseline,
+      // and absence fails closed so jobs stay pending.
+      const learningSession = runtime.activeSession;
+      const resolvedLearningModel = resolveLearningModel({
+        ...(options.learningModel ? { requested: options.learningModel } : {}),
+        baseline: learningSession.model,
+        startupFellBack: nativeRuntime.modelFallbackMessage !== undefined,
+        resolve: (provider, modelId) => learningSession.modelRuntime?.getModel(provider, modelId),
+      });
+      const learningRunner = resolvedLearningModel
+        ? createLearningSessionRunner({ cwd, model: resolvedLearningModel.model, policy: resolvedLearningModel.policy })
+        : undefined;
+      learningModelIdentity = learningRunner?.modelIdentity ?? null;
+      if (!learningRunner) console.warn("[Pindie] Learning model unavailable (explicit config missing/unresolved or startup fallback); learning jobs remain pending.");
+      learningSupervisor = new LearningSupervisor({
+        ledger: jobs!,
+        budget: new FileLearningBudgetLedger({ globalBaseDir: roots.globalBaseDir }),
+        handlers: options.learningHandlers ?? [createProjectDiscoveryHandler(discovery!)],
+        runner: learningRunner,
+        authority: {
+          generation: () => learningGeneration,
+          idle: () => {
+            if (learningHumanActive || !runtime || runtime.activeSession !== learningBoundSession) return false;
+            const facts = runtime.getActiveSessionFacts();
+            return facts.isIdle && !facts.isStreaming && !facts.isCompacting && facts.pendingMessageCount === 0;
+          },
         },
-      },
-    });
-    if (currentProjectRoot) enqueue(currentProjectRoot);
+      });
+      if (currentProjectRoot) enqueue(currentProjectRoot);
+    }
     quotaFallbackSupervisor = new QuotaFallbackSupervisor(runtime, options.quotaFallback);
     const testWaitingChange = options.quotaResume?.onWaitingChange;
     quotaResumeSupervisor = new QuotaResumeSupervisor(runtime, {
@@ -480,7 +501,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       runtime,
       interactiveMode,
       presentation,
-      learningModelIdentity: learningRunner?.modelIdentity ?? null,
+      learningModelIdentity,
       run: async () => {
         try {
           await interactiveMode.run();
