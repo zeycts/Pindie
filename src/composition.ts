@@ -201,7 +201,7 @@ export function resolvePindieFeatureSelection(
     ? false
     : overrides.crossProjectLearning ??
       (autonomousLearning === true
-        ? configuredFlag(env, "PINDIE_CROSS_PROJECT_LEARNING_ENABLED") ?? true
+        ? configuredFlag(env, "PINDIE_CROSS_PROJECT_LEARNING_ENABLED")
         : undefined);
   const crossProjectLearning = requestedCrossProjectLearning ?? selfImprovement;
   if (!selfImprovement && crossProjectLearning) {
