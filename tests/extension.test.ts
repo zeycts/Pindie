@@ -1007,6 +1007,12 @@ function createHarness(
     {
       subscriptionUsageProvider: { fetchUsage: async () => null },
       ...options,
+      // This legacy integration harness exercises the complete SI/CPL surface.
+      // Production defaults are Stable Mode; SI/CPL-specific tests opt in here.
+      featureSelection: options.featureSelection ?? {
+        selfImprovement: true,
+        crossProjectLearning: true,
+      },
       store,
       experienceStore,
       experienceReader,
