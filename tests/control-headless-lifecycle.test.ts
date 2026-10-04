@@ -171,7 +171,7 @@ test("real pinned Pi Session events reach the live timeline and replacement rele
   }
 });
 
-test("Pi 1.0.1 real Control prompt disposition, observe/timeline/wait and replacement remain coherent", async () => {
+test("Pi 1.0.2 real Control prompt disposition, observe/timeline/wait and replacement remain coherent", async () => {
   const root = await mkdtemp(join(tmpdir(), "pindie-control-pi099-"));
   const project = join(root, "project");
   const agentDir = join(root, "agent");

@@ -1,4 +1,23 @@
-# Pi 1.0.1 compatibility audit
+# Pi 1.0.2 compatibility audit
+
+## Incremental 1.0.1 → 1.0.2 audit
+
+Scope: narrow exact-pin upgrade of `pi-ai`, `pi-coding-agent` and `pi-tui`; no architecture, TUI, model-policy or models-configuration changes. Still-valid 1.0.1 findings are retained below as history, not repeated as new release changes.
+
+- Published **1.0.2 (2026-10-04)** adds `samplingParamsByThinkingLevel` for OpenAI-compatible APIs: clamp the thinking level, then merge model defaults, effective-level overrides and request sampling parameters (later keys win). Changes are in pi-ai's OpenAI/Azure API options and coding-agent's model schema/provider composition. This is upstream capability only; Pindie does not adopt it.
+- Actual npm tarballs also refresh NVIDIA/OpenRouter catalog data (one NVIDIA model, three OpenRouter classifiers and metadata updates), generated bundles/maps and package/example version metadata. No Pindie model selection or reasoning configuration is changed.
+- `dist/index` exports/declarations, SDK factory, AgentSession/AgentSessionRuntime/SessionManager implementations and declarations, resource loader, settings manager, ExtensionRunner and InteractiveMode are byte-for-byte unchanged. pi-tui, pi-agent-core, chord, pi-codemode and pi-telemetry change package metadata only; pi-mcp also changes its changelog. Pindie's actual imports/usages require no adaptation.
+- **TUI policy unchanged:** explicit Pindie/Host override → explicitly configured effective raw Pi `tuiMode` → `"regular"` when absent. Existing six-case tests cover both shells; fullscreen-by-default is not adopted.
+- **Dependency resolution:** exactly eight Pi-family packages move 1.0.1 → 1.0.2 (`chord`, `pi-agent-core`, `pi-ai`, `pi-codemode`, `pi-coding-agent`, `pi-mcp`, `pi-telemetry`, `pi-tui`). Published Pi dependency ranges require the related family >=1.0.2. All eight npm integrity values match the lockfile. Apart from these versions/integrities and peer-resolution relabeling, the lockfile is unchanged; no non-Pi dependency upgrade or deduplication. Release-age exclusions and patchedDependencies follow 1.0.2; Browser extension 0.1.15 and all external dependencies stay fixed.
+- **Patch still necessary:** the unchanged existing 11-case contract against pristine published 1.0.2 gives **3 pass / 8 fail**; pnpm-installed patched 1.0.2 gives **11 pass / 0 fail**. The same eight missing-preflight cases listed below fail; SDK isolation, isolated Learning startup and full-Run Promise settlement already pass upstream. Only test version labels changed.
+- `patches/@earendil-works__pi-coding-agent@1.0.2.patch` was regenerated from pristine 1.0.2 with zero fuzz/no offsets. It is byte-for-byte identical to the former 1.0.1 patch (same pnpm hash); patched agent-session.js matches the pnpm-installed file exactly. Idle triggers and settled successors still receive fresh preflight; boundary continuations remain same-Run, without duplicate preflight or settlement.
+- Pristine proof uses an extracted npm artifact and a temporary Node resolve loader redirecting every coding-agent import, with dependency lookup linked to the installed **1.0.2** dependency directory. Installed packages and the production Host/session are not overwritten.
+
+Sequential verification: frozen strict-peer install; pristine/patch proof; existing Pi compatibility **11**, Control **72**, Host/runtime/session **125**, quota **69**, Learning foundation/composition/isolation **40**, Browser Reality **27** tests; `pnpm typecheck`; full `pnpm run check`; `pnpm smoke`; isolated loopback MCP dogfood; `git diff --check`. Final full-suite/smoke results are recorded in the delivery PR.
+
+Isolated dogfood uses an ephemeral loopback port, disposable workspace/agent/Pindie storage, real Pi with a faux provider and the actual MCP client/transport: project opening, accepted/unsettled input, event-driven wait(settled), exactly-once timeline delivery, fresh Session/PresentationReader rebinding, lease rotation and stale-lease rejection. No production Host/session mutation or paid inference. Residual manual checks remain live-provider inference and interactive terminal visuals/IME/tmux; Browser coverage is automated, not live Chrome visual dogfood.
+
+## Retained 1.0.1 baseline (historical)
 
 Scope: upgrade the three directly used Pi packages from exactly **0.99.1** to exactly **1.0.1**, with the related Pi family resolved to 1.0.1. This replaces the previous 0.99.1 audit. No Pi feature adoption, auth migration, model-policy change, production Host restart, or Learning architecture change.
 
