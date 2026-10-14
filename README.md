@@ -125,7 +125,7 @@ PINDIE_PROJECT_ROOT=/home/dev/projects/Pindie
 PINDIE_WORKSPACE_ROOT=/home/dev/projects
 ```
 
-It serves nine `pindie_*` tools (the six project-scoped Control tools, list/open project, and create project) over Streamable HTTP at `http://127.0.0.1:8765/mcp` (override the port with `PINDIE_CONTROL_PORT`). List direct-child projects and explicitly open one before using project-scoped tools. Point OpenAI Secure MCP Tunnel at that local URL using `--mcp-server-url`, not `--mcp-command`; restarting the tunnel does not stop the Host. Only explicit project switching or process shutdown disposes the active Host. The service binds loopback only and validates Host/Origin headers; it does not open a public listener.
+It serves 13 `pindie_*` tools (10 project-scoped Control tools for observation, input, human response, safe stopping, session management, configuration, timeline, and waiting; plus three workspace tools for listing, opening, and creating projects) over Streamable HTTP at `http://127.0.0.1:8765/mcp` (override the port with `PINDIE_CONTROL_PORT`). List direct-child projects and explicitly open one before using project-scoped tools. Point OpenAI Secure MCP Tunnel at that local URL using `--mcp-server-url`, not `--mcp-command`; restarting the tunnel does not stop the Host. Only explicit project switching or process shutdown disposes the active Host. The service binds loopback only and validates Host/Origin headers; it does not open a public listener.
 
 Optional Work Memory uses Notion when both environment variables are configured:
 
