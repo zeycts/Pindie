@@ -12,6 +12,7 @@ import {
   type CoreIntegration,
 } from "./core-integration.ts";
 import {
+  type BeforeAgentStartEvent,
   type ExtensionAPI,
   type ExtensionContext,
   type ToolCallEventResult,
@@ -149,7 +150,6 @@ import {
 import { getQuotaFallbackController } from "./quota-fallback-control.ts";
 import { detectQuotaFallbackBackupFailure } from "./quota-fallback-supervisor.ts";
 import {
-  PINDIE_QUOTA_RESUME_MESSAGE,
   PINDIE_QUOTA_RESUME_TYPE,
 } from "./quota-resume-supervisor.ts";
 import { createPindieMemoryCaptureTool } from "./tools/memory.ts";
@@ -307,31 +307,10 @@ function safeSessionEntries(
   }
 }
 
-function isQuotaResumeBranchMessage(value: unknown): boolean {
-  if (typeof value !== "object" || value === null || !("message" in value)) return false;
-  const message = (value as { message?: unknown }).message;
-  if (typeof message !== "object" || message === null) return false;
-  const candidate = message as { role?: unknown; customType?: unknown };
-  return candidate.role === "custom" && candidate.customType === PINDIE_QUOTA_RESUME_TYPE;
-}
-
-function isQuotaResumeAgentRun(
-  event: { prompt?: unknown },
-  ctx: ExtensionContext,
-): boolean {
-  try {
-    const branch = ctx.sessionManager.getBranch();
-    const latest = branch.at(-1);
-    if (isQuotaResumeBranchMessage(latest)) return true;
-  } catch {
-    // Compatibility fallback below is the factual signal exposed by the
-    // pinned Pi 0.86.1 idle custom-trigger path.
-  }
-
-  // Pi 0.86.1's patched idle custom-trigger path runs before the custom
-  // message is appended to SessionManager, so its preflight exposes the exact
-  // hidden message content rather than the customType on the current branch.
-  return event.prompt === PINDIE_QUOTA_RESUME_MESSAGE;
+function isQuotaResumeAgentRun(event: BeforeAgentStartEvent): boolean {
+  // Native Pi exposes the trigger before it is appended to the branch.
+  // User text (even the exact hidden marker) and historical entries are not triggers.
+  return event.messageType === "custom" && event.message.customType === PINDIE_QUOTA_RESUME_TYPE;
 }
 
 export function registerPindieExtension(
@@ -992,7 +971,7 @@ function registerComposedPindieExtension(
     let preparationGeneration: number | null = null;
     try {
       presentation.setStatusContext(ctx);
-      if (isQuotaResumeAgentRun(event, ctx)) {
+      if (isQuotaResumeAgentRun(event)) {
         void presentation.refreshSubscriptionUsage(ctx, { force: true }).catch(() => undefined);
       }
       core.resetAgentRunBookkeeping();
