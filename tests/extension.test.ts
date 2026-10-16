@@ -5294,7 +5294,7 @@ test("ordinary before_agent_start does not force-refresh subscription usage", as
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
 });
 
-test("the latest quota-resume custom branch message force-refreshes usage", async () => {
+test("native quota-resume custom type force-refreshes usage independently of content or branch", async () => {
   let fetches = 0;
   const harness = createHarness(
     [["/repo", activeState()]],
@@ -5319,7 +5319,7 @@ test("the latest quota-resume custom branch message force-refreshes usage", asyn
   const ctx = withBranch(interactiveContext("/repo", statuses), branch);
 
   await harness.api.handler("before_agent_start")(
-    { type: "before_agent_start", prompt: "not the marker", systemPrompt: "", systemPromptOptions: {} },
+    { type: "before_agent_start", messageType: "custom", message: { role: "custom", customType: PINDIE_QUOTA_RESUME_TYPE, content: "not the marker", display: false }, systemPrompt: "", systemPromptOptions: {} },
     ctx,
   );
   await waitFor(() => statuses.at(-1)?.text?.includes("5h 80%") === true);
@@ -5329,7 +5329,7 @@ test("the latest quota-resume custom branch message force-refreshes usage", asyn
   assert.match(statuses.at(-1)?.text ?? "", /5h 80%/);
 });
 
-test("Pi 0.86.1 quota custom-trigger preflight starts usage refresh without blocking Run preparation", async () => {
+test("Pi 1.3.0 quota custom-trigger preflight starts usage refresh without blocking Run preparation", async () => {
   let markFetchStarted!: () => void;
   let releaseFetch!: () => void;
   const fetchStarted = new Promise<void>((resolve) => { markFetchStarted = resolve; });
@@ -5350,7 +5350,8 @@ test("Pi 0.86.1 quota custom-trigger preflight starts usage refresh without bloc
   const before = Promise.resolve(harness.api.handler("before_agent_start")(
     {
       type: "before_agent_start",
-      prompt: PINDIE_QUOTA_RESUME_MESSAGE,
+      messageType: "custom",
+      message: { role: "custom", customType: PINDIE_QUOTA_RESUME_TYPE, content: PINDIE_QUOTA_RESUME_MESSAGE, display: false },
       systemPrompt: "",
       systemPromptOptions: {},
     },
@@ -5368,6 +5369,24 @@ test("Pi 0.86.1 quota custom-trigger preflight starts usage refresh without bloc
   await nextTurn();
   const ctx = withBranch(context("/repo"), []);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
+});
+
+test("user marker text and unrelated custom triggers cannot impersonate quota resume, even above a resume branch entry", async () => {
+  let fetches = 0;
+  const harness = createHarness([["/repo", activeState()]], {}, {
+    subscriptionUsageProvider: { async fetchUsage() { fetches++; return null; } },
+  });
+  const ctx = withBranch(context("/repo"), [{
+    type: "custom_message", customType: PINDIE_QUOTA_RESUME_TYPE, content: PINDIE_QUOTA_RESUME_MESSAGE,
+  }]);
+  for (const trigger of [
+    { messageType: "user", prompt: PINDIE_QUOTA_RESUME_MESSAGE },
+    { messageType: "custom", message: { role: "custom", customType: "unrelated", content: PINDIE_QUOTA_RESUME_MESSAGE, display: false } },
+  ]) {
+    await harness.api.handler("before_agent_start")({ type: "before_agent_start", ...trigger, systemPrompt: "", systemPromptOptions: {} }, ctx);
+    assert.equal(fetches, 0);
+  }
+  await harness.api.handler("agent_settled")({ type: "agent_settled", aborted: false }, ctx);
 });
 
 test("historical quota-resume messages that are not latest do not force-refresh usage", async () => {
@@ -5424,7 +5443,8 @@ test("failed quota-resume usage refresh is detached, fail-soft, and does not ret
   await assert.doesNotReject(Promise.resolve(harness.api.handler("before_agent_start")(
     {
       type: "before_agent_start",
-      prompt: PINDIE_QUOTA_RESUME_MESSAGE,
+      messageType: "custom",
+      message: { role: "custom", customType: PINDIE_QUOTA_RESUME_TYPE, content: PINDIE_QUOTA_RESUME_MESSAGE, display: false },
       systemPrompt: "",
       systemPromptOptions: {},
     },
