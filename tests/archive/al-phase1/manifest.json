@@ -1,0 +1,474 @@
+{
+  "baseline": "fe1d9fa",
+  "caseRegistrations": 78,
+  "cases": [
+    {
+      "file": "extension.test.ts",
+      "line": 1121,
+      "title": "test(\"registered Candidate tool descriptions require explicit matching commands\", () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 1140,
+      "title": "test(\"shared Candidate decision descriptions and usage cover local, scope, and synthesis routes\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 1164,
+      "title": "test(\"Candidate commands reject embedded whitespace consistently before namespace dispatch\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 1183,
+      "title": "test(\"Candidate decisions report canonical ID errors without mislabeling the subject as a Trial or review\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 1767,
+      "title": "test(\"SI v0.4 /experience renders empty and mixed evidence read-only\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 1853,
+      "title": "test(\"SI v0.7 /strategies lists the complete Seed portfolio and stays read-only\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 1900,
+      "title": "test(\"SI v0.7 /strategies groups trusted Seed revisions and Derived identities\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 2018,
+      "title": "test(\"SI v0.7 /strategies preserves exact global and local trust deduplication\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 2096,
+      "title": "test(\"SI v0.7 /strategies keeps a local portfolio when optional trust reconstruction fails\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 2138,
+      "title": "test(\"SI v0.7 /strategies isolates a conflicting optional global revision\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 2190,
+      "title": "test(\"SI v0.7 /strategies keeps local inspection when optional global artifacts are malformed\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 2242,
+      "title": "test(\"SI v0.6 /trial-review renders read-only Candidate and Seed evidence\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 2284,
+      "title": "test(\"SI v0.7 /trial-review dispatches Derivation Candidates with separate read-only evidence\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 2336,
+      "title": "test(\"SI v0.7 unified /trial-review fails closed on a cross-store UUID collision\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 2386,
+      "title": "test(\"adaptation, derivation, global derivation and Trial completions stay terminal without disposition\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 3951,
+      "title": "test(\"Slice A times out Self-Improvement preparation and clears only its failed generation\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 4008,
+      "title": "test(\"Slice A rejects late trust publication from an older preparation generation\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 4060,
+      "title": "test(\"ordinary Self-Improvement preparation tolerates a context without a Session getter\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 4476,
+      "title": "test(\"SI v0.2 Policy Snapshot is optional, transcript-visible, replaceable, and Run-scoped\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 4515,
+      "title": "test(\"failed Policy declaration restores the previous Snapshot after one Core mutation\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 6013,
+      "title": "test(\"Trial attribution ends at the outgoing Run and is not inherited by a fresh Session\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 7832,
+      "title": "test(\"SI v0.6 writes revision-aware schema-v4 Run Experience while preserving v0.3 facts\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 7879,
+      "title": "test(\"SI v0.6 preserves idle introduction and Policy declaration positions\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 7940,
+      "title": "test(\"SI v0.6 keeps completed run-start Task A distinct from introduced settlement Task B\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 7966,
+      "title": "test(\"SI v0.3 eligibility excludes no-Task, policy-only, stale, unavailable, and denied-only Runs\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8073,
+      "title": "test(\"SI v0.5 /adapt is explicit, Run-bound, and Candidate creation stays inactive\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8165,
+      "title": "test(\"SI v0.5 /adapt rejects unknown, busy, missing-root, and insufficient evidence without a model turn\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8211,
+      "title": "test(\"SI v0.7 /derive is explicit, bounded, read-only, and consumes one Candidate lease\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8300,
+      "title": "test(\"SI v0.7 /derive, /adapt, and /trial leases remain mutually exclusive\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8336,
+      "title": "test(\"SI v0.6 Slice B /trial arms the next real Run without manufacturing user intent\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8423,
+      "title": "test(\"SI v0.7 /trial completions unify valid Revision and Derivation Candidates by exact ID\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8469,
+      "title": "test(\"SI v0.7 Derivation /trial binds one exact Run, creates no packet attribution alone, and records schema-v4 trial identity\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8575,
+      "title": "test(\"SI v0.7 Derivation /trial fails closed for stale Candidate bindings and cross-store UUID collisions\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8638,
+      "title": "test(\"SI v0.7 Derivation /trial rejects a changed trusted-portfolio base before Run binding\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8687,
+      "title": "test(\"SI v0.7 Derivation Trial lease clears across Session replacement and fresh Runs\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8716,
+      "title": "test(\"SI v0.6 /trial refuses malformed, unavailable, busy, missing, and invalid Candidates\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8777,
+      "title": "test(\"SI v0.6 Candidate lifecycle completions are semantic, filtered, and read-only\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8878,
+      "title": "test(\"SI v0.6 stale Candidate completions remain subject to fresh command authority\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8924,
+      "title": "test(\"SI v0.6 Trial and Adaptation slow paths are mutually exclusive\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 8971,
+      "title": "test(\"SI v0.6 Trial leases clear across Session replacement and fresh Runs\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 9426,
+      "title": "test(\"SI v0.6 /promote creates one immutable Decision and normal Runs explicitly attribute promoted Policy\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 9512,
+      "title": "test(\"SI v0.7 CPL-off local Derived promotion uses the shared writer lock for final strict revalidation and write\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 9606,
+      "title": "test(\"SI v0.7 CPL-off local Derived promotion fails when a valid global revision owns the logical ID\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 9666,
+      "title": "test(\"SI v0.7 CPL-off malformed global authority is presentation-isolated but blocks local Derived promotion\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 9734,
+      "title": "test(\"SI v0.7 CPL-off unrelated local Derived promotion remains valid with coherent global authority\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 9784,
+      "title": "test(\"SI v0.7 shared writer lock serializes local and global same-ID trust transitions\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 9932,
+      "title": "test(\"SI v0.6 /promote enforces the exact gate while /reject remains explicit and unavailable in normal Policy\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 9983,
+      "title": "test(\"SI v0.6 trust read/write failures fall back to Seeds and never alter Task authority\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 10020,
+      "title": "test(\"Slice A /trust-transfer is meaning-first, source-bound, and does not start a Run or mutate local State\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 10085,
+      "title": "test(\"Scope Trial global projection failure preserves project-local Trial completion\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 10123,
+      "title": "test(\"Slice B Scope Trial dispatches through the shared lease and preserves source revision attribution\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 10287,
+      "title": "test(\"Slice C /trial-review scope is completion-driven, fresh, bounded, and read-only\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 10355,
+      "title": "test(\"Scope Trial handoff commits normally and automatic rollover does not inherit it\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 10450,
+      "title": "test(\"Slice B /derive-global admits once, binds one packet-only Run, and settles without Task Experience or continuation\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 10593,
+      "title": "test(\"Slice C Synthesis Trial uses one normal Task Run, attributes only exact selection, and settles cleanly\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 10726,
+      "title": "test(\"Slice C active Synthesis Trial still resolves an ordinary exact trusted selector\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 10799,
+      "title": "test(\"Slice C Synthesis Trial fails closed for stale Candidate and target authority before Run binding\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 10941,
+      "title": "test(\"Slice C Synthesis Trial fails closed when Session reset clears binding during pre-Run validation\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 11022,
+      "title": "test(\"Slice E clears pending and active Global Derivation and Synthesis Trial leases across reload and shutdown\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "extension.test.ts",
+      "line": 11145,
+      "title": "test(\"Slice B /derive-global preparation, launch, and Session failures clear reservation without starting a Run\", async () => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "learning-foundation-f1.test.ts",
+      "line": 30,
+      "title": "test(\"F1 episode is stable through refinement, Runs, reload and completion; replacement rotates it\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "learning-foundation-f1.test.ts",
+      "line": 52,
+      "title": "test(\"F1 pre-v1 active State bootstraps once, but missing ledger with v5 evidence does not remint\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "learning-foundation-f1.test.ts",
+      "line": 73,
+      "title": "test(\"F1 crash mismatch and corrupt binding fail closed without blocking semantic transitions\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "learning-foundation-f1.test.ts",
+      "line": 97,
+      "title": "test(\"F1 same-contract replacement crash marker prevents old identity reuse on both sides of State commit\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "learning-foundation-f1.test.ts",
+      "line": 118,
+      "title": "test(\"F1 run attribution never assigns one Run crossing episodes to its final Task\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "learning-foundation-f1.test.ts",
+      "line": 215,
+      "title": "test(\"F1 v4 remains readable; coherent v5 survives storage and pruning\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "learning-foundation-f2.test.ts",
+      "line": 220,
+      "title": "test(\"F2 Host kicks only after the replacement Session is bound, without another Human Run\", async () => fixture(async (root) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "project-discovery.test.ts",
+      "line": 219,
+      "title": "test(\"D1 Host startup enqueue does not start a model or change the Human Session surface\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "project-discovery.test.ts",
+      "line": 244,
+      "title": "test(\"D2 Host freezes the explicit learning model identity, independent of the Human Session model\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "strategy-trust-scope-slice-d.test.ts",
+      "line": 302,
+      "title": "test(\"Slice E CPL-off reconstructs promoted Synthesis trust from real files and isolates Candidate corruption\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "trial-overlay-pi-r2.test.ts",
+      "line": 68,
+      "title": "for (const kind of [\"approach\", \"modifier\"] as const) for (const preexisting of [false, true]) test(`R2 native Pi ${kind}: ${preexisting ? \"first request\" : \"same-Run task_start continuation\"}, explicit trial v5 attribution`, async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "trial-overlay-pi-r2.test.ts",
+      "line": 103,
+      "title": "test(\"R3 native Pi selected without subsequent work preserves Experience but publishes no evidence\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "trial-overlay-pi-r2.test.ts",
+      "line": 111,
+      "title": "test(\"R3 native Pi trial replaced by final Seed Policy is not materialized\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "trial-overlay-pi-r2.test.ts",
+      "line": 145,
+      "title": "test(\"R2 native Pi fresh Session/reloaded assembly cannot redeliver an assigned episode\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "trial-overlay-pi-r2.test.ts",
+      "line": 158,
+      "title": "test(\"R2 native Pi ignoring offer creates only scheduling history and ordinary Experience\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "trial-overlay-pi-r2.test.ts",
+      "line": 166,
+      "title": "test(\"R2 native Pi downstream transform deletion consumes rendering but not exact selector lease\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "trial-overlay-pi-r2.test.ts",
+      "line": 209,
+      "title": "test(\"R2 native Pi rejected selector leaves Seed and later exact declaration chronology intact\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    },
+    {
+      "file": "trial-overlay-pi-r2.test.ts",
+      "line": 235,
+      "title": "test(\"R2 native Pi legacy Adapt packet Run never consumes the open episode\", async (t) => {",
+      "reason": "Removed production Learning activation/Policy/Trial contract. Standalone module tests and mixed Core cases stay active."
+    }
+  ]
+}

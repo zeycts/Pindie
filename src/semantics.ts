@@ -238,7 +238,6 @@ export function deriveCapabilities(
 ): ReadonlySet<PindieCapability> {
   const capabilities = new Set<PindieCapability>([
     ...OBSERVATION_CAPABILITIES,
-    "policy.declare",
   ]);
 
   if (snapshot.authority !== "coherent") {

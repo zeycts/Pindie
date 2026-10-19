@@ -14,11 +14,8 @@ import {
 } from "./semantics.ts";
 import type { ToolEffect } from "./execution-semantics.ts";
 import type { PindieState } from "./state.ts";
-import {
-  type RunExperienceExecution,
-  type RunExperiencePolicy,
-  RunExperienceTracker,
-} from "./run-experience.ts";
+import type { RunExperiencePolicy } from "./run-experience.ts";
+import { RunCounters, type RunExecutionCounters } from "./run-counters.ts";
 /** Pi-facing ownership for runtime-only Agent Run authority state. */
 export class RunIntegration {
   readonly runtime: PindieRuntime;
@@ -29,7 +26,7 @@ export class RunIntegration {
   private agentRunActive = false;
   private agentRunGeneration = 0;
   private agentRunSettlementInProgress = false;
-  readonly experience = new RunExperienceTracker();
+  readonly experience = new RunCounters();
 
   constructor(runtime: PindieRuntime) {
     this.runtime = runtime;
@@ -92,17 +89,18 @@ export class RunIntegration {
     return this.agentRunFactsContext?.taskAtRunStart?.goal ?? null;
   }
 
-  get executionCounters(): RunExperienceExecution {
+  get executionCounters(): RunExecutionCounters {
     return this.experience.execution;
   }
 
   get policyAttribution(): RunExperiencePolicy {
-    return this.experience.policy;
+    return { finalSnapshot: null, declarationCount: 0, finalPolicyDeclarationCount: 0,
+      finalPolicyFirstDeclaredAfter: null, finalPolicyLastDeclaredAfter: null };
   }
 
   setPolicySnapshot(snapshot: PolicySnapshot): void {
-    this.currentPolicySnapshot = snapshot;
-    this.experience.setPolicySnapshot(snapshot);
+    // Retired compatibility seam. Policy cannot affect ordinary Runs.
+    void snapshot;
   }
 
   clearPolicySnapshot(): void {
@@ -177,11 +175,11 @@ export class RunIntegration {
   }
 
   recordSuccessfulPolicyDeclaration(): void {
-    this.experience.recordSuccessfulPolicyDeclaration();
+    // Retired; no attribution is collected.
   }
 
   recordFailedPolicyDeclaration(): void {
-    this.currentPolicySnapshot = this.experience.recordFailedPolicyDeclaration();
+    this.currentPolicySnapshot = null;
   }
 
   recordSuccessfulCapability(capability: PindieCapability): void {

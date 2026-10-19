@@ -124,7 +124,7 @@ function coreApi(tools: Map<string, any>): ExtensionAPI {
   } as unknown as ExtensionAPI;
 }
 
-test("Core-only assembly owns base Task, Gateway, verification/Gate, and Seed Policy behavior", async () => {
+test("Core-only assembly owns Task, Gateway and verification/Gate without retired Policy",  async () => {
   const store = new MemoryStateStore();
   const core = createCoreIntegration({
     store,
@@ -142,10 +142,9 @@ test("Core-only assembly owns base Task, Gateway, verification/Gate, and Seed Po
   assert.equal(tools.has("pindie_strategy_candidate_create"), false);
   assert.equal(tools.has("pindie_memory_capture"), false);
 
-  await tools.get("pindie_policy_set").execute("policy", {
-    approach: "direct-action",
-  });
-  assert.equal(core.run.policySnapshot?.approach.id, "direct-action");
+  assert.equal(tools.has("pindie_policy_set"), false);
+  assert.equal(core.authorizeTool("pindie_policy_set").decision?.allowed, false);
+  assert.equal(core.run.policySnapshot, null);
 
   await tools.get("pindie_task_start").execute("start", {
     goal: "Exercise the Core boundary",

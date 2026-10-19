@@ -20,9 +20,9 @@
     "pindie": "node --experimental-strip-types src/pindie.ts",
     "control:mcp": "node --experimental-strip-types src/control-mcp-process.ts",
     "control:watch": "node --experimental-strip-types src/control-watch.ts",
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test": "node --experimental-strip-types --test --test-concurrency=1 tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "check": "tsc --noEmit && node --experimental-strip-types --test tests/*.test.ts",
+    "check": "tsc --noEmit && node --experimental-strip-types --test --test-concurrency=1 tests/*.test.ts",
     "smoke": "node --experimental-strip-types scripts/pi-smoke.ts"
   },
   "devDependencies": {

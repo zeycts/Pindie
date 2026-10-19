@@ -196,10 +196,10 @@ test("stale and unavailable authority preserve observation and deny consequences
   assert.equal(composed(null, { stateAvailable: false }, "custom_tool").allowed, false);
 });
 
-test("policy declaration uses only the fixed non-mutating capability", () => {
-  assert.equal(composed(EMPTY_STATE, facts({ taskRelation: "none" }), "pindie_policy_set").allowed, true);
-  assert.equal(composed({ task: task() }, facts(), "pindie_policy_set").allowed, true);
-  assert.equal(composed(null, { stateAvailable: false }, "pindie_policy_set").allowed, true);
+test("retired Policy remains classified non-mutating but cannot be authorized", () => {
+  assert.equal(composed(EMPTY_STATE, facts({ taskRelation: "none" }), "pindie_policy_set").allowed, false);
+  assert.equal(composed({ task: task() }, facts(), "pindie_policy_set").allowed, false);
+  assert.equal(composed(null, { stateAvailable: false }, "pindie_policy_set").allowed, false);
   assert.deepEqual(classifyToolEffect("pindie_policy_set"), {
     requiredCapability: "policy.declare",
     projectMutation: "none",

@@ -1,5 +1,7 @@
 # Pindie v0.3 — Behavior Specification
 
+> **AL retirement Phase 1:** [current boundary](al-retirement-phase1.md) supersedes historical Learning/SI/CPL/Policy/WorkEpisode behavior below. No flag or override reactivates it; no Policy/learning tools, commands, advisory, Experience persistence or Learning jobs are mounted. Core Task/Verification/Gate semantics are unchanged.
+
 This document defines the current semantic and behavioral contract. It describes what Pindie means and guarantees now; implementation history belongs in Git history and tests.
 
 ## 1. Persistent-State invariants

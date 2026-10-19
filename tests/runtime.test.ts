@@ -149,7 +149,7 @@ function observerLedger(): import("../src/work-episode.ts").WorkEpisodeLedger {
     } };
 }
 
-test("T1 dispatch never waits for a hung episode observer; refine/progress/reload never notify", async () => {
+test("retired episode observer is never invoked by Task dispatch/refine/progress/reload", async () => {
   const store = new FakeStateStore(), runtime = new PindieRuntime(store, observerLedger());
   let calls = 0;
   runtime.onWorkEpisodeOpened = async () => { calls++; await new Promise(() => {}); };
@@ -164,11 +164,11 @@ test("T1 dispatch never waits for a hung episode observer; refine/progress/reloa
       await runtime.load("/repo");
     })(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Dispatch awaited observer")), 250); })]);
   } finally { clearTimeout(timer); }
-  assert.equal(calls, 2);
+  assert.equal(calls, 0);
   assert.equal(runtime.state.task?.goal, "Refined");
 });
 
-test("T1 detached observer synchronous throws and async rejections are contained and bounded", async (t) => {
+test("retired episode observer cannot throw or reject into Core transitions", async (t) => {
   const warnings: string[] = [], unhandled: unknown[] = [];
   t.mock.method(console, "warn", (message: string) => { warnings.push(message); });
   const onUnhandled = (error: unknown) => { unhandled.push(error); };
@@ -181,7 +181,7 @@ test("T1 detached observer synchronous throws and async rejections are contained
   runtime.onWorkEpisodeOpened = async () => { throw new Error("async failure".repeat(100)); };
   assert.ok((await runtime.dispatch({ ...START_EVENT, type: "replace_task", goal: "Replacement" })).ok);
   await nextTurn();
-  assert.equal(warnings.length, 2);
+  assert.equal(warnings.length, 0);
   assert.ok(warnings.every((message) => message.length < 600));
   assert.deepEqual(unhandled, []);
   assert.equal(runtime.state.task?.goal, "Replacement");

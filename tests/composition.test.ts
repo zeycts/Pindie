@@ -79,14 +79,14 @@ function hasRuntimeImport(source: string, moduleSpecifier: string): boolean {
 const projectRoot = "/workspace/composable-pindie";
 const execFileAsync = promisify(execFile);
 
-test("Stable Mode production composition keeps Core WorkEpisode and excludes Learning dependencies", () => {
+test("production composition excludes retired WorkEpisode and Learning dependencies", () => {
   const { featureSelection, extensionOptions } = composeConfiguredPindieExtension(
     { storageRoots: { projectsBaseDir: "/tmp/r0-projects", globalBaseDir: "/tmp/r0-global" } },
     {},
   );
   assert.equal(featureSelection.selfImprovement, false);
   assert.equal(featureSelection.crossProjectLearning, false);
-  assert.ok(extensionOptions.workEpisodes);
+  assert.equal(extensionOptions.workEpisodes, undefined);
   assert.equal(extensionOptions.experienceStore, undefined);
   assert.equal(extensionOptions.strategyCandidateStore, undefined);
   assert.equal(extensionOptions.crossProjectExperienceReader, undefined);
@@ -123,53 +123,12 @@ test("Slice A resolves stable startup defaults and explicit dependency roots", (
     (composition.extensionOptions.store as FileStateStore).storageBaseDir,
     roots.projectsBaseDir,
   );
-  assert.equal(
-    (composition.extensionOptions.experienceStore as FileRunExperienceStore).experienceDirectory(projectRoot),
-    join(roots.projectsBaseDir, getProjectId(projectRoot), "experience"),
-  );
-  assert.equal(
-    (composition.extensionOptions.strategyCandidateStore as FileStrategyCandidateStore).strategyCandidateDirectory(projectRoot),
-    join(roots.projectsBaseDir, getProjectId(projectRoot), "strategy-candidates"),
-  );
-  assert.equal(
-    (composition.extensionOptions.strategyDecisionStore as FileStrategyDecisionStore).strategyDecisionDirectory(projectRoot),
-    join(roots.projectsBaseDir, getProjectId(projectRoot), "strategy-decisions"),
-  );
-  assert.equal(
-    (composition.extensionOptions.strategyDerivationCandidateStore as FileStrategyDerivationCandidateStore).strategyDerivationCandidateDirectory(projectRoot),
-    join(roots.projectsBaseDir, getProjectId(projectRoot), "strategy-derivation-candidates"),
-  );
-  assert.equal(
-    (composition.extensionOptions.strategyDerivationDecisionStore as FileStrategyDerivationDecisionStore).strategyDerivationDecisionDirectory(projectRoot),
-    join(roots.projectsBaseDir, getProjectId(projectRoot), "strategy-derivation-decisions"),
-  );
-  assert.equal(
-    (composition.extensionOptions.strategyTrustScopeCandidateStore as FileStrategyTrustScopeCandidateStore).strategyScopeCandidateDirectory(),
-    join(roots.globalBaseDir, "strategy-scope-candidates"),
-  );
-  assert.equal(
-    (composition.extensionOptions.strategyTrustScopeDecisionStore as FileStrategyTrustScopeDecisionStore).strategyScopeDecisionDirectory(),
-    join(roots.globalBaseDir, "strategy-scope-decisions"),
-  );
-  assert.equal(
-    (composition.extensionOptions.strategyTrustScopeWriterLock as FileGlobalWriterLock).storageBaseDir,
-    roots.globalBaseDir,
-  );
-  assert.equal(composition.extensionOptions.crossProjectTrustReader instanceof FileProjectTrustedStrategyPortfolioReader, true);
-  assert.equal(
-    (composition.extensionOptions.strategySynthesisCandidateStore as FileStrategySynthesisCandidateStore).candidateDirectory(),
-    join(roots.globalBaseDir, "strategy-synthesis-candidates"),
-  );
-  assert.equal(
-    composition.extensionOptions.strategySynthesisCandidateReader,
-    composition.extensionOptions.strategySynthesisCandidateStore,
-    "SI and CPL must share the production Synthesis Candidate authority reader/store",
-  );
-  assert.equal(
-    composition.extensionOptions.strategySynthesisDecisionReader,
-    composition.extensionOptions.strategySynthesisDecisionStore,
-    "SI and CPL must share the production Synthesis Decision authority reader/store",
-  );
+  for (const name of ["experienceStore", "strategyCandidateStore", "strategyDecisionStore",
+    "strategyDerivationCandidateStore", "strategyDerivationDecisionStore", "strategyTrustScopeCandidateStore",
+    "strategyTrustScopeDecisionStore", "strategyTrustScopeWriterLock", "crossProjectTrustReader",
+    "strategySynthesisCandidateStore", "strategySynthesisCandidateReader", "strategySynthesisDecisionStore", "strategySynthesisDecisionReader"]) {
+    assert.equal(Object.hasOwn(composition.extensionOptions, name), false, name);
+  }
 });
 
 test("Slice A gives configured Remote an explicit routing root", () => {
@@ -209,13 +168,11 @@ test("Slice A never derives feature roots from an injected StateStore", () => {
     (composition.extensionOptions.store as FileStateStore).storageBaseDir,
     "/tmp/state-only",
   );
-  assert.equal(
-    (composition.extensionOptions.experienceStore as FileRunExperienceStore).experienceDirectory(projectRoot),
-    join("/tmp/explicit-projects", getProjectId(projectRoot), "experience"),
-  );
+  assert.equal(composition.storageRoots.projectsBaseDir, "/tmp/explicit-projects");
+  assert.equal(composition.extensionOptions.experienceStore, undefined);
 });
 
-test("Slice E allows SI-only composition and drops CPL dependencies when disabled", () => {
+test("retired SI and CPL overrides drop learning dependencies while other features remain configurable", () => {
   const roots = {
     projectsBaseDir: "/tmp/slice-d-projects",
     globalBaseDir: "/tmp/slice-d-global",
@@ -265,7 +222,7 @@ test("Slice E allows SI-only composition and drops CPL dependencies when disable
     featureSelection: { selfImprovement: true, crossProjectLearning: false },
     storageRoots: roots,
   });
-  assert.equal(siOnly.featureSelection.selfImprovement, true);
+  assert.equal(siOnly.featureSelection.selfImprovement, false);
   assert.equal(siOnly.featureSelection.crossProjectLearning, false);
   for (const dependency of [
     "experienceStore",
@@ -275,7 +232,7 @@ test("Slice E allows SI-only composition and drops CPL dependencies when disable
     "strategySynthesisCandidateReader",
     "strategySynthesisDecisionReader",
   ]) {
-    assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), true, dependency);
+    assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), false, dependency);
   }
   for (const dependency of [
     "strategySynthesisCandidateStore",
@@ -285,11 +242,11 @@ test("Slice E allows SI-only composition and drops CPL dependencies when disable
   }
   assert.equal(
     siOnly.extensionOptions.strategySynthesisCandidateReader instanceof FileStrategySynthesisCandidateReader,
-    true,
+    false,
   );
   assert.equal(
     siOnly.extensionOptions.strategySynthesisDecisionReader instanceof FileStrategySynthesisDecisionReader,
-    true,
+    false,
   );
   for (const dependency of [
     "crossProjectExperienceReader",
@@ -310,14 +267,7 @@ test("Slice E allows SI-only composition and drops CPL dependencies when disable
       presentation: true,
     },
   );
-  assert.throws(
-    () => resolvePindieFeatureSelection(
-      { selfImprovement: false, crossProjectLearning: true },
-      {},
-      {},
-    ),
-    /Cross-Project Learning requires Self-Improvement/,
-  );
+  assert.equal(resolvePindieFeatureSelection({ selfImprovement: false, crossProjectLearning: true }, {}, {}).crossProjectLearning, false);
   assert.equal(
     resolvePindieFeatureSelection(
       { selfImprovement: true, crossProjectLearning: false },
@@ -410,7 +360,7 @@ test("Slice F protects the final Core/SI/CPL and trust runtime import boundaries
   assert.equal(hasRuntimeImport(trustSafetySource, "./strategy-trust-scope-global.ts"), true);
 });
 
-test("Stable Mode master switch is off by default and is authoritative when explicitly disabled", () => {
+test("retired master switch is inert both when enabled and disabled", () => {
   assert.deepEqual(resolvePindieFeatureSelection({}, {}, {}), {
     selfImprovement: false,
     crossProjectLearning: false,
@@ -425,8 +375,8 @@ test("Stable Mode master switch is off by default and is authoritative when expl
       PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
     }),
     {
-      selfImprovement: true,
-      crossProjectLearning: true,
+      selfImprovement: false,
+      crossProjectLearning: false,
       remote: false,
       workMemory: false,
       bundledSkills: true,
@@ -464,7 +414,7 @@ test("Stable Mode master switch is off by default and is authoritative when expl
   );
 });
 
-test("Slice F preserves opt-in environment selection and clearly rejects SI-off plus CPL-on", () => {
+test("retired environment selection cannot enable SI or CPL even with conflicting old values", () => {
   const siOff = composeConfiguredPindieExtension({}, {
     PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
     PINDIE_SELF_IMPROVEMENT_ENABLED: "false",
@@ -481,20 +431,16 @@ test("Slice F preserves opt-in environment selection and clearly rejects SI-off 
   assert.equal(bothOff.featureSelection.selfImprovement, false);
   assert.equal(bothOff.featureSelection.crossProjectLearning, false);
 
-  assert.throws(
-    () => composeConfiguredPindieExtension({}, {
-      PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
-      PINDIE_SELF_IMPROVEMENT_ENABLED: "false",
-      PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "true",
-    }),
-    /Cross-Project Learning requires Self-Improvement/,
-  );
+  assert.equal(composeConfiguredPindieExtension({}, {
+    PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true", PINDIE_SELF_IMPROVEMENT_ENABLED: "false",
+    PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "true",
+  }).featureSelection.crossProjectLearning, false);
   const siOnly = composeConfiguredPindieExtension({}, {
     PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
     PINDIE_SELF_IMPROVEMENT_ENABLED: "true",
     PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "false",
   });
-  assert.equal(siOnly.featureSelection.selfImprovement, true);
+  assert.equal(siOnly.featureSelection.selfImprovement, false);
   assert.equal(siOnly.featureSelection.crossProjectLearning, false);
   assert.equal(Object.hasOwn(siOnly.extensionOptions, "crossProjectExperienceReader"), false);
   assert.equal(Object.hasOwn(siOnly.extensionOptions, "scopeProjectTrustReader"), false);
@@ -557,8 +503,9 @@ test("Slice F assembles the final composition matrix through the production comp
     ["Core + Work Memory", selection({ workMemory: true })],
   ] as const;
 
-  for (const [name, featureSelection] of cases) {
-    const composition = compose({ ...optionalInput, featureSelection });
+  for (const [name, requestedSelection] of cases) {
+    const featureSelection = { ...requestedSelection, selfImprovement: false, crossProjectLearning: false };
+    const composition = compose({ ...optionalInput, featureSelection: requestedSelection });
     assert.deepEqual(composition.featureSelection, featureSelection, name);
     for (const dependency of [
       "experienceStore",

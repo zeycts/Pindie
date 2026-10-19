@@ -1,5 +1,7 @@
 # Pindie Architecture v0.3
 
+> **AL retirement Phase 1:** [current boundary](al-retirement-phase1.md) supersedes the Learning/SI/CPL/Policy/WorkEpisode integration descriptions retained below as history. Production no longer mounts these paths, regardless of flags/overrides. No historical data is deleted. Unrelated ownership and Core contracts remain unchanged.
+
 ## 1. Purpose and ownership
 
 Pindie is a personal Agent Operating System for indie development. Pi is its current low-level execution runtime, not the owner of Pindie's process or active-session lifecycle. Pindie Host owns that lifecycle; the existing semantic integration remains extension-hosted without changing existing semantic behavior.

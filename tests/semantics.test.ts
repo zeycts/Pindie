@@ -10,7 +10,7 @@ import {
 } from "../src/semantics.ts";
 import { EMPTY_STATE, type PindieState, type PindieTask } from "../src/state.ts";
 
-const AUTHORITY_BASE_CAPABILITIES: PindieCapability[] = ["observe.project", "observe.git", "policy.declare"];
+const AUTHORITY_BASE_CAPABILITIES: PindieCapability[] = ["observe.project", "observe.git"];
 const COHERENT_BASE: PindieCapability[] = [
   ...AUTHORITY_BASE_CAPABILITIES,
   "memory.capture",
@@ -135,14 +135,14 @@ function assertDerivationFails(
   if (!result.ok && message) assert.match(result.error, message);
 }
 
-test("S01 unavailable authority exposes observation plus policy declaration", () => {
+test("S01 unavailable authority exposes observation without retired Policy", () => {
   const snapshot = successfulSnapshot(null, { stateAvailable: false });
 
   assert.deepEqual(snapshot, { authority: "unavailable" });
   assertCapabilities(deriveCapabilities(snapshot), AUTHORITY_BASE_CAPABILITIES);
 });
 
-test("S02 stale authority exposes observation plus policy declaration", () => {
+test("S02 stale authority exposes observation without retired Policy", () => {
   const snapshot = successfulSnapshot(stateWith(createTask()), {
     stateAvailable: true,
     runCoherent: false,
@@ -152,7 +152,7 @@ test("S02 stale authority exposes observation plus policy declaration", () => {
   assertCapabilities(deriveCapabilities(snapshot), AUTHORITY_BASE_CAPABILITIES);
 });
 
-test("S03 coherent idle exposes start, observation, and policy declaration", () => {
+test("S03 coherent idle exposes start and observation", () => {
   const snapshot = successfulSnapshot(
     EMPTY_STATE,
     coherentFacts({
@@ -172,7 +172,7 @@ test("S03 coherent idle exposes start, observation, and policy declaration", () 
   );
 });
 
-test("S04 a Task completed before the Run exposes start, observation, and policy declaration", () => {
+test("S04 a Task completed before the Run exposes start and observation", () => {
   assertCapabilities(
     capabilitiesFor(
       stateWith(completedTask()),
@@ -182,7 +182,7 @@ test("S04 a Task completed before the Run exposes start, observation, and policy
   );
 });
 
-test("S05 a Task completed during the Run exposes observation plus policy declaration", () => {
+test("S05 a Task completed during the Run exposes observation without retired Policy", () => {
   assertCapabilities(
     capabilitiesFor(
       stateWith(completedTask()),
@@ -366,7 +366,7 @@ test("S16 blocked introduced and changed Tasks cannot be replaced", () => {
   }
 });
 
-test("S17 a Gate opened during the current Run exposes observation plus policy declaration", () => {
+test("S17 a Gate opened during the current Run exposes observation without retired Policy", () => {
   assertCapabilities(
     capabilitiesFor(
       stateWith(gatedTask()),
@@ -514,7 +514,7 @@ test("available and unavailable State inputs cannot contradict their Run Facts",
   );
 });
 
-test("authority dominance reduces representative stale States to observation plus policy declaration", () => {
+test("authority dominance reduces representative stale States to observation only", () => {
   const representativeStates = [
     stateWith(createTask({ verification: passedVerification() })),
     stateWith(

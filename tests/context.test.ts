@@ -85,13 +85,7 @@ test("stable Pindie System Contract is deterministic, complete, and excludes cur
   assert.match(first, /model owns interpretation of user intent/);
   assert.match(first, /latest Pindie Run Baseline/);
   assert.match(first, /append-only runtime updates/i);
-  assert.match(first, /Seed Strategies are optional, advisory/);
-  assert.match(first, /Strategy Revision Candidates are inactive hypotheses; creation requires a live Seed-targeted adaptation Run \(explicit \/adapt <strategy-id>\) and its lease/);
-  assert.match(first, /Strategy Derivation Candidates are inactive new-logical-Strategy hypotheses; creation requires a live local Derivation Run \(explicit \/derive\) and its lease, and is optional/);
-  assert.match(first, /only an explicitly armed \/trial Run \(local <candidate-id>, scope:<candidate-id>, or synthesis:<candidate-id>\) may select its exact Candidate revision/);
-  assert.match(first, /Candidates never override State, the Execution Gateway, Verification, or Task authority/);
-  assert.doesNotMatch(first, /creation is valid only during explicitly entered/);
-  assert.match(first, /Seed Strategies:/);
+  assert.doesNotMatch(first, /Seed Strategies|Policy Snapshot|Strategy Revision Candidates|\/adapt|\/derive|\/trial/);
   assert.doesNotMatch(first, /Current Policy Snapshot/);
   assert.doesNotMatch(first, /Approach: architecture-first/);
 });
@@ -229,7 +223,7 @@ test("current Action Eligibility uses the same capability derivation across impo
     completionRelation: "completed_during_run",
   }));
   expected(completedDuringRun, "task start", "not eligible");
-  expected(completedDuringRun, "policy declaration", "allowed");
+  assert.doesNotMatch(completedDuringRun, /policy declaration/);
 
   const stale = renderCurrentPindieActionEligibility({
     authority: "stale",
@@ -239,16 +233,16 @@ test("current Action Eligibility uses the same capability derivation across impo
     hasQuestions: false,
     completionReady: false,
   });
-  expected(stale, "policy declaration", "allowed");
+  assert.doesNotMatch(stale, /policy declaration/);
   expected(stale, "project mutation", "not eligible");
   expected(stale, "task refine", "not eligible");
 
   const unavailable = renderCurrentPindieActionEligibility({ authority: "unavailable" });
-  expected(unavailable, "policy declaration", "allowed");
+  assert.doesNotMatch(unavailable, /policy declaration/);
   expected(unavailable, "task start", "not eligible");
 });
 
-test("State Checkpoint preserves current State, eligibility, policy, and hidden metadata", () => {
+test("State Checkpoint preserves current State, eligibility and hidden metadata but excludes retired Policy", () => {
   const policy = createPolicySnapshot({
     approach: "architecture-first",
     modifiers: ["minimal-change"],
@@ -273,10 +267,10 @@ test("State Checkpoint preserves current State, eligibility, policy, and hidden 
     "Human Gate:\n- Kind: decision",
     "Current Pindie Action Eligibility:",
     "- task refine: allowed",
-    "Current Policy Snapshot:\n- Approach: architecture-first (approach)",
-    "  - minimal-change (modifier)",
+
   ]) assert.match(content, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
+  assert.doesNotMatch(content, /Current Policy Snapshot|architecture-first|minimal-change/);
   const message = createPindieStateCheckpointMessage(state(), snapshot, policy);
   assert.equal(message.customType, PINDIE_STATE_CHECKPOINT_TYPE);
   assert.equal(message.display, false);
