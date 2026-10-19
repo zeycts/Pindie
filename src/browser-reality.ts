@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import {
-  DevToolsClient,
-  type BrowserUseConfig,
-} from "@amaster.ai/pi-browser-use";
+import type { BrowserRealityManager } from "./browser-reality-manager.ts";
+import { readBrowserToolCatalog } from "./browser-tool-catalog.ts";
+export { REQUIRED_BROWSER_TOOL_NAMES } from "./browser-tool-catalog.ts";
 import {
   buildBrowserLaunchArguments,
   createBrowserRealityHost,
+  UnconfirmedBrowserLaunchError,
   type BrowserRealityHost,
   type LaunchedBrowser,
 } from "./browser-reality-host.ts";
@@ -17,22 +17,6 @@ export { buildBrowserLaunchArguments } from "./browser-reality-host.ts";
 const START_TIMEOUT_MS = 10_000;
 const START_POLL_MS = 250;
 const DEFAULT_START_ATTEMPTS = 2;
-
-export const REQUIRED_BROWSER_TOOL_NAMES = Object.freeze([
-  "list_pages",
-  "select_page",
-  "navigate_page",
-  "take_snapshot",
-  "take_screenshot",
-  "click",
-  "fill",
-  "press_key",
-  "evaluate_script",
-  "list_console_messages",
-  "get_console_message",
-  "list_network_requests",
-  "get_network_request",
-] as const);
 
 export interface BrowserRealityConfig {
   readonly enabled: boolean;
@@ -95,9 +79,7 @@ export interface BrowserRealityToolClient {
 }
 
 export interface BrowserRealityExtensionOptions {
-  readonly config: BrowserRealityConfig;
-  readonly status: () => Promise<BrowserRealityStatus>;
-  readonly createClient?: (config: BrowserUseConfig) => BrowserRealityToolClient;
+  readonly manager: BrowserRealityManager;
 }
 
 function configuredFlag(
@@ -191,6 +173,7 @@ export function createBrowserRealityRuntime(
   const ownsProfile = config.profileDirectory === undefined;
   let effectiveConfig: BrowserRealityConfig = config;
   let browser: LaunchedBrowser | null = null;
+  let launchUnconfirmed = false;
   let ownedProfileDirectory: string | null = null;
   let current: BrowserRealityStatus = {
     enabled: config.enabled,
@@ -205,8 +188,8 @@ export function createBrowserRealityRuntime(
   };
   const cleanOwnedProfile = async (): Promise<void> => {
     const profileDirectory = ownedProfileDirectory;
-    ownedProfileDirectory = null;
     if (profileDirectory) await cleanupProfile(profileDirectory);
+    ownedProfileDirectory = null;
   };
 
   return {
@@ -215,6 +198,7 @@ export function createBrowserRealityRuntime(
     },
     async start() {
       if (!config.enabled) return current;
+      if (launchUnconfirmed) return unavailable("Browser launch termination is unconfirmed; replacement refused.");
 
       let profileDirectory = config.profileDirectory;
       try {
@@ -257,6 +241,7 @@ export function createBrowserRealityRuntime(
           browser = await launch(activeConfig);
         } catch (error) {
           lastFailure = `Could not start Pindie Dev Browser: ${safeFailure(error)}`;
+          if (error instanceof UnconfirmedBrowserLaunchError) { launchUnconfirmed = true; break; }
           if (!config.browserUrl && attempt + 1 < attempts) continue;
           break;
         }
@@ -283,7 +268,7 @@ export function createBrowserRealityRuntime(
           `Pindie Dev Browser did not expose ${browserUrl} within ${START_TIMEOUT_MS}ms.`;
       }
 
-      if (ownsProfile && browser === null) {
+      if (ownsProfile && browser === null && !launchUnconfirmed) {
         try {
           await cleanOwnedProfile();
         } catch {
@@ -300,6 +285,7 @@ export function createBrowserRealityRuntime(
     },
     dispose() {
       disposePromise ??= (async () => {
+        if (launchUnconfirmed) throw new Error("Browser launch termination is unconfirmed; profile retained for manual review.");
         const launched = browser;
         let browserStopped = launched === null;
         if (launched) {
@@ -308,14 +294,14 @@ export function createBrowserRealityRuntime(
             browser = null;
             browserStopped = true;
           } catch (error) {
-            console.warn(`[Pindie] Could not stop Pindie Dev Browser: ${safeFailure(error)}`);
+            throw new Error(`Could not stop Pindie Dev Browser: ${safeFailure(error)}`);
           }
         }
         if (ownsProfile && browserStopped) {
           try {
             await cleanOwnedProfile();
           } catch (error) {
-            console.warn(`[Pindie] Could not clean Pindie Dev Browser profile: ${safeFailure(error)}`);
+            throw new Error(`Could not clean Pindie Dev Browser profile: ${safeFailure(error)}`);
           }
         }
         current = {
@@ -326,26 +312,6 @@ export function createBrowserRealityRuntime(
       })();
       return disposePromise;
     },
-  };
-}
-
-function browserClientConfig(config: BrowserRealityConfig): BrowserUseConfig {
-  if (!config.browserUrl) throw new Error("Pindie Dev Browser endpoint is unavailable.");
-  return {
-    sessionMode: "existing",
-    browserUrl: config.browserUrl,
-    categoryPerformance: false,
-    categoryNetwork: true,
-    categoryEmulation: true,
-    categoryExtensions: false,
-    experimentalVision: false,
-    experimentalScreencast: false,
-    experimentalMemory: false,
-    experimentalPageIdRouting: true,
-    usageStatistics: false,
-    performanceCrux: false,
-    redactNetworkHeaders: true,
-    acceptInsecureCerts: false,
   };
 }
 
@@ -370,77 +336,47 @@ export function registerBrowserRealityExtension(
   pi: ExtensionAPI,
   options: BrowserRealityExtensionOptions,
 ): void {
-  const createClient = options.createClient ?? ((config) => new DevToolsClient(config));
-  let client: BrowserRealityToolClient | null = null;
-  let unavailableReason: string | null = null;
-
-  pi.on("session_start", async (_event, ctx) => {
-    const runtimeStatus = await options.status();
-    if (!runtimeStatus.available) {
-      unavailableReason = runtimeStatus.reason ?? "Pindie Dev Browser is unavailable.";
-      if (ctx.hasUI) ctx.ui.notify(`Browser Reality unavailable: ${unavailableReason}`, "warning");
-      return;
-    }
-
-    const candidate = createClient(browserClientConfig(options.config));
-    client = candidate;
-    try {
-      const discovered = await candidate.listAllTools(AbortSignal.timeout(15_000));
-      const byName = new Map(discovered.map((tool) => [tool.name, tool]));
-      const missing = REQUIRED_BROWSER_TOOL_NAMES.filter((name) => !byName.has(name));
-      if (missing.length > 0) {
-        throw new Error(`Chrome DevTools MCP is missing required tools: ${missing.join(", ")}.`);
-      }
-
-      for (const name of REQUIRED_BROWSER_TOOL_NAMES) {
-        const upstream = byName.get(name)!;
-        pi.registerTool({
-          name: `browser_${name}`,
-          label: `browser_${name}`,
-          description: upstream.description ?? `Chrome DevTools ${name} tool.`,
-          parameters: Type.Unsafe(upstream.inputSchema),
-          async execute(_toolCallId, params, signal) {
-            if (client !== candidate) {
-              throw new Error("Browser Reality belongs to a closed Pi Session.");
-            }
-            const result = await candidate.callTool(
-              name,
-              params as Record<string, unknown>,
-              signal,
-            );
-            return {
-              content: toolResultContent(result) as never,
-              details: undefined,
-              ...(result.isError ? { isError: true } : {}),
-            };
-          },
-        });
-      }
-      unavailableReason = null;
-    } catch (error) {
-      unavailableReason = `Chrome DevTools bridge unavailable: ${safeFailure(error)}`;
-      client = null;
-      try {
-        await candidate.close();
-      } catch {
-        // The original discovery failure is authoritative.
-      }
-      if (ctx.hasUI) ctx.ui.notify(`Browser Reality unavailable: ${unavailableReason}`, "warning");
-    }
+  let closed = false;
+  const assertOpen = () => {
+    if (closed) throw new Error("Browser Reality belongs to a closed Pi Session.");
+  };
+  for (const upstream of readBrowserToolCatalog().tools) {
+    pi.registerTool({
+      name: `browser_${upstream.name}`,
+      label: `browser_${upstream.name}`,
+      description: upstream.description!,
+      parameters: Type.Unsafe(upstream.inputSchema),
+      async execute(_toolCallId, params, signal) {
+        assertOpen();
+        const result = await options.manager.callTool(upstream.name, params as Record<string, unknown>, signal);
+        return {
+          content: toolResultContent(result) as never,
+          details: undefined,
+          ...(result.isError ? { isError: true } : {}),
+        };
+      },
+    });
+  }
+  pi.registerTool({
+    name: "browser_release", label: "browser_release",
+    description: "Close this Host's DevTools bridge and owned Dev Browser, discarding its temporary pages/profile. Refuses while browser tools are in flight. The next browser call starts fresh.",
+    parameters: Type.Object({}),
+    async execute() {
+      assertOpen();
+      await options.manager.release();
+      return { content: [{ type: "text", text: "Browser Reality released." }], details: undefined };
+    },
   });
-
-  pi.on("before_agent_start", async (event) => {
-    const runtimeStatus = await options.status();
-    const reason = unavailableReason ?? (runtimeStatus.available ? null : runtimeStatus.reason);
-    if (!reason) return;
-    return {
-      systemPrompt: `${event.systemPrompt}\n\nBrowser Reality is enabled but unavailable: ${reason}`,
-    };
+  pi.registerTool({
+    name: "browser_status", label: "browser_status",
+    description: "Report this Host's Browser Reality resource phase without starting Chrome or a DevTools bridge.",
+    parameters: Type.Object({}),
+    async execute() {
+      assertOpen();
+      return { content: [{ type: "text", text: JSON.stringify(options.manager.status()) }], details: undefined };
+    },
   });
-
-  pi.on("session_shutdown", async () => {
-    const current = client;
-    client = null;
-    if (current) await current.close();
-  });
+  // Activity protects browser state while the user is working elsewhere in Pi.
+  pi.on("before_agent_start", async () => { options.manager.touch(); });
+  pi.on("session_shutdown", async () => { closed = true; });
 }

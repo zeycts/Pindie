@@ -116,6 +116,13 @@ export class PindieInteractiveMode {
     this.view = options.createView?.(viewOptions) ?? new PindieTuiView(viewOptions);
   }
 
+  canReleaseIdleResources(): boolean {
+    return this.runPromise !== null && !this.stopped && !this.exitRequested &&
+      this.sessionBinding !== null && !this.abortInFlight && !this.attentionResponseInFlight &&
+      this.extensionUI !== null && !this.extensionUI.hasActiveInteraction &&
+      this.view.hasPendingInteraction?.() === false;
+  }
+
   run(): Promise<void> {
     this.runPromise ??= this.runInternal();
     return this.runPromise;

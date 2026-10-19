@@ -21,6 +21,10 @@ import {
   type BrowserRealityRuntime,
 } from "./browser-reality.ts";
 import { PiRuntimeAdapter } from "./pi-runtime.ts";
+import { createNativeInteractiveRuntime } from "./native-interactive-runtime.ts";
+import { observeNativeUiIdle } from "./native-ui-idle.ts";
+import { canReleaseBrowserIdle } from "./browser-idle-authority.ts";
+import { createBrowserRealityManager, type BrowserRealityManager } from "./browser-reality-manager.ts";
 import {
   PindieInteractiveMode as OwnedPindieInteractiveMode,
   type PindieInteractiveModeOptions,
@@ -81,6 +85,7 @@ export interface PindieResourcePaths {
 
 export interface PindieInteractiveMode {
   run(): Promise<void>;
+  canReleaseIdleResources?(): boolean;
 }
 
 export interface PindieHostDependencies {
@@ -252,7 +257,8 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   const browserConfig = resolveBrowserRealityConfig(env);
   const makeBrowserReality = dependencies.createBrowserRealityRuntime ??
     createBrowserRealityRuntime;
-  let browserReality: BrowserRealityRuntime | undefined;
+  let browserReality: BrowserRealityManager | undefined;
+  let uiIdle: () => boolean = () => false;
   let nativeRuntime: AgentSessionRuntime | undefined;
   let runtime: PiRuntimeAdapter | undefined;
   let rolloverSupervisor: LongTaskRolloverSupervisor | undefined;
@@ -351,11 +357,15 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
 
   try {
     if (browserConfig.enabled) {
-      browserReality = makeBrowserReality(browserConfig);
-      const status = await browserReality.start();
-      if (!status.available) {
-        console.warn(`[Pindie] Browser Reality unavailable: ${status.reason}`);
-      }
+      browserReality = createBrowserRealityManager(browserConfig, {
+        createRuntime: makeBrowserReality,
+        canIdleRelease: () => runtime !== undefined && canReleaseBrowserIdle({
+          session: runtime.getActiveSessionFacts(),
+          bashRunning: runtime.activeSession.isBashRunning,
+          presentation: currentPresentationReader?.snapshot() ?? null,
+          uiIdle: uiIdle(),
+        }),
+      });
     }
     nativeRuntime = await createRuntime(createPindieRuntimeFactory(dependencies, taskMetrics, {
       featureSelection,
@@ -363,8 +373,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       ...(browserReality
         ? {
             browserExtensionFactory: (pi) => registerBrowserRealityExtension(pi, {
-              config: browserReality!.config,
-              status: () => browserReality!.status(),
+              manager: browserReality!,
             }),
           }
         : {}),
@@ -469,7 +478,8 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
         ?? "regular",
     };
     const activeRuntime = runtime;
-    const interactiveMode = isPindieTuiEnabled(env)
+    let disposePromise: Promise<void> | undefined;
+    const interactiveMode: PindieInteractiveMode = isPindieTuiEnabled(env)
       ? (dependencies.createPindieInteractiveMode ??
         ((adapter, ownedModeOptions) => new OwnedPindieInteractiveMode(adapter, ownedModeOptions)))(
           activeRuntime,
@@ -480,26 +490,35 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
             presentation,
           },
         )
-      : createMode(nativeRuntime, modeOptions);
-    let disposePromise: Promise<void> | undefined;
-    const dispose = (): Promise<void> => {
+      : createMode(createNativeInteractiveRuntime(nativeRuntime, dispose), modeOptions);
+    uiIdle = isPindieTuiEnabled(env)
+      ? () => interactiveMode.canReleaseIdleResources?.() === true
+      : observeNativeUiIdle(interactiveMode);
+    function dispose(): Promise<void> {
       disposePromise ??= (async () => {
+        uiIdle = () => false;
         // Do not leave a Session-bound reader visible while Host teardown is
         // releasing the native runtime. The second assignment covers any
         // cleanup path that publishes during asynchronous teardown.
         currentPresentationReader = null;
         preemptLearning("session-change");
-        await learningSupervisor?.dispose();
-        await releaseHostControl();
         try {
-          await runtime!.dispose();
+          try {
+            await learningSupervisor?.dispose();
+          } finally {
+            await releaseHostControl();
+          }
         } finally {
-          currentPresentationReader = null;
-          await browserReality?.dispose();
+          try {
+            await runtime!.dispose();
+          } finally {
+            currentPresentationReader = null;
+            await browserReality?.dispose();
+          }
         }
       })();
       return disposePromise;
-    };
+    }
 
     queueMicrotask(kickLearning);
     return {
@@ -519,8 +538,8 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   } catch (error) {
     currentPresentationReader = null;
     preemptLearning("session-change");
-    await learningSupervisor?.dispose();
-    await releaseHostControl();
+    try { await learningSupervisor?.dispose(); } catch { /* Preserve bootstrap failure. */ }
+    try { await releaseHostControl(); } catch { /* Still release runtime/browser resources. */ }
     if (runtime ?? nativeRuntime) {
       try {
         await (runtime ?? nativeRuntime)!.dispose();

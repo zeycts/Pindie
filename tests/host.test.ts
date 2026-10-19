@@ -214,7 +214,7 @@ test("runtime factory omits Pindie-added Skills when the startup selection disab
   );
 });
 
-test("Host creates one runtime and supplies that same runtime to InteractiveMode", async () => {
+test("Host creates one runtime and supplies a Host-disposal facade only to native InteractiveMode", async () => {
   const projectCwd = "/tmp/pindie-host-project";
   const { runtime, disposeCalls, newSessionCalls } = fakeRuntime();
   const sessionManager = SessionManager.inMemory(projectCwd);
@@ -246,7 +246,8 @@ test("Host creates one runtime and supplies that same runtime to InteractiveMode
 
   assert.equal(runtimeCalls, 1);
   assert.equal(runtimeOptions?.cwd, projectCwd);
-  assert.equal(modeRuntime, runtime);
+  assert.notEqual(modeRuntime, runtime);
+  assert.equal(modeRuntime?.session, runtime.session);
   assert.equal(host.runtime.activeSession, runtime.session);
 
   await host.runtime.replaceWithFreshSession();
@@ -360,7 +361,7 @@ test("PINDIE_TUI=0 preserves the injected legacy InteractiveMode path", async ()
   assert.equal(disposeCalls(), 1);
 });
 
-test("Host isolates unavailable Browser Reality and cleans its runtime on shutdown", async () => {
+test("Host startup and unused shutdown never construct or start Browser Reality resources", async () => {
   const { runtime, disposeCalls } = fakeRuntime();
   let browserStarts = 0;
   let browserDisposals = 0;
@@ -401,12 +402,12 @@ test("Host isolates unavailable Browser Reality and cleans its runtime on shutdo
       },
     });
 
-    assert.equal(resolvedConfig?.enabled, true);
-    assert.equal(browserStarts, 1);
-    assert.match(String(warnings[0]?.[0]), /Browser Reality unavailable.*Chrome unavailable/);
+    assert.equal(resolvedConfig, undefined);
+    assert.equal(browserStarts, 0);
+    assert.deepEqual(warnings, []);
     await host.dispose();
     assert.equal(disposeCalls(), 1);
-    assert.equal(browserDisposals, 1);
+    assert.equal(browserDisposals, 0);
   } finally {
     console.warn = originalWarn;
   }

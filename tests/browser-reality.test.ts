@@ -9,9 +9,9 @@ import {
   registerBrowserRealityExtension,
   REQUIRED_BROWSER_TOOL_NAMES,
   resolveBrowserRealityConfig,
-  type BrowserRealityStatus,
-  type BrowserRealityToolClient,
 } from "../src/browser-reality.ts";
+
+import { UnconfirmedBrowserLaunchError } from "../src/browser-reality-host.ts";
 
 function config() {
   return resolveBrowserRealityConfig({
@@ -43,14 +43,6 @@ class BrowserExtensionHarness {
       },
     };
   }
-}
-
-function discoveredTools() {
-  return REQUIRED_BROWSER_TOOL_NAMES.map((name) => ({
-    name,
-    description: `${name} description`,
-    inputSchema: { type: "object", properties: {} },
-  }));
 }
 
 test("Browser Reality defaults on and headless without a fixed endpoint or shared profile", () => {
@@ -302,84 +294,50 @@ test("Browser launch failure remains a factual isolated runtime status", async (
   await runtime.dispose();
 });
 
-test("Browser extension discovers and registers only the required Chrome DevTools tools", async () => {
-  const harness = new BrowserExtensionHarness();
-  let closes = 0;
-  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
-  const client: BrowserRealityToolClient = {
-    listAllTools: async () => [
-      ...discoveredTools(),
-      { name: "lighthouse_audit", inputSchema: { type: "object" } },
-    ],
-    callTool: async (name, args) => {
-      calls.push({ name, args });
-      return { content: [{ type: "text", text: "observed" }] };
-    },
-    close: async () => { closes += 1; },
-  };
-  const available: BrowserRealityStatus = {
-    enabled: true,
-    available: true,
-    reason: null,
-  };
-
-  registerBrowserRealityExtension(harness.api, {
-    config: config(),
-    status: async () => available,
-    createClient: () => client,
+test("uncertain launch ownership forbids retry, replacement and profile deletion", async () => {
+  let launches = 0;
+  let cleaned = 0;
+  const runtime = createBrowserRealityRuntime(resolveBrowserRealityConfig({}), {
+    allocateProfileDirectory: async () => "/isolated/uncertain",
+    allocatePort: async () => 9911,
+    probe: async () => false,
+    launch: async () => { launches++; throw new UnconfirmedBrowserLaunchError("identity unavailable"); },
+    cleanupProfile: async () => { cleaned++; },
   });
-  await harness.handlers.get("session_start")?.(
-    { type: "session_start", reason: "startup" },
-    harness.context(),
-  );
-
-  assert.deepEqual(
-    [...harness.tools.keys()].sort(),
-    REQUIRED_BROWSER_TOOL_NAMES.map((name) => `browser_${name}`).sort(),
-  );
-  const result = await harness.tools.get("browser_evaluate_script")?.execute(
-    "call",
-    { function: "() => document.title", pageId: 1 },
-    undefined,
-  );
-  assert.equal(result.content[0].text, "observed");
-  assert.deepEqual(calls, [{
-    name: "evaluate_script",
-    args: { function: "() => document.title", pageId: 1 },
-  }]);
-
-  await harness.handlers.get("session_shutdown")?.(
-    { type: "session_shutdown", reason: "quit" },
-    harness.context(),
-  );
-  assert.equal(closes, 1);
+  assert.equal((await runtime.start()).available, false);
+  assert.equal(launches, 1);
+  assert.equal(cleaned, 0);
+  assert.match((await runtime.start()).reason!, /replacement refused/);
+  assert.equal(launches, 1);
+  await assert.rejects(runtime.dispose(), /termination is unconfirmed/);
+  assert.equal(cleaned, 0);
 });
 
-test("Browser extension isolates discovery failure and exposes the factual reason to the model", async () => {
+test("Browser extension registers the static surface without startup work; Session shutdown does not release Host resources", async () => {
   const harness = new BrowserExtensionHarness();
-  let closes = 0;
-  const client: BrowserRealityToolClient = {
-    listAllTools: async () => { throw new Error("ECONNREFUSED"); },
-    callTool: async () => ({ content: [] }),
-    close: async () => { closes += 1; },
-  };
-
+  const calls: string[] = [];
   registerBrowserRealityExtension(harness.api, {
-    config: config(),
-    status: async () => ({ enabled: true, available: true, reason: null }),
-    createClient: () => client,
+    manager: {
+      status: () => ({ phase: "idle", inFlight: 0, reason: null }),
+      callTool: async (name) => { calls.push(name); return { content: [{ type: "text", text: "observed" }] }; },
+      touch: () => {},
+      release: async () => { calls.push("release"); },
+      dispose: async () => { calls.push("dispose"); },
+    },
   });
-  await harness.handlers.get("session_start")?.(
-    { type: "session_start", reason: "startup" },
-    harness.context(),
-  );
-
-  assert.equal(harness.tools.size, 0);
-  assert.equal(closes, 1);
-  assert.match(harness.notices[0] ?? "", /Browser Reality unavailable.*ECONNREFUSED/);
-  const result = await harness.handlers.get("before_agent_start")?.({
-    type: "before_agent_start",
-    systemPrompt: "base",
-  }, harness.context());
-  assert.match(result.systemPrompt, /Browser Reality is enabled but unavailable.*ECONNREFUSED/);
+  assert.deepEqual([...harness.tools.keys()].sort(), [
+    ...REQUIRED_BROWSER_TOOL_NAMES.map((name) => `browser_${name}`), "browser_release", "browser_status",
+  ].sort());
+  assert.equal(harness.handlers.has("session_start"), false);
+  assert.deepEqual(calls, []);
+  const status = await harness.tools.get("browser_status")!.execute("status", {});
+  assert.match(status.content[0].text, /idle/);
+  assert.deepEqual(calls, []);
+  const result = await harness.tools.get("browser_evaluate_script")!.execute("call", { function: "() => document.title", pageId: 1 });
+  assert.equal(result.content[0].text, "observed");
+  await harness.tools.get("browser_release")!.execute("release", {});
+  assert.deepEqual(calls, ["evaluate_script", "release"]);
+  await harness.handlers.get("session_shutdown")!({}, harness.context());
+  assert.deepEqual(calls, ["evaluate_script", "release"]);
+  await assert.rejects(harness.tools.get("browser_list_pages")!.execute("closed", {}), /closed Pi Session/);
 });

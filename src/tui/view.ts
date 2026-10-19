@@ -75,6 +75,7 @@ export interface PindieTuiViewPort extends PindieExtensionUIViewPort {
   clearEditor(): void;
   showNotice(message: string): void;
   requestRender(): void;
+  hasPendingInteraction?(): boolean;
 }
 
 export interface PindieTuiViewOptions {
@@ -893,6 +894,7 @@ export class PindieTuiView implements PindieTuiViewPort {
   private attentionIdentity: string | null = null;
   private readonly foldOverrides = new Map<string, UiDisplayMode>();
   private activeOverlay: PindieOverlayKind | null = null;
+  private pendingPickerRequests = 0;
   private overlayHandle: OverlayHandle | null = null;
   private readonly blockLineRanges: Map<string, BlockLineRange>;
   private palettePanel: VStack | null = null;
@@ -1544,9 +1546,14 @@ export class PindieTuiView implements PindieTuiViewPort {
     this.editor.setAutocompleteProvider(provider);
   }
 
+  hasPendingInteraction(): boolean {
+    return this.activeOverlay !== null || this.pendingPickerRequests !== 0;
+  }
+
   private async openModelPicker(): Promise<void> {
     const sessionId = this.currentSessionId;
     if (sessionId === null || this.activeOverlay !== null || this.onRequestModelPicker === undefined) return;
+    this.pendingPickerRequests++;
     try {
       const choices = await this.onRequestModelPicker();
       if (this.currentSessionId !== sessionId || this.activeOverlay !== null ||
@@ -1560,11 +1567,13 @@ export class PindieTuiView implements PindieTuiViewPort {
         () => this.closeOverlay(),
       ));
     } catch (error) { this.showNotice(`Model picker failed: ${errorMessage(error)}`); }
+    finally { this.pendingPickerRequests--; }
   }
 
   private async openSessionPicker(): Promise<void> {
     const sessionId = this.currentSessionId;
     if (sessionId === null || this.activeOverlay !== null || this.onRequestSessionPicker === undefined) return;
+    this.pendingPickerRequests++;
     try {
       const choices = [...await this.onRequestSessionPicker()].sort((a, b) => b.modified.getTime() - a.modified.getTime());
       if (this.currentSessionId !== sessionId || this.activeOverlay !== null ||
@@ -1578,6 +1587,7 @@ export class PindieTuiView implements PindieTuiViewPort {
         () => this.closeOverlay(),
       ));
     } catch (error) { this.showNotice(`Session picker failed: ${errorMessage(error)}`); }
+    finally { this.pendingPickerRequests--; }
   }
 
   private openPicker(kind: "model-picker" | "session-picker", component: Component & Focusable): void {

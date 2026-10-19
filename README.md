@@ -139,9 +139,9 @@ Both must be configured to enable Work Memory.
 ### Browser Reality
 
 Browser Reality is default-on and headless by default on WSL and native Linux.
-A normal Pindie startup starts a dedicated browser profile without a visible
-browser window and exposes selected official Chrome DevTools MCP tools as
-`browser_*` Pi tools:
+Startup registers selected official Chrome DevTools MCP declarations as
+`browser_*` Pi tools without launching Chrome or a bridge. The first browser
+action lazily starts a dedicated browser/profile, reused across Host Sessions:
 
 ```bash
 pnpm pindie
@@ -183,6 +183,20 @@ PINDIE_BROWSER_PROFILE_DIR
 When explicitly set, Pindie conservatively refuses an endpoint that is already
 running rather than attaching to an unknown browser. An explicit
 `PINDIE_BROWSER_PROFILE_DIR` remains developer-managed and is not removed on
-shutdown. Browser Reality is runtime-only: disabling it leaves normal Pindie
-startup and semantic State unchanged, while startup/bridge failures are
-reported without disabling the rest of Pindie.
+shutdown. `browser_status` inspects resource phase without startup;
+`browser_release` explicitly discards browser state when no browser calls are
+in flight. The next action starts fresh. After 15 minutes without activity,
+automatic release requires a settled Session, no queued work, Human Gate,
+quota wait, or pending UI interaction. Unknown authority prevents release.
+
+Browser Reality is runtime-only: disabling it leaves normal Pindie startup and
+semantic State unchanged. Startup/bridge failures do not disable ordinary work.
+Graceful exits await Host cleanup; emergency terminal failure, crash, SIGKILL,
+or machine loss cannot guarantee it. Unconfirmed cleanup retains the profile
+and blocks automatic replacement. On Windows, a real Job handle is retained in
+the browser root; losing that handle/name is **not** evidence that descendants
+exited. Release requires an exact zero-active Job acknowledgment, otherwise the
+profile is retained (even if the browser may already have exited).
+No startup janitor kills old browsers or deletes old profiles; inspect and stop
+only resources you can independently identify before manually removing stale profiles. See
+[Browser lifecycle details](docs/architecture.md#browser-reality-v02).
