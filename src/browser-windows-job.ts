@@ -1,7 +1,9 @@
-// Invoked only inside the existing WSL -> Windows PowerShell boundary. A named
-// job is retained by its associated processes, not by a long-running PS helper.
-// Descendants inherit the job and breakaway is not enabled. Never enumerate or
-// kill unrelated Windows processes by name, endpoint or profile-directory match.
+// Invoked only inside the existing WSL -> Windows PowerShell boundary. Member
+// references do NOT preserve a Job's name after the last handle closes. Keep an
+// actual non-inheritable Job handle in the suspended browser root before resume.
+// If that root/handle disappears, reopening can fail while descendants survive:
+// missing name is always UNCONFIRMED, never permission to delete a profile.
+// Descendants inherit membership (no breakaway). Never kill by arbitrary PID.
 const jobApi = `
 Add-Type -TypeDefinition @'
 using System;
@@ -32,6 +34,9 @@ public static class PindieBrowserJob {
     IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string cwd,
     ref STARTUPINFO startup, out PROCESS_INFORMATION process);
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+  [DllImport("kernel32.dll")] public static extern IntPtr GetCurrentProcess();
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool DuplicateHandle(IntPtr sourceProcess,
+    IntPtr sourceHandle, IntPtr targetProcess, out IntPtr targetHandle, uint access, bool inherit, uint options);
   [DllImport("kernel32.dll", SetLastError=true)] public static extern uint ResumeThread(IntPtr thread);
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool TerminateJobObject(IntPtr job, uint code);
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool TerminateProcess(IntPtr process, uint code);
@@ -71,6 +76,10 @@ export function windowsBrowserJobLaunch(job: string, executable: string, args: r
     `  if (-not [PindieBrowserJob]::CreateProcess(${literal(executable)}, $command, [IntPtr]::Zero, [IntPtr]::Zero, $false, 4, [IntPtr]::Zero, $null, [ref]$startup, [ref]$info)) { throw 'Could not create suspended browser' }`,
     "  if (-not [PindieBrowserJob]::AssignProcessToJobObject($job, $info.process)) { throw 'Could not assign browser job' }",
     "  $assigned = $true",
+    // This is a handle in the launched process, NOT a handle owned by this
+    // helper. Do not CloseHandle($browserJobHandle) in the helper's handle table.
+    "  $browserJobHandle = [IntPtr]::Zero",
+    "  if (-not [PindieBrowserJob]::DuplicateHandle([PindieBrowserJob]::GetCurrentProcess(), $job, $info.process, [ref]$browserJobHandle, 4, $false, 0)) { throw 'Could not retain browser job handle' }",
     "  if ([PindieBrowserJob]::ResumeThread($info.thread) -eq [uint32]::MaxValue) { throw 'Could not resume browser' }",
     "  Write-Output \"PID:$($info.pid)\"",
     "  $success = $true",
@@ -92,13 +101,12 @@ export function windowsBrowserJobStop(job: string): string {
     "$ErrorActionPreference = 'Stop'", jobApi,
     `$job = [PindieBrowserJob]::OpenJobObject(12, $false, ${literal(job)})`, // QUERY | TERMINATE
     "if ($job -eq [IntPtr]::Zero) {",
-    "  if ([Runtime.InteropServices.Marshal]::GetLastWin32Error() -eq 2) { exit 0 }",
-    "  throw 'Could not open owned browser job'",
+    "  throw 'Owned browser job cannot be opened; termination is unconfirmed (a missing name does not prove process exit)'",
     "}",
     "try {",
     "  if (-not [PindieBrowserJob]::TerminateJobObject($job, 0)) { throw 'Could not terminate browser job' }",
     "  for ($attempt = 0; $attempt -lt 30; $attempt++) {",
-    "    if ([PindieBrowserJob]::Active($job) -eq 0) { exit 0 }",
+    `    if ([PindieBrowserJob]::Active($job) -eq 0) { Write-Output ${literal(`STOPPED:${job}`)}; exit 0 }`,
     "    Start-Sleep -Milliseconds 100",
     "  }",
     "  throw 'Owned browser job still has active processes'",

@@ -154,7 +154,10 @@ export function createWslWindowsBrowserRealityHost(dependencies: {
     async stop(browser) {
       const job = owned.get(browser);
       if (!job) throw new Error("Refused to stop a browser not launched by this Host.");
-      await execute(windowsBrowserJobStop(job));
+      const result = await execute(windowsBrowserJobStop(job));
+      if (!result.stdout.split(/\r?\n/u).includes(`STOPPED:${job}`)) {
+        throw new Error("Windows browser termination is unconfirmed: missing exact job-stop acknowledgment.");
+      }
     },
     async cleanupProfile(profileDirectory) {
       const script = [

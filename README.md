@@ -193,7 +193,10 @@ Browser Reality is runtime-only: disabling it leaves normal Pindie startup and
 semantic State unchanged. Startup/bridge failures do not disable ordinary work.
 Graceful exits await Host cleanup; emergency terminal failure, crash, SIGKILL,
 or machine loss cannot guarantee it. Unconfirmed cleanup retains the profile
-and blocks automatic replacement. No startup janitor kills old browsers or
-deletes old profiles; inspect and stop only resources you can independently
-identify before manually removing stale profiles. See
+and blocks automatic replacement. On Windows, a real Job handle is retained in
+the browser root; losing that handle/name is **not** evidence that descendants
+exited. Release requires an exact zero-active Job acknowledgment, otherwise the
+profile is retained (even if the browser may already have exited).
+No startup janitor kills old browsers or deletes old profiles; inspect and stop
+only resources you can independently identify before manually removing stale profiles. See
 [Browser lifecycle details](docs/architecture.md#browser-reality-v02).

@@ -45,6 +45,7 @@ export function createBrowserRealityManager(
   let reason: string | null = null;
   let runtime: BrowserRealityRuntime | undefined;
   let client: BrowserRealityToolClient | undefined;
+  let closingClient: Promise<void> | undefined;
   let starting: Promise<void> | undefined;
   let releasing: Promise<void> | undefined;
   let disposing: Promise<void> | undefined;
@@ -67,7 +68,7 @@ export function createBrowserRealityManager(
     if (disposed || phase !== "ready") return;
     timer = setTimeout(() => {
       let safe = false;
-      try { safe = options.canIdleRelease(); } catch { /* Unknown authority fails closed. */ }
+      try { safe = options.canIdleRelease() === true; } catch { /* Unknown authority fails closed. */ }
       if (calls.size === 0 && now() - lastActivity >= idleMs && safe) {
         void release().catch(() => { /* Failure remains visible through status. */ });
       } else arm();
@@ -75,9 +76,19 @@ export function createBrowserRealityManager(
     timer.unref();
   };
   const touch = () => { lastActivity = now(); arm(); };
+  const closeClient = async () => {
+    if (!client) return;
+    const closing = client;
+    // Some clients make a second close() a no-op even while their first close
+    // is pending/rejected. Only the original operation can confirm termination.
+    closingClient ??= Promise.resolve().then(() => closing.close());
+    await bounded(closingClient);
+    client = undefined;
+    closingClient = undefined;
+  };
   const cleanup = async () => {
     // Never remove a browser/profile after an unconfirmed bridge stop.
-    if (client) { await bounded(client.close()); client = undefined; }
+    await closeClient();
     if (runtime) { await runtime.dispose(); runtime = undefined; }
   };
   const ensure = async () => {
@@ -159,7 +170,7 @@ export function createBrowserRealityManager(
             try { await starting; } catch { /* Startup owns its failure cleanup. */ }
             await releasing;
             // Closing the bridge unblocks calls even when upstream ignores abort.
-            if (client) { await bounded(client.close()); client = undefined; }
+            await closeClient();
             if (calls.size) await bounded(new Promise<void>((resolve) => { onDrained = resolve; }));
             await cleanup();
             phase = "disposed";

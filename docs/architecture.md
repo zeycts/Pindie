@@ -595,8 +595,13 @@ browser and deleting only its temporary profile. Subsequent execution starts
 fresh. Caller cancellation does not cancel another caller's shared startup.
 Host disposal aborts active calls and bounds bridge close/call drain before
 browser deletion; a late startup cannot publish a usable bridge after disposal.
-Cleanup failure remains visible and blocks automatic replacement. Session
-shutdown alone never releases Host resources.
+Cleanup failure remains visible and blocks automatic replacement. A failed or
+timed-out bridge close retains its original promise: a second upstream no-op
+`close()` cannot substitute for confirmation. Bridge confirmation here means
+settlement of that original SDK close operation, not independent OS process-tree
+verification (the pinned SDK can resolve after requesting its final SIGKILL).
+Actual tool drain and browser termination are separately required before profile
+deletion. Session shutdown alone never releases Host resources.
 
 A runtime-only 15-minute inactivity timer may release resources only with known
 settled Session facts (no streaming, compaction, pending messages or bash), known
@@ -613,19 +618,36 @@ Linux launches a dedicated session/process group, binds the exact launch handle
 to its `/proc` start identity, signals only that group, and requires
 kernel-confirmed group absence after bounded TERM/KILL escalation. Direct-child
 exit or a `/proc` member enumeration alone is not confirmation; lingering zombies
-can conservatively keep cleanup unconfirmed. WSL launches Windows
-Chrome suspended, assigns it to a uniquely named non-breakaway Windows Job, then
-resumes it. Job termination must report zero active members before profile
-cleanup; arbitrary PID handles are rejected on both platforms. A launch with
-unconfirmed ownership retains its profile and refuses replacement. Explicit
-profiles remain developer-managed and are never deleted.
+can conservatively keep cleanup unconfirmed. WSL launches Windows Chrome
+suspended, assigns it to a uniquely named non-breakaway Windows Job, and uses
+`DuplicateHandle` to put a non-inheritable, query-only Job handle in that exact
+browser root before resuming it. The handle belongs to the browser, not the
+short-lived launch helper; closing the helper's handles does not close it.
+Member references alone do **not** preserve a kernel object's name: see
+[kernel object name lifetime](https://scorpiosoftware.net/2023/05/15/kernel-object-names-lifetime/).
+
+Windows release must reopen the exact random Job name, terminate the Job, query
+zero active members using its still-open stop handle, and return an exact
+Job-bound acknowledgment before profile cleanup. Missing name, access failure,
+missing/wrong acknowledgment or surviving descendants are unconfirmed, never
+success. If the browser root exits or closes its retained handle before release,
+the Job name can disappear while descendants survive. Cleanup then fails closed,
+retains the profile and blocks replacement; even a fully exited browser can
+conservatively require manual stale-resource review in this case. No PID-only
+fallback is used. A launch helper killed between process creation, assignment
+and handle duplication can also leave unconfirmed resources; no retry/deletion
+is authorized. Arbitrary launch handles are rejected on both platforms.
+Explicit profiles remain developer-managed and are never deleted.
 
 Native InteractiveMode alone receives a runtime facade whose `dispose` awaits
 Host cleanup before Pi's own normal/SIGTERM/SIGHUP exit; the Adapter retains the
 original runtime to avoid recursion. Pi still owns shutdown, signals, the
 terminal and process.exit. Emergency terminal exit, uncaught crash, SIGKILL and
 machine loss bypass or can interrupt asynchronous cleanup. No guarantee is
-claimed for those exits. No persisted resource registry or startup janitor is
+claimed for those exits. In particular, the browser-owned Windows Job handle
+survives Host death while that browser root lives; it is not a kill-on-Host-exit
+lease, and there is no watchdog that promises to stop those orphan resources.
+No persisted resource registry or startup janitor is
 introduced: a later Host neither adopts nor kills old processes nor scans/deletes
 old profiles. Stale resources require independent human identification and
 manual cleanup; an unconfirmed bridge stop, call drain or browser stop never
@@ -635,8 +657,12 @@ alter Task truth or prevent ordinary Pindie startup.
 Validation includes isolated real Linux/browser-use startup, reuse, navigation,
 evaluation, snapshot, release/restart and cleanup, plus pinned native shutdown
 and real signal-handler subprocess tests with inert terminal/Session fixtures.
-The Windows Job boundary has generated-script/ownership regression coverage;
-real Windows/WSL execution and a full native PTY smoke are not claimed.
+The Windows Job boundary has generated-script checks plus Host/runtime/manager
+integration with a handle/name/member lifetime model. Regressions explicitly
+remove the last handle/name while Chrome members survive and verify zero profile
+deletions, including an old-helper exit-0/no-ack response. These are not a native
+PowerShell interpreter or Windows kernel verification. Real Windows/WSL execution
+and a full native PTY smoke are not claimed.
 
 ## 14. Work Memory v0.1 — approved architecture
 

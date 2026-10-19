@@ -43,6 +43,12 @@ test("native selectors, overlays, queued input, initialization and shutdown bloc
     (m: ReturnType<typeof fixture>) => { m.isInitialized = false; },
     (m: ReturnType<typeof fixture>) => { m.shutdownRequested = true; },
     (m: ReturnType<typeof fixture>) => { m.renderer = {}; },
+    (m: ReturnType<typeof fixture>) => { m.editor = null; m.editorContainer.children = [null]; },
+    (m: ReturnType<typeof fixture>) => { m.editor = "unknown"; m.editorContainer.children = [m.editor]; },
+    (m: ReturnType<typeof fixture>) => { m.editor = () => {}; m.editorContainer.children = [m.editor]; },
+    (m: ReturnType<typeof fixture>) => { m.renderer = Object.assign(() => {}, { hasOverlayEntries: false }); },
+    (m: ReturnType<typeof fixture>) => { delete m.extensionInput; },
+    (m: ReturnType<typeof fixture>) => { Object.defineProperty(m.renderer, "hasOverlayEntries", { get() { throw new Error("unknown"); } }); },
   ]) {
     const mode = fixture();
     const idle = observeNativeUiIdle(mode);

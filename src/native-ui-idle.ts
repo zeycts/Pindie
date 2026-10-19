@@ -54,8 +54,10 @@ export function observeNativeUiIdle(mode: unknown, version = VERSION): () => boo
       const container = target.editorContainer as { children?: unknown } | undefined;
       // Synchronous native selectors/auth dialogs replace the composer. Custom
       // overlays can be hidden without settling; their promises remain counted.
-      return renderer?.hasOverlayEntries === false && Array.isArray(container?.children) &&
-        container.children.length === 1 && target.editor !== undefined && container.children[0] === target.editor;
+      return typeof renderer === "object" && renderer !== null && renderer.hasOverlayEntries === false &&
+        typeof container === "object" && container !== null && Array.isArray(container.children) &&
+        container.children.length === 1 && typeof target.editor === "object" && target.editor !== null &&
+        container.children[0] === target.editor;
     } catch { return false; }
   };
 }
