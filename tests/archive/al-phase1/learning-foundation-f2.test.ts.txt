@@ -1,0 +1,53 @@
+// Historical cases extracted exactly from fe1d9fa:tests/learning-foundation-f2.test.ts
+// Not executable standalone: original shared fixtures remain in Git history.
+
+test("F2 Host kicks only after the replacement Session is bound, without another Human Run", async () => fixture(async (root) => {
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+  await mkdir(cwd);
+  await mkdir(agentDir);
+  let calls = 0;
+  let entering!: () => void;
+  const started = new Promise<void>((resolve) => { entering = resolve; });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let executed!: () => void;
+  const execution = new Promise<void>((resolve) => { executed = resolve; });
+  const ledger = new FileLearningJobLedger({ globalBaseDir: join(root, "global") });
+  const jobHandler = handler(async (job) => { executed(); return { receiptRef: ref(job) }; });
+  const host = await createPindieHost({ cwd, agentDir, sessionManager: SessionManager.inMemory(cwd),
+    storageRoots: { globalBaseDir: join(root, "global"), projectsBaseDir: join(root, "projects") },
+    env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true" }, learningHandlers: [jobHandler],
+    dependencies: {
+      createInteractiveMode: () => ({ run: async () => {} }),
+      createAgentSessionServices: async (options) => {
+        if (++calls === 2) { entering(); await gate; }
+        return createAgentSessionServices(options);
+      },
+    },
+  });
+  try {
+    // Let initial startup settle, then enqueue without a kick; replacement
+    // must provide the next safe-idle opportunity itself.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await ledger.enqueue("project-discovery", scope, fingerprint, 1, Date.now());
+    const old = host.runtime.activeSession;
+    const replacement = host.runtime.replaceWithFreshSession();
+    await started;
+    assert.equal((await ledger.read())[0]?.state, "pending");
+    release();
+    await replacement;
+    assert.notEqual(host.runtime.activeSession, old);
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([execution, new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => reject(new Error("No post-bind learning kick.")), 3000);
+      })]);
+    } finally { clearTimeout(deadline); }
+    // The handler may have signalled before completing the terminal write.
+    for (let i = 0; i < 50 && (await ledger.read())[0]?.state !== "completed"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal((await ledger.read())[0]?.state, "completed");
+  } finally { release(); await host.dispose(); }
+}));

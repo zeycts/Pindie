@@ -1,0 +1,44 @@
+// Historical cases extracted exactly from fe1d9fa:tests/project-discovery.test.ts
+// Not executable standalone: original shared fixtures remain in Git history.
+
+test("D1 Host startup enqueue does not start a model or change the Human Session surface", async (t) => {
+  const f = await setup(t);
+  for (let i = 0; i < 6; i++) await f.add(i);
+  const cwd = join(f.dir, "project"), agentDir = join(f.dir, "agent");
+  await mkdir(cwd); await mkdir(agentDir);
+  const target = join(f.projects, getProjectId(cwd), "experience");
+  await mkdir(target, { recursive: true });
+  for (const name of await readdir(join(f.projects, id, "experience")))
+    await copyFile(join(f.projects, id, "experience", name), join(target, name));
+  const host = await createPindieHost({ cwd, agentDir, sessionManager: SessionManager.inMemory(cwd),
+    storageRoots: { projectsBaseDir: f.projects, globalBaseDir: f.global },
+    learningHandlers: [], // D1 enqueue-only compatibility seam; D2 registers a production handler by default.
+    env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true" },
+    dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
+  });
+  try {
+    const before = host.runtime.activeSession.getActiveToolNames();
+    for (let attempt = 0; attempt < 20 && (await f.deps.jobs.read()).length === 0; attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.deepEqual(host.runtime.activeSession.getActiveToolNames(), before);
+    assert.deepEqual(host.runtime.activeSession.messages, []);
+    assert.equal((await f.deps.jobs.read()).length, 1);
+    assert.equal((await f.deps.jobs.read())[0]?.state, "pending");
+  } finally { await host.dispose(); }
+});
+
+test("D2 Host freezes the explicit learning model identity, independent of the Human Session model", async (t) => {
+  const f = await setup(t);
+  const cwd = join(f.dir, "project"), agentDir = join(f.dir, "agent");
+  await mkdir(cwd); await mkdir(agentDir);
+  const host = await createPindieHost({ cwd, agentDir, sessionManager: SessionManager.inMemory(cwd),
+    storageRoots: { projectsBaseDir: f.projects, globalBaseDir: f.global },
+    learningHandlers: [], // no model invocation; identity resolution is independent of handlers.
+    learningModel: { provider: "anthropic", modelId: "claude-sonnet-4-5", thinkingLevel: "off" },
+    env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true" },
+    dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
+  });
+  try {
+    assert.deepEqual(host.learningModelIdentity, { provider: "anthropic", modelId: "claude-sonnet-4-5", thinkingLevel: "off" });
+  } finally { await host.dispose(); }
+});

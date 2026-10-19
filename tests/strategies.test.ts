@@ -42,26 +42,16 @@ test("SI01 Seed Strategy catalog contains exactly the seven immutable priors", (
   }
 });
 
-test("SI02 Seed Strategy contract rendering is deterministic and complete", () => {
+test("Core contract remains deterministic without historical Seed guidance",  () => {
   const first = renderPindieSystemContract();
   const second = renderPindieSystemContract();
 
   assert.equal(first, second);
   assert.match(first, /^<PINDIE_SYSTEM_CONTRACT>[\s\S]*<\/PINDIE_SYSTEM_CONTRACT>$/);
   assert.match(first, /Pindie System Contract/);
-  assert.match(first, /optional, advisory problem-solving priors/i);
-  assert.match(first, /may use a strategy, combine strategies, or ignore strategies/i);
-  assert.match(first, /never override actual user intent/i);
-  assert.match(first, /project constraints/i);
-  assert.match(first, /Pindie Run Baseline/i);
-  assert.match(first, /State or semantic authority/i);
-  assert.match(first, /capabilities or Execution Gateway decisions/i);
-  assert.match(first, /verification reality/i);
-  assert.match(first, /Human Gates/i);
-  assert.match(first, /not required ceremony/i);
-
-  for (const [id, kind] of expectedStrategies) {
-    assert.equal(first.split(id).length - 1, 1, id);
-    assert.match(first, new RegExp(`- ${id} \\(${kind}\\)`));
-  }
+  assert.match(first, /Execution Gateway is authoritative/);
+  assert.match(first, /Pindie Run Baseline/);
+  assert.match(first, /Human Gate/);
+  assert.doesNotMatch(first, /Seed Strategies|Policy Snapshot|\/adapt|\/trial/);
+  for (const [id] of expectedStrategies) assert.equal(first.includes(id), false, id);
 });

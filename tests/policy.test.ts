@@ -257,10 +257,10 @@ test("pindie_policy_set uses the caller AbortSignal to cancel resolution", async
   await assert.rejects(execution, /Policy resolution was aborted/);
 });
 
-test("SI02 policy keeps Seed Strategies in the stable contract and declares current Policy in its tool result", async () => {
+test("historical Policy tool remains standalone while Core contract excludes its guidance",  async () => {
   const contract = renderPindieSystemContract();
-  assert.match(contract, /Seed Strategies:/);
-  for (const seed of SEED_STRATEGIES) assert.match(contract, new RegExp(`- ${seed.id} \\(${seed.kind}\\)`));
+  assert.doesNotMatch(contract, /Seed Strategies:/);
+  for (const seed of SEED_STRATEGIES) assert.equal(contract.includes(seed.id), false);
   assert.doesNotMatch(contract, /Current Policy Snapshot/);
 
   const snapshots: PolicySnapshot[] = [];

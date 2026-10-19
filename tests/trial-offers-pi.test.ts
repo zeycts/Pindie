@@ -26,7 +26,7 @@ async function artifactBytes(dir: string): Promise<Record<string, string>> {
   return files;
 }
 
-for (const legacyHistory of [false, true]) test(`R0 native Pi ordinary work freezes T1 with an open v1 hypothesis (${legacyHistory ? "existing" : "no"} Trial history)`, async () => {
+for (const legacyHistory of [false, true]) test(`native Pi ordinary work leaves historical Learning inert with an open v1 hypothesis (${legacyHistory ? "existing" : "no"} Trial history)`, async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pindie-r0-pi-"));
   const agentDir = join(cwd, "agent"), projectsBaseDir = join(cwd, "projects"), globalBaseDir = join(cwd, "global");
   const projectId = getProjectId(cwd), learningDir = join(projectsBaseDir, projectId, "learning-v1");
@@ -54,6 +54,7 @@ for (const legacyHistory of [false, true]) test(`R0 native Pi ordinary work free
       await writeFile(join(trialDir, `${frozen.commit.assignment.workEpisodeId}.pending.json`), JSON.stringify(frozen.pending));
     }
     const before = await artifactBytes(trialDir);
+    const allLearningBefore = await artifactBytes(learningDir);
     assert.equal(Object.keys(before).length > 0, legacyHistory);
     const faux = fauxProvider({ provider: `trial-r0-${randomUUID()}` });
     const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null, refreshOnCreate: false });
@@ -78,15 +79,13 @@ for (const legacyHistory of [false, true]) test(`R0 native Pi ordinary work free
     const state = await new FileStateStore({ baseDir: projectsBaseDir }).load(cwd);
     assert.equal(state.task?.goal, "Ordinary Human Task");
     assert.deepEqual(state.task?.openLoops.blockers, ["Human dependency"]);
-    const ledger = JSON.parse(await readFile(join(projectsBaseDir, projectId, "work-episode.json"), "utf8"));
-    assert.ok(ledger.current?.episodeId);
+    await assert.rejects(readFile(join(projectsBaseDir, projectId, "work-episode.json")), { code: "ENOENT" });
     const experience = await new FileRunExperienceReader({ baseDir: projectsBaseDir }).read(cwd);
-    assert.equal(experience.records.length, 1);
-    assert.equal(experience.records[0]!.experience.schemaVersion, 5);
-    assert.equal(experience.records[0]!.experience.workEpisodeId, ledger.current.episodeId);
+    assert.equal(experience.records.length, 0);
     faux.setResponses([(ctx) => { assertOrdinaryContext(ctx); return fauxAssistantMessage("Continuing ordinary work."); }]);
     await session.prompt("Continue this Task.");
     assert.deepEqual(await artifactBytes(trialDir), before, "no new assignment, receipt, hold or mutation of historical bytes");
+    assert.deepEqual(await artifactBytes(learningDir), allLearningBefore, "all historical Learning bytes are untouched");
     assert.deepEqual(await hypotheses.list(projectId), [h], "Discovery hypothesis infrastructure remains available");
     assert.ok(!JSON.stringify(session.sessionManager.getBranch()).includes("PINDIE_EXPERIMENTAL_TRIAL"));
   } finally {

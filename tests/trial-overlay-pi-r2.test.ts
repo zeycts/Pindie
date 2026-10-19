@@ -65,58 +65,7 @@ async function fixture(t: any, kind: "approach" | "modifier" = "approach", optio
   return { session, faux, publish, h, select, experiences, assignments, evidence, diagnostics, integration, cwd, projectsBaseDir, reopen };
 }
 
-for (const kind of ["approach", "modifier"] as const) for (const preexisting of [false, true]) test(`R2 native Pi ${kind}: ${preexisting ? "first request" : "same-Run task_start continuation"}, explicit trial v5 attribution`, async (t) => {
-  const f = await fixture(t, kind);
-  if (preexisting) { f.faux.setResponses([task(), progress(), fauxAssistantMessage("Blocked.")]); await f.session.prompt("Start real work."); }
-  await f.publish();
-  f.faux.setResponses([
-    ...(!preexisting ? [(ctx: unknown) => { assert.equal(hasAdvisory(ctx), false); return task(); }] : []),
-    (ctx) => { assert.ok(hasAdvisory(ctx)); assert.ok(JSON.stringify(ctx).includes(f.h.id)); return f.select(); },
-    (ctx) => { assert.equal(hasAdvisory(ctx), false); assert.ok(!JSON.stringify(ctx).includes("Invalid Pindie Policy")); return progress(); },
-    (ctx) => { assert.equal(hasAdvisory(ctx), false); return fauxAssistantMessage("Blocked on dependency."); },
-  ]);
-  await f.session.prompt(preexisting ? "Continue real work; choose a suitable strategy." : "Start real work and choose a suitable strategy.");
-  const records = await f.experiences();
-  const e = [...records].sort((a, b) => a.experience.recordedAt.localeCompare(b.experience.recordedAt)).at(-1)!.experience;
-  assert.equal(e.schemaVersion, 5); assert.ok(e.workEpisodeId);
-  const final = e.policy.finalSnapshot!; assert.ok(final);
-  const selection = kind === "approach" ? final.approach : final.modifiers[0]!;
-  assert.equal(selection.revisionIdentity, f.h.id); assert.equal(selection.revisionFingerprint, f.h.fingerprint); assert.equal(selection.revisionStatusAtRun, "trial");
-  assert.equal(e.policy.declarationCount, 1);
-  assert.ok(e.policy.finalPolicyLastDeclaredAfter);
-  assert.ok(e.execution.toolCalls > e.policy.finalPolicyLastDeclaredAfter.toolCalls);
-  assert.equal((await f.assignments()).length, 1);
-  const evidence = await f.evidence();
-  assert.equal(evidence.length, 1);
-  const support = evidence[0]!;
-  assert.equal(support.schemaVersion, 2); assert.equal(support.workEpisodeId, e.workEpisodeId);
-  assert.equal(support.selection.kind, kind); assert.equal(support.selection.revisionIdentity, f.h.id);
-  assert.ok(records.some((r) => r.recordId === support.source.recordId && runExperienceRecordFingerprint(r.experience) === support.source.fingerprint));
-  assert.equal(support.postDeclaration.toolCalls, e.execution.toolCalls - e.policy.finalPolicyLastDeclaredAfter.toolCalls);
-  assert.deepEqual(support.outcome, e.outcome); assert.deepEqual(support.metrics, e.metrics);
-  f.faux.setResponses([(ctx) => { assert.equal(hasAdvisory(ctx), false); return fauxAssistantMessage("Still blocked."); }]);
-  await f.session.prompt("Continue same episode.");
-  assert.equal((await f.assignments()).length, 1);
-  assert.ok(!JSON.stringify(f.session.sessionManager.getBranch()).includes("PINDIE_EXPERIMENTAL_TRIAL"), "advisory is absent from native Session branch");
-});
-
-test("R3 native Pi selected without subsequent work preserves Experience but publishes no evidence", async (t) => {
-  const f = await fixture(t); await f.publish();
-  f.faux.setResponses([task(), f.select(), fauxAssistantMessage("No further work.")]);
-  await f.session.prompt("Start work and select.");
-  assert.equal((await f.experiences())[0]!.experience.policy.finalSnapshot?.approach.revisionIdentity, f.h.id);
-  assert.deepEqual(await f.evidence(), []);
-});
-
-test("R3 native Pi trial replaced by final Seed Policy is not materialized", async (t) => {
-  const f = await fixture(t); await f.publish();
-  f.faux.setResponses([task(), f.select(), progress(), fauxAssistantMessage(fauxToolCall("pindie_policy_set", { approach: "direct-action" }), { stopReason: "toolUse" }), progress(), fauxAssistantMessage("Blocked.")]);
-  await f.session.prompt("Start work, select then replace Policy.");
-  assert.equal((await f.experiences())[0]!.experience.policy.declarationCount, 2);
-  assert.deepEqual(await f.evidence(), []);
-});
-
-for (const failure of ["save", "no-ref", "source", "evidence"] as const) test(`R3 native Pi ${failure} failure cannot alter Task truth or fabricate evidence`, async (t) => {
+for (const failure of ["save", "no-ref", "source", "evidence"] as const) test(`native Pi retired ${failure} dependency cannot alter Task truth or fabricate evidence`, async (t) => {
   let f!: Awaited<ReturnType<typeof fixture>>;
   const options: Partial<PindieExtensionOptions> = failure === "evidence" ? {} : failure === "source" ? {
     experienceStore: { save: async (projectRoot, experience, signal) => {
@@ -136,60 +85,39 @@ for (const failure of ["save", "no-ref", "source", "evidence"] as const) test(`R
   f.faux.setResponses([task(), f.select(), progress(), fauxAssistantMessage("Blocked.")]);
   await f.session.prompt("Start real work.");
   assert.deepEqual(f.integration.runtime.state.task!.openLoops.blockers, ["Human dependency"]);
-  assert.equal((await f.assignments()).length, 1);
-  if (failure === "source") assert.equal((await f.experiences())[0]!.experience.policy.finalSnapshot?.approach.revisionIdentity, f.h.id);
-  if (failure === "evidence") { assert.equal((await f.experiences()).length, 1); await assert.rejects(f.evidence(), /Corrupt/); }
+  assert.equal((await f.assignments()).length, 0);
+  assert.deepEqual(await f.experiences(), []);
+  assert.equal(f.integration.policySnapshot, null);
+  if (failure === "evidence") { await assert.rejects(f.evidence(), /Corrupt/); }
   else assert.deepEqual(await f.evidence(), []);
 });
 
-test("R2 native Pi fresh Session/reloaded assembly cannot redeliver an assigned episode", async (t) => {
-  const f = await fixture(t); await f.publish();
-  f.faux.setResponses([task(), (ctx) => { assert.ok(hasAdvisory(ctx)); return progress(); }, fauxAssistantMessage("Blocked.")]);
-  await f.session.prompt("Start real work.");
-  const oldSession = f.session.sessionManager.getSessionId();
-  const next = await f.reopen(); assert.notEqual(next.sessionManager.getSessionId(), oldSession);
-  f.faux.setResponses([(ctx) => { assert.equal(hasAdvisory(ctx), false); return progress(); }, fauxAssistantMessage("Blocked.")]);
-  await next.prompt("Continue the same task in a fresh Session.");
-  assert.equal((await f.assignments()).length, 1);
-  assert.ok(f.diagnostics.some((d: any) => d.event === "existing"));
-  assert.ok(!JSON.stringify(next.sessionManager.getBranch()).includes("PINDIE_EXPERIMENTAL_TRIAL"));
-});
-
-test("R2 native Pi ignoring offer creates only scheduling history and ordinary Experience", async (t) => {
-  const f = await fixture(t); await f.publish();
-  f.faux.setResponses([task(), (ctx) => { assert.ok(hasAdvisory(ctx)); return progress(); }, (ctx) => { assert.equal(hasAdvisory(ctx), false); return fauxAssistantMessage("Blocked."); }]);
-  await f.session.prompt("Start work.");
-  assert.equal((await f.experiences())[0]!.experience.policy.finalSnapshot, null); assert.equal((await f.assignments()).length, 1);
-  assert.deepEqual(await f.evidence(), []);
-});
-
-test("R2 native Pi downstream transform deletion consumes rendering but not exact selector lease", async (t) => {
-  const f = await fixture(t, "approach", {}, true); await f.publish();
-  f.faux.setResponses([task(), (ctx) => { assert.equal(hasAdvisory(ctx), false); return progress(); }, (ctx) => { assert.equal(hasAdvisory(ctx), false); return f.select(); }, progress(), fauxAssistantMessage("Blocked.")]);
-  await f.session.prompt("Start real work.");
-  assert.equal((await f.experiences())[0]!.experience.policy.finalSnapshot?.approach.revisionIdentity, f.h.id);
-  assert.equal((await f.evidence()).length, 1, "projection/delivery is not an evidence gate");
-});
-
-test("R2 native Pi replacement waits for next Run, multi-occurrence revokes old lease", async (t) => {
+test("native Pi replacement preserves Task identity boundaries without Trial placement", async (t) => {
   const f = await fixture(t);
-  f.faux.setResponses([task(), progress(), fauxAssistantMessage("Blocked.")]); await f.session.prompt("Start real work.");
+  f.faux.setResponses([task(), progress(), fauxAssistantMessage("Blocked.")]);
+  await f.session.prompt("Start real work.");
   await f.publish();
   const replace = () => fauxAssistantMessage(fauxToolCall("pindie_task_replace", { goal: "Replacement work", successCriteria: ["done"] }), { stopReason: "toolUse" });
-  f.faux.setResponses([(ctx) => { assert.ok(hasAdvisory(ctx)); return replace(); }, (ctx) => { assert.equal(hasAdvisory(ctx), false); return f.select(); }, progress(), fauxAssistantMessage("Blocked.")]);
-  await f.session.prompt("Start work, then replace it with a different task.");
-  assert.equal((await f.assignments()).length, 1);
-  const e = [...await f.experiences()].sort((a, b) => a.experience.recordedAt.localeCompare(b.experience.recordedAt)).at(-1)!.experience; assert.equal(e.schemaVersion, 4); assert.equal(e.workEpisodeId, undefined); assert.equal(e.policy.finalSnapshot, null);
+  f.faux.setResponses([(ctx) => { assert.equal(hasAdvisory(ctx), false); return replace(); }, progress(), fauxAssistantMessage("Blocked.")]);
+  await f.session.prompt("Replace it with a different task.");
+  assert.equal(f.integration.runtime.state.task?.goal, "Replacement work");
+  assert.deepEqual(await f.assignments(), []);
+  assert.deepEqual(await f.experiences(), []);
   assert.deepEqual(await f.evidence(), []);
-  f.faux.setResponses([(ctx) => { assert.ok(hasAdvisory(ctx)); return progress(); }, fauxAssistantMessage("Blocked.")]);
-  await f.session.prompt("Continue replacement."); assert.equal((await f.assignments()).length, 2);
+  f.faux.setResponses([(ctx) => { assert.equal(hasAdvisory(ctx), false); return progress(); }, fauxAssistantMessage("Blocked.")]);
+  await f.session.prompt("Continue replacement.");
+  assert.equal(f.integration.runtime.state.task?.goal, "Replacement work");
+  assert.deepEqual(await f.assignments(), []);
 });
 
-test("R2 native Pi failed task_start does not consume a scheduling attempt", async (t) => {
+test("native Pi failed task_start leaves authority usable for the next valid Task", async (t) => {
   const f = await fixture(t); await f.publish();
-  f.faux.setResponses([fauxAssistantMessage(fauxToolCall("pindie_task_start", { goal: "", successCriteria: ["done"] }), { stopReason: "toolUse" }),
-    (ctx) => { assert.equal(hasAdvisory(ctx), false); return task(); }, (ctx) => { assert.ok(hasAdvisory(ctx)); return progress(); }, fauxAssistantMessage("Blocked.")]);
-  await f.session.prompt("Start work."); assert.equal((await f.assignments()).length, 1);
+  f.faux.setResponses([fauxAssistantMessage(fauxToolCall("pindie_task_start", { goal: "Invalid definition", successCriteria: [] }), { stopReason: "toolUse" }),
+    (ctx) => { assert.equal(f.integration.runtime.state.task, null); assert.equal(hasAdvisory(ctx), false); return task(); },
+    (ctx) => { assert.equal(hasAdvisory(ctx), false); return progress(); }, fauxAssistantMessage("Blocked.")]);
+  await f.session.prompt("Start work.");
+  assert.equal(f.integration.runtime.state.task?.goal, "Human work");
+  assert.deepEqual(await f.assignments(), []);
 });
 
 test("R2 native Pi SI disabled never accesses assignment/hypothesis seams", async (t) => {
@@ -206,49 +134,19 @@ test("R2 native Pi null/ambiguous episode never schedules", async (t) => {
   await f.session.prompt("Start real work."); assert.equal((await f.assignments()).length, 0);
 });
 
-test("R2 native Pi rejected selector leaves Seed and later exact declaration chronology intact", async (t) => {
-  const f = await fixture(t); await f.publish();
-  const seed = () => fauxAssistantMessage(fauxToolCall("pindie_policy_set", { approach: "direct-action", modifiers: ["minimal-change"] }), { stopReason: "toolUse" });
-  f.faux.setResponses([task(), (ctx) => { assert.ok(hasAdvisory(ctx)); return fauxAssistantMessage(fauxToolCall("pindie_policy_set", { approach: { strategyId: f.h.logicalId, revisionIdentity: f.h.id, revisionFingerprint: `sha256:${"0".repeat(64)}` } }), { stopReason: "toolUse" }); },
-    seed(), f.select(), progress(), fauxAssistantMessage("Blocked.")]);
-  await f.session.prompt("Start real work."); const e = (await f.experiences())[0]!.experience;
-  assert.equal(e.policy.declarationCount, 2); assert.equal(e.policy.finalPolicyDeclarationCount, 1); assert.equal(e.policy.finalSnapshot?.approach.revisionIdentity, f.h.id);
-  assert.ok(e.execution.toolCalls > e.policy.finalPolicyLastDeclaredAfter!.toolCalls);
-});
-
-test("R2 native Pi external State epoch invalidates an already-rendered selector", async (t) => {
+test("native Pi external State epoch remains authoritative while retired Policy stays unavailable", async (t) => {
   const f = await fixture(t); await f.publish();
   f.faux.setResponses([task(), async (ctx) => {
-    assert.ok(hasAdvisory(ctx));
+    assert.equal(hasAdvisory(ctx), false);
     const state = structuredClone(f.integration.runtime.state); state.task!.goal = "External replacement";
     await new FileStateStore({ baseDir: f.projectsBaseDir }).save(f.cwd, state);
     await f.integration.core.run.refreshAuthoritativeState();
     return f.select();
   }, (ctx) => { assert.equal(hasAdvisory(ctx), false); return progress(); }, fauxAssistantMessage("Blocked.")]);
-  await f.session.prompt("Start real work."); assert.equal((await f.assignments()).length, 1);
+  await f.session.prompt("Start real work."); assert.equal((await f.assignments()).length, 0);
+  assert.equal(f.integration.runtime.state.task?.goal, "External replacement");
   const policyResult = f.session.sessionManager.getBranch().find((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "pindie_policy_set");
   assert.ok(policyResult && policyResult.type === "message" && policyResult.message.role === "toolResult" && policyResult.message.isError);
   assert.ok((await f.experiences()).every((r) => r.experience.policy.finalSnapshot === null));
   assert.deepEqual(await f.evidence(), []);
-});
-
-test("R2 native Pi legacy Adapt packet Run never consumes the open episode", async (t) => {
-  const f = await fixture(t);
-  const seed = () => fauxAssistantMessage(fauxToolCall("pindie_policy_set", { approach: "direct-action" }), { stopReason: "toolUse" });
-  f.faux.setResponses([task(), seed(), progress(), fauxAssistantMessage("Blocked.")]); await f.session.prompt("Start real work.");
-  f.faux.setResponses([seed(), progress(), fauxAssistantMessage("Blocked.")]); await f.session.prompt("Continue real work.");
-  await f.publish();
-  const before = f.faux.state.callCount;
-  f.faux.setResponses([(ctx) => { assert.equal(hasAdvisory(ctx), false); assert.ok(JSON.stringify(ctx).includes("<PINDIE_ADAPTATION_PACKET>")); return fauxAssistantMessage("No candidate proposed."); }]);
-  let resolveSettled!: () => void;
-  const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
-  const unsubscribe = f.session.subscribe((event) => { if (event.type === "agent_settled") resolveSettled(); });
-  const timer = setTimeout(() => resolveSettled(), 3000);
-  try {
-    const command = f.session.extensionRunner.getCommand("adapt")!;
-    await command.handler("direct-action", f.session.extensionRunner.createCommandContext());
-    await settled;
-  } finally { clearTimeout(timer); unsubscribe(); }
-  await f.session.waitForIdle();
-  assert.equal((await f.assignments()).length, 0); assert.equal(f.faux.state.callCount, before + 1);
 });
