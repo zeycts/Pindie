@@ -2,6 +2,10 @@
 
 Pindie is a personal AI agent for indie development built on the Pi agent harness.
 
+## AL retirement — current authority
+
+AL / Self-Improvement / Cross-Project Learning are retired. `docs/al-retirement-phase1.md` supersedes all Learning activation, integration-preservation and future-implementation guidance below and in historical AL/SI/CPL documents. Do not re-enable these features through flags, overrides, injected dependencies or new production imports. Phase 1 retains internal research implementations and historical data for review/rollback; Phase 2 deletion requires separate acceptance. Never migrate/delete `~/.pindie` history as part of code cleanup. Preserve Core Task/Verification/Gate, Control, Session/Run, Attention, Browser, Quota, Remote, Work Memory, Skills and Pi integration. Improvement now uses model + Harness + native Skill/workflow + human review/tests.
+
 ## Authority
 
 For architecture or implementation work, use this order:
@@ -32,7 +36,7 @@ If those sources conflict, report the contradiction before widening scope. Do no
 
 Pindie must not implement a second Agent Loop, general workflow engine, persisted Work Plane phase machine or Task queue, planner framework, memory database, verification-log database, or second Skill runtime. Approved Autonomous Learning v1 permits a tiny persistent domain-specific LearningJob scheduler/ledger separate from user Task State; this exception is not a general task queue or second LLM Agent Loop.
 
-**Stable Mode is the production default.** Autonomous Learning is experimental and opt-in through `PINDIE_AUTONOMOUS_LEARNING_ENABLED=1`. With it disabled, ordinary Pindie work must not construct or depend on Self-Improvement, Cross-Project Learning, LearningSupervisor/Discovery jobs, ordinary Trial overlays, or Learning data. Existing Learning artifacts remain preserved on disk but inert.
+**Learning is hard-isolated, not opt-in.** Any value of the retired AL/SI/CPL flags or direct composition overrides leaves Learning disabled. Ordinary work must not import runtime Learning implementations, construct their stores, schedule jobs, register Policy/learning tools or commands, inject advisory, or read/write Learning history. WorkEpisode had no non-learning consumer and is no longer mounted. Historical type-only/inert compatibility seams are temporary Phase 2 cleanup, not activation APIs.
 
 ## Design principles
 
