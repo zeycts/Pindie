@@ -106,7 +106,8 @@ export class PindieRuntime {
     }
   }
 
-  constructor(store: PindieStateStore, workEpisodes?: WorkEpisodeLedger) { this.store = store; this.workEpisodes = workEpisodes; }
+  /** Retired ledger input is ignored; Task persistence never accesses learning storage. */
+  constructor(store: PindieStateStore, _workEpisodes?: WorkEpisodeLedger) { this.store = store; this.workEpisodes = undefined; }
   get state(): PindieState { return this.currentState; }
   get projectRoot(): string | null { return this.currentProjectRoot; }
   get externalStateEpoch(): number { return this.currentExternalStateEpoch; }
@@ -129,10 +130,6 @@ export class PindieRuntime {
     this.assertNoPendingSemanticMutation(projectRoot);
     this.currentProjectRoot = projectRoot;
     this.currentState = state;
-    if (this.workEpisodes) {
-      try { this.observeWorkEpisode(projectRoot, state, await this.workEpisodes.reconcile(projectRoot, state)); }
-      catch (error) { console.warn(`[Pindie] WorkEpisode reconciliation unavailable: ${String(error)}`); }
-    }
   }
 
   async refresh(signal?: AbortSignal): Promise<boolean> {
@@ -210,33 +207,11 @@ export class PindieRuntime {
     if (result.state === state) return result;
     this.assertCurrentAuthority(projectRoot, generation, signal);
     this.assertNoPendingSemanticMutation(projectRoot);
-    if (this.workEpisodes) {
-      try { await this.workEpisodes.prepared(projectRoot, state, event); }
-      catch (error) { console.warn(`[Pindie] WorkEpisode preparation unavailable: ${String(error)}`); }
-    }
     await this.store.save(projectRoot, result.state, signal);
     this.assertCurrentAuthority(projectRoot, generation, signal);
     this.assertNoPendingSemanticMutation(projectRoot);
     this.currentState = result.state;
     if (event.type === "start_task" || event.type === "replace_task") this.occurrenceEpoch++;
-    if (this.workEpisodes) {
-      try {
-        const episodeId = await this.workEpisodes.committed(projectRoot, state, result.state, event);
-        this.observeWorkEpisode(projectRoot, result.state, episodeId);
-        const observer = this.onWorkEpisodeOpened;
-        if (episodeId && observer && (event.type === "start_task" || event.type === "replace_task")) {
-          // Operational notification only. No observer Promise belongs to dispatch or its State lock.
-          void Promise.resolve().then(() => {
-            if (this.currentProjectRoot === projectRoot && this.authorityGeneration === generation &&
-              this.observedWorkEpisodeId === episodeId) return observer(projectRoot, episodeId);
-          }).catch((error: unknown) => {
-            try { console.warn(`[Pindie] WorkEpisode observer unavailable: ${String(error).slice(0, 512)}`); }
-            catch { /* Diagnostic failure cannot become an unhandled observer rejection. */ }
-          });
-        }
-      }
-      catch (error) { this.observeWorkEpisode(projectRoot, result.state, null); console.warn(`[Pindie] WorkEpisode binding unavailable: ${String(error)}`); }
-    }
     return result;
   }
 

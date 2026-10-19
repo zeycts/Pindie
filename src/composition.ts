@@ -1,113 +1,22 @@
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
-import {
-  discordRemoteConfig,
-  type DiscordRemoteConfigResult,
-} from "./remote-config.ts";
-import {
-  FileRunExperienceReader,
-  FileRunExperienceStore,
-  type RunExperienceProjectReader,
-  type RunExperienceReader,
-  type RunExperienceStore,
-} from "./experience-store.ts";
-import {
-  NOTION_PROJECT_MEMORY_API_VERSION,
-  notionProjectMemoryConfig,
-  type NotionProjectMemoryConfigResult,
-} from "./notion-project-memory-config.ts";
+import { discordRemoteConfig, type DiscordRemoteConfigResult } from "./remote-config.ts";
+import { NOTION_PROJECT_MEMORY_API_VERSION, notionProjectMemoryConfig, type NotionProjectMemoryConfigResult } from "./notion-project-memory-config.ts";
 import { RemoteRoutingStore } from "./remote-routing.ts";
-import { FileStrategyKnowledge } from "./strategy-knowledge-file.ts";
-import { FileRunExperienceMaintenance } from "./experience-lifecycle.ts";
-import { FileWorkEpisodeLedger } from "./work-episode.ts";
-import {
-  type StrategyCandidateReader,
-  type StrategyCandidateStore,
-} from "./strategy-candidates.ts";
-import {
-  type StrategyRevisionDecisionReader,
-  type StrategyRevisionDecisionStore,
-} from "./strategy-decisions.ts";
-import {
-  type StrategyDerivationCandidateReader,
-  type StrategyDerivationCandidateStore,
-} from "./strategy-derivation-candidates.ts";
-import {
-  type StrategyDerivationDecisionReader,
-  type StrategyDerivationDecisionStore,
-} from "./strategy-derivation-decisions.ts";
-import {
-  type StrategyTrustScopeCandidateStore,
-} from "./strategy-trust-scope-candidates.ts";
-import {
-  type StrategyTrustScopeDecisionStore,
-} from "./strategy-trust-scope-decisions.ts";
-import {
-  type StrategyTrustScopeSourceResolver,
-} from "./strategy-trust-scope-resolution.ts";
-import {
-  type ProjectTrustedStrategyPortfolioReader,
-} from "./strategy-trust-safety.ts";
-import {
-  FileScopeProjectTrustReader,
-  type ScopeProjectTrustReader,
-} from "./strategy-trust-scope-review.ts";
-import {
-  FileGlobalWriterLock,
-  FileStateStore,
-  FileTaskContinuityStore,
-  type GlobalWriterLock,
-  type PindieStateStore,
-  type TaskContinuityStore,
-} from "./store.ts";
+import { FileStateStore, FileTaskContinuityStore } from "./store.ts";
 import type { PindieExtensionOptions } from "./extension.ts";
-import {
-  FileQuotaResumePreferenceStore,
-  type QuotaResumePreferenceStore,
-} from "./quota-resume.ts";
-import { FileQuotaFallbackPreferenceStore, type QuotaFallbackPreferenceStore } from "./quota-fallback.ts";
+import { FileQuotaResumePreferenceStore } from "./quota-resume.ts";
+import { FileQuotaFallbackPreferenceStore } from "./quota-fallback.ts";
 import type { NotionProjectMemoryClient } from "./notion-project-memory.ts";
-import type { ProjectMemorySink } from "./project-memory.ts";
-import {
-  type StrategySynthesisCandidateReader,
-  type StrategySynthesisCandidateStore,
-} from "./strategy-synthesis-candidates.ts";
-import {
-  type StrategySynthesisDecisionReader,
-  type StrategySynthesisDecisionStore,
-} from "./strategy-synthesis-decisions.ts";
 
 const require = createRequire(import.meta.url);
-
 type DiscordRemoteModule = typeof import("./discord-remote.ts");
 type RemoteCompanionModule = typeof import("./remote-companion.ts");
 type NotionProjectMemoryModule = typeof import("./notion-project-memory.ts");
-type NotionSdkModule = {
-  readonly Client: new (options: {
-    readonly auth: string;
-    readonly notionVersion: string;
-  }) => NotionProjectMemoryClient;
-};
+type NotionSdkModule = { readonly Client: new (options: { readonly auth: string; readonly notionVersion: string }) => NotionProjectMemoryClient };
 
-function loadDiscordRemoteModule(): DiscordRemoteModule {
-  return require("./discord-remote.ts") as DiscordRemoteModule;
-}
-
-function loadRemoteCompanionModule(): RemoteCompanionModule {
-  return require("./remote-companion.ts") as RemoteCompanionModule;
-}
-
-function loadNotionProjectMemoryModule(): NotionProjectMemoryModule {
-  return require("./notion-project-memory.ts") as NotionProjectMemoryModule;
-}
-
-function loadNotionSdk(): NotionSdkModule {
-  return require("@notionhq/client") as NotionSdkModule;
-}
-
-/** Startup-time product selection. This is configuration, not semantic State. */
+/** Retired flags remain inert input compatibility until Phase 2. No override can enable them. */
 export interface PindieFeatureSelection {
   readonly selfImprovement: boolean;
   readonly crossProjectLearning: boolean;
@@ -116,30 +25,20 @@ export interface PindieFeatureSelection {
   readonly bundledSkills: boolean;
   readonly presentation: boolean;
 }
-
 export type PindieFeatureSelectionOverrides = Partial<PindieFeatureSelection>;
-
-export interface PindieFeatureAvailability {
-  readonly remote?: boolean;
-  readonly workMemory?: boolean;
-}
-
-/** Explicit production storage namespaces used by the assembled features. */
+export interface PindieFeatureAvailability { readonly remote?: boolean; readonly workMemory?: boolean }
 export interface PindieStorageRoots {
   readonly projectsBaseDir: string;
   readonly globalBaseDir: string;
   readonly remoteRoutingBaseDir: string;
 }
-
 export type PindieStorageRootOverrides = Partial<PindieStorageRoots>;
-
 export interface PindieCompositionConfig {
-  /** Resolve environment-configured Remote and Work Memory adapters. */
   readonly configureOptionalFeatures?: boolean;
+  /** @deprecated Inert, retained for source compatibility only. */
   readonly onExperienceSaved?: (projectRoot: string) => void;
   readonly env?: Record<string, string | undefined>;
 }
-
 export interface PindieComposition {
   readonly featureSelection: PindieFeatureSelection;
   readonly storageRoots: PindieStorageRoots;
@@ -147,413 +46,95 @@ export interface PindieComposition {
   readonly extensionOptions: PindieExtensionOptions;
   readonly warnings: readonly string[];
 }
-
-const DEFAULT_PINDIE_FEATURE_SELECTION: PindieFeatureSelection = Object.freeze({
-  // Stable Mode is the production default. Autonomous Learning must be an
-  // explicit opt-in so ordinary Pindie work never depends on experimental
-  // learning/trial state.
-  selfImprovement: false,
-  crossProjectLearning: false,
-  remote: false,
-  workMemory: false,
-  bundledSkills: true,
-  presentation: true,
+export const DEFAULT_PINDIE_FEATURE_SELECTION: PindieFeatureSelection = Object.freeze({
+  selfImprovement: false, crossProjectLearning: false,
+  remote: false, workMemory: false, bundledSkills: true, presentation: true,
 });
-
-export { DEFAULT_PINDIE_FEATURE_SELECTION };
-
-function configuredFlag(
-  env: Record<string, string | undefined>,
-  name: string,
-): boolean | undefined {
+function configuredFlag(env: Record<string, string | undefined>, name: string): boolean | undefined {
   const value = env[name]?.trim().toLowerCase();
   if (value === undefined || value === "") return undefined;
-  if (value === "1" || value === "true" || value === "yes" || value === "on") return true;
-  if (value === "0" || value === "false" || value === "no" || value === "off") return false;
+  if (["1", "true", "yes", "on"].includes(value)) return true;
+  if (["0", "false", "no", "off"].includes(value)) return false;
   throw new Error(`${name} must be a boolean value.`);
 }
-
-/**
- * Resolve startup selection without constructing any feature implementation.
- * Remote and Work Memory are selected only when their complete environment or
- * an explicitly supplied dependency is available.
- */
 export function resolvePindieFeatureSelection(
-  overrides: PindieFeatureSelectionOverrides = {},
-  availability: PindieFeatureAvailability = {},
+  overrides: PindieFeatureSelectionOverrides = {}, availability: PindieFeatureAvailability = {},
   env: Record<string, string | undefined> = process.env,
 ): PindieFeatureSelection {
-  const autonomousLearning = configuredFlag(
-    env,
-    "PINDIE_AUTONOMOUS_LEARNING_ENABLED",
-  );
-  // Stable Mode is the environment default. Legacy fine-grained environment
-  // flags cannot silently re-enable Learning; production must opt in through
-  // the master switch. Direct composition overrides remain available for
-  // isolated tests and advanced embedding.
-  const selfImprovement = autonomousLearning === false
-    ? false
-    : overrides.selfImprovement ??
-      (autonomousLearning === true
-        ? configuredFlag(env, "PINDIE_SELF_IMPROVEMENT_ENABLED") ?? true
-        : DEFAULT_PINDIE_FEATURE_SELECTION.selfImprovement);
-  const requestedCrossProjectLearning = autonomousLearning === false
-    ? false
-    : overrides.crossProjectLearning ??
-      (autonomousLearning === true
-        ? configuredFlag(env, "PINDIE_CROSS_PROJECT_LEARNING_ENABLED")
-        : undefined);
-  const crossProjectLearning = requestedCrossProjectLearning ?? selfImprovement;
-  if (!selfImprovement && crossProjectLearning) {
-    throw new Error(
-      "Pindie feature selection is invalid: Cross-Project Learning requires Self-Improvement.",
-    );
-  }
+  // AL/SI/CPL are retired, not optional features. Do not even parse their old flags.
   const remoteAvailable = availability.remote === true;
   const workMemoryAvailable = availability.workMemory === true;
-  const requestedRemote = overrides.remote ??
-    configuredFlag(env, "PINDIE_REMOTE_ENABLED") ??
-    remoteAvailable;
-  const requestedWorkMemory = overrides.workMemory ??
-    configuredFlag(env, "PINDIE_WORK_MEMORY_ENABLED") ??
-    workMemoryAvailable;
-
   return Object.freeze({
-    selfImprovement,
-    crossProjectLearning,
-    remote: requestedRemote && remoteAvailable,
-    workMemory: requestedWorkMemory && workMemoryAvailable,
-    bundledSkills: overrides.bundledSkills ??
-      configuredFlag(env, "PINDIE_BUNDLED_SKILLS_ENABLED") ??
-      DEFAULT_PINDIE_FEATURE_SELECTION.bundledSkills,
-    presentation: overrides.presentation ??
-      configuredFlag(env, "PINDIE_PRESENTATION_ENABLED") ??
-      DEFAULT_PINDIE_FEATURE_SELECTION.presentation,
+    selfImprovement: false, crossProjectLearning: false,
+    remote: (overrides.remote ?? configuredFlag(env, "PINDIE_REMOTE_ENABLED") ?? remoteAvailable) && remoteAvailable,
+    workMemory: (overrides.workMemory ?? configuredFlag(env, "PINDIE_WORK_MEMORY_ENABLED") ?? workMemoryAvailable) && workMemoryAvailable,
+    bundledSkills: overrides.bundledSkills ?? configuredFlag(env, "PINDIE_BUNDLED_SKILLS_ENABLED") ?? true,
+    presentation: overrides.presentation ?? configuredFlag(env, "PINDIE_PRESENTATION_ENABLED") ?? true,
   });
 }
-
-/** Resolve the production namespaces without touching the filesystem. */
-export function resolvePindieStorageRoots(
-  overrides: PindieStorageRootOverrides = {},
-  homeDirectory = homedir(),
-): PindieStorageRoots {
+export function resolvePindieStorageRoots(overrides: PindieStorageRootOverrides = {}, homeDirectory = homedir()): PindieStorageRoots {
   return Object.freeze({
     projectsBaseDir: overrides.projectsBaseDir ?? join(homeDirectory, ".pindie", "projects"),
     globalBaseDir: overrides.globalBaseDir ?? join(homeDirectory, ".pindie", "global"),
-    remoteRoutingBaseDir: overrides.remoteRoutingBaseDir ?? join(
-      homeDirectory,
-      ".pindie",
-      "remote",
-      "discord",
-      "projects",
-    ),
+    remoteRoutingBaseDir: overrides.remoteRoutingBaseDir ?? join(homeDirectory, ".pindie", "remote", "discord", "projects"),
   });
 }
-
-function configuredWarnings(
-  memory: NotionProjectMemoryConfigResult | null,
-  remote: DiscordRemoteConfigResult | null,
-): string[] {
-  return [
-    ...(memory !== null && !memory.enabled && memory.warning ? [memory.warning] : []),
-    ...(remote !== null && !remote.enabled && remote.warning ? [remote.warning] : []),
-  ];
+function configuredWarnings(memory: NotionProjectMemoryConfigResult | null, remote: DiscordRemoteConfigResult | null): string[] {
+  return [...(memory !== null && !memory.enabled && memory.warning ? [memory.warning] : []),
+    ...(remote !== null && !remote.enabled && remote.warning ? [remote.warning] : [])];
 }
-
-function isProjectReader(
-  value: RunExperienceReader,
-): value is RunExperienceReader & RunExperienceProjectReader {
-  return typeof (value as Partial<RunExperienceProjectReader>).listProjectIds === "function" &&
-    typeof (value as Partial<RunExperienceProjectReader>).readProjectId === "function";
-}
-
-/**
- * Construct production defaults and return the dependencies for the existing
- * extension registration path. No feature business logic is executed here.
- */
-export function composePindieExtension(
-  input: PindieExtensionOptions = {},
-  config: PindieCompositionConfig = {},
-): PindieComposition {
+export function composePindieExtension(input: PindieExtensionOptions = {}, config: PindieCompositionConfig = {}): PindieComposition {
   const env = config.env ?? process.env;
   const roots = resolvePindieStorageRoots(input.storageRoots);
-  const configureOptionalFeatures = config.configureOptionalFeatures === true;
-
-  const configuredMemory = configureOptionalFeatures
-    ? notionProjectMemoryConfig(env)
-    : null;
-  const configuredRemote = configureOptionalFeatures
-    ? discordRemoteConfig(env)
-    : null;
-  const selection = resolvePindieFeatureSelection(
-    input.featureSelection,
-    {
-      remote: input.remoteCompanion !== undefined || configuredRemote?.enabled === true,
-      workMemory: input.projectMemorySink !== undefined || configuredMemory?.enabled === true,
-    },
-    env,
-  );
-
-  const stateStore: PindieStateStore = input.store ?? new FileStateStore({
-    baseDir: roots.projectsBaseDir,
-  });
-  const continuityStore: TaskContinuityStore = input.continuityStore ?? new FileTaskContinuityStore({
-    baseDir: roots.projectsBaseDir,
-  });
-  const quotaResumePreferenceStore: QuotaResumePreferenceStore =
-    input.quotaResumePreferenceStore ?? new FileQuotaResumePreferenceStore({
-      baseDir: roots.globalBaseDir,
-    });
-  const quotaFallbackPreferenceStore: QuotaFallbackPreferenceStore =
-    input.quotaFallbackPreferenceStore ?? new FileQuotaFallbackPreferenceStore({
-      baseDir: roots.globalBaseDir,
-    });
-
-  let experienceStore: RunExperienceStore | undefined;
-  let experienceReader: RunExperienceReader | undefined;
-  let crossProjectExperienceReader: RunExperienceProjectReader | undefined;
-  let strategyCandidateStore: StrategyCandidateStore | undefined;
-  let strategyCandidateReader: StrategyCandidateReader | undefined;
-  let strategyDerivationCandidateStore: StrategyDerivationCandidateStore | undefined;
-  let strategyDerivationCandidateReader: StrategyDerivationCandidateReader | undefined;
-  let strategyDecisionStore: StrategyRevisionDecisionStore | undefined;
-  let strategyDecisionReader: StrategyRevisionDecisionReader | undefined;
-  let strategyDerivationDecisionStore: StrategyDerivationDecisionStore | undefined;
-  let strategyDerivationDecisionReader: StrategyDerivationDecisionReader | undefined;
-  let strategyTrustScopeCandidateStore: StrategyTrustScopeCandidateStore | undefined;
-  let strategyTrustScopeDecisionStore: StrategyTrustScopeDecisionStore | undefined;
-  let strategyTrustScopeSourceResolver: StrategyTrustScopeSourceResolver | undefined;
-  let strategyTrustScopeWriterLock: GlobalWriterLock | undefined;
-  let scopeProjectTrustReader: ScopeProjectTrustReader | undefined;
-  let crossProjectTrustReader: ProjectTrustedStrategyPortfolioReader | undefined;
-  let strategySynthesisCandidateReader: StrategySynthesisCandidateReader | undefined;
-  let strategySynthesisDecisionReader: StrategySynthesisDecisionReader | undefined;
-  let strategySynthesisCandidateStore: StrategySynthesisCandidateStore | undefined;
-  let strategySynthesisDecisionStore: StrategySynthesisDecisionStore | undefined;
-
-  const strategyKnowledge = new FileStrategyKnowledge({
-    projectsBaseDir: roots.projectsBaseDir,
-    globalBaseDir: roots.globalBaseDir,
-  });
-
-  // The mutable Synthesis Stores are also the read-only SI authority readers
-  // when CPL is selected. Reuse the exact production instances so the two
-  // feature boundaries cannot silently observe different global namespaces.
-  if (selection.crossProjectLearning) {
-    strategySynthesisCandidateStore = input.strategySynthesisCandidateStore ??
-      strategyKnowledge.synthesisCandidates;
-    strategySynthesisDecisionStore = input.strategySynthesisDecisionStore ??
-      strategyKnowledge.synthesisDecisions;
+  const configuredMemory = config.configureOptionalFeatures === true ? notionProjectMemoryConfig(env) : null;
+  const configuredRemote = config.configureOptionalFeatures === true ? discordRemoteConfig(env) : null;
+  const selection = resolvePindieFeatureSelection(input.featureSelection, {
+    remote: input.remoteCompanion !== undefined || configuredRemote?.enabled === true,
+    workMemory: input.projectMemorySink !== undefined || configuredMemory?.enabled === true,
+  }, env);
+  let projectMemorySink = selection.workMemory ? input.projectMemorySink : undefined;
+  if (selection.workMemory && projectMemorySink === undefined && configuredMemory?.enabled === true) {
+    const { Client } = require("@notionhq/client") as NotionSdkModule;
+    const { NotionProjectMemorySink } = require("./notion-project-memory.ts") as NotionProjectMemoryModule;
+    projectMemorySink = new NotionProjectMemorySink({ client: new Client({ auth: configuredMemory.config.token,
+      notionVersion: NOTION_PROJECT_MEMORY_API_VERSION }), dataSourceId: configuredMemory.config.dataSourceId });
   }
-
-  if (selection.selfImprovement) {
-    experienceStore = input.experienceStore ?? new FileRunExperienceStore({
-      baseDir: roots.projectsBaseDir,
-      onSaved: async (projectRoot) => {
-        await new FileRunExperienceMaintenance({
-          projectsBaseDir: roots.projectsBaseDir,
-          globalBaseDir: roots.globalBaseDir,
-        }).prune(projectRoot);
-        config.onExperienceSaved?.(projectRoot); // Host hook is fire-and-forget; never Task delivery.
-      },
-    });
-    experienceReader = input.experienceReader ?? new FileRunExperienceReader({
-      baseDir: roots.projectsBaseDir,
-    });
-    strategyCandidateStore = input.strategyCandidateStore ??
-      strategyKnowledge.revisionCandidates;
-    strategyCandidateReader = input.strategyCandidateReader ??
-      (typeof (strategyCandidateStore as Partial<StrategyCandidateReader>).read === "function"
-        ? strategyCandidateStore as unknown as StrategyCandidateReader
-        : strategyKnowledge.revisionCandidates);
-
-    strategyDerivationCandidateStore = input.strategyDerivationCandidateStore ??
-      strategyKnowledge.derivationCandidates;
-    strategyDerivationCandidateReader = input.strategyDerivationCandidateReader ??
-      (typeof (strategyDerivationCandidateStore as Partial<StrategyDerivationCandidateReader>).read === "function"
-        ? strategyDerivationCandidateStore as unknown as StrategyDerivationCandidateReader
-        : strategyKnowledge.derivationCandidates);
-
-    strategyDecisionStore = input.strategyDecisionStore ??
-      strategyKnowledge.revisionDecisions;
-    strategyDecisionReader = input.strategyDecisionReader ?? strategyDecisionStore;
-    strategyDerivationDecisionStore = input.strategyDerivationDecisionStore ??
-      strategyKnowledge.derivationDecisions;
-    strategyDerivationDecisionReader = input.strategyDerivationDecisionReader ?? strategyDerivationDecisionStore;
-
-    strategyTrustScopeCandidateStore = input.strategyTrustScopeCandidateStore ??
-      strategyKnowledge.scopeCandidates;
-    strategyTrustScopeDecisionStore = input.strategyTrustScopeDecisionStore ??
-      strategyKnowledge.scopeDecisions;
-    strategyTrustScopeSourceResolver = input.strategyTrustScopeSourceResolver ??
-      strategyKnowledge.sourceResolver;
-    strategyTrustScopeWriterLock = input.strategyTrustScopeWriterLock ?? new FileGlobalWriterLock({
-      baseDir: roots.globalBaseDir,
-    });
-    // Synthesis authority is part of the SI trust-safety substrate, not only
-    // the optional CPL workflow. SI constructs read-only access here; the
-    // mutable workflow Stores are assembled only when CPL is selected below.
-    strategySynthesisCandidateReader = input.strategySynthesisCandidateReader ??
-      strategySynthesisCandidateStore ??
-      input.strategySynthesisCandidateStore ??
-      strategyKnowledge.synthesisCandidateReader;
-    strategySynthesisDecisionReader = input.strategySynthesisDecisionReader ??
-      strategySynthesisDecisionStore ??
-      input.strategySynthesisDecisionStore ??
-      strategyKnowledge.synthesisDecisionReader;
-  }
-
-  if (selection.crossProjectLearning) {
-    crossProjectExperienceReader = input.crossProjectExperienceReader ??
-      (experienceReader !== undefined && isProjectReader(experienceReader) ? experienceReader : undefined);
-    crossProjectTrustReader = input.crossProjectTrustReader ?? strategyKnowledge.projectTrust;
-    scopeProjectTrustReader = input.scopeProjectTrustReader ??
-      new FileScopeProjectTrustReader({ projectsBaseDir: roots.projectsBaseDir });
-    if (crossProjectExperienceReader === undefined) {
-      // A custom SI-only test reader may not expose the optional cross-project
-      // namespace. Keep CPL assembled but make its evidence path fail closed;
-      // production composition always supplies FileRunExperienceReader.
-      crossProjectExperienceReader = {
-        listProjectIds: async () => Object.freeze([]),
-        readProjectId: async () => {
-          throw new Error("Cross-project Experience reader is unavailable.");
-        },
-      };
-    }
-  }
-
-  let projectMemorySink: ProjectMemorySink | undefined;
-  if (selection.workMemory) {
-    projectMemorySink = input.projectMemorySink;
-    if (projectMemorySink === undefined && configuredMemory?.enabled === true) {
-      const { Client } = loadNotionSdk();
-      const { NotionProjectMemorySink } = loadNotionProjectMemoryModule();
-      const client = new Client({
-        auth: configuredMemory.config.token,
-        notionVersion: NOTION_PROJECT_MEMORY_API_VERSION,
-      });
-      projectMemorySink = new NotionProjectMemorySink({
-        client,
-        dataSourceId: configuredMemory.config.dataSourceId,
-      });
-    }
-  }
-
-  let remoteCompanion: PindieExtensionOptions["remoteCompanion"];
+  let remoteCompanion = selection.remote ? input.remoteCompanion : undefined;
   let remoteRoutingStore = selection.remote ? input.remoteRoutingStore : undefined;
-  if (selection.remote) {
-    remoteCompanion = input.remoteCompanion;
-    if (remoteCompanion === undefined && configuredRemote?.enabled === true) {
-      const { DiscordRemote } = loadDiscordRemoteModule();
-      const { RemoteCompanion } = loadRemoteCompanionModule();
-      const discord = new DiscordRemote(configuredRemote.config);
-      remoteRoutingStore ??= new RemoteRoutingStore({
-        baseDir: roots.remoteRoutingBaseDir,
-      });
-      remoteCompanion = {
-        companion: new RemoteCompanion(discord, {
-          routing: remoteRoutingStore,
-        }),
-        guildId: configuredRemote.config.guildId,
-        discord,
-      };
-    }
+  if (selection.remote && remoteCompanion === undefined && configuredRemote?.enabled === true) {
+    const { DiscordRemote } = require("./discord-remote.ts") as DiscordRemoteModule;
+    const { RemoteCompanion } = require("./remote-companion.ts") as RemoteCompanionModule;
+    const discord = new DiscordRemote(configuredRemote.config);
+    remoteRoutingStore ??= new RemoteRoutingStore({ baseDir: roots.remoteRoutingBaseDir });
+    remoteCompanion = { companion: new RemoteCompanion(discord, { routing: remoteRoutingStore }),
+      guildId: configuredRemote.config.guildId, discord };
   }
-
-  const {
-    projectMemorySink: _inputProjectMemorySink,
-    remoteCompanion: _inputRemoteCompanion,
-    remoteRoutingStore: _inputRemoteRoutingStore,
-    quotaResumePreferenceStore: _inputQuotaResumePreferenceStore,
-    quotaFallbackPreferenceStore: _inputQuotaFallbackPreferenceStore,
-    experienceStore: _inputExperienceStore,
-    experienceReader: _inputExperienceReader,
-    crossProjectExperienceReader: _inputCrossProjectExperienceReader,
-    crossProjectTrustReader: _inputCrossProjectTrustReader,
-    strategySynthesisCandidateReader: _inputStrategySynthesisCandidateReader,
-    strategySynthesisDecisionReader: _inputStrategySynthesisDecisionReader,
-    strategySynthesisCandidateStore: _inputStrategySynthesisCandidateStore,
-    strategySynthesisDecisionStore: _inputStrategySynthesisDecisionStore,
-    strategyCandidateStore: _inputStrategyCandidateStore,
-    strategyCandidateReader: _inputStrategyCandidateReader,
-    strategyDerivationCandidateStore: _inputStrategyDerivationCandidateStore,
-    strategyDerivationCandidateReader: _inputStrategyDerivationCandidateReader,
-    strategyDecisionStore: _inputStrategyDecisionStore,
-    strategyDecisionReader: _inputStrategyDecisionReader,
-    strategyDerivationDecisionStore: _inputStrategyDerivationDecisionStore,
-    strategyDerivationDecisionReader: _inputStrategyDerivationDecisionReader,
-    strategyTrustScopeCandidateStore: _inputStrategyTrustScopeCandidateStore,
-    strategyTrustScopeDecisionStore: _inputStrategyTrustScopeDecisionStore,
-    strategyTrustScopeSourceResolver: _inputStrategyTrustScopeSourceResolver,
-    strategyTrustScopeWriterLock: _inputStrategyTrustScopeWriterLock,
-    scopeProjectTrustReader: _inputScopeProjectTrustReader,
-    ...inputWithoutOptionalFeatures
-  } = input;
+  // Drop retired dependency injection too: no getters, constructors, reads, writes or callbacks.
+  const retired = new Set([
+    "experienceStore", "experienceReader", "onExperienceSaved", "workEpisodes", "trialAssignmentStore", "trialHypothesisReader",
+    "trialAssignmentPolicy", "trialDiagnostic", "strategyCandidateStore", "strategyCandidateReader",
+    "strategyDerivationCandidateStore", "strategyDerivationCandidateReader", "strategyDecisionStore", "strategyDecisionReader",
+    "strategyDerivationDecisionStore", "strategyDerivationDecisionReader", "strategyTrustScopeCandidateStore",
+    "strategyTrustScopeDecisionStore", "strategyTrustScopeSourceResolver", "strategyTrustScopeWriterLock",
+    "crossProjectExperienceReader", "crossProjectTrustReader", "scopeProjectTrustReader",
+    "strategySynthesisCandidateReader", "strategySynthesisDecisionReader", "strategySynthesisCandidateStore", "strategySynthesisDecisionStore",
+    "projectMemorySink", "remoteCompanion", "remoteRoutingStore",
+  ]);
+  const retained = Object.fromEntries(Object.keys(input).filter((key) => !retired.has(key)).map((key) => [key, input[key as keyof PindieExtensionOptions]]));
   const extensionOptions: PindieExtensionOptions = {
-    ...inputWithoutOptionalFeatures,
-    workEpisodes: input.workEpisodes ?? (stateStore instanceof FileStateStore &&
-      stateStore.storageBaseDir === roots.projectsBaseDir &&
-      (experienceReader === undefined || experienceReader instanceof FileRunExperienceReader)
-      ? new FileWorkEpisodeLedger({
-          projectsBaseDir: roots.projectsBaseDir,
-          stateStore,
-          experienceReader: experienceReader ?? new FileRunExperienceReader({ baseDir: roots.projectsBaseDir }),
-        }) : undefined),
-    store: stateStore,
-    continuityStore,
-    quotaResumePreferenceStore,
-    quotaFallbackPreferenceStore,
-    ...(selection.selfImprovement
-      ? {
-          experienceStore: experienceStore!,
-          experienceReader: experienceReader!,
-          strategyCandidateStore: strategyCandidateStore!,
-          strategyCandidateReader: strategyCandidateReader!,
-          strategyDerivationCandidateStore: strategyDerivationCandidateStore!,
-          strategyDerivationCandidateReader: strategyDerivationCandidateReader!,
-          strategyDecisionStore: strategyDecisionStore!,
-          strategyDecisionReader: strategyDecisionReader!,
-          strategyDerivationDecisionStore: strategyDerivationDecisionStore!,
-          strategyDerivationDecisionReader: strategyDerivationDecisionReader!,
-          strategyTrustScopeCandidateStore: strategyTrustScopeCandidateStore!,
-          strategyTrustScopeDecisionStore: strategyTrustScopeDecisionStore!,
-          strategyTrustScopeSourceResolver: strategyTrustScopeSourceResolver!,
-          strategyTrustScopeWriterLock: strategyTrustScopeWriterLock!,
-          strategySynthesisCandidateReader: strategySynthesisCandidateReader!,
-          strategySynthesisDecisionReader: strategySynthesisDecisionReader!,
-        }
-      : {}),
-    ...(selection.crossProjectLearning
-      ? {
-          crossProjectExperienceReader: crossProjectExperienceReader!,
-          crossProjectTrustReader: crossProjectTrustReader!,
-          scopeProjectTrustReader: scopeProjectTrustReader!,
-          strategySynthesisCandidateStore: strategySynthesisCandidateStore!,
-          strategySynthesisDecisionStore: strategySynthesisDecisionStore!,
-        }
-      : {}),
+    ...retained,
+    store: input.store ?? new FileStateStore({ baseDir: roots.projectsBaseDir }),
+    continuityStore: input.continuityStore ?? new FileTaskContinuityStore({ baseDir: roots.projectsBaseDir }),
+    quotaResumePreferenceStore: input.quotaResumePreferenceStore ?? new FileQuotaResumePreferenceStore({ baseDir: roots.globalBaseDir }),
+    quotaFallbackPreferenceStore: input.quotaFallbackPreferenceStore ?? new FileQuotaFallbackPreferenceStore({ baseDir: roots.globalBaseDir }),
     ...(projectMemorySink === undefined ? {} : { projectMemorySink }),
     ...(remoteCompanion === undefined ? {} : { remoteCompanion }),
     ...(remoteRoutingStore === undefined ? {} : { remoteRoutingStore }),
-    featureSelection: selection,
-    storageRoots: roots,
+    featureSelection: selection, storageRoots: roots,
   };
-
-  return Object.freeze({
-    featureSelection: selection,
-    storageRoots: roots,
-    remoteRoutingStore: remoteRoutingStore ?? null,
-    extensionOptions,
-    warnings: Object.freeze(configuredWarnings(configuredMemory, configuredRemote)),
-  });
+  return Object.freeze({ featureSelection: selection, storageRoots: roots, remoteRoutingStore: remoteRoutingStore ?? null,
+    extensionOptions, warnings: Object.freeze(configuredWarnings(configuredMemory, configuredRemote)) });
 }
-
-export function composeConfiguredPindieExtension(
-  input: PindieExtensionOptions = {},
-  env: Record<string, string | undefined> = process.env,
-): PindieComposition {
-  return composePindieExtension(input, {
-    configureOptionalFeatures: true,
-    env,
-  });
+export function composeConfiguredPindieExtension(input: PindieExtensionOptions = {}, env: Record<string, string | undefined> = process.env): PindieComposition {
+  return composePindieExtension(input, { configureOptionalFeatures: true, env });
 }

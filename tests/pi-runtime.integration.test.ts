@@ -32,7 +32,6 @@ const PINDIE_STABLE_TOOL_NAMES = [
   "pindie_gate_open",
   "pindie_gate_resolve",
   "pindie_git_observe",
-  "pindie_policy_set",
   "pindie_task_complete",
   "pindie_task_progress",
   "pindie_task_refine",
@@ -45,7 +44,8 @@ const PINDIE_STABLE_TOOL_NAMES = [
 function assertPindieSurface(session: AgentSession): void {
   const toolNames = new Set(session.getAllTools().map((tool) => tool.name));
   for (const name of PINDIE_STABLE_TOOL_NAMES) assert.equal(toolNames.has(name), true, `missing ${name}`);
-  assert.equal(toolNames.has("pindie_strategy_candidate_create"), false, "Stable Mode must not expose SI Candidate creation");
+  assert.equal(toolNames.has("pindie_policy_set"), false, "retired Policy must not be registered");
+  assert.equal(toolNames.has("pindie_strategy_candidate_create"), false, "retired SI must not be registered");
   for (const name of ["codemode", "tool_search"]) assert.equal(toolNames.has(name), false);
   assert.equal([...toolNames].some((name) => name.startsWith("mcp__")), false);
   assert.equal(session.resourceLoader.getExtensions().extensions.some((extension) => extension.path.startsWith("builtin:")), false);

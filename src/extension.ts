@@ -40,8 +40,6 @@ import {
   type PindiePresentationReader,
 } from "./presentation-integration.ts";
 import { PINDIE_REMOTE_NOTICE_TYPE, renderPindieRemoteNotice } from "./remote-notice.ts";
-import { CrossProjectLearningIntegration } from "./cross-project-learning-integration.ts";
-import { SelfImprovementIntegration } from "./self-improvement-integration.ts";
 import type {
   RunExperienceProjectReader,
   RunExperienceReader,
@@ -72,11 +70,10 @@ import type {
   StrategySynthesisDecisionReader,
   StrategySynthesisDecisionStore,
 } from "./strategy-synthesis-decisions.ts";
-import {
-  emptyPromotedStrategyRevisionCatalog,
-  type StrategyRevisionDecisionReader,
-  type StrategyRevisionDecisionStore,
-  type PromotedStrategyRevisionCatalog,
+import type {
+  StrategyRevisionDecisionReader,
+  StrategyRevisionDecisionStore,
+  PromotedStrategyRevisionCatalog,
 } from "./strategy-decisions.ts";
 import type {
   StrategyDerivationDecisionReader,
@@ -160,16 +157,10 @@ import {
   runBoundedOperation,
 } from "./liveness.ts";
 
-import { resolvePindieStorageRoots } from "./composition.ts";
-import { getProjectId } from "./store.ts";
-import { FileDiscoveryHypothesisStore } from "./discovery-hypotheses.ts";
-import { D2OpenHypothesisReader, type OpenHypothesisReader } from "./open-hypotheses.ts";
-import { FileProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safety.ts";
-import { FileTrialAssignmentStore, type TrialAssignmentStore, type AssignmentPolicy } from "./trial-assignment-v2.ts";
-import { OrdinaryTrialOverlay, type OrdinaryTrialBinding, type TrialDiagnostic } from "./ordinary-trial-overlay.ts";
-import { FileTrialEvidenceV2Store, materializeTrialEvidenceV2 } from "./trial-evidence-v2.ts";
-import { runExperienceRecordFingerprint } from "./run-experience-fingerprint.ts";
-import { isExecutableStrategyHypothesis } from "./learning-v1-contract.ts";
+// Retired embedding options: type-only compatibility until Phase 2.
+import type { OpenHypothesisReader } from "./open-hypotheses.ts";
+import type { TrialAssignmentStore, AssignmentPolicy } from "./trial-assignment-v2.ts";
+import type { TrialDiagnostic } from "./ordinary-trial-overlay.ts";
 
 type ProjectRootResolver = (cwd: string, signal?: AbortSignal) => Promise<string>;
 
@@ -364,7 +355,6 @@ function registerComposedPindieExtension(
   const continuityNow = options.now ?? Date.now;
   const core = createCoreIntegration({
     store: stateStore,
-    workEpisodes: options.workEpisodes,
     continuityStore,
     committedRolloverPublisher,
     taskHandoffEnabled,
@@ -383,92 +373,6 @@ function registerComposedPindieExtension(
   const resolveProjectRoot = options.resolveProjectRoot ??
     defaultResolveProjectRoot;
 
-  let selfImprovement: SelfImprovementIntegration | null = null;
-  let crossProjectLearning: CrossProjectLearningIntegration | null = null;
-  if (featureSelection.selfImprovement) {
-    const {
-      experienceStore,
-      experienceReader,
-      strategyCandidateStore,
-      strategyCandidateReader,
-      strategyDerivationCandidateStore,
-      strategyDerivationCandidateReader,
-      strategyDecisionStore,
-      strategyDecisionReader,
-      strategyDerivationDecisionStore,
-      strategyDerivationDecisionReader,
-      strategyTrustScopeCandidateStore,
-      strategyTrustScopeDecisionStore,
-      strategyTrustScopeSourceResolver,
-      strategyTrustScopeWriterLock,
-      strategySynthesisCandidateReader,
-      strategySynthesisDecisionReader,
-    } = options;
-    if (
-      experienceStore === undefined || experienceReader === undefined ||
-      strategyCandidateStore === undefined || strategyCandidateReader === undefined ||
-      strategyDerivationCandidateStore === undefined || strategyDerivationCandidateReader === undefined ||
-      strategyDecisionStore === undefined || strategyDecisionReader === undefined ||
-      strategyDerivationDecisionStore === undefined || strategyDerivationDecisionReader === undefined ||
-      strategyTrustScopeCandidateStore === undefined || strategyTrustScopeDecisionStore === undefined ||
-      strategyTrustScopeSourceResolver === undefined || strategyTrustScopeWriterLock === undefined ||
-      strategySynthesisCandidateReader === undefined || strategySynthesisDecisionReader === undefined
-    ) {
-      throw new Error("Self-Improvement composition is missing an explicit production dependency.");
-    }
-    selfImprovement = new SelfImprovementIntegration({
-      workEpisodes: options.workEpisodes,
-      pi,
-      core: {
-        getProjectRoot: () => runtime.projectRoot,
-        getActiveAgentRunGeneration: () => run.activeAgentRunGeneration,
-        isAgentRunCurrent: (generation) => run.isAgentRunCurrent(generation),
-      },
-      experienceStore,
-      experienceReader,
-      strategyCandidateStore,
-      strategyCandidateReader,
-      strategyDerivationCandidateStore,
-      strategyDerivationCandidateReader,
-      strategyDecisionStore,
-      strategyDecisionReader,
-      strategyDerivationDecisionStore,
-      strategyDerivationDecisionReader,
-      strategyTrustScopeCandidateStore,
-      strategyTrustScopeDecisionStore,
-      strategyTrustScopeSourceResolver,
-      strategyTrustScopeWriterLock,
-      strategySynthesisCandidateReader,
-      strategySynthesisDecisionReader,
-      now: continuityNow,
-    });
-  }
-  if (featureSelection.crossProjectLearning) {
-    if (selfImprovement === null) {
-      throw new Error("Cross-Project Learning requires Self-Improvement.");
-    }
-    if (
-      options.crossProjectExperienceReader === undefined ||
-      options.crossProjectTrustReader === undefined ||
-      options.scopeProjectTrustReader === undefined ||
-      options.strategySynthesisCandidateStore === undefined ||
-      options.strategySynthesisDecisionStore === undefined
-    ) {
-      throw new Error("Cross-Project Learning composition is missing an explicit production dependency.");
-    }
-    crossProjectLearning = new CrossProjectLearningIntegration({
-      pi,
-      learning: selfImprovement.learningAccess,
-      trust: selfImprovement.strategyTrustAccess,
-      crossProjectExperienceReader: options.crossProjectExperienceReader,
-      crossProjectTrustReader: options.crossProjectTrustReader,
-      scopeProjectTrustReader: options.scopeProjectTrustReader,
-      strategySynthesisCandidateStore: options.strategySynthesisCandidateStore,
-      strategySynthesisDecisionStore: options.strategySynthesisDecisionStore,
-      now: continuityNow,
-    });
-    selfImprovement.attachCrossProjectLearning(crossProjectLearning.asAttachment());
-  }
   const subscriptionUsageMonitor = new SubscriptionUsageMonitor(
     options.subscriptionUsageProvider ?? chatGptSubscriptionUsageProvider,
     continuityNow,
@@ -725,39 +629,6 @@ function registerComposedPindieExtension(
     return renderCurrentPindieActionEligibility(derivation.snapshot);
   };
 
-  const trialRoots = resolvePindieStorageRoots(options.storageRoots);
-  const trialAssignments = featureSelection.selfImprovement ? options.trialAssignmentStore ?? new FileTrialAssignmentStore({ projectsBaseDir: trialRoots.projectsBaseDir }) : null;
-  const trialEvidence = featureSelection.selfImprovement ? new FileTrialEvidenceV2Store({ projectsBaseDir: trialRoots.projectsBaseDir }) : null;
-  const ordinaryTrial = featureSelection.selfImprovement ? new OrdinaryTrialOverlay({
-    store: trialAssignments!,
-    reader: options.trialHypothesisReader ?? new D2OpenHypothesisReader(new FileDiscoveryHypothesisStore({ projectsBaseDir: trialRoots.projectsBaseDir }),
-      new FileProjectTrustedStrategyPortfolioReader({ projectsBaseDir: trialRoots.projectsBaseDir, globalBaseDir: trialRoots.globalBaseDir })),
-    ...(options.trialAssignmentPolicy ? { policy: options.trialAssignmentPolicy } : {}),
-    ...(options.trialDiagnostic ? { diagnostic: options.trialDiagnostic } : {}),
-    ...(options.now ? { now: options.now } : {}),
-  }) : null;
-  let ordinaryTrialRun = false;
-  const trialStartAdmissions = new Map<string, { generation: number; sessionId: string; projectRoot: string; occurrenceEpoch: number; externalStateEpoch: number }>();
-  const currentTrialBinding = (ctx: ExtensionContext): OrdinaryTrialBinding | null => {
-    try {
-      const generation = run.activeAgentRunGeneration;
-      if (!ordinaryTrialRun || generation === null || ctx.signal?.aborted || selfImprovement?.hasPacketForGeneration(generation) === true) return null;
-      const episode = core.getOrdinaryRunEpisode();
-      if (!episode) return null;
-      return {
-        projectId: getProjectId(episode.projectRoot), workEpisodeId: episode.episodeId,
-        sessionId: ctx.sessionManager.getSessionId(), generation,
-        occurrenceEpoch: episode.occurrenceEpoch, externalStateEpoch: episode.externalStateEpoch,
-      };
-    } catch { return null; }
-  };
-  const clearOrdinaryTrial = (): void => { ordinaryTrialRun = false; ordinaryTrial?.reset(); trialStartAdmissions.clear(); };
-  if (ordinaryTrial) pi.on("context_with_system", (event, ctx) => {
-    const advisory = ordinaryTrial?.render(currentTrialBinding(ctx));
-    if (!advisory) return;
-    return { messages: [...event.messages, { role: "user" as const, content: [{ type: "text" as const, text: advisory }], timestamp: Date.now() }] };
-  });
-
   core.registerTools(pi, {
     onSemanticStateChange: () => {
       presentation.refreshStatus();
@@ -769,15 +640,7 @@ function registerComposedPindieExtension(
         remoteCompletionReport = { generation, sessionId: liveRemoteSession.sessionId, text };
       }
     },
-    resolveRevisionSelector: selfImprovement === null
-      ? undefined
-      : async (selector, kind, ctx) => {
-          const experimental = await ordinaryTrial?.resolve(selector, kind, () => currentTrialBinding(ctx), ctx.signal);
-          return experimental ?? selfImprovement!.resolveRevisionSelector(selector, kind, ctx);
-        },
   });
-  selfImprovement?.registerTools();
-  crossProjectLearning?.registerTools();
 
   if (options.projectMemorySink !== undefined) {
     pi.registerTool(createPindieMemoryCaptureTool({
@@ -793,8 +656,6 @@ function registerComposedPindieExtension(
       handler: async (args, ctx) => presentation.handleEfficiencyCommand(args, ctx),
     });
   }
-  selfImprovement?.registerCommands();
-  crossProjectLearning?.registerCommands();
 
   if (featureSelection.presentation) {
     pi.registerCommand("reasoning", {
@@ -808,7 +669,6 @@ function registerComposedPindieExtension(
 
   pi.on("session_start", async (_event, ctx) => {
     ++agentRunLifecycleGeneration;
-    clearOrdinaryTrial();
     await quotaResume.restoreSession(ctx);
     await quotaFallback.restoreSession(ctx);
     const nativeSessionId = options.remoteCompanion || taskHandoffEnabled
@@ -822,7 +682,6 @@ function registerComposedPindieExtension(
     presentation.resetTrackers();
     presentation.clearStatus(ctx);
     presentation.resetSubscriptionUsage();
-    selfImprovement?.resetForSession();
     core.resetRuntimeForSession(nativeSessionId);
     lastCheckpointCompactionId = null;
 
@@ -876,15 +735,8 @@ function registerComposedPindieExtension(
     }
   });
 
-  if (ordinaryTrial) {
-    pi.on("session_before_switch", () => { clearOrdinaryTrial(); });
-    pi.on("session_before_fork", () => { clearOrdinaryTrial(); });
-    pi.on("session_before_tree", () => { clearOrdinaryTrial(); });
-  }
-
   pi.on("session_tree", async (_event, ctx) => {
     ++agentRunLifecycleGeneration;
-    clearOrdinaryTrial();
     cancelQuotaResume(ctx);
     try { fallbackController?.cancel(ctx.sessionManager.getSessionId()); } catch { /* Released Host. */ }
     await quotaResume.restoreBranch(ctx);
@@ -932,7 +784,6 @@ function registerComposedPindieExtension(
 
   pi.on("session_shutdown", (event, ctx) => {
     ++agentRunLifecycleGeneration;
-    clearOrdinaryTrial();
     cancelQuotaResume(ctx);
     releaseQuotaStatusObserver?.();
     releaseQuotaStatusObserver = null;
@@ -958,7 +809,6 @@ function registerComposedPindieExtension(
     remote?.discord?.stop();
     presentation.resetTrackers();
     presentation.clearStatus(ctx);
-    selfImprovement?.resetForSession();
     core.resetRuntimeForSession(null);
     lastCheckpointCompactionId = null;
     presentation.setStatusContext(null);
@@ -966,7 +816,6 @@ function registerComposedPindieExtension(
 
   pi.on("before_agent_start", async (event, ctx) => {
     ++agentRunLifecycleGeneration;
-    clearOrdinaryTrial();
     remoteCompletionReport = null;
     let preparationGeneration: number | null = null;
     try {
@@ -992,37 +841,6 @@ function registerComposedPindieExtension(
       // authoritative project State rather than a previous session snapshot.
       core.beginAgentRunFacts(ctx);
       preparationGeneration = run.activeAgentRunGeneration;
-      // Operational provenance only; failed/ambiguous reads never change Task authority or prompt.
-      try {
-        await runBoundedOperation({
-          label: "Pindie WorkEpisode Run-start observation",
-          timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
-          run: (signal) => core.captureRunStartEpisode(signal),
-        });
-      } catch (error) {
-        console.warn(`[Pindie] WorkEpisode Run-start attribution unavailable: ${errorMessage(error)}`);
-      }
-      const selfImprovementRun = selfImprovement === null
-        ? {
-            adaptationLease: null,
-            trialLease: null,
-            derivationLease: null,
-            globalDerivationLease: null,
-            promptContributions: [] as readonly string[],
-          }
-        : await runBoundedOperation({
-            label: "Pindie Self-Improvement Run preparation",
-            timeoutMs: PINDIE_TOOL_LIVENESS_TIMEOUT_MS,
-            run: (signal) => selfImprovement.prepareAgentRun(ctx, signal),
-          });
-
-      ordinaryTrialRun = selfImprovementRun.adaptationLease === null && selfImprovementRun.trialLease === null &&
-        selfImprovementRun.derivationLease === null && selfImprovementRun.globalDerivationLease === null;
-      const placement = currentTrialBinding(ctx);
-      if (ordinaryTrial && placement && core.getRunStartEpisode()?.taskWasOpen) {
-        await ordinaryTrial.prepare(placement, () => currentTrialBinding(ctx), ctx.signal);
-      }
-
       let derivation = run.deriveSnapshot();
       if (!derivation.ok) {
         markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
@@ -1037,16 +855,9 @@ function registerComposedPindieExtension(
         featureSelection.presentation ? () => presentation.refreshStatus(ctx) : undefined,
       );
       const taskAtRunStart = run.authoritativeState?.task ?? null;
-      const synthesisTrialRun = selfImprovementRun.trialLease !== null &&
-        "candidateType" in selfImprovementRun.trialLease &&
-        selfImprovementRun.trialLease.candidateType === "cross-project-synthesis";
       if (
         derivation.ok &&
         derivation.snapshot.authority === "coherent" &&
-        selfImprovementRun.adaptationLease === null &&
-        (selfImprovementRun.trialLease === null || synthesisTrialRun) &&
-        selfImprovementRun.derivationLease === null &&
-        selfImprovementRun.globalDerivationLease === null &&
         runtime.projectRoot !== null &&
         taskAtRunStart !== null &&
         !taskAtRunStart.completed
@@ -1062,7 +873,6 @@ function registerComposedPindieExtension(
       void options.remoteCompanion?.companion.status(remoteStatusFacts());
 
       if (!derivation.ok) {
-        selfImprovement?.resetForSession();
         throw new Error(
           `Pindie unavailable semantic derivation failed: ${derivation.error}`,
         );
@@ -1072,7 +882,6 @@ function registerComposedPindieExtension(
         ...(options.projectMemorySink === undefined
           ? []
           : [corePromptContribution(appendPindieWorkMemoryContract(""))]),
-        ...selfImprovementRun.promptContributions.map((content) => corePromptContribution(content)),
       ];
       const systemPrompt = core.buildSystemPrompt(
         event.systemPrompt,
@@ -1091,9 +900,7 @@ function registerComposedPindieExtension(
         ),
       };
     } catch (error) {
-      if (preparationGeneration === run.activeAgentRunGeneration) clearOrdinaryTrial();
       if (preparationGeneration !== null) {
-        selfImprovement?.abortAgentRunPreparation(preparationGeneration);
         core.abortAgentRunPreparation(preparationGeneration);
       }
       throw error;
@@ -1160,7 +967,6 @@ function registerComposedPindieExtension(
     }
     if (!run.isAgentRunCurrent(agentRunGeneration)) return;
     if (handoff.isPendingFor(sessionId, agentRunGeneration)) return;
-    if (selfImprovement?.hasPacketForGeneration(agentRunGeneration) === true) return;
 
     const derivation = run.deriveSnapshot();
     const state = run.authoritativeState;
@@ -1192,7 +998,6 @@ function registerComposedPindieExtension(
   });
 
   pi.on("agent_before_settle", (event, ctx) => {
-    if (selfImprovement?.isSelfImprovementRunForGeneration(run.activeAgentRunGeneration) === true) return;
     if (taskHandoffEnabled) {
       try {
         if (handoff.shouldSuppressContinuation({
@@ -1274,12 +1079,6 @@ function registerComposedPindieExtension(
       if (isHandoffCall) handoff.cancelHandoffReservation(event.toolCallId);
       else handoff.cancelNormalToolCall(event.toolCallId);
     };
-    const selfImprovementRestriction = selfImprovement?.restrictToolCall(effect, event.toolName) ?? null;
-    if (selfImprovementRestriction !== null) {
-      cancelToolAdmission();
-      run.recordDeniedCall(effect);
-      return { block: true, reason: selfImprovementRestriction };
-    }
     if (
       effect.requiredCapability === "observe.project" ||
       effect.requiredCapability === "observe.git"
@@ -1337,16 +1136,7 @@ function registerComposedPindieExtension(
     }
 
     const snapshot = derivation.snapshot;
-    const adaptationActive = selfImprovement?.isAdaptationRunActive === true;
-    const derivationActive = selfImprovement?.isDerivationRunActive === true;
-    const globalDerivationActive = selfImprovement?.isGlobalDerivationRunActive === true;
-    const capabilities = new Set<PindieCapability>(deriveCapabilities(snapshot));
-    if (effect.requiredCapability === "policy.adapt" && adaptationActive) {
-      capabilities.add("policy.adapt");
-    }
-    if (effect.requiredCapability === "policy.derive" && (derivationActive || globalDerivationActive)) {
-      capabilities.add("policy.derive");
-    }
+    const capabilities = deriveCapabilities(snapshot);
     const authorization = core.authorizeToolEffect(capabilities, effect);
     if (!authorization.allowed) {
       cancelToolAdmission();
@@ -1397,16 +1187,6 @@ function registerComposedPindieExtension(
       capabilities,
     );
     run.recordAuthorizedCall(event.toolCallId, effect);
-    if (ordinaryTrial && ordinaryTrialRun && effect.requiredCapability === "task.start") {
-      const start = core.getRunStartEpisode(), generation = run.activeAgentRunGeneration;
-      if (start && !start.taskWasOpen && start.episodeId === null && generation !== null && runtime.projectRoot === start.projectRoot &&
-        runtime.taskOccurrenceEpoch === start.occurrenceEpoch && runtime.externalStateEpoch === start.externalStateEpoch) {
-        try {
-          trialStartAdmissions.set(event.toolCallId, { generation, sessionId: ctx.sessionManager.getSessionId(), projectRoot: start.projectRoot,
-            occurrenceEpoch: start.occurrenceEpoch, externalStateEpoch: start.externalStateEpoch });
-        } catch { /* Missing native binding skips learning, not authorized Human work. */ }
-      }
-    }
   });
 
   pi.on("tool_result", async (event, ctx) => {
@@ -1447,25 +1227,9 @@ function registerComposedPindieExtension(
     const authorizedExecution = execution.takeAuthorizedExecution(
       event.toolCallId,
     );
-    if (telemetryKind === "policy") {
-      if (event.isError) run.recordFailedPolicyDeclaration();
-      else run.recordSuccessfulPolicyDeclaration();
-      return;
-    }
-    if (telemetryKind === "self-improvement" || telemetryKind === "memory") return;
+    if (telemetryKind === "memory") return;
     if (!authorizedExecution) return;
     const { effect } = authorizedExecution;
-    const startAdmission = trialStartAdmissions.get(event.toolCallId);
-    trialStartAdmissions.delete(event.toolCallId);
-    if (ordinaryTrial && !event.isError && effect.requiredCapability === "task.start" && startAdmission) {
-      const placement = currentTrialBinding(ctx);
-      if (placement && placement.generation === startAdmission.generation && placement.sessionId === startAdmission.sessionId && runtime.projectRoot === startAdmission.projectRoot &&
-        placement.externalStateEpoch === startAdmission.externalStateEpoch && placement.occurrenceEpoch === startAdmission.occurrenceEpoch + 1) {
-        await ordinaryTrial.prepare(placement, () => currentTrialBinding(ctx), ctx.signal);
-      }
-    }
-    if (!event.isError && effect.requiredCapability === "task.replace") ordinaryTrial?.invalidate();
-
     if (
       !event.isError &&
       (effect.requiredCapability === "task.start" ||
@@ -1550,9 +1314,6 @@ function registerComposedPindieExtension(
     // stale; that obsolete run must not touch or reset this runtime's state.
     const entries = safeSessionEntries(ctx);
     if (!entries) return;
-    const frozenTrialBinding = currentTrialBinding(ctx);
-    const frozenAssignment = ordinaryTrial?.settlementAssignment(frozenTrialBinding) ?? null;
-    clearOrdinaryTrial();
 
     const settlementLifecycleGeneration = agentRunLifecycleGeneration;
     const settlementRemoteLease = liveRemoteSession;
@@ -1580,40 +1341,8 @@ function registerComposedPindieExtension(
       return !options.remoteCompanion || liveRemoteSession === settlementRemoteLease;
     };
 
-    const trialSettlementCurrent = (): boolean => {
-      try {
-        return frozenTrialBinding !== null && agentRunLifecycleGeneration === settlementLifecycleGeneration &&
-          run.isAgentRunCurrent(frozenTrialBinding.generation) && ctx.sessionManager.getSessionId() === frozenTrialBinding.sessionId &&
-          runtime.projectRoot !== null && getProjectId(runtime.projectRoot) === frozenTrialBinding.projectId &&
-          runtime.taskOccurrenceEpoch === frozenTrialBinding.occurrenceEpoch && runtime.externalStateEpoch === frozenTrialBinding.externalStateEpoch;
-      } catch { return false; }
-    };
     presentation.setStatusContext(ctx);
-    const result = await core.settleAgentRun(
-      ctx,
-      entries,
-      selfImprovement?.createSettlementObserver(async (projectRoot, experience, ref, signal) => {
-        if (!frozenAssignment || !trialAssignments || !trialEvidence) return;
-        signal?.throwIfAborted();
-        if (!trialSettlementCurrent()) throw new Error("Stale Trial settlement.");
-        const assignment = await trialAssignments.readExact(frozenAssignment);
-        const hypotheses = await new FileDiscoveryHypothesisStore({ projectsBaseDir: trialRoots.projectsBaseDir }).list(assignment.projectId);
-        const hypothesis = hypotheses.find((h) => h.id === assignment.hypothesis.id && h.fingerprint === assignment.hypothesis.fingerprint);
-        if (!isExecutableStrategyHypothesis(hypothesis)) throw new Error("Missing exact executable Trial hypothesis.");
-        const evidence = materializeTrialEvidenceV2(assignment, hypothesis, ref, experience);
-        if (!evidence) return;
-        const records = (await options.experienceReader!.read(projectRoot)).records;
-        const live = records.find((r) => r.recordId === ref.recordId);
-        if (!live || runExperienceRecordFingerprint(live.experience) !== ref.fingerprint) throw new Error("Missing exact committed Trial Experience.");
-        for (const comparison of assignment.comparison) {
-          const record = records.find((r) => r.recordId === comparison.recordId);
-          if (!record || runExperienceRecordFingerprint(record.experience) !== comparison.fingerprint) throw new Error("Missing exact Trial comparison.");
-        }
-        signal?.throwIfAborted();
-        if (!trialSettlementCurrent()) throw new Error("Stale Trial settlement after read.");
-        await trialEvidence.publish(evidence, signal, trialSettlementCurrent);
-      }),
-    );
+    const result = await core.settleAgentRun(ctx, entries);
     if (result.status !== "settled") return;
 
     presentation.clearActivityLingerRefresh();
@@ -1732,15 +1461,12 @@ function registerComposedPindieExtension(
     runTimer: presentation.runTimer,
     taskMetrics: presentation.taskMetrics,
     contextGovernor,
-    trial: selfImprovement?.trial ?? null,
-    derivation: selfImprovement?.derivation ?? null,
-    globalDerivation: selfImprovement?.globalDerivation ?? null,
-    get promotedStrategyRevisionCatalog() {
-      return selfImprovement?.promotedStrategyRevisionCatalog ?? emptyPromotedStrategyRevisionCatalog();
-    },
-    get trustedStrategyPortfolio() {
-      return selfImprovement?.trustedStrategyPortfolio ?? null;
-    },
+    trial: null,
+    derivation: null,
+    globalDerivation: null,
+    promotedStrategyRevisionCatalog: Object.freeze({ entries: [], selections: [],
+      resolve() { throw new Error("Strategy selection is retired."); } }),
+    trustedStrategyPortfolio: null,
     get policySnapshot() {
       return run.policySnapshot;
     },
@@ -1761,7 +1487,7 @@ export function registerConfiguredPindieExtension(
   options: PindieExtensionOptions = {},
   env: Record<string, string | undefined> = process.env,
 ): PindieExtensionIntegration {
-  const composition = composePindieExtension(options, { configureOptionalFeatures: true, env, onExperienceSaved: options.onExperienceSaved });
+  const composition = composePindieExtension(options, { configureOptionalFeatures: true, env });
   for (const warning of composition.warnings) console.warn(warning);
   return registerComposedPindieExtension(
     pi,

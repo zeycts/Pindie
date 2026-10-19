@@ -3,10 +3,7 @@ import {
   type PindieCapability,
   type SemanticSnapshot,
 } from "./semantics.ts";
-import {
-  formatStrategySelectionLabel,
-  type PolicySnapshot,
-} from "./policy.ts";
+import type { PolicySnapshot } from "./policy.ts";
 import {
   getTaskStatus,
   getVerificationStatus,
@@ -14,7 +11,6 @@ import {
   type PindieTask,
   type VerificationCheck,
 } from "./state.ts";
-import { SEED_STRATEGIES } from "./strategies.ts";
 
 export const PINDIE_SYSTEM_CONTRACT_START = "<PINDIE_SYSTEM_CONTRACT>";
 export const PINDIE_SYSTEM_CONTRACT_END = "</PINDIE_SYSTEM_CONTRACT>";
@@ -31,7 +27,6 @@ export const PINDIE_RUNTIME_UPDATE_END = "</PINDIE_RUNTIME_UPDATE>";
 
 const ACTION_ELIGIBILITY: readonly (readonly [string, PindieCapability])[] = [
   ["project mutation", "project.mutate"],
-  ["policy declaration", "policy.declare"],
   ["task start", "task.start"],
   ["task replace", "task.replace"],
   ["task refine", "task.refine"],
@@ -41,28 +36,6 @@ const ACTION_ELIGIBILITY: readonly (readonly [string, PindieCapability])[] = [
   ["gate open", "gate.open"],
   ["gate resolve", "gate.resolve"],
 ];
-
-function renderSeedStrategies(lines: string[]): void {
-  lines.push("", "Seed Strategies:");
-  for (const strategy of SEED_STRATEGIES) {
-    lines.push(
-      `- ${strategy.id} (${strategy.kind})`,
-      `  Summary: ${strategy.summary}`,
-      "  Use when:",
-      ...strategy.useWhen.map((guidance) => `  - ${guidance}`),
-    );
-    if (strategy.avoidWhen && strategy.avoidWhen.length > 0) {
-      lines.push(
-        "  Avoid when:",
-        ...strategy.avoidWhen.map((guidance) => `  - ${guidance}`),
-      );
-    }
-    lines.push(
-      "  Principles:",
-      ...strategy.principles.map((principle) => `  - ${principle}`),
-    );
-  }
-}
 
 /** Static Pindie instructions that are safe to reuse for every Agent Run. */
 export function renderPindieSystemContract(): string {
@@ -92,19 +65,7 @@ export function renderPindieSystemContract(): string {
     "Append-only runtime updates:",
     "- The Run Baseline is authoritative metadata captured at Agent Run start, not user intent and not a new request.",
     "- Later Pindie tool results and runtime updates are appended at their causal location. Do not expect a later request to replace or reorder earlier transcript messages.",
-    "",
-    "Policy Snapshot semantics:",
-    "- Seed Strategies are optional, advisory problem-solving priors. The model may use a strategy, combine strategies, or ignore strategies when inappropriate.",
-    "- A current Policy Snapshot exists only after a successful pindie_policy_set declaration in this Agent Run; that tool result is the authoritative in-run Policy update.",
-    "- Strategies never override actual user intent, project constraints, State or semantic authority, capabilities or Execution Gateway decisions, verification reality, or Human Gates.",
-    "- Policy declaration is optional and is not required ceremony.",
-    "- Strategy Revision Candidates are inactive hypotheses; creation requires a live Seed-targeted adaptation Run (explicit /adapt <strategy-id>) and its lease.",
-    "- Strategy Derivation Candidates are inactive new-logical-Strategy hypotheses; creation requires a live local Derivation Run (explicit /derive) and its lease, and is optional.",
-    "- Candidate revisions remain unavailable to normal Policy declarations; only an explicitly armed /trial Run (local <candidate-id>, scope:<candidate-id>, or synthesis:<candidate-id>) may select its exact Candidate revision.",
-    "- Project-local promoted revisions may be listed in a bounded normal Run catalog and are selectable only by their exact selector; promotion never changes the default Policy or replaces the Seed.",
-    "- Candidates never override State, the Execution Gateway, Verification, or Task authority; receiving a Trial Packet does not create Policy attribution.",
   ];
-  renderSeedStrategies(lines);
   lines.push(PINDIE_SYSTEM_CONTRACT_END);
   return lines.join("\n");
 }
@@ -193,21 +154,8 @@ export function renderCurrentPindieActionEligibility(
   ].join("\n");
 }
 
-function renderCurrentPindiePolicySnapshot(
-  policySnapshot: PolicySnapshot | null,
-): string[] {
-  if (policySnapshot === null) return [];
-  return [
-    "",
-    "Current Policy Snapshot:",
-    `- Approach: ${formatStrategySelectionLabel(policySnapshot.approach)} (${policySnapshot.approach.kind})`,
-    "  Modifiers:",
-    ...(policySnapshot.modifiers.length > 0
-      ? policySnapshot.modifiers.map((strategy) =>
-        `  - ${formatStrategySelectionLabel(strategy)} (${strategy.kind})`)
-      : ["  - none"]),
-  ];
-}
+// Inert compatibility argument: retired Policy never enters ordinary context.
+function renderCurrentPindiePolicySnapshot(_policySnapshot: PolicySnapshot | null): string[] { return []; }
 
 function renderUnavailableState(reason: string | null): string {
   return [

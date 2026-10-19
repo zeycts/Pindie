@@ -53,7 +53,6 @@ import {
   createPindieGateResolveTool,
 } from "./tools/gate.ts";
 import { createPindieGitObserveTool } from "./tools/git-observe.ts";
-import { createPindiePolicySetTool } from "./tools/policy.ts";
 import {
   createPindieTaskCompleteTool,
   createPindieTaskHandoffTool,
@@ -183,11 +182,8 @@ export function coreGatewayDenialReason(
   snapshot: SemanticSnapshot,
   requiredCapability: ToolEffect["requiredCapability"],
 ): string {
-  if (requiredCapability === "policy.adapt") {
-    return "Pindie blocked this call: Strategy Candidate creation requires a live Seed-targeted adaptation lease (explicit /adapt <strategy-id>). Outside that Run, use /adapt <strategy-id> while the Agent is idle.";
-  }
-  if (requiredCapability === "policy.derive") {
-    return "Pindie blocked this call: Strategy Derivation or Synthesis Candidate creation requires a live matching lease (explicit /derive or /derive-global Run). Outside that Run, use /derive or /derive-global as appropriate while the Agent is idle.";
+  if (requiredCapability.startsWith("policy.")) {
+    return "Pindie blocked this call: AL/SI/CPL and Policy tools are retired and cannot be activated.";
   }
   if (snapshot.authority === "coherent" && requiredCapability === "task.replace") {
     if (snapshot.taskStatus === "done") {
@@ -232,7 +228,7 @@ export class CoreIntegration {
   private runStartEpisode: import("./work-episode-attribution.ts").RunStartEpisodeBinding | null = null;
 
   constructor(options: CoreIntegrationOptions) {
-    this.runtime = new PindieRuntime(options.store, options.workEpisodes);
+    this.runtime = new PindieRuntime(options.store);
     this.run = new RunIntegration(this.runtime);
     this.execution = new ExecutionIntegration({
       captureProjectFingerprint: options.captureProjectFingerprint,
@@ -293,13 +289,6 @@ export class CoreIntegration {
       onMutationUncertain,
     };
 
-    pi.registerTool(createPindiePolicySetTool({
-      onPolicySet: (snapshot) => {
-        this.run.setPolicySnapshot(snapshot);
-        options.onPolicySet?.(snapshot);
-      },
-      resolveRevisionSelector: options.resolveRevisionSelector,
-    }));
     pi.registerTool(createPindieTaskStartTool(this.runtime, taskToolOptions));
     pi.registerTool(createPindieTaskReplaceTool(this.runtime, taskToolOptions));
     pi.registerTool(createPindieTaskRefineTool(this.runtime, taskToolOptions));
@@ -491,43 +480,10 @@ export class CoreIntegration {
     }
   }
 
-  /** Read-only exact whole-Run episode eligibility; optional features never own ledger truth. */
-  getOrdinaryRunEpisode(): { projectRoot: string; episodeId: string; occurrenceEpoch: number; externalStateEpoch: number } | null {
-    const start = this.runStartEpisode, r = this.runtime, state = this.run.authoritativeState;
-    const d = this.run.deriveSnapshot();
-    if (!start || !state?.task || state.task.completed || !r.projectRoot || !r.currentWorkEpisodeId || !this.run.hasActiveAgentRun || !d.ok || d.snapshot.authority !== "coherent" || start.projectRoot !== r.projectRoot || start.externalStateEpoch !== r.externalStateEpoch) return null;
-    const delta = r.taskOccurrenceEpoch - start.occurrenceEpoch;
-    if (start.taskWasOpen ? delta !== 0 || start.episodeId !== r.currentWorkEpisodeId : start.episodeId !== null || delta !== 1) return null;
-    return { projectRoot: r.projectRoot, episodeId: r.currentWorkEpisodeId, occurrenceEpoch: r.taskOccurrenceEpoch, externalStateEpoch: r.externalStateEpoch };
-  }
-
-  getRunStartEpisode(): import("./work-episode-attribution.ts").RunStartEpisodeBinding | null {
-    return this.runStartEpisode === null ? null : Object.freeze({ ...this.runStartEpisode });
-  }
-
-  /** Capture exact operational identity after pre-Run State refresh, without adding model context. */
-  async captureRunStartEpisode(signal?: AbortSignal): Promise<void> {
-    const ledger = this.runtime.workEpisodes;
-    const generation = this.run.activeAgentRunGeneration;
-    const root = this.runtime.projectRoot;
-    const state = this.run.authoritativeState;
-    const derivation = this.run.deriveSnapshot();
-    if (!ledger || generation === null || !root || !state || !derivation.ok || derivation.snapshot.authority !== "coherent") return;
-    const taskWasOpen = state.task !== null && !state.task.completed;
-    let episodeId: string | null = null;
-    const isCurrent = () => !signal?.aborted && this.run.isAgentRunCurrent(generation) &&
-      this.runtime.projectRoot === root && this.run.authoritativeState === state;
-    try { if (taskWasOpen) episodeId = await ledger.current(root, state); }
-    catch { if (isCurrent()) this.runtime.observeWorkEpisode(root, state, null); return; }
-    if (!isCurrent()) return;
-    this.runtime.observeWorkEpisode(root, state, episodeId);
-    if (taskWasOpen && episodeId === null) return; // Ambiguous existing Task, not idle.
-    this.runStartEpisode = {
-      projectRoot: root, episodeId, taskWasOpen,
-      occurrenceEpoch: this.runtime.taskOccurrenceEpoch,
-      externalStateEpoch: this.runtime.externalStateEpoch,
-    };
-  }
+  /** @deprecated Inert Phase 1 compatibility; WorkEpisode had no non-learning consumer. */
+  getOrdinaryRunEpisode(): { projectRoot: string; episodeId: string; occurrenceEpoch: number; externalStateEpoch: number } | null { return null; }
+  getRunStartEpisode(): import("./work-episode-attribution.ts").RunStartEpisodeBinding | null { return null; }
+  async captureRunStartEpisode(_signal?: AbortSignal): Promise<void> {}
 
   beginAgentRun(
     ctx: ExtensionContext,
