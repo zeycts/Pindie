@@ -1,6 +1,8 @@
 import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { windowsBrowserJobLaunch, windowsBrowserJobStop } from "./browser-windows-job.ts";
 import { constants as fsConstants } from "node:fs";
-import { access, mkdir, rm } from "node:fs/promises";
+import { access, mkdir, readFile, rm } from "node:fs/promises";
 import { homedir, release as osRelease } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { createServer } from "node:net";
@@ -26,6 +28,8 @@ export interface BrowserRealityHostConfig {
   readonly chromeExecutable?: string;
   readonly profileDirectory: string;
 }
+
+export class UnconfirmedBrowserLaunchError extends Error {}
 
 export interface LaunchedBrowser {
   readonly pid: number;
@@ -66,16 +70,6 @@ function powershellLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-function windowsLaunchArguments(config: BrowserRealityHostConfig): readonly string[] {
-  return buildBrowserLaunchArguments(config)
-    .filter((argument) => argument !== "--remote-debugging-address=127.0.0.1")
-    .map((argument) =>
-      argument.startsWith("--user-data-dir=")
-        ? `--user-data-dir=\"${config.profileDirectory}\"`
-        : argument
-    );
-}
-
 export function buildBrowserLaunchArguments(
   config: BrowserRealityHostConfig,
 ): readonly string[] {
@@ -92,7 +86,13 @@ export function buildBrowserLaunchArguments(
   ]);
 }
 
-export function createWslWindowsBrowserRealityHost(): BrowserRealityHost {
+export function createWslWindowsBrowserRealityHost(dependencies: {
+  execute?: (script: string) => Promise<{ stdout: string }>;
+} = {}): BrowserRealityHost {
+  const execute = dependencies.execute ?? ((script: string) => execFile(DEFAULT_POWERSHELL, [
+    "-NoProfile", "-NonInteractive", "-Command", script,
+  ], { cwd: POWERSHELL_CWD, timeout: 10_000, windowsHide: true }));
+  const owned = new WeakMap<LaunchedBrowser, string>();
   return {
     platform: "wsl-windows",
     async allocatePort() {
@@ -135,36 +135,26 @@ export function createWslWindowsBrowserRealityHost(): BrowserRealityHost {
       return profileDirectory;
     },
     async launch(config) {
-      const argumentsScript = windowsLaunchArguments(config)
-        .map((argument) => `  ${powershellLiteral(argument)}`)
-        .join(",\n");
-      const script = [
-        "$ErrorActionPreference = 'Stop'",
-        "$arguments = @(", argumentsScript, ")",
-        `$process = Start-Process -FilePath ${powershellLiteral(config.chromeExecutable ?? DEFAULT_WINDOWS_CHROME)} -ArgumentList $arguments -PassThru`,
-        "[Console]::OutputEncoding = [Text.UTF8Encoding]::new()",
-        "Write-Output \"PID:$($process.Id)\"",
-      ].join("\n");
-      const result = await execFile(DEFAULT_POWERSHELL, [
-        "-NoProfile", "-NonInteractive", "-Command", script,
-      ], {
-        cwd: POWERSHELL_CWD,
-        env: process.env,
-        timeout: 10_000,
-        windowsHide: true,
-      });
-      const match = /(?:^|\n)PID:(\d+)(?:\r?\n|$)/u.exec(result.stdout);
-      if (!match) throw new Error("Windows Chrome did not report its process ID.");
-      return { pid: Number(match[1]) };
+      const job = `Local\\PindieDevBrowser-${randomUUID()}`;
+      try {
+        const result = await execute(windowsBrowserJobLaunch(job, config.chromeExecutable ?? DEFAULT_WINDOWS_CHROME,
+          buildBrowserLaunchArguments(config).filter((argument) => argument !== "--remote-debugging-address=127.0.0.1")));
+        const match = /(?:^|\n)PID:(\d+)(?:\r?\n|$)/u.exec(result.stdout);
+        if (!match || Number(match[1]) < 1) throw new Error("Windows Chrome did not report its process ID.");
+        const browser = Object.freeze({ pid: Number(match[1]) });
+        owned.set(browser, job);
+        return browser;
+      } catch (error) {
+        // A timed-out interop process might have launched Chrome without returning
+        // its marker. Best-effort job stop never authorizes profile deletion here.
+        try { await execute(windowsBrowserJobStop(job)); } catch { /* Retain for manual review. */ }
+        throw new UnconfirmedBrowserLaunchError(`Windows browser launch is unconfirmed (${job}): ${String(error)}`);
+      }
     },
     async stop(browser) {
-      const script = [
-        "$ErrorActionPreference = 'SilentlyContinue'",
-        `Stop-Process -Id ${browser.pid}`,
-      ].join("\n");
-      await execFile(DEFAULT_POWERSHELL, [
-        "-NoProfile", "-NonInteractive", "-Command", script,
-      ], { cwd: POWERSHELL_CWD, timeout: 10_000, windowsHide: true });
+      const job = owned.get(browser);
+      if (!job) throw new Error("Refused to stop a browser not launched by this Host.");
+      await execute(windowsBrowserJobStop(job));
     },
     async cleanupProfile(profileDirectory) {
       const script = [
@@ -193,6 +183,8 @@ export interface LinuxBrowserRealityHostDependencies {
   readonly rm?: typeof rm;
   readonly stopGracePeriodMs?: number;
   readonly forceKillWaitMs?: number;
+  readonly kill?: typeof process.kill;
+  readonly readFile?: typeof readFile;
 }
 
 export async function resolveLinuxBrowserExecutable(
@@ -224,6 +216,16 @@ export async function resolveLinuxBrowserExecutable(
   );
 }
 
+function parseLinuxProcessStat(text: string): { state: string; group: number; session: number; started: string } {
+  // comm may contain spaces and parentheses. Fields after its final ')' begin at state (3).
+  const fields = text.slice(text.lastIndexOf(")") + 2).trim().split(/\s+/u);
+  if (text.lastIndexOf(")") < 0 || fields.length < 20 || !/^[A-Z]$/u.test(fields[0]!) ||
+      [fields[2], fields[3], fields[19]].some((field) => !/^\d+$/u.test(field ?? ""))) {
+    throw new Error("Unrecognized Linux process identity.");
+  }
+  return { state: fields[0]!, group: Number(fields[2]), session: Number(fields[3]), started: fields[19]! };
+}
+
 export function createLinuxBrowserRealityHost(
   dependencies: LinuxBrowserRealityHostDependencies = {},
 ): BrowserRealityHost {
@@ -235,6 +237,16 @@ export function createLinuxBrowserRealityHost(
   const checkAccess = dependencies.access ?? access;
   const stopGracePeriodMs = dependencies.stopGracePeriodMs ?? 2_000;
   const forceKillWaitMs = dependencies.forceKillWaitMs ?? 1_000;
+  const signalProcess = dependencies.kill ?? process.kill;
+  const read = dependencies.readFile ?? readFile;
+  const owned = new WeakMap<LaunchedBrowser, { started: string; stopped: boolean }>();
+  const stat = async (pid: number) => {
+    try { return parseLinuxProcessStat(await read(`/proc/${pid}/stat`, "utf8")); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ESRCH") return null;
+      throw error;
+    }
+  };
   return {
     platform: "linux",
     allocatePort() {
@@ -262,66 +274,63 @@ export function createLinuxBrowserRealityHost(
       );
       const child = spawnProcess(executable, [...buildBrowserLaunchArguments(config)], {
         stdio: "ignore",
+        detached: true, // Dedicated session/process group; never signal the Host's group.
+        env: env as NodeJS.ProcessEnv,
       });
       await new Promise<void>((resolve, reject) => {
         child.once("spawn", resolve);
         child.once("error", reject);
       });
       if (child.pid === undefined) throw new Error("Chrome did not report its process ID.");
-      return { pid: child.pid, process: child };
+      const browser = Object.freeze({ pid: child.pid, process: child });
+      let identity;
+      try {
+        identity = await stat(child.pid);
+        if (!identity || identity.group !== child.pid || identity.session !== child.pid) {
+          throw new Error("Could not establish dedicated Chrome process-group ownership.");
+        }
+      } catch (error) {
+        // No confirmed group authority: retain the profile and block replacement.
+        // Killing a direct child alone would not prove descendant termination.
+        throw new UnconfirmedBrowserLaunchError(String(error));
+      }
+      owned.set(browser, { started: identity.started, stopped: false });
+      return browser;
     },
     async stop(browser) {
-      const child = browser.process;
-      if (!child) {
-        try {
-          process.kill(browser.pid, "SIGTERM");
-        } catch (error) {
+      const ownership = owned.get(browser);
+      if (!ownership) throw new Error("Refused to stop a browser not launched by this Host.");
+      if (ownership.stopped) return;
+      const alive = async () => {
+        const leader = await stat(browser.pid);
+        if (leader && leader.started !== ownership.started) throw new Error("Chrome process-group leader identity changed; cleanup refused.");
+        // Kernel group absence is authoritative. A /proc enumeration alone
+        // could miss a child forked while its parent was exiting. Even zombies
+        // conservatively keep cleanup unconfirmed until the group is gone.
+        try { signalProcess(-browser.pid, 0); return true; }
+        catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          ownership.stopped = true;
+          return false;
         }
-        return;
-      }
-      if (child.exitCode !== null || child.signalCode !== null) return;
-
-      await new Promise<void>((resolve, reject) => {
-        let settled = false;
-        let forceTimer: NodeJS.Timeout | undefined;
-        const finish = (error?: unknown) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(graceTimer);
-          if (forceTimer) clearTimeout(forceTimer);
-          child.off("exit", exited);
-          child.off("close", exited);
-          if (error) reject(error);
-          else resolve();
-        };
-        const exited = () => finish();
-        const send = (signal: NodeJS.Signals): boolean => {
-          try {
-            return child.kill(signal);
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-            finish(error);
-            return false;
-          }
-        };
-        const graceTimer = setTimeout(() => {
-          if (child.exitCode !== null || child.signalCode !== null) {
-            finish();
-            return;
-          }
-          if (!send("SIGKILL")) {
-            finish();
-            return;
-          }
-          forceTimer = setTimeout(() => finish(
-            new Error(`Chrome process ${browser.pid} did not exit after SIGKILL.`),
-          ), forceKillWaitMs);
-        }, stopGracePeriodMs);
-        child.once("exit", exited);
-        child.once("close", exited);
-        if (!send("SIGTERM")) finish();
-      });
+      };
+      const send = async (signal: NodeJS.Signals) => {
+        if (!await alive()) return;
+        try { signalProcess(-browser.pid, signal); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+      };
+      const wait = async (duration: number) => {
+        const deadline = Date.now() + duration;
+        do {
+          if (!await alive()) return true;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        } while (Date.now() < deadline);
+        return !await alive();
+      };
+      await send("SIGTERM");
+      if (await wait(stopGracePeriodMs)) return;
+      await send("SIGKILL");
+      if (!await wait(forceKillWaitMs)) throw new Error(`Chrome process group ${browser.pid} did not stop after SIGKILL.`);
     },
     async cleanupProfile(profileDirectory) {
       await removeDirectory(profileDirectory, { recursive: true, force: true });

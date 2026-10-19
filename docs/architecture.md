@@ -550,7 +550,7 @@ The three continuation mechanisms have distinct boundaries:
 - **Quota Auto Resume:** subscription availability boundary → same Session,
   later fresh Agent Run.
 
-### Browser Reality v0.1.3
+### Browser Reality v0.2
 
 Browser Reality is a default-on, headless-by-default external development
 surface, not semantic State. `PINDIE_BROWSER_HEADLESS=false` is the minimal
@@ -575,10 +575,68 @@ Model
 ```
 
 Browser availability, page selection, DOM snapshots, screenshots, Console and
-Network observations are never written to `PindieState`. Bridge/session cleanup
-follows Pi extension lifecycle; owned Chrome and runtime-profile cleanup follows
-Host lifecycle. Disabled or unavailable Browser Reality does not alter Task
-truth or prevent ordinary Pindie startup.
+Network observations are never written to `PindieState`. One runtime-only Host
+manager owns both the bridge and browser/profile; Session replacement merely
+invalidates outgoing tool closures. Neither Host startup nor tool registration
+starts a process, discovers tools, allocates an endpoint, or creates a profile.
+
+The 13 selected declarations are a checked-in exact upstream snapshot, including
+descriptions and complete JSON schemas, bound to browser-use 0.1.15 / DevTools
+1.9.0. First execution checks installed versions before launch, single-flights
+startup, then checks live declarations before dispatch. Mismatch fails closed;
+it never substitutes guessed schemas. Explicit maintenance commands are
+`node --experimental-strip-types scripts/browser-tool-catalog.ts --check` and
+`--write`; these start a metadata bridge intentionally, not during registration.
+Review regenerated declarations before upgrading the version binding.
+
+`browser_status` reads the manager phase without startup. `browser_release`
+refuses in-flight startup/tools and closes the bridge before stopping the owned
+browser and deleting only its temporary profile. Subsequent execution starts
+fresh. Caller cancellation does not cancel another caller's shared startup.
+Host disposal aborts active calls and bounds bridge close/call drain before
+browser deletion; a late startup cannot publish a usable bridge after disposal.
+Cleanup failure remains visible and blocks automatic replacement. Session
+shutdown alone never releases Host resources.
+
+A runtime-only 15-minute inactivity timer may release resources only with known
+settled Session facts (no streaming, compaction, pending messages or bash), known
+State, no Human Gate/quota wait, and no pending UI interaction. Browser calls and
+ordinary agent starts refresh activity. Owned UI exposes its current overlay,
+queued-dialog and pending-picker facts. Native UI uses human-approved bounded
+per-instance Pi 1.3.0 instrumentation: pending UI promises include asynchronous
+custom factories before mounting; selector/editor/overlay facts cover mounted
+native interactions. Unknown versions, changed shapes or replaced wrappers
+prevent automatic release. There are no prototype/global patches or new policy
+loop, and this observer grants no tool execution authority.
+
+Linux launches a dedicated session/process group, binds the exact launch handle
+to its `/proc` start identity, signals only that group, and requires
+kernel-confirmed group absence after bounded TERM/KILL escalation. Direct-child
+exit or a `/proc` member enumeration alone is not confirmation; lingering zombies
+can conservatively keep cleanup unconfirmed. WSL launches Windows
+Chrome suspended, assigns it to a uniquely named non-breakaway Windows Job, then
+resumes it. Job termination must report zero active members before profile
+cleanup; arbitrary PID handles are rejected on both platforms. A launch with
+unconfirmed ownership retains its profile and refuses replacement. Explicit
+profiles remain developer-managed and are never deleted.
+
+Native InteractiveMode alone receives a runtime facade whose `dispose` awaits
+Host cleanup before Pi's own normal/SIGTERM/SIGHUP exit; the Adapter retains the
+original runtime to avoid recursion. Pi still owns shutdown, signals, the
+terminal and process.exit. Emergency terminal exit, uncaught crash, SIGKILL and
+machine loss bypass or can interrupt asynchronous cleanup. No guarantee is
+claimed for those exits. No persisted resource registry or startup janitor is
+introduced: a later Host neither adopts nor kills old processes nor scans/deletes
+old profiles. Stale resources require independent human identification and
+manual cleanup; an unconfirmed bridge stop, call drain or browser stop never
+authorizes profile deletion. Disabled or unavailable Browser Reality does not
+alter Task truth or prevent ordinary Pindie startup.
+
+Validation includes isolated real Linux/browser-use startup, reuse, navigation,
+evaluation, snapshot, release/restart and cleanup, plus pinned native shutdown
+and real signal-handler subprocess tests with inert terminal/Session fixtures.
+The Windows Job boundary has generated-script/ownership regression coverage;
+real Windows/WSL execution and a full native PTY smoke are not claimed.
 
 ## 14. Work Memory v0.1 — approved architecture
 

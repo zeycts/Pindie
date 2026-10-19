@@ -84,6 +84,15 @@ test("Linux executable resolution reports a clear factual failure", async () => 
   );
 });
 
+function processStat(pid: number, group = pid, state = "S", started = "123"): string {
+  const fields = Array<string>(20).fill("0");
+  fields[0] = state;
+  fields[2] = String(group);
+  fields[3] = String(group);
+  fields[19] = started;
+  return `${pid} (browser (test)) ${fields.join(" ")}`;
+}
+
 test("Linux launch passes loopback-only unquoted arguments to spawn", async () => {
   const calls: Array<{ executable: string; args: readonly string[]; options: unknown }> = [];
   const child = new EventEmitter() as EventEmitter & {
@@ -95,6 +104,7 @@ test("Linux launch passes loopback-only unquoted arguments to spawn", async () =
   const host = createLinuxBrowserRealityHost({
     env: { PATH: "/bin" },
     access: async () => {},
+    readFile: (async () => processStat(321)) as never,
     spawn: ((executable: string, args: readonly string[], options: unknown) => {
       calls.push({ executable, args, options });
       queueMicrotask(() => child.emit("spawn"));
@@ -110,6 +120,7 @@ test("Linux launch passes loopback-only unquoted arguments to spawn", async () =
   });
 
   assert.equal(browser.pid, 321);
+  assert.deepEqual(calls[0]?.options, { stdio: "ignore", detached: true, env: { PATH: "/bin" } });
   assert.equal(calls[0]?.executable, "/opt/chrome");
   assert.deepEqual(calls[0]?.args, [
     "--remote-debugging-address=127.0.0.1",
@@ -123,85 +134,67 @@ test("Linux launch passes loopback-only unquoted arguments to spawn", async () =
   ]);
 });
 
-function fakeBrowserProcess(kill: (signal?: NodeJS.Signals) => boolean) {
-  const child = new EventEmitter() as EventEmitter & {
-    exitCode: number | null;
-    signalCode: NodeJS.Signals | null;
-    kill(signal?: NodeJS.Signals): boolean;
-  };
-  child.exitCode = null;
-  child.signalCode = null;
-  child.kill = kill;
-  return child;
-}
-
-test("Linux stop sends SIGTERM and waits for child exit or close", async (context) => {
-  for (const event of ["exit", "close"] as const) {
-    await context.test(event, async () => {
-      const signals: Array<NodeJS.Signals | undefined> = [];
-      const child = fakeBrowserProcess((signal) => { signals.push(signal); return true; });
-      const host = createLinuxBrowserRealityHost({
-        stopGracePeriodMs: 1_000,
-        forceKillWaitMs: 1_000,
-      });
-      let stopped = false;
-      const stopping = host.stop({ pid: 999, process: child as never })
-        .then(() => { stopped = true; });
-
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      assert.deepEqual(signals, ["SIGTERM"]);
-      assert.equal(stopped, false);
-      child.emit(event, 0, null);
-      await stopping;
-      assert.equal(stopped, true);
-    });
-  }
-});
-
-test("Linux stop tolerates already-exited and ESRCH browser processes", async () => {
-  const host = createLinuxBrowserRealityHost();
-  const exited = fakeBrowserProcess(() => { throw new Error("must not signal"); });
-  exited.exitCode = 0;
-  await host.stop({ pid: 998, process: exited as never });
-
-  const missing = fakeBrowserProcess(() => {
-    throw Object.assign(new Error("gone"), { code: "ESRCH" });
-  });
-  await host.stop({ pid: 999, process: missing as never });
-});
-
-test("Linux stop falls back to SIGKILL and waits for forced exit", async () => {
-  const signals: Array<NodeJS.Signals | undefined> = [];
-  let child: ReturnType<typeof fakeBrowserProcess>;
-  child = fakeBrowserProcess((signal) => {
-    signals.push(signal);
-    if (signal === "SIGKILL") queueMicrotask(() => child.emit("exit", null, "SIGKILL"));
-    return true;
-  });
+async function groupFixture(onSignal: (signal: string | number | undefined, members: Map<number, string>) => void) {
+  const members = new Map([[321, processStat(321)], [322, processStat(322, 321)]]);
+  const signals: Array<[number, string | number | undefined]> = [];
+  const child = Object.assign(new EventEmitter(), { pid: 321 });
   const host = createLinuxBrowserRealityHost({
-    stopGracePeriodMs: 5,
-    forceKillWaitMs: 100,
-  });
-
-  await host.stop({ pid: 999, process: child as never });
-
-  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
-});
-
-test("Linux stop remains bounded when no exit event follows SIGKILL", async () => {
-  const signals: Array<NodeJS.Signals | undefined> = [];
-  const child = fakeBrowserProcess((signal) => { signals.push(signal); return true; });
-  const host = createLinuxBrowserRealityHost({
+    access: async () => {},
+    spawn: (() => { queueMicrotask(() => child.emit("spawn")); return child; }) as never,
+    readFile: (async (path: string) => {
+      const content = members.get(Number(path.split("/")[2]));
+      if (!content) throw Object.assign(new Error("gone"), { code: "ENOENT" });
+      return content;
+    }) as never,
+    kill: (pid, signal) => {
+      if (signal === 0) {
+        if (members.size === 0) throw Object.assign(new Error("group gone"), { code: "ESRCH" });
+        return true;
+      }
+      signals.push([pid, signal]); onSignal(signal, members); return true;
+    },
     stopGracePeriodMs: 5,
     forceKillWaitMs: 5,
   });
-  const startedAt = Date.now();
+  const browser = await host.launch({ browserUrl: "http://127.0.0.1:9999", profileDirectory: "/isolated", headless: true });
+  return { host, browser, members, signals, child };
+}
 
-  await assert.rejects(
-    host.stop({ pid: 999, process: child as never }),
-    /did not exit after SIGKILL/,
-  );
+test("Linux group stop waits for descendants even after the direct child exits", async () => {
+  const fixture = await groupFixture((signal, members) => {
+    members.delete(321);
+    if (signal === "SIGKILL") members.delete(322);
+  });
+  fixture.child.emit("exit", 0);
+  await fixture.host.stop(fixture.browser);
+  assert.deepEqual(fixture.signals, [[-321, "SIGTERM"], [-321, "SIGKILL"]]);
+  await fixture.host.stop(fixture.browser);
+  assert.equal(fixture.signals.length, 2);
+});
 
-  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
-  assert.equal(Date.now() - startedAt < 500, true);
+test("Linux group stop tolerates kernel-confirmed absence but never treats a zombie-only snapshot as proof", async () => {
+  const fixture = await groupFixture(() => {});
+  fixture.members.delete(321);
+  fixture.members.set(322, processStat(322, 321, "Z"));
+  await assert.rejects(fixture.host.stop(fixture.browser), /did not stop after SIGKILL/);
+  fixture.members.clear();
+  await fixture.host.stop(fixture.browser);
+  assert.equal(fixture.signals.length, 2);
+});
+
+test("Linux group stop refuses foreign handles and PID reuse without signaling", async () => {
+  const fixture = await groupFixture(() => {});
+  await assert.rejects(fixture.host.stop({ pid: 321 }), /not launched by this Host/);
+  fixture.members.set(321, processStat(321, 321, "S", "456"));
+  await assert.rejects(fixture.host.stop(fixture.browser), /identity changed/);
+  assert.deepEqual(fixture.signals, []);
+});
+
+test("Linux group stop is bounded and does not claim termination from child exit alone", async () => {
+  const fixture = await groupFixture(() => {});
+  fixture.child.emit("exit", 0);
+  const start = Date.now();
+  await assert.rejects(fixture.host.stop(fixture.browser), /did not stop after SIGKILL/);
+  assert.equal(Date.now() - start < 500, true);
+  assert.deepEqual(fixture.signals, [[-321, "SIGTERM"], [-321, "SIGKILL"]]);
 });

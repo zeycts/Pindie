@@ -392,6 +392,23 @@ function createHarness() {
   };
 }
 
+test("owned mode idle-resource authority requires known settled UI and rejects overlays or unknown views", async () => {
+  const harness = createHarness();
+  assert.equal(harness.mode.canReleaseIdleResources(), false);
+  const running = harness.mode.run();
+  await flush();
+  assert.equal(harness.mode.canReleaseIdleResources(), false); // Custom view has no observer.
+  let pending = false;
+  Object.assign(harness.view, { hasPendingInteraction: () => pending });
+  assert.equal(harness.mode.canReleaseIdleResources(), true);
+  pending = true;
+  assert.equal(harness.mode.canReleaseIdleResources(), false);
+  pending = false;
+  harness.view.exit();
+  await running;
+  assert.equal(harness.mode.canReleaseIdleResources(), false);
+});
+
 test("PindieInteractiveMode binds, projects, reduces events, and shuts down cleanly", async () => {
   const harness = createHarness();
   const running = harness.mode.run();
@@ -2291,8 +2308,11 @@ test("async Session picker does not open after the same Session becomes running"
   view.start();
   view.setEditorText("draft survives");
 
+  assert.equal(view.hasPendingInteraction(), false);
   terminal.emit("\u001bn");
   await flush();
+  assert.equal(view.getInteractionState().activeOverlay, null);
+  assert.equal(view.hasPendingInteraction(), true); // Picker choices have not resolved yet.
   view.apply(viewProjection({ sessionId: "picker-race", running: true }));
   resolveChoices([{
     path: "/other",
