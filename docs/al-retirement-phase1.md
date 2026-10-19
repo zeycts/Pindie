@@ -1,5 +1,7 @@
 # AL / SI / CPL retirement — Phase 1
 
+Historical Phase 1 snapshot: [Phase 2-A](al-retirement-phase2-a.md) now removes the standalone Evaluation/Recovery island and inert Host Learning interface types/results described as retained below. Other deletion work remains pending; no historical data is migrated or removed.
+
 Status: production hard isolation on Draft PR #268; **not merged/deployed**. This approved retirement contract supersedes historical Learning activation and SI/CPL integration-preservation guidance. Phase 2 production-source deletion is not included.
 
 ## Production boundary

@@ -1,0 +1,575 @@
+{
+  "base": "d89ff6b48220bf0f8ad8d4a72ee9a7d393c6aeba",
+  "sources": [
+    "src/evaluation-contract.ts",
+    "src/evaluation-execution-authority-store.ts",
+    "src/evaluation-execution-lease-assessment.ts",
+    "src/evaluation-execution-lease-store.ts",
+    "src/evaluation-execution-lease.ts",
+    "src/evaluation-execution-runner.ts",
+    "src/evaluation-packet-builder.ts",
+    "src/evaluation-packet-store.ts",
+    "src/evaluation-recovery-readiness.ts",
+    "src/evaluation-run-store.ts",
+    "src/evaluation-run.ts",
+    "src/evaluation-stale-confirmation.ts",
+    "src/evaluator-contract.ts",
+    "src/recovery-admission-store.ts",
+    "src/recovery-admission.ts",
+    "src/recovery-capacity.ts",
+    "src/recovery-successor-binding-store.ts",
+    "src/recovery-successor-binding.ts"
+  ],
+  "testsAndFixtures": [
+    "tests/evaluation-execution-lease-assessment.test.ts",
+    "tests/evaluation-execution-lease-store.test.ts",
+    "tests/evaluation-execution-lease.test.ts",
+    "tests/evaluation-execution-runner.test.ts",
+    "tests/evaluation-packet-builder.test.ts",
+    "tests/evaluation-packet-store.test.ts",
+    "tests/evaluation-r4a.test.ts",
+    "tests/evaluation-recovery-readiness.test.ts",
+    "tests/evaluation-run.test.ts",
+    "tests/evaluation-stale-confirmation.test.ts",
+    "tests/evaluator-contract.test.ts",
+    "tests/recovery-admission.test.ts",
+    "tests/recovery-fixture.ts",
+    "tests/recovery-successor-binding.test.ts"
+  ],
+  "retainedInboundReferences": [],
+  "allInboundEdges": [
+    {
+      "from": "src/evaluation-execution-authority-store.ts",
+      "to": "src/evaluation-run-store.ts"
+    },
+    {
+      "from": "src/evaluation-execution-authority-store.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "src/evaluation-execution-authority-store.ts",
+      "to": "src/evaluation-execution-lease-store.ts"
+    },
+    {
+      "from": "src/evaluation-execution-authority-store.ts",
+      "to": "src/evaluation-execution-lease-assessment.ts"
+    },
+    {
+      "from": "src/evaluation-execution-authority-store.ts",
+      "to": "src/evaluation-stale-confirmation.ts"
+    },
+    {
+      "from": "src/evaluation-execution-lease-assessment.ts",
+      "to": "src/evaluation-execution-lease.ts"
+    },
+    {
+      "from": "src/evaluation-execution-lease-store.ts",
+      "to": "src/evaluation-run-store.ts"
+    },
+    {
+      "from": "src/evaluation-execution-lease-store.ts",
+      "to": "src/recovery-capacity.ts"
+    },
+    {
+      "from": "src/evaluation-execution-lease-store.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "src/evaluation-execution-lease-store.ts",
+      "to": "src/evaluation-execution-lease.ts"
+    },
+    {
+      "from": "src/evaluation-execution-lease-store.ts",
+      "to": "src/evaluation-execution-authority-store.ts"
+    },
+    {
+      "from": "src/evaluation-execution-lease.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "src/evaluation-execution-runner.ts",
+      "to": "src/evaluation-run-store.ts"
+    },
+    {
+      "from": "src/evaluation-execution-runner.ts",
+      "to": "src/evaluation-packet-store.ts"
+    },
+    {
+      "from": "src/evaluation-execution-runner.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "src/evaluation-execution-runner.ts",
+      "to": "src/evaluator-contract.ts"
+    },
+    {
+      "from": "src/evaluation-execution-runner.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "src/evaluation-packet-builder.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "src/evaluation-packet-store.ts",
+      "to": "src/evaluation-packet-builder.ts"
+    },
+    {
+      "from": "src/evaluation-packet-store.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "src/evaluation-recovery-readiness.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "src/evaluation-recovery-readiness.ts",
+      "to": "src/recovery-admission.ts"
+    },
+    {
+      "from": "src/evaluation-recovery-readiness.ts",
+      "to": "src/recovery-successor-binding.ts"
+    },
+    {
+      "from": "src/evaluation-recovery-readiness.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "src/evaluation-run-store.ts",
+      "to": "src/recovery-capacity.ts"
+    },
+    {
+      "from": "src/evaluation-run-store.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "src/evaluation-run-store.ts",
+      "to": "src/recovery-admission.ts"
+    },
+    {
+      "from": "src/evaluation-run-store.ts",
+      "to": "src/evaluation-stale-confirmation.ts"
+    },
+    {
+      "from": "src/evaluation-run-store.ts",
+      "to": "src/evaluation-execution-lease-store.ts"
+    },
+    {
+      "from": "src/evaluation-run-store.ts",
+      "to": "src/recovery-admission-store.ts"
+    },
+    {
+      "from": "src/evaluation-run-store.ts",
+      "to": "src/recovery-successor-binding-store.ts"
+    },
+    {
+      "from": "src/evaluation-run-store.ts",
+      "to": "src/evaluation-execution-authority-store.ts"
+    },
+    {
+      "from": "src/evaluation-run-store.ts",
+      "to": "src/recovery-successor-binding.ts"
+    },
+    {
+      "from": "src/evaluation-run-store.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "src/evaluation-run.ts",
+      "to": "src/recovery-admission.ts"
+    },
+    {
+      "from": "src/evaluation-run.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "src/evaluation-stale-confirmation.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "src/evaluation-stale-confirmation.ts",
+      "to": "src/evaluation-execution-lease.ts"
+    },
+    {
+      "from": "src/evaluation-stale-confirmation.ts",
+      "to": "src/evaluation-execution-lease-assessment.ts"
+    },
+    {
+      "from": "src/evaluator-contract.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "src/evaluator-contract.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "src/recovery-admission-store.ts",
+      "to": "src/evaluation-run-store.ts"
+    },
+    {
+      "from": "src/recovery-admission-store.ts",
+      "to": "src/evaluation-packet-store.ts"
+    },
+    {
+      "from": "src/recovery-admission-store.ts",
+      "to": "src/recovery-capacity.ts"
+    },
+    {
+      "from": "src/recovery-admission-store.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "src/recovery-admission-store.ts",
+      "to": "src/recovery-admission.ts"
+    },
+    {
+      "from": "src/recovery-admission-store.ts",
+      "to": "src/evaluation-execution-lease-store.ts"
+    },
+    {
+      "from": "src/recovery-admission-store.ts",
+      "to": "src/evaluation-execution-authority-store.ts"
+    },
+    {
+      "from": "src/recovery-admission-store.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "src/recovery-admission.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "src/recovery-admission.ts",
+      "to": "src/evaluation-stale-confirmation.ts"
+    },
+    {
+      "from": "src/recovery-admission.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "src/recovery-capacity.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "src/recovery-capacity.ts",
+      "to": "src/recovery-successor-binding-store.ts"
+    },
+    {
+      "from": "src/recovery-capacity.ts",
+      "to": "src/recovery-successor-binding.ts"
+    },
+    {
+      "from": "src/recovery-capacity.ts",
+      "to": "src/recovery-admission-store.ts"
+    },
+    {
+      "from": "src/recovery-successor-binding-store.ts",
+      "to": "src/recovery-admission.ts"
+    },
+    {
+      "from": "src/recovery-successor-binding-store.ts",
+      "to": "src/recovery-successor-binding.ts"
+    },
+    {
+      "from": "src/recovery-successor-binding-store.ts",
+      "to": "src/recovery-admission-store.ts"
+    },
+    {
+      "from": "src/recovery-successor-binding.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "src/recovery-successor-binding.ts",
+      "to": "src/recovery-admission.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-lease-assessment.test.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-lease-assessment.test.ts",
+      "to": "src/evaluation-execution-lease-assessment.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-lease-assessment.test.ts",
+      "to": "src/evaluation-execution-lease.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-lease-store.test.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-lease-store.test.ts",
+      "to": "src/evaluator-contract.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-lease-store.test.ts",
+      "to": "src/evaluation-run-store.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-lease-store.test.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-lease-store.test.ts",
+      "to": "src/evaluation-execution-lease.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-lease-store.test.ts",
+      "to": "src/evaluation-execution-lease-store.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-lease.test.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-lease.test.ts",
+      "to": "src/evaluation-execution-lease.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-runner.test.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-runner.test.ts",
+      "to": "src/evaluator-contract.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-runner.test.ts",
+      "to": "src/evaluation-run-store.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-runner.test.ts",
+      "to": "src/evaluation-packet-store.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-runner.test.ts",
+      "to": "src/evaluation-execution-runner.ts"
+    },
+    {
+      "from": "tests/evaluation-execution-runner.test.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "tests/evaluation-packet-builder.test.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "tests/evaluation-packet-builder.test.ts",
+      "to": "src/evaluation-packet-builder.ts"
+    },
+    {
+      "from": "tests/evaluation-packet-store.test.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "tests/evaluation-packet-store.test.ts",
+      "to": "src/evaluation-packet-store.ts"
+    },
+    {
+      "from": "tests/evaluation-packet-store.test.ts",
+      "to": "src/evaluation-packet-builder.ts"
+    },
+    {
+      "from": "tests/evaluation-r4a.test.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "tests/evaluation-recovery-readiness.test.ts",
+      "to": "src/recovery-successor-binding.ts"
+    },
+    {
+      "from": "tests/evaluation-recovery-readiness.test.ts",
+      "to": "src/recovery-admission.ts"
+    },
+    {
+      "from": "tests/evaluation-recovery-readiness.test.ts",
+      "to": "tests/recovery-fixture.ts"
+    },
+    {
+      "from": "tests/evaluation-recovery-readiness.test.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "tests/evaluation-recovery-readiness.test.ts",
+      "to": "src/evaluation-recovery-readiness.ts"
+    },
+    {
+      "from": "tests/evaluation-run.test.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "tests/evaluation-run.test.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "tests/evaluation-run.test.ts",
+      "to": "src/evaluation-run-store.ts"
+    },
+    {
+      "from": "tests/evaluation-run.test.ts",
+      "to": "src/evaluation-packet-store.ts"
+    },
+    {
+      "from": "tests/evaluation-run.test.ts",
+      "to": "src/evaluation-packet-builder.ts"
+    },
+    {
+      "from": "tests/evaluation-stale-confirmation.test.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "tests/evaluation-stale-confirmation.test.ts",
+      "to": "src/evaluator-contract.ts"
+    },
+    {
+      "from": "tests/evaluation-stale-confirmation.test.ts",
+      "to": "src/evaluation-execution-authority-store.ts"
+    },
+    {
+      "from": "tests/evaluation-stale-confirmation.test.ts",
+      "to": "src/evaluation-run-store.ts"
+    },
+    {
+      "from": "tests/evaluation-stale-confirmation.test.ts",
+      "to": "src/evaluation-stale-confirmation.ts"
+    },
+    {
+      "from": "tests/evaluation-stale-confirmation.test.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "tests/evaluation-stale-confirmation.test.ts",
+      "to": "src/evaluation-execution-lease.ts"
+    },
+    {
+      "from": "tests/evaluation-stale-confirmation.test.ts",
+      "to": "src/evaluation-execution-lease-store.ts"
+    },
+    {
+      "from": "tests/evaluator-contract.test.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "tests/evaluator-contract.test.ts",
+      "to": "src/evaluator-contract.ts"
+    },
+    {
+      "from": "tests/evaluator-contract.test.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "tests/recovery-admission.test.ts",
+      "to": "src/recovery-admission.ts"
+    },
+    {
+      "from": "tests/recovery-admission.test.ts",
+      "to": "src/recovery-admission-store.ts"
+    },
+    {
+      "from": "tests/recovery-admission.test.ts",
+      "to": "tests/recovery-fixture.ts"
+    },
+    {
+      "from": "tests/recovery-admission.test.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "tests/recovery-admission.test.ts",
+      "to": "src/evaluation-execution-lease.ts"
+    },
+    {
+      "from": "tests/recovery-fixture.ts",
+      "to": "src/evaluation-contract.ts"
+    },
+    {
+      "from": "tests/recovery-fixture.ts",
+      "to": "src/evaluator-contract.ts"
+    },
+    {
+      "from": "tests/recovery-fixture.ts",
+      "to": "src/evaluation-execution-authority-store.ts"
+    },
+    {
+      "from": "tests/recovery-fixture.ts",
+      "to": "src/recovery-admission.ts"
+    },
+    {
+      "from": "tests/recovery-fixture.ts",
+      "to": "src/recovery-admission-store.ts"
+    },
+    {
+      "from": "tests/recovery-fixture.ts",
+      "to": "src/evaluation-run-store.ts"
+    },
+    {
+      "from": "tests/recovery-fixture.ts",
+      "to": "src/evaluation-stale-confirmation.ts"
+    },
+    {
+      "from": "tests/recovery-fixture.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "tests/recovery-fixture.ts",
+      "to": "src/evaluation-execution-lease.ts"
+    },
+    {
+      "from": "tests/recovery-fixture.ts",
+      "to": "src/evaluation-execution-lease-store.ts"
+    },
+    {
+      "from": "tests/recovery-successor-binding.test.ts",
+      "to": "src/recovery-successor-binding-store.ts"
+    },
+    {
+      "from": "tests/recovery-successor-binding.test.ts",
+      "to": "src/recovery-successor-binding.ts"
+    },
+    {
+      "from": "tests/recovery-successor-binding.test.ts",
+      "to": "src/recovery-admission.ts"
+    },
+    {
+      "from": "tests/recovery-successor-binding.test.ts",
+      "to": "src/evaluator-contract.ts"
+    },
+    {
+      "from": "tests/recovery-successor-binding.test.ts",
+      "to": "src/evaluation-execution-authority-store.ts"
+    },
+    {
+      "from": "tests/recovery-successor-binding.test.ts",
+      "to": "tests/recovery-fixture.ts"
+    },
+    {
+      "from": "tests/recovery-successor-binding.test.ts",
+      "to": "src/evaluation-run-store.ts"
+    },
+    {
+      "from": "tests/recovery-successor-binding.test.ts",
+      "to": "src/evaluation-stale-confirmation.ts"
+    },
+    {
+      "from": "tests/recovery-successor-binding.test.ts",
+      "to": "src/recovery-capacity.ts"
+    },
+    {
+      "from": "tests/recovery-successor-binding.test.ts",
+      "to": "src/evaluation-execution-runner.ts"
+    },
+    {
+      "from": "tests/recovery-successor-binding.test.ts",
+      "to": "src/evaluation-run.ts"
+    },
+    {
+      "from": "tests/recovery-successor-binding.test.ts",
+      "to": "src/evaluation-execution-lease.ts"
+    },
+    {
+      "from": "tests/recovery-successor-binding.test.ts",
+      "to": "src/evaluation-execution-lease-store.ts"
+    }
+  ],
+  "scanScope": "All .ts under src, tests (including fixtures), scripts; all relative .ts string references, including type-only and dynamic references. Phase1 .txt archive is preserved."
+}
