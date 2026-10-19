@@ -205,30 +205,27 @@ test("Stable Mode Host does not enqueue discovery or start a learning runtime by
     agentDir,
     sessionManager: SessionManager.inMemory(cwd),
     storageRoots: { projectsBaseDir: f.projects, globalBaseDir: f.global },
-    learningModel: { provider: "anthropic", modelId: "claude-sonnet-4-5", thinkingLevel: "off" },
     env: { PINDIE_BROWSER_ENABLED: "false" },
     dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
   });
   try {
     await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(host.learningModelIdentity, null);
+    assert.equal("learningModelIdentity" in host, false);
     assert.equal((await f.deps.jobs.read()).length, 0);
   } finally { await host.dispose(); }
 });
 
-test("D2 Host leaves learning unavailable when the requested learning model cannot be resolved", async (t) => {
+test("retired flags cannot add Learning model interfaces to the Host", async (t) => {
   const f = await setup(t);
   const cwd = join(f.dir, "project"), agentDir = join(f.dir, "agent");
   await mkdir(cwd); await mkdir(agentDir);
   const host = await createPindieHost({ cwd, agentDir, sessionManager: SessionManager.inMemory(cwd),
     storageRoots: { projectsBaseDir: f.projects, globalBaseDir: f.global },
-    learningHandlers: [],
-    learningModel: { provider: "pindie-nonexistent", modelId: "no-such-model" },
     env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true" },
     dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
   });
   try {
-    assert.equal(host.learningModelIdentity, null);
+    assert.equal("learningModelIdentity" in host, false);
   } finally { await host.dispose(); }
 });
 test("D1 bounds and corrupted evidence/portfolio/receipt fail closed without blocking save",  async (t) => {
