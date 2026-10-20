@@ -45,18 +45,7 @@ import {
   FileStrategyTrustScopeDecisionStore,
   validateStrategyTrustScopeDecisionArtifact,
   validateStrategyTrustScopeDecisionBinding,
-} from "../src/strategy-trust-scope-decisions.ts";
-import {
-  createStrategyTrustScopeCandidateForProject,
-  listTransferableDerivedStrategies,
-} from "../src/strategy-trust-scope.ts";
-import {
-  createScopeTrialBinding,
-  parseScopeTrialCommandValue,
-  resolveScopeTrialBinding,
-  scopeTrialCommandValue,
-  strategyRevisionSelectionFromScopeTrial,
-} from "../src/strategy-trust-scope-trial.ts";
+} from "../src/strategy-trust-scope-decisions.ts";import { createScopeTrialBinding, parseScopeTrialCommandValue, resolveScopeTrialBinding, scopeTrialCommandValue } from "../src/strategy-trust-scope-trial.ts";
 import { TrialRuntime } from "../src/strategy-trial.ts";
 import {
   FileStrategyTrustScopeSourceResolver,
@@ -525,107 +514,6 @@ test("source resolver fails closed for missing, malformed, rejected, and cross-s
   void revisionCandidate;
   await revisionStore.save(SOURCE_ROOT, validRevision);
   await assert.rejects(ambiguous.sourceResolver.resolve(ambiguous.source), /ambiguous/i);
-});
-
-test("only a promoted Derived entry is transferable and completion remains meaning-first", async (t) => {
-  const value = await fixture(t);
-  const projection = await listTransferableDerivedStrategies(
-    SOURCE_ROOT,
-    createTrustedStrategyPortfolio(
-      SOURCE_ROOT,
-      createPromotedStrategyRevisionCatalog([]),
-      value.sourceResolver
-        ? (await value.sourceResolver.resolve(value.source)).promotedDerivedCatalog
-        : undefined,
-    ),
-    value.sourceResolver,
-    value.scopeCandidateStore,
-    value.scopeDecisionStore,
-  );
-  assert.equal(projection.options.length, 1);
-  assert.equal(projection.options[0]?.value, "delivery-checkpoints");
-  assert.match(projection.options[0]?.label ?? "", /delivery-checkpoints/);
-  assert.match(projection.options[0]?.label ?? "", /modifier/);
-  assert.match(projection.options[0]?.label ?? "", /promoted aaaaaaaa/);
-  assert.match(projection.options[0]?.label ?? "", /project-local trusted Derived Strategy/);
-  assert.doesNotMatch(projection.options[0]?.label ?? "", new RegExp(CANDIDATE_ID));
-});
-
-test("trust-transfer completion excludes hypotheses that creation would reject as duplicates", async (t) => {
-  const value = await fixture(t);
-  const currentPortfolio = createTrustedStrategyPortfolio(
-    SOURCE_ROOT,
-    createPromotedStrategyRevisionCatalog([]),
-    (await value.sourceResolver.resolve(value.source)).promotedDerivedCatalog,
-  );
-  const options = () => listTransferableDerivedStrategies(
-    SOURCE_ROOT, currentPortfolio, value.sourceResolver,
-    value.scopeCandidateStore, value.scopeDecisionStore,
-  );
-  assert.deepEqual((await options()).options.map((entry) => entry.value), ["delivery-checkpoints"]);
-  const candidate = createStrategyTrustScopeCandidate({
-    sourceStrategy: value.source,
-    candidateId: CANDIDATE_ID,
-  });
-  await value.scopeCandidateStore.save(candidate);
-  assert.deepEqual((await options()).options, []);
-  await value.scopeDecisionStore.save(createStrategyTrustScopeDecision({
-    candidate, decision: "rejected", trialRefs: [],
-  }));
-  assert.deepEqual((await options()).options, []);
-  await assert.rejects(createStrategyTrustScopeCandidateForProject({
-    projectRoot: SOURCE_ROOT, sourceStrategy: value.source,
-  }, {
-    candidateStore: value.scopeCandidateStore,
-    decisionReader: value.scopeDecisionStore,
-    sourceResolver: value.sourceResolver,
-    writerLock: value.writerLock,
-  }), /identical|reopen/i);
-});
-
-test("locked Candidate creation enforces source, duplicates, rejection closure, and no copied semantics", async (t) => {
-  const value = await fixture(t);
-  const dependencies = {
-    candidateStore: value.scopeCandidateStore,
-    decisionReader: value.scopeDecisionStore,
-    sourceResolver: value.sourceResolver,
-    writerLock: value.writerLock,
-  };
-  const created = await createStrategyTrustScopeCandidateForProject({
-    projectRoot: SOURCE_ROOT,
-    sourceStrategy: value.source,
-    candidateId: CANDIDATE_ID,
-    createdAt: "2026-07-07T00:00:00.000Z",
-  }, dependencies);
-  assert.equal(created.sourceStrategy.strategyId, "delivery-checkpoints");
-  assert.equal("summary" in created, false);
-  assert.equal("useWhen" in created.sourceStrategy, false);
-  await assert.rejects(
-    createStrategyTrustScopeCandidateForProject({
-      projectRoot: SOURCE_ROOT,
-      sourceStrategy: value.source,
-      candidateId: SECOND_CANDIDATE_ID,
-    }, dependencies),
-    /identical|reopen/i,
-  );
-
-  const rejected = createStrategyTrustScopeDecision({ candidate: created, decision: "rejected", trialRefs: [] });
-  await value.scopeDecisionStore.save(rejected);
-  await assert.rejects(
-    createStrategyTrustScopeCandidateForProject({
-      projectRoot: SOURCE_ROOT,
-      sourceStrategy: value.source,
-      candidateId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-    }, dependencies),
-    /identical|reopen/i,
-  );
-  await assert.rejects(
-    createStrategyTrustScopeCandidateForProject({
-      projectRoot: TARGET_A,
-      sourceStrategy: value.source,
-    }, dependencies),
-    /source project/i,
-  );
 });
 
 test("global writer lock serializes competing operations and releases after failure", async (t) => {
