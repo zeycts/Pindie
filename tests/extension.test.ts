@@ -3147,7 +3147,7 @@ test("Context Governor resets at Session lifecycle boundaries", async () => {
   assert.equal(await projectContext(harness, 10), undefined);
 });
 
-test("SI04 stable contract and Run Baseline preserve authority information across Run states", async () => {
+test("stable contract and Run Baseline preserve authority information across Run states", async () => {
   const coherent = createHarness([["/repo", activeState()]]);
   await startSession(coherent, "/repo");
   const coherentResult = await harnessBeforeAgentStart(coherent);
@@ -6341,7 +6341,7 @@ test("Core counters reset each Run and retired persistence failures cannot affec
   assert.equal(failed.integration.runCost.snapshot([] as any)?.active, false);
 });
 
-test("SI v0.3 obsolete stale settlement writes no Experience", async () => {
+test("obsolete stale settlement never invokes historical persistence", async () => {
   const harness = createHarness([["/repo", activeState()]]);
   await startSession(harness, "/repo");
   await beginAgentRun(harness);

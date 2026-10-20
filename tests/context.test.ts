@@ -89,6 +89,23 @@ test("stable Pindie System Contract is deterministic, complete, and excludes cur
   assert.doesNotMatch(first, /Approach: architecture-first/);
 });
 
+const historicalSeedIds = ["direct-action", "reproduce-first", "explore-first", "hypothesis-driven", "architecture-first", "minimal-change", "verify-as-you-go"];
+
+test("Core contract remains deterministic without historical Seed guidance", () => {
+  const first = renderPindieSystemContract();
+  assert.equal(first, renderPindieSystemContract());
+  assert.match(first, /^<PINDIE_SYSTEM_CONTRACT>[\s\S]*<\/PINDIE_SYSTEM_CONTRACT>$/);
+  for (const term of ["Pindie System Contract", "Execution Gateway is authoritative", "Pindie Run Baseline", "Human Gate"]) assert.ok(first.includes(term), term);
+  assert.doesNotMatch(first, /Seed Strategies|Policy Snapshot|\/adapt|\/trial/);
+  for (const id of historicalSeedIds) assert.equal(first.includes(id), false, id);
+});
+
+test("Core system contract excludes retired Seed and Policy guidance", () => {
+  const contract = renderPindieSystemContract();
+  assert.doesNotMatch(contract, /Seed Strategies:|Current Policy Snapshot|pindie_policy_set/);
+  for (const id of historicalSeedIds) assert.equal(contract.includes(id), false, id);
+});
+
 test("Pindie appends the stable contract to Pi's prompt idempotently", () => {
   const base = "Pi system contract";
   const appended = appendPindieSystemContract(base);

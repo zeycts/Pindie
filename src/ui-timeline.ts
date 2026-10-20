@@ -89,10 +89,6 @@ const semanticTools = new Set([
 
 const externalTools = new Set([
   "pindie_memory_capture",
-  "pindie_policy_set",
-  "pindie_strategy_candidate_create",
-  "pindie_strategy_derivation_candidate_create",
-  "pindie_strategy_synthesis_candidate_create",
 ]);
 
 /**
@@ -315,12 +311,6 @@ function displayToolName(toolName: string): string {
   switch (toolName) {
     case "pindie_memory_capture":
       return "Work Memory capture";
-    case "pindie_policy_set":
-      return "Policy update";
-    case "pindie_strategy_candidate_create":
-    case "pindie_strategy_derivation_candidate_create":
-    case "pindie_strategy_synthesis_candidate_create":
-      return "Strategy work";
     default:
       return toolName.replaceAll("_", " ");
   }

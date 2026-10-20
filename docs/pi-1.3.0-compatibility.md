@@ -41,7 +41,7 @@ Covered invariants:
 - pending `nextTurn` messages accompany both user/custom starts; messages sent during preflight queue into that Run, not a competing Run;
 - user/custom preflight is busy; user delivery without a queue mode rejects; preflight abort executes no provider request and emits exactly one `agent_settled` with `aborted: true`;
 - resumed active tools are preserved, modifier overlays and explicit replacement stay authoritative;
-- SDK/Host have no unexpected `codemode`, `tool_search`, `mcp__*` or built-in MCP extensions/commands. Isolated Learning has no Human tools, extensions, commands, skills, templates, themes or transcript state.
+- SDK/Host have no unexpected `codemode`, `tool_search`, `mcp__*` or built-in MCP extensions/commands.
 
 The expanded native contract can be rerun with:
 
@@ -55,7 +55,7 @@ For detached verification, `npm pack @earendil-works/pi-coding-agent@1.3.0`, ext
 
 New `tests/pi-1.3-control.test.ts` uses real Pi with a faux provider, blocked native preflight and temporary project/agent/Pindie storage. It asserts busy before `agent_start`, `now → steer` / `after_current_run → followUp`, queued versus handled dispositions, no fabricated handled messages, exactly-once accepted timeline delivery, event-driven settled wait remaining pending during preflight, stop/queue-clear/preflight abort, `agent_settled.aborted`, replacement and stale lease rejection. Existing tests retain accepted-but-unsettled-before-agent_start, Session/reader rebinding, stale Session/generation and transport contracts. `preflightResult("started")` now follows asynchronous preparation but still precedes `agent_start`; Control need not invent an earlier acceptance event. Settled waiting continues to require idle + automatic work settled + empty queues + no quota wait, not just `agent_end` or the notification's aborted flag.
 
-Quota refresh remains detached/fail-soft, once per quota-resume start, without blocking preparation or changing State. Automatic fallback/resume successors and same-Run continuation preserve their existing ownership and exactly-once semantics. No Control, Host, Learning, quota-policy or UI refactor was necessary.
+Quota refresh remains detached/fail-soft, once per quota-resume start, without blocking preparation or changing State. Automatic fallback/resume successors and same-Run continuation preserve their existing ownership and exactly-once semantics. No Control, Host, quota-policy or UI refactor was necessary.
 
 TUI policy stays **explicit Host override → explicit effective Pi setting → regular fallback**, in both production Pi InteractiveMode and the owned shell. No adoption of fullscreen default. Existing six-case precedence coverage and TUI/action tests pass. Home/End remain editor line movement; Ctrl+Home/End control fullscreen transcript bounds. Upstream fixes shifted-symbol keys, terminal reply fragmentation, fullscreen selection across Session changes and overlay ownership. EIO/raw-mode handling remains upstream; OSC 7501 and OSC 52 are optional Pi capabilities, not enabled by Pindie. No keybindings/settings files are rewritten.
 
@@ -69,7 +69,6 @@ Heavy suites ran sequentially (not concurrent suite invocations). Passed before 
 | Control/client/workspace/MCP/headless/monitor/spikes + new preflight Control tests | 69/69 |
 | Host/runtime/Session/long-task Control | 61/61 |
 | Quota resume/fallback/control/supervisors | 69/69 |
-| Learning foundations/composition/ordinary Trial Pi isolation | 60/60 |
 | Browser Reality | 27/27 |
 | TUI/actions | 58/58 |
 | Extension regressions including quota trigger discrimination | 240/240 |

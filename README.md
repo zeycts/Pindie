@@ -41,7 +41,7 @@ Capabilities
 
 The current semantic layer is deliberately small. Pindie does not add a second Agent Loop, workflow engine, task queue, planner framework, or separate Skill runtime.
 
-**AL / Self-Improvement / Cross-Project Learning are retired.** Phase 1 disconnects their production imports, scheduler, stores, commands/tools, Policy/advisory and Experience paths. Old environment flags and embedding overrides cannot reactivate them. Historical user data stays untouched; dead implementation/design documents are removed and recoverable from Git history. Development improvement uses models, Harness, native Skills/workflows and human review/tests.
+Development improvement uses models, Harness, native Skills/workflows, tests and human review. Retired learning features cannot be reactivated by old flags or embedding overrides; legacy tools remain denied. Historical user data stays untouched. Removed implementations, designs and test archives remain recoverable from Git history.
 
 ## What Pindie adds
 

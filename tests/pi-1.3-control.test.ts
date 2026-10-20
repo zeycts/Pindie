@@ -35,7 +35,7 @@ for (const stop of [false, true]) {
     try {
       host = await createPindieHost({ cwd: project, agentDir, sessionManager: SessionManager.inMemory(project),
         storageRoots: { projectsBaseDir: join(root, "state"), globalBaseDir: join(root, "global"), remoteRoutingBaseDir: join(root, "routing") },
-        env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: "0", PINDIE_AUTONOMOUS_LEARNING_ENABLED: "0", PINDIE_REMOTE_ENABLED: "false", PINDIE_WORK_MEMORY_ENABLED: "false" },
+        env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: "0", PINDIE_REMOTE_ENABLED: "false", PINDIE_WORK_MEMORY_ENABLED: "false" },
         dependencies: {
           createAgentSessionServices: (options) => createAgentSessionServices({ ...options, modelRuntime,
             resourceLoaderOptions: { ...options.resourceLoaderOptions,

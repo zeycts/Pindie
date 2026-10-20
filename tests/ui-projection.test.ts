@@ -316,6 +316,10 @@ test("presentation classifier reserves semantic tools without changing execution
   assert.equal(classifyToolPresentation("pindie_memory_capture"), "external");
   assert.equal(classifyToolPresentation("browser_navigate"), "external");
   assert.equal(classifyToolPresentation("future_tool"), "generic");
+  for (const name of ["pindie_policy_set", "pindie_strategy_candidate_create",
+    "pindie_strategy_derivation_candidate_create", "pindie_strategy_synthesis_candidate_create"]) {
+    assert.equal(classifyToolPresentation(name), "generic", "retired calls have no live feature presentation");
+  }
 });
 
 test("live semantic calls use one identity from running preview through result", () => {

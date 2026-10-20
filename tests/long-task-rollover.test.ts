@@ -462,7 +462,7 @@ test("failed or cancelled rollover abandons the Task metrics lease without enter
 
     await attempt(supervisor, scheduler, request("session-1"));
 
-    // Rollover control never starts a fresh Run or writes Experience itself;
+    // Rollover control never starts a fresh Run itself;
     // after failure/cancellation the lease cannot adopt a later Session.
     assert.equal(taskMetrics.enterSession("/repo", binding), false);
   }

@@ -192,9 +192,7 @@ It must not be persisted in:
 
 - `PindieState`;
 - Task continuity artifacts;
-- Experience;
 - Work Memory;
-- policy/strategy artifacts;
 - a new fallback database.
 
 Process exit loses the lease.
@@ -453,7 +451,6 @@ Existing cost accounting may consume Pi usage/cost metadata. Do not:
 
 - merge DeepSeek spend into OpenAI subscription quota percentages;
 - create a second cost database;
-- create a special fallback Experience family;
 - add time-of-day DeepSeek pricing logic solely for this feature.
 
 Off-peak price differences may remain approximate in Pindie's static cost display.
