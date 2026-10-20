@@ -100,6 +100,6 @@ test("production entrypoint emitted import graph cannot load retired Learning/Po
       await visit(resolve(dirname(path), match[1]!));
     }
   }
-  for (const name of ["host.ts", "extension.ts", "control-workspace.ts", "control-mcp.ts", "core-integration.ts"]) await visit(resolve(base, name));
+  for (const name of ["host.ts", "composition.ts", "extension.ts", "control-workspace.ts", "control-mcp.ts", "core-integration.ts"]) await visit(resolve(base, name));
   assert.ok(visited.size > 30);
 });

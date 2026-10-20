@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import ts from "typescript";
 
 import {
   composeConfiguredPindieExtension,
@@ -296,11 +297,14 @@ test("retired SI and CPL overrides drop learning dependencies while other featur
 });
 
 test("Slice F protects the final Core/SI/CPL and trust runtime import boundaries", async () => {
-  const [coreSource, selfImprovementSource, crossProjectLearningSource, portfolioSource, trustSafetySource, globalSource] = await Promise.all(
+  const [coreSource, compositionSource, extensionSource, hostSource, controlWorkspaceSource, controlMcpSource, portfolioSource, trustSafetySource, globalSource] = await Promise.all(
     [
       "core-integration.ts",
-      "self-improvement-integration.ts",
-      "cross-project-learning-integration.ts",
+      "composition.ts",
+      "extension.ts",
+      "host.ts",
+      "control-workspace.ts",
+      "control-mcp.ts",
       "strategy-portfolio.ts",
       "strategy-trust-safety.ts",
       "strategy-trust-scope-global.ts",
@@ -321,23 +325,21 @@ test("Slice F protects the final Core/SI/CPL and trust runtime import boundaries
   assert.doesNotMatch(taskSource, /(?:import|require)\s*.*learning-signal(?:\.ts)?/, "Core Task tools must not load SI signal implementation");
   assert.doesNotMatch(taskSource, /learning-disposition-contract/, "Core completion has no learning seam");
   assert.doesNotMatch(taskSource, /LearningSignalHolder|isValidLearningSignal/, "removed SI signal holder and validation must not return to Core");
-  assert.equal(hasRuntimeImport(selfImprovementSource, "./cross-project-learning-integration.ts"), false);
-  assert.equal(hasRuntimeImport(selfImprovementSource, "./strategy-synthesis-review.ts"), false);
-
-  const cplSelfImprovementImports = importsFrom(
-    crossProjectLearningSource,
-    "./self-improvement-integration.ts",
-  );
-  assert.equal(cplSelfImprovementImports.length, 1);
-  assert.equal(cplSelfImprovementImports[0]!.typeOnly, true);
-  assert.deepEqual(
-    [...cplSelfImprovementImports[0]!.names].sort(),
-    [
-      "CrossProjectLearningAttachment",
-      "SelfImprovementLearningAccess",
-      "SelfImprovementStrategyTrustAccess",
-    ].sort(),
-  );
+  for (const file of ["self-improvement-integration.ts", "cross-project-learning-integration.ts"]) {
+    await assert.rejects(access(new URL(`../src/${file}`, import.meta.url)), { code: "ENOENT" },
+      `Retired integration must be physically absent: ${file}`);
+  }
+  // Inspect emitted code so interface import("...") types do not become false
+  // runtime edges. The transitive graph and retired-tool authorization are also
+  // checked in al-retirement.test.ts.
+  for (const source of [coreSource, compositionSource, extensionSource, hostSource, controlWorkspaceSource, controlMcpSource]) {
+    const emitted = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
+    for (const entry of sourceImports(emitted)) {
+      assert.doesNotMatch(entry.moduleSpecifier,
+        /^\.\/(?:self-improvement-|cross-project-|strategy-|strategies\.|policy\.|learning-|discovery-|project-discovery|trial-|ordinary-trial-|experience-|run-experience|work-episode|open-hypotheses|hypothesis-lineage)/,
+        `Core entrypoint must not import a retired runtime: ${entry.moduleSpecifier}`);
+    }
+  }
 
   const portfolioDerivationDecisionImports = importsFrom(
     portfolioSource,
