@@ -23,7 +23,6 @@ import {
   renderPindieStateCheckpoint,
   renderPindieSystemContract,
 } from "../src/context.ts";
-import { createPolicySnapshot } from "../src/policy.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
 import type { PindieState } from "../src/state.ts";
 
@@ -243,11 +242,7 @@ test("current Action Eligibility uses the same capability derivation across impo
 });
 
 test("State Checkpoint preserves current State, eligibility and hidden metadata but excludes retired Policy", () => {
-  const policy = createPolicySnapshot({
-    approach: "architecture-first",
-    modifiers: ["minimal-change"],
-  });
-  const content = renderPindieStateCheckpoint(state(), snapshot, policy);
+  const content = renderPindieStateCheckpoint(state(), snapshot);
   assert.match(content, new RegExp(`^${PINDIE_STATE_CHECKPOINT_START}`));
   assert.match(content, new RegExp(`${PINDIE_STATE_CHECKPOINT_END}$`));
   for (const expected of [
@@ -271,7 +266,7 @@ test("State Checkpoint preserves current State, eligibility and hidden metadata 
   ]) assert.match(content, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
   assert.doesNotMatch(content, /Current Policy Snapshot|architecture-first|minimal-change/);
-  const message = createPindieStateCheckpointMessage(state(), snapshot, policy);
+  const message = createPindieStateCheckpointMessage(state(), snapshot);
   assert.equal(message.customType, PINDIE_STATE_CHECKPOINT_TYPE);
   assert.equal(message.display, false);
   assert.ok(isPindieStateCheckpointMessage({ ...message, role: "custom" }));
@@ -282,11 +277,13 @@ test("State Checkpoint preserves an unavailable authority reason without fabrica
   const content = renderPindieStateCheckpoint(
     null,
     { authority: "unavailable" },
-    null,
     "State refresh failed during compaction.",
   );
   assert.match(content, /Agent Run authority: unavailable/);
   assert.match(content, /Reason: State refresh failed during compaction\./);
+  const message = createPindieStateCheckpointMessage(null, { authority: "unavailable" }, "State refresh failed during compaction.");
+  assert.equal(message.content, content, "checkpoint message forwards the authority reason in the new third argument");
+  assert.equal(message.display, false);
   assert.doesNotMatch(content, /Current Policy Snapshot/);
   assert.doesNotMatch(content, /Goal:|Verification status:|Human Gate:/);
 });

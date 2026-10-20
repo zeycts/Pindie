@@ -95,7 +95,7 @@ for (const failure of ["save", "no-ref", "source", "evidence"] as const) test(`n
   assert.deepEqual(f.integration.runtime.state.task!.openLoops.blockers, ["Human dependency"]);
   assert.equal((await f.assignments()).length, 0);
   assert.deepEqual(await f.experiences(), []);
-  assert.equal(f.integration.policySnapshot, null);
+  assert.equal("policySnapshot" in f.integration, false);
   assert.deepEqual(await f.evidence(), historicalEvidence, "even corrupt historical bytes stay untouched; no retired reader executes");
 });
 

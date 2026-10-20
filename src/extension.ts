@@ -89,7 +89,6 @@ import type { DiscordRemote } from "./discord-remote.ts";
 import type { RemoteRoutingStore } from "./remote-routing.ts";
 import type { ProjectMemorySink } from "./project-memory.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
-import type { PolicySnapshot } from "./policy.ts";
 import type { ProjectFingerprint } from "./project-mutation.ts";
 import type { ReasoningController } from "./reasoning.ts";
 import type { RunActivityTracker } from "./run-activity.ts";
@@ -237,7 +236,6 @@ export interface PindieExtensionIntegration {
   readonly promotedStrategyRevisionCatalog: PromotedStrategyRevisionCatalog;
   /** Runtime-derived Seeds plus valid promoted Seed/Derived trust entries. */
   readonly trustedStrategyPortfolio: TrustedStrategyPortfolio | null;
-  readonly policySnapshot: PolicySnapshot | null;
   readonly stateUnavailableReason: string | null;
   readonly quotaAutoResumeEnabled: boolean;
   readonly quotaFallbackEnabled: boolean;
@@ -919,7 +917,6 @@ function registerComposedPindieExtension(
     const checkpoint = createPindieStateCheckpointMessage(
       state,
       derivation.snapshot,
-      run.policySnapshot,
       unavailableReason,
     );
 
@@ -1458,9 +1455,6 @@ function registerComposedPindieExtension(
     promotedStrategyRevisionCatalog: Object.freeze({ entries: [], selections: [],
       resolve() { throw new Error("Strategy selection is retired."); } }),
     trustedStrategyPortfolio: null,
-    get policySnapshot() {
-      return run.policySnapshot;
-    },
     get stateUnavailableReason() {
       return run.stateUnavailableReason;
     },

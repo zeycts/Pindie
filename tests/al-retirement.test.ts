@@ -78,21 +78,31 @@ test("extension registers only live Core/Memory tools; retired calls are denied 
   for (const name of ["pindie_task_start", "pindie_task_complete", "pindie_verification_record", "pindie_gate_open", "pindie_gate_resolve", "pindie_git_observe", "pindie_memory_capture"]) {
     assert.equal(tools.has(name), true, name);
   }
-  assert.equal(integration.runtime.workEpisodes, undefined);
+  assert.equal("workEpisodes" in integration.runtime, false);
   assert.equal(integration.trial, null);
-  assert.equal(integration.policySnapshot, null);
+  assert.equal("policySnapshot" in integration, false);
   assert.doesNotMatch(renderPindieSystemContract(), /Seed Strategies|Policy Snapshot|\/adapt|\/trial|pindie_policy_set/);
 });
 
 test("ordinary Task transitions ignore a poisoned WorkEpisode ledger; semantic state still persists", async () => {
   const ledger = new Proxy({}, { get() { throw new Error("Learning ledger accessed"); } });
-  const store = new MemoryStore(), runtime = new PindieRuntime(store, ledger as any);
+  const store = new MemoryStore();
+  const runtime: PindieRuntime = Reflect.construct(PindieRuntime, [store, ledger]);
   await runtime.load("/isolated-retirement");
   const started = await runtime.dispatch({ type: "start_task", goal: "Core survives", successCriteria: ["Persist without Learning"], constraints: [] });
   assert.equal(started.ok, true);
   assert.equal(runtime.state.task?.goal, "Core survives");
   assert.deepEqual(store.state, runtime.state);
-  assert.equal(runtime.workEpisodes, undefined);
+  assert.equal("workEpisodes" in runtime, false);
+});
+
+test("Core authority modules have no retired imports, including erased type-only dependencies", async () => {
+  const retired = /\/(?:cross-project-|exact-identity\.|experience-|learning-|policy\.|run-experience|strategies\.|strategy-|work-episode)/u;
+  for (const name of ["core-integration.ts", "runtime.ts", "run-integration.ts", "context.ts"]) {
+    const source = await readFile(new URL(`../src/${name}`, import.meta.url), "utf8");
+    const imports = ts.preProcessFile(source, true, true).importedFiles;
+    for (const entry of imports) assert.doesNotMatch(entry.fileName, retired, `${name}: ${entry.fileName}`);
+  }
 });
 
 test("production entrypoint emitted import graph cannot load retired Learning/Policy modules", async () => {

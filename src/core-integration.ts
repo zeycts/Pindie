@@ -23,10 +23,7 @@ import {
 import type { ProjectFingerprint } from "./project-mutation.ts";
 import { PindieRuntime } from "./runtime.ts";
 import { RunIntegration } from "./run-integration.ts";
-import type {
-  RunExperienceExecution,
-  RunExperiencePolicy,
-} from "./run-experience.ts";
+import type { RunExecutionCounters } from "./run-counters.ts";
 import { RunCostTracker, type RunCost } from "./run-cost.ts";
 import { RunTimer } from "./run-timer.ts";
 import {
@@ -67,11 +64,6 @@ import type {
   PindieStateStore,
   TaskContinuityStore,
 } from "./store.ts";
-import type {
-  PolicySnapshot,
-  StrategyRevisionSelection,
-  StrategyRevisionSelector,
-} from "./policy.ts";
 import type { CommittedRolloverPublisher } from "./long-task-control.ts";
 
 /** Immutable optional text appended after the Core-owned system contract. */
@@ -81,7 +73,6 @@ export interface CorePromptContribution {
 
 export interface CoreIntegrationOptions {
   readonly store: PindieStateStore;
-  readonly workEpisodes?: import("./work-episode.ts").WorkEpisodeLedger;
   readonly continuityStore: TaskContinuityStore;
   readonly committedRolloverPublisher?: CommittedRolloverPublisher | null;
   readonly taskHandoffEnabled?: boolean;
@@ -96,14 +87,6 @@ export interface CoreIntegrationOptions {
 }
 
 export interface CoreToolRegistrationOptions {
-  /** Optional learned-selector resolver; omitted means Seed/base Policy only. */
-  readonly resolveRevisionSelector?: (
-    selector: StrategyRevisionSelector,
-    kind: "approach" | "modifier",
-    ctx: ExtensionContext,
-  ) => StrategyRevisionSelection | Promise<StrategyRevisionSelection>;
-  /** Read-only observation after Core stages the Policy Snapshot. */
-  readonly onPolicySet?: (snapshot: PolicySnapshot) => void;
   /** Read-only projection refresh after a Core semantic State transition. */
   readonly onSemanticStateChange?: () => void;
   /** Successful completion report for runtime presentation; never semantic State. */
@@ -111,7 +94,6 @@ export interface CoreToolRegistrationOptions {
 }
 
 export interface CoreSettlementFacts {
-  readonly runStartEpisode: import("./work-episode-attribution.ts").RunStartEpisodeBinding | null;
   readonly settlementOccurrenceEpoch: number;
   readonly settlementExternalStateEpoch: number;
   readonly settlementGeneration: number | null;
@@ -121,8 +103,7 @@ export interface CoreSettlementFacts {
   readonly snapshot: SemanticSnapshot | null;
   readonly runStartTaskStatus: TaskStatus | null;
   readonly runStartTaskGoal: string | null;
-  readonly execution: RunExperienceExecution;
-  readonly policy: RunExperiencePolicy;
+  readonly execution: RunExecutionCounters;
   readonly durationMs: number | null;
   readonly cost: number | null;
   readonly taskConsumption: ConsumptionMetrics | null;
@@ -225,7 +206,6 @@ export class CoreIntegration {
   private readonly taskHandoffEnabled: boolean;
   private readonly now: () => number;
   private measurementContext: ExtensionContext | null = null;
-  private runStartEpisode: import("./work-episode-attribution.ts").RunStartEpisodeBinding | null = null;
 
   constructor(options: CoreIntegrationOptions) {
     this.runtime = new PindieRuntime(options.store);
@@ -449,7 +429,6 @@ export class CoreIntegration {
   }
 
   resetAgentRunBookkeeping(): void {
-    this.runStartEpisode = null;
     this.run.resetAgentRun();
     this.execution.discardRuntime();
   }
@@ -468,7 +447,6 @@ export class CoreIntegration {
   }
 
   beginAgentRunFacts(ctx: ExtensionContext): void {
-    this.runStartEpisode = null;
     this.setMeasurementContext(ctx);
     this.execution.beginEvidenceScope(this.runtime.externalStateEpoch);
     this.run.beginAgentRunFacts();
@@ -479,11 +457,6 @@ export class CoreIntegration {
       );
     }
   }
-
-  /** @deprecated Inert Phase 1 compatibility; WorkEpisode had no non-learning consumer. */
-  getOrdinaryRunEpisode(): { projectRoot: string; episodeId: string; occurrenceEpoch: number; externalStateEpoch: number } | null { return null; }
-  getRunStartEpisode(): import("./work-episode-attribution.ts").RunStartEpisodeBinding | null { return null; }
-  async captureRunStartEpisode(_signal?: AbortSignal): Promise<void> {}
 
   beginAgentRun(
     ctx: ExtensionContext,
@@ -560,7 +533,6 @@ export class CoreIntegration {
         cost: settledCost?.cost ?? 0,
       });
       const facts: CoreSettlementFacts = Object.freeze({
-        runStartEpisode: this.runStartEpisode,
         settlementOccurrenceEpoch: this.runtime.taskOccurrenceEpoch,
         settlementExternalStateEpoch: this.runtime.externalStateEpoch,
         settlementGeneration,
@@ -571,7 +543,6 @@ export class CoreIntegration {
         runStartTaskStatus: this.run.taskStatusAtRunStart,
         runStartTaskGoal: this.run.taskGoalAtRunStart,
         execution: this.run.executionCounters,
-        policy: this.run.policyAttribution,
         durationMs: settledDurationMs,
         cost: settledCost?.cost ?? null,
         taskConsumption: freezeMetrics(taskConsumption),
@@ -615,7 +586,6 @@ export class CoreIntegration {
         try {
           this.execution.discardRuntime();
         } finally {
-          this.runStartEpisode = null;
           this.run.resetAgentRun();
         }
       }

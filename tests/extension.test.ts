@@ -1162,7 +1162,7 @@ test("Core tools survive without Policy registration or SI store access", async 
   assert.deepEqual(reader.roots, []);
 
   assert.equal(harness.api.tools.has("pindie_policy_set"), false);
-  assert.equal(harness.integration.policySnapshot, null);
+  assert.equal("policySnapshot" in harness.integration, false);
   assert.equal((await callGuard(harness, toolCall("pindie_policy_set", { approach: "direct-action" }, "retired-policy")))?.block, true);
 
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
@@ -1221,7 +1221,7 @@ test("retired SI overrides keep local presentation without global trust-safety r
   await harnessBeforeAgentStart(harness, "/repo");
   assert.equal(globalReads, 0);
   assert.ok(harness.integration.runActivity);
-  assert.equal(harness.integration.policySnapshot, null);
+  assert.equal("policySnapshot" in harness.integration, false);
   await harness.api.handler("agent_settled")({ type: "agent_settled" }, context("/repo"));
   assert.equal(globalReads, 0);
   assert.equal(harness.integration.runTimer.active, false);
@@ -3640,9 +3640,9 @@ test("retired Policy rejection stays outside evidence and PindieState persistenc
     { type: "session_shutdown", reason: "reload" },
     context("/repo"),
   );
-  assert.equal(harness.integration.policySnapshot, null);
+  assert.equal("policySnapshot" in harness.integration, false);
   await startSession(harness, "/repo", "reload");
-  assert.equal(harness.integration.policySnapshot, null);
+  assert.equal("policySnapshot" in harness.integration, false);
 });
 
 test("H01 Pindie leaves historical continuation probes in transcript order", async () => {
