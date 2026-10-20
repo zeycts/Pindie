@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -9,16 +9,16 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import { registerConfiguredPindieExtension, type PindieExtensionOptions } from "../src/extension.ts";
 import { FileStateStore, getProjectId } from "../src/store.ts";
 import { FileRunExperienceReader, FileRunExperienceStore } from "../src/experience-store.ts";
-import { FileTrialEvidenceV2Store } from "../src/trial-evidence-v2.ts";
-import { runExperienceRecordFingerprint } from "../src/run-experience-fingerprint.ts";
-import { hypothesisRef } from "../src/discovery-hypotheses.ts";
 import { hypothesisFingerprint, learningFingerprint } from "../src/learning-v1-contract.ts";
-import { DEFAULT_ASSIGNMENT_POLICY } from "../src/trial-assignment-v2.ts";
+
+// Deliberately inject old JS fields without restoring them to the public API.
+// Composition must still discard them without activation or getter access.
+type LegacyInjections = Partial<PindieExtensionOptions> & Record<string, unknown>;
 
 const hasAdvisory = (ctx: unknown) => JSON.stringify(ctx).includes("<PINDIE_EXPERIMENTAL_TRIAL>");
 const task = (goal = "Human work") => fauxAssistantMessage(fauxToolCall("pindie_task_start", { goal, successCriteria: ["done"] }), { stopReason: "toolUse" });
 const progress = () => fauxAssistantMessage(fauxToolCall("pindie_task_progress", { blockers: ["Human dependency"], questions: [] }), { stopReason: "toolUse" });
-async function fixture(t: any, kind: "approach" | "modifier" = "approach", options: Partial<PindieExtensionOptions> = {}, deleteAdvisory = false) {
+async function fixture(t: any, kind: "approach" | "modifier" = "approach", options: LegacyInjections = {}, deleteAdvisory = false) {
   const cwd = await mkdtemp(join(tmpdir(), "r2-native-pi-")), agentDir = join(cwd, "agent"), projectsBaseDir = join(cwd, "projects"), globalBaseDir = join(cwd, "global"), projectId = getProjectId(cwd);
   await mkdir(agentDir);
   const semantics = { schemaVersion: 2 as const, scope: { kind: "project" as const, projectId }, logicalId: "bounded-check", kind, lineage: "new" as const, parent: null, baseRevisionFingerprint: null,
@@ -26,7 +26,8 @@ async function fixture(t: any, kind: "approach" | "modifier" = "approach", optio
     sources: [{ projectId, recordId: `${randomUUID()}.json`, fingerprint: `sha256:${"a".repeat(64)}` }], discoveryPacketFingerprint: `sha256:${"b".repeat(64)}` };
   const h = { ...semantics, id: randomUUID(), fingerprint: hypothesisFingerprint(semantics) };
   const publish = async () => {
-    const content = { schemaVersion: 2, packetFingerprint: h.discoveryPacketFingerprint, outcome: "published", refs: [hypothesisRef(h)], newHypotheses: [h], modelIdentity: { provider: "faux", modelId: "discovery", thinkingLevel: "off" } };
+    const ref = { schemaVersion: 1, family: "strategy-hypothesis", scope: h.scope, id: h.id, fingerprint: h.fingerprint };
+    const content = { schemaVersion: 2, packetFingerprint: h.discoveryPacketFingerprint, outcome: "published", refs: [ref], newHypotheses: [h], modelIdentity: { provider: "faux", modelId: "discovery", thinkingLevel: "off" } };
     const dir = join(projectsBaseDir, projectId, "learning-v1", "hypotheses"); await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `${h.discoveryPacketFingerprint.slice(7)}.json`), JSON.stringify({ ...content, fingerprint: learningFingerprint(content) }));
   };
@@ -39,7 +40,7 @@ async function fixture(t: any, kind: "approach" | "modifier" = "approach", optio
   const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noSkills: true, noPromptTemplates: true, noContextFiles: true, noThemes: true,
     extensionFactories: [(pi) => {
       integration = registerConfiguredPindieExtension(pi, { storageRoots: { projectsBaseDir, globalBaseDir }, featureSelection: { selfImprovement: true, crossProjectLearning: false }, resolveProjectRoot: async () => cwd,
-        subscriptionUsageProvider: { fetchUsage: async () => null }, trialAssignmentPolicy: { ...DEFAULT_ASSIGNMENT_POLICY, cooldownMs: 0, operationTimeoutMs: 1000 }, trialDiagnostic: (d) => diagnostics.push(d), ...options });
+        subscriptionUsageProvider: { fetchUsage: async () => null }, ...{ trialAssignmentPolicy: { cooldownMs: 0, operationTimeoutMs: 1000 }, trialDiagnostic: (d: unknown) => diagnostics.push(d) }, ...options });
       if (deleteAdvisory) pi.on("context_with_system", (event) => ({ messages: event.messages.filter((m) => !hasAdvisory(m)) }));
     }] });
   await loader.reload();
@@ -61,13 +62,19 @@ async function fixture(t: any, kind: "approach" | "modifier" = "approach", optio
   const select = () => fauxAssistantMessage(fauxToolCall("pindie_policy_set", kind === "approach" ? { approach: selector } : { approach: "direct-action", modifiers: [selector] }), { stopReason: "toolUse" });
   const experiences = async () => (await new FileRunExperienceReader({ baseDir: projectsBaseDir }).read(cwd)).records;
   const assignments = async () => { try { return (await readdir(join(projectsBaseDir, projectId, "learning-v1", "trial-assignments-v2"))).filter((v) => v.endsWith(".json")); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; throw e; } };
-  const evidence = () => new FileTrialEvidenceV2Store({ projectsBaseDir }).list(projectId);
+  const evidence = async () => {
+    const dir = join(projectsBaseDir, projectId, "learning-v1", "trial-evidence-v2");
+    let names: string[];
+    try { names = await readdir(dir); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; throw e; }
+    return Promise.all(names.sort().map(async (name) => ({ name, bytes: await readFile(join(dir, name), "utf8") })));
+  };
   return { session, faux, publish, h, select, experiences, assignments, evidence, diagnostics, integration, cwd, projectsBaseDir, reopen };
 }
 
 for (const failure of ["save", "no-ref", "source", "evidence"] as const) test(`native Pi retired ${failure} dependency cannot alter Task truth or fabricate evidence`, async (t) => {
   let f!: Awaited<ReturnType<typeof fixture>>;
-  const options: Partial<PindieExtensionOptions> = failure === "evidence" ? {} : failure === "source" ? {
+  const options: LegacyInjections = failure === "evidence" ? {} : failure === "source" ? {
     experienceStore: { save: async (projectRoot, experience, signal) => {
       const store = new FileRunExperienceStore({ baseDir: f.projectsBaseDir });
       const ref = await store.save(projectRoot, experience, signal);
@@ -82,14 +89,14 @@ for (const failure of ["save", "no-ref", "source", "evidence"] as const) test(`n
     const dir = join(f.projectsBaseDir, getProjectId(f.cwd), "learning-v1", "trial-evidence-v2");
     await mkdir(dir, { recursive: true }); await writeFile(join(dir, `${randomUUID()}.json`), "null");
   }
+  const historicalEvidence = await f.evidence();
   f.faux.setResponses([task(), f.select(), progress(), fauxAssistantMessage("Blocked.")]);
   await f.session.prompt("Start real work.");
   assert.deepEqual(f.integration.runtime.state.task!.openLoops.blockers, ["Human dependency"]);
   assert.equal((await f.assignments()).length, 0);
   assert.deepEqual(await f.experiences(), []);
   assert.equal(f.integration.policySnapshot, null);
-  if (failure === "evidence") { await assert.rejects(f.evidence(), /Corrupt/); }
-  else assert.deepEqual(await f.evidence(), []);
+  assert.deepEqual(await f.evidence(), historicalEvidence, "even corrupt historical bytes stay untouched; no retired reader executes");
 });
 
 test("native Pi replacement preserves Task identity boundaries without Trial placement", async (t) => {

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { composePindieExtension, resolvePindieFeatureSelection } from "../src/composition.ts";
-import { registerPindieExtension } from "../src/extension.ts";
+import { registerPindieExtension, type PindieExtensionOptions } from "../src/extension.ts";
 import { renderPindieSystemContract } from "../src/context.ts";
 import { PindieRuntime } from "../src/runtime.ts";
 import { EMPTY_STATE, type PindieState } from "../src/state.ts";
@@ -35,9 +35,12 @@ test("retired flags and direct overrides cannot reactivate AL, including malform
 });
 
 test("composition drops poisoned learning injections without reading even their getters", () => {
+  const removedTrialTypes: Extract<keyof PindieExtensionOptions,
+    "trialAssignmentStore" | "trialHypothesisReader" | "trialAssignmentPolicy" | "trialDiagnostic"> extends never ? true : false = true;
+  assert.equal(removedTrialTypes, true, "retired Trial public fields cannot reappear");
   const input: any = { store: new MemoryStore(), featureSelection: { selfImprovement: true, crossProjectLearning: true } };
   for (const name of ["experienceStore", "experienceReader", "onExperienceSaved", "workEpisodes", "trialAssignmentStore",
-    "trialHypothesisReader", "trialDiagnostic", "strategyCandidateStore", "strategyTrustScopeWriterLock",
+    "trialHypothesisReader", "trialAssignmentPolicy", "trialDiagnostic", "strategyCandidateStore", "strategyTrustScopeWriterLock",
     "strategySynthesisCandidateReader", "strategySynthesisDecisionStore", "crossProjectExperienceReader"]) {
     Object.defineProperty(input, name, { enumerable: true, get() { throw new Error(`Retired access: ${name}`); } });
   }
@@ -102,4 +105,8 @@ test("production entrypoint emitted import graph cannot load retired Learning/Po
   }
   for (const name of ["host.ts", "composition.ts", "extension.ts", "control-workspace.ts", "control-mcp.ts", "core-integration.ts"]) await visit(resolve(base, name));
   assert.ok(visited.size > 30);
+  for (const name of ["discovery-contract.ts", "discovery-hypotheses.ts", "hypothesis-lineage.ts", "open-hypotheses.ts",
+    "ordinary-trial-overlay.ts", "trial-assignment-v2.ts", "trial-evidence-v2.ts", "v1-experience-protection.ts", "experience-lifecycle.ts"]) {
+    await assert.rejects(access(resolve(base, name)), { code: "ENOENT" }, `Retired AL module must be physically absent: ${name}`);
+  }
 });

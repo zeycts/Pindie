@@ -7,8 +7,6 @@ import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { registerConfiguredPindieExtension } from "../src/extension.ts";
-import { FileDiscoveryHypothesisStore, hypothesisRef } from "../src/discovery-hypotheses.ts";
-import { D2OpenHypothesisReader } from "../src/open-hypotheses.ts";
 import { legacyTrialFixture } from "./fixtures/trial-v1.ts";
 import { FileStateStore, getProjectId } from "../src/store.ts";
 import { FileRunExperienceReader } from "../src/experience-store.ts";
@@ -39,16 +37,17 @@ for (const legacyHistory of [false, true]) test(`native Pi ordinary work leaves 
       summary: "Check the smallest affected surface first", useWhen: ["Local edits"], avoidWhen: [], expectedEffect: "Fewer unrelated edits", failureSignals: ["Missed relevant tests"], trialHints: [],
       sources: [{ projectId, recordId: `${randomUUID()}.json`, fingerprint: `sha256:${"a".repeat(64)}` }], discoveryPacketFingerprint: `sha256:${"b".repeat(64)}` };
     const h = { ...semantic, id: randomUUID(), fingerprint: hypothesisFingerprint(semantic) };
-    // Persist the existing D2 commit format; no replacement Hypothesis schema or product API.
-    const content = { schemaVersion: 2, packetFingerprint: h.discoveryPacketFingerprint, outcome: "published", refs: [hypothesisRef(h)], newHypotheses: [h],
+    const ref = { schemaVersion: 1 as const, family: "strategy-hypothesis" as const, scope: h.scope, id: h.id, fingerprint: h.fingerprint };
+    // Persist exact historical bytes without constructing retired readers.
+    const content = { schemaVersion: 2, packetFingerprint: h.discoveryPacketFingerprint, outcome: "published", refs: [ref], newHypotheses: [h],
       modelIdentity: { provider: "faux", modelId: "discovery", thinkingLevel: "off" } };
     const hypothesisDir = join(learningDir, "hypotheses");
     await mkdir(hypothesisDir, { recursive: true });
     await writeFile(join(hypothesisDir, `${h.discoveryPacketFingerprint.slice(7)}.json`), JSON.stringify({ ...content, fingerprint: learningFingerprint(content) }));
-    const hypotheses = new FileDiscoveryHypothesisStore({ projectsBaseDir });
-    assert.deepEqual(await new D2OpenHypothesisReader(hypotheses).readOpen(projectId), [h]);
+    const historyPath = join(hypothesisDir, `${h.discoveryPacketFingerprint.slice(7)}.json`);
+    assert.deepEqual(JSON.parse(await readFile(historyPath, "utf8")).newHypotheses, [h]);
     if (legacyHistory) {
-      const frozen = legacyTrialFixture(projectId, hypothesisRef(h));
+      const frozen = legacyTrialFixture(projectId, ref);
       await mkdir(trialDir, { recursive: true });
       await writeFile(join(trialDir, `${frozen.commit.assignment.workEpisodeId}.json`), JSON.stringify(frozen.commit));
       await writeFile(join(trialDir, `${frozen.commit.assignment.workEpisodeId}.pending.json`), JSON.stringify(frozen.pending));
@@ -86,7 +85,7 @@ for (const legacyHistory of [false, true]) test(`native Pi ordinary work leaves 
     await session.prompt("Continue this Task.");
     assert.deepEqual(await artifactBytes(trialDir), before, "no new assignment, receipt, hold or mutation of historical bytes");
     assert.deepEqual(await artifactBytes(learningDir), allLearningBefore, "all historical Learning bytes are untouched");
-    assert.deepEqual(await hypotheses.list(projectId), [h], "Discovery hypothesis infrastructure remains available");
+    assert.deepEqual(JSON.parse(await readFile(historyPath, "utf8")).newHypotheses, [h], "historical hypotheses remain untouched without a reader");
     assert.ok(!JSON.stringify(session.sessionManager.getBranch()).includes("PINDIE_EXPERIMENTAL_TRIAL"));
   } finally {
     try { await session?.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); }
