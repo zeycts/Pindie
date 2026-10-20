@@ -76,7 +76,7 @@ Pi continues to own the mature interactive terminal shell and low-level runtime.
 - Human Signal;
 - Remote / Discord;
 - quota resume and long-task rollover;
-- memory, reasoning, learning / strategy, and other Agent-native capabilities.
+- Work Memory, reasoning, and other Agent-native capabilities.
 
 The following was the **experimental topology evaluated during the owned-TUI experiment**, not a target topology:
 

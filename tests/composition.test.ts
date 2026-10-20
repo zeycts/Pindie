@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -20,6 +20,123 @@ import { FileQuotaFallbackPreferenceStore } from "../src/quota-fallback.ts";
 import { getProjectId } from "../src/store.ts";
 import { RemoteCompanion, type RemoteSurface } from "../src/remote-companion.ts";
 import type { ProjectMemorySink } from "../src/project-memory.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerPindieExtension, type PindieExtensionOptions, type PindieExtensionIntegration } from "../src/extension.ts";
+import { classifyToolEffect } from "../src/execution-semantics.ts";
+import { deriveCapabilities } from "../src/semantics.ts";
+import { renderPindieSystemContract } from "../src/context.ts";
+import { PindieRuntime } from "../src/runtime.ts";
+import { EMPTY_STATE, type PindieState } from "../src/state.ts";
+import type { PindieStateStore } from "../src/store.ts";
+
+class MemoryStore implements PindieStateStore {
+  state: PindieState = structuredClone(EMPTY_STATE);
+  async load() { return structuredClone(this.state); }
+  async save(_root: string, state: PindieState) { this.state = structuredClone(state); }
+  async withProjectLock<T>(_root: string, operation: () => Promise<T>) { return operation(); }
+}
+const retiredTools = ["pindie_policy_set", "pindie_strategy_candidate_create",
+  "pindie_strategy_derivation_candidate_create", "pindie_strategy_synthesis_candidate_create"];
+const retiredCommands = ["experience", "strategies", "adapt", "derive", "trial", "trial-review", "promote", "reject", "derive-global", "trust-transfer"];
+
+test("retired flags and direct overrides cannot reactivate AL, including malformed values", () => {
+  for (const value of [undefined, "", "0", "1", "false", "true", "on", "yes", "invalid"]) {
+    const selection = resolvePindieFeatureSelection({ selfImprovement: true, crossProjectLearning: true }, {}, {
+      PINDIE_AUTONOMOUS_LEARNING_ENABLED: value, PINDIE_SELF_IMPROVEMENT_ENABLED: value,
+      PINDIE_CROSS_PROJECT_LEARNING_ENABLED: value,
+    });
+    assert.equal("selfImprovement" in selection, false);
+    assert.equal("crossProjectLearning" in selection, false);
+    assert.equal(selection.bundledSkills, true);
+    assert.equal(selection.presentation, true);
+  }
+});
+
+test("composition drops poisoned learning injections without reading even their getters", () => {
+  const removedOptionTypes: Extract<keyof PindieExtensionOptions,
+    "experienceStore" | "experienceReader" | "onExperienceSaved" | "workEpisodes" |
+    "strategyCandidateStore" | "strategyDecisionReader" | "strategyDerivationCandidateReader" |
+    "strategyTrustScopeWriterLock" | "strategySynthesisDecisionStore" | "crossProjectExperienceReader" |
+    "trialAssignmentStore" | "trialHypothesisReader" | "trialAssignmentPolicy" | "trialDiagnostic"> extends never ? true : false = true;
+  assert.equal(removedOptionTypes, true, "retired dependencies cannot reappear in the public API");
+  const removedIntegrationTypes: Extract<keyof PindieExtensionIntegration,
+    "trial" | "derivation" | "globalDerivation" | "promotedStrategyRevisionCatalog" | "trustedStrategyPortfolio"> extends never ? true : false = true;
+  assert.equal(removedIntegrationTypes, true, "retired null/empty accessors cannot reappear");
+  const input: any = { store: new MemoryStore(), featureSelection: { selfImprovement: true, crossProjectLearning: true } };
+  for (const name of ["experienceStore", "experienceReader", "onExperienceSaved", "workEpisodes", "trialAssignmentStore",
+    "trialHypothesisReader", "trialAssignmentPolicy", "trialDiagnostic", "strategyCandidateStore", "strategyTrustScopeWriterLock",
+    "strategySynthesisCandidateReader", "strategySynthesisDecisionStore", "crossProjectExperienceReader"]) {
+    Object.defineProperty(input, name, { enumerable: true, get() { throw new Error(`Retired access: ${name}`); } });
+  }
+  const composition = composePindieExtension(input);
+  assert.equal("selfImprovement" in composition.featureSelection, false);
+  for (const name of Object.keys(input).filter((k) => !["store", "featureSelection"].includes(k))) {
+    assert.equal(Object.hasOwn(composition.extensionOptions, name), false);
+  }
+});
+
+test("extension registers only live Core/Memory tools; retired calls are denied and advisory is absent", () => {
+  const tools = new Map<string, any>(), commands = new Set<string>();
+  const api = {
+    on() {}, registerEntryRenderer() {},
+    registerTool(tool: any) { tools.set(tool.name, tool); },
+    registerCommand(name: string) { commands.add(name); },
+  } as unknown as ExtensionAPI;
+  const integration = registerPindieExtension(api, {
+    store: new MemoryStore(), continuityStore: { async save() {} },
+    featureSelection: { selfImprovement: true, crossProjectLearning: true, presentation: false },
+    projectMemorySink: { async capture() {} } as any,
+  });
+  assert.deepEqual([...tools.keys()].sort(), ["pindie_task_start", "pindie_task_replace", "pindie_task_refine",
+    "pindie_task_progress", "pindie_verification_record", "pindie_task_complete", "pindie_gate_open",
+    "pindie_gate_resolve", "pindie_git_observe", "pindie_memory_capture"].sort(), "exact selected Core/Memory registry; no retired factory registration");
+  for (const name of retiredTools) {
+    assert.match(classifyToolEffect(name).requiredCapability, /^policy\./, "retired name cannot be reclassified as a Core grant");
+    assert.equal(tools.has(name), false, name);
+    assert.equal(integration.core.authorizeTool(name).decision?.allowed, false, name);
+  }
+  for (const name of retiredCommands) assert.equal(commands.has(name), false, name);
+  for (const name of ["pindie_task_start", "pindie_task_complete", "pindie_verification_record", "pindie_gate_open", "pindie_gate_resolve", "pindie_git_observe", "pindie_memory_capture"]) {
+    assert.equal(tools.has(name), true, name);
+  }
+  assert.equal("workEpisodes" in integration.runtime, false);
+  for (const name of ["trial", "derivation", "globalDerivation", "promotedStrategyRevisionCatalog", "trustedStrategyPortfolio"]) {
+    assert.equal(name in integration, false, name);
+  }
+  assert.equal("policySnapshot" in integration, false);
+  assert.doesNotMatch(renderPindieSystemContract(), /Seed Strategies|Policy Snapshot|\/adapt|\/trial|pindie_policy_set/);
+});
+
+test("retired tools remain denied with coherent project mutation authority and cannot enter State", async () => {
+  const api = { on() {}, registerEntryRenderer() {}, registerTool() {}, registerCommand() {} } as unknown as ExtensionAPI;
+  const store = new MemoryStore();
+  const integration = registerPindieExtension(api, { store, continuityStore: { async save() {} }, featureSelection: { presentation: false } });
+  await integration.runtime.load("/isolated-denial");
+  await integration.runtime.dispatch({ type: "start_task", goal: "Real work", successCriteria: ["deny retired tools"], constraints: [] });
+  integration.core.beginAgentRunFacts({ sessionManager: { getEntries: () => [], getSessionId: () => "denial-session" } } as any);
+  assert.equal(integration.core.authorizeTool("edit").decision?.allowed, true);
+  const snapshot = integration.core.run.deriveSnapshot();
+  assert.equal(snapshot.ok, true);
+  if (snapshot.ok) for (const capability of deriveCapabilities(snapshot.snapshot)) assert.doesNotMatch(capability, /^policy\./);
+  const before = structuredClone(store.state);
+  for (const name of retiredTools) {
+    assert.match(classifyToolEffect(name).requiredCapability, /^policy\./);
+    assert.equal(integration.core.authorizeTool(name).decision?.allowed, false, name);
+  }
+  assert.deepEqual(store.state, before);
+});
+
+test("ordinary Task transitions ignore a poisoned WorkEpisode ledger; semantic state still persists", async () => {
+  const ledger = new Proxy({}, { get() { throw new Error("Learning ledger accessed"); } });
+  const store = new MemoryStore();
+  const runtime: PindieRuntime = Reflect.construct(PindieRuntime, [store, ledger]);
+  await runtime.load("/isolated-retirement");
+  const started = await runtime.dispatch({ type: "start_task", goal: "Core survives", successCriteria: ["Persist without Learning"], constraints: [] });
+  assert.equal(started.ok, true);
+  assert.equal(runtime.state.task?.goal, "Core survives");
+  assert.deepEqual(store.state, runtime.state);
+  assert.equal("workEpisodes" in runtime, false);
+});
 
 const projectRoot = "/workspace/composable-pindie";
 const execFileAsync = promisify(execFile);
@@ -111,11 +228,6 @@ test("Stable composition protects Core and optional adapter runtime import bound
   assert.doesNotMatch(emitted, /(?:from\s*|import\s*\(|require\s*\()\s*["']\.\/(?:composition|presentation-integration|remote-companion|discord-remote|notion-project-memory)\.ts/);
   const taskSource = await readFile(new URL("../src/tools/task.ts", import.meta.url), "utf8");
   assert.doesNotMatch(taskSource, /learning-signal|learning-disposition-contract|LearningSignalHolder|isValidLearningSignal/);
-  for (const name of ["self-improvement-integration.ts", "cross-project-learning-integration.ts"]) {
-    await assert.rejects(access(new URL(`../src/${name}`, import.meta.url)), { code: "ENOENT" });
-  }
-  // The complete source AST (including erased types) and transitive runtime graph
-  // are checked in al-retirement.test.ts, not against retired module internals.
 });
 
 test("retired master switch is inert both when enabled and disabled", () => {

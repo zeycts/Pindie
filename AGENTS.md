@@ -40,9 +40,9 @@ Do not implement a second Agent Loop, generic workflow/planner/Task queue, persi
 
 ## Retirement safety
 
-AL/SI/CPL execution, commands, Policy tools and Learning persistence are retired regardless of old flags/overrides. Do not reactivate them. Old `policy.*` effects remain fail-closed and never become Core grants. Remaining Strategy/Trust/Policy/Experience/WorkEpisode artifacts/types are inert cleanup candidates, not activation APIs.
+AL/SI/CPL execution, commands, Policy tools and Learning persistence are retired regardless of old flags/overrides. Do not reactivate them. Old `policy.*` effects remain fail-closed and never become Core grants.
 
-Obsolete feature design/roadmap documents and retirement audit documents are deleted, recoverable from Git history. Do not rebuild their index or roadmap. `tests/archive/al-phase1/` remains historical test source and must be preserved.
+Obsolete feature designs, roadmaps, retirement audits and frozen test archives are deleted, recoverable from Git history. Do not rebuild their index or roadmap. Preserve live safety regressions for rejected tools, ignored legacy payloads and Core authority.
 
 Code retirement never authorizes reading, migrating or deleting historical `~/.pindie` data, State/continuity, preferences, routing, credentials or Sessions. Production deployment/restarts and PR merges need explicit user authority.
 

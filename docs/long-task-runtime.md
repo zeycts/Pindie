@@ -180,7 +180,7 @@ arm terminal latch
 finish current turn
 ```
 
-The durable checkpoint is committed only after the Run reaches `agent_settled`, after normal Run Experience settlement.
+The durable checkpoint is committed only after the Run reaches `agent_settled`, after Core Run measurements are frozen.
 
 At settlement, Pindie revalidates:
 
@@ -297,11 +297,11 @@ Host checks the fresh Session's native user/run queue
 Host injects hidden runtime-resume custom message only when no Human input won
 ```
 
-Host-owned automatic continuation Sessions receive a bounded native Pi lineage display name (`cont. N · base`) so the Session selector keeps them recognizable. This is presentation metadata only; it is not Task, continuity, Experience, or LLM context data.
+Host-owned automatic continuation Sessions receive a bounded native Pi lineage display name (`cont. N · base`) so the Session selector keeps them recognizable. This is presentation metadata only; it is not Task, continuity, or LLM context data.
 
 `withSession` runs after Pi applies/rebinds the replacement Session, so v0.1 does not need a reverse “new Session endpoint registered” channel. If Human input is accepted while that rebind is in progress, the fresh Session remains in control and stale hidden resume is suppressed; Pindie does not copy the input into another queue.
 
-Replacement cancellation/failure does not mutate Task truth. The Task remains active; there is no infinite automatic retry loop. Because Experience is settled before the committed replacement request, these outcomes add no replacement Run record.
+Replacement cancellation/failure does not mutate Task truth. The Task remains active; there is no infinite automatic retry loop. These outcomes do not start a continuation Run or add continuation consumption to Task metrics.
 
 Automatic rollover has a finite runtime safety fuse. The exact default is tuning, not architecture.
 
@@ -362,7 +362,7 @@ constants.
 
 Pi compaction remains authoritative for in-Session history compression. Current-session continuity after compaction is supplied by Pi plus Pindie's existing authoritative State Checkpoint, not by re-injecting an old rollover checkpoint that may already be stale.
 
-## 8. Autonomy, Experience, and future subagents
+## 8. Autonomy, measurements, and future subagents
 
 The autonomous lifecycle returns control only on:
 
@@ -381,13 +381,9 @@ Task → one Session → complete
 
 There is no `/long` command and no durable `longTask=true` Task type.
 
-Long Task Runtime v0.1 does not change Experience schema. A large Task naturally creates multiple ordinary Runs/Experiences across Sessions. At settlement, an eligible ordinary Run freezes its own Run timer, Run cost, Policy/attribution, execution, and outcome and attempts one immutable schema-v4 record; repeated settlement notifications cannot add another record. A Run with no Task or non-policy execution remains ineligible rather than receiving a fabricated record.
+A large Task naturally spans multiple ordinary Runs across Sessions. Run Timer, Run Cost and Core counters remain Run-scoped runtime measurements. Human status and Task completion present cumulative Task-owned active Run time and model-equivalent cost; the process-local Host preserves that accumulator across automatic rollover without counting idle time between Runs. Task metrics are not stored in `PindieState` or `TaskContinuityV1` and do not survive process restart.
 
-Each Experience keeps that Run's own duration and cost. Human status and Task completion instead present cumulative Task-owned active Run time and model-equivalent cost; the process-local Host preserves that accumulator across automatic rollover without counting idle time between Runs. Task cumulative metrics are never copied into schema-v4 `metrics`, are not stored in `PindieState` or `TaskContinuityV1`, and do not survive process restart.
-
-The outgoing Run's Experience is frozen before its continuity checkpoint is committed. A fresh automatic Session starts new Run-scoped Policy, attribution, timer, and cost bookkeeping; its hidden resume message is runtime metadata, not Human intent, and cannot create a record by itself. Trial, Adaptation, and Derivation leases are all one-Run runtime state: they clear at their Run boundary or Session replacement and never carry across automatic rollover, while a deliberately selected promoted revision remains recorded with `revisionStatusAtRun = promoted`. Cancelled or failed replacement does not enter a continuation Run and does not fabricate Experience. Handoff and rollover are non-project-mutating runtime control and must not manufacture project execution evidence or false Policy declarations.
-
-Future Self-Improvement may learn when to hand off or which Policy works in long-horizon situations, but v0.1 contains no learned rollover policy.
+The outgoing Run's measurements are frozen before its continuity checkpoint is committed. A fresh automatic Session starts new Run-scoped timer, cost and counter bookkeeping. Its hidden resume message is runtime metadata, not Human intent. Cancelled or failed replacement does not enter a continuation Run. Handoff and rollover are non-project-mutating runtime control and must not manufacture project execution or verification evidence.
 
 Subagents solve context isolation and parallel breadth, not coordinator longevity. Future architecture may therefore look like:
 
@@ -434,7 +430,7 @@ Slice D — Compatibility + Dogfood Closure
 one real Task across multiple automatic Sessions
 user steer/follow-up precedence
 Remote / reload / shutdown compatibility
-Experience accounting
+Run and Task metrics accounting
 behavior/docs synchronization
 ```
 

@@ -114,7 +114,7 @@ GateRunRelation       none | existed_before_run | opened_during_run
 
 Run-start object identity is only a coherent-Run immutable-State change detector. It is never persistent Task identity.
 
-Task-occurrence and external-State epochs remain Core authority facts, not Learning attribution. Historical Learning artifacts and remaining inert schema helpers are never loaded by production and are not current State or continuation authority. Code retirement does not migrate or delete user data.
+Task-occurrence and external-State epochs remain Core authority facts. Historical user artifacts are not current State or continuation authority and are never loaded by production. Code retirement does not migrate or delete user data.
 
 ## 4. Capabilities and execution authority
 
@@ -390,7 +390,7 @@ Pindie Host
 └── stable access to the Pi Runtime Adapter
 ```
 
-The Host does not own semantic problem solving. It does not plan Tasks, select work phases, judge Verification, synthesize Policy, or run a second LLM loop.
+The Host does not own semantic problem solving. It does not plan Tasks, select work phases, judge Verification, or run a second LLM loop.
 
 `PindieState` remains semantic authority. A Host failure must not reinterpret durable Task truth.
 
@@ -473,7 +473,7 @@ exercise existing Pindie behavior through the Host-owned runtime
 → update current behavior docs only after the new ownership is real
 ```
 
-Each slice must be independently reviewable. A slice must not opportunistically implement Long Task Runtime, automatic context rollover, new memory, multi-agent scheduling, model routing, or SI v0.6.
+Each slice must be independently reviewable. A slice must not opportunistically implement Long Task Runtime, automatic context rollover, new memory, multi-agent scheduling, or model routing.
 
 ### What v0.1 unlocks
 
@@ -527,7 +527,7 @@ Extension incident planning
 The Extension identifies a terminal `openai-codex` quota candidate and confirms
 a fresh exhausted subscription window. The Host/Supervisor alone owns the real
 waiting lease and timer, and publishes a runtime-only waiting status back to
-Presentation. That status is never `PindieState`, Experience, TaskContinuity,
+Presentation. That status is never `PindieState`, TaskContinuity,
 or durable Session semantic state. Pi owns the resumed Agent Run. Human input,
 model or branch changes, and Session lifecycle boundaries cancel the pending
 lease; process exit loses it. Reset credits are never automatically consumed.
@@ -658,7 +658,7 @@ and a full native PTY smoke are not claimed.
 
 ## 14. Work Memory v0.1 — approved architecture
 
-Work Memory is an external durable work-memory projection shared with other AI work surfaces. It preserves only high-value durable state changes that would otherwise be costly to reconstruct later. It is not `PindieState`, Task continuity, Run Experience, Session history, a second memory database, or another workflow engine.
+Work Memory is an external durable work-memory projection shared with other AI work surfaces. It preserves only high-value durable state changes that would otherwise be costly to reconstruct later. It is not `PindieState`, Task continuity, Session history, a second memory database, or another workflow engine.
 
 The v0.1 ownership boundary is:
 
@@ -748,7 +748,7 @@ pindie_memory_capture → memory.capture / project mutation none
 
 Writing external Work Memory is an external side effect, not project Reality mutation. It must not invalidate project Verification or participate in Project Mutation Freshness.
 
-Work Memory capture is not ordinary coding execution telemetry. Preserve its separate classification rather than count capture as coding/verification activity. Core counters and Task measurements remain independent of Learning persistence; capture adds no durable Learning record.
+Work Memory capture is not ordinary coding execution telemetry. Preserve its separate classification rather than count capture as coding/verification activity. Core counters and Task measurements remain independent of external memory persistence.
 
 ### External persistence boundary
 
@@ -858,7 +858,7 @@ No `memory-store`, `memory-runtime`, `memory-manager`, memory queue, memory Stat
 21. Remote/Discord failure must not alter local Pindie correctness or stop the local Agent.
 22. Retired Policy/Strategy tools have no Core grants; old flags and injections cannot reactivate Learning.
 23. Runtime Independence is an ownership inversion, not a second Agent Loop: Pindie may own Agent/Session lifecycle while Pi remains the low-level execution runtime.
-24. Work Memory is an external projection and never becomes `PindieState`, Task continuity, Run Experience, Session truth, or a second memory database.
+24. Work Memory is an external projection and never becomes `PindieState`, Task continuity, Session truth, or a second memory database.
 25. Work Memory meaning and capture worthiness belong to the model; project identity, source, date, provenance, legality, and external-write mechanics belong to the Harness.
 26. Work Memory capture never counts as project mutation, never invalidates Verification, and never blocks the primary Task when external persistence fails.
 27. Task completion is not automatically a Work Memory Milestone; meaningful completion memory is captured before the terminating completion action.
