@@ -1,8 +1,6 @@
 # Pindie v0.3 — Behavior Specification
 
-> Stable Mode: no flag or override activates AL/SI/CPL, Policy tools, advisory or Learning persistence. Retired `policy.*` effects remain fail-closed. Historical retirement evidence remains in Git history, not a current roadmap.
-
-This document defines the current semantic and behavioral contract. It describes what Pindie means and guarantees now; implementation history belongs in Git history and tests.
+This document defines the current semantic and behavioral contract: what Pindie means and guarantees now.
 
 ## 1. Persistent-State invariants
 
@@ -86,7 +84,7 @@ GateRunRelation       none | existed_before_run | opened_during_run
 
 ## 4. Capability vocabulary and matrix
 
-Core capabilities are `observe.project`, `observe.git`, `project.mutate`, `task.start/refine/replace/progress/complete`, `verification.record`, and `gate.open/resolve`. Optional Memory adds its existing capture capability only when selected. Legacy `policy.*` effect names classify retired calls for denial; they never become grants.
+Core capabilities are `observe.project`, `observe.git`, `project.mutate`, `task.start/refine/replace/progress/complete`, `verification.record`, and `gate.open/resolve`. Optional Memory adds its existing capture capability only when selected.
 
 Stale/unavailable Run authority permits observation only. Coherent states:
 
@@ -127,7 +125,7 @@ allowed = capabilities.has(effect.requiredCapability)
 
 Known observation tools keep the observation fast path. Consequential calls use authoritative refresh/coherence checks before capability authorization.
 
-The Gateway remains defense in depth for races, stale already-generated calls, external-State changes, and same-Run semantic transitions. Retired Policy/Strategy calls remain denied even when present in an old captured tool baseline.
+The Gateway remains defense in depth for races, stale already-generated calls, external-State changes, and same-Run semantic transitions. Unsupported semantic calls remain denied even when present in a captured tool baseline.
 
 ## 6. Project Mutation Freshness
 
@@ -147,8 +145,6 @@ projectMutation = ambiguous
 Denied calls create no mutation window. Failed ambiguous tools are still observed afterward because partial project mutation may have occurred.
 
 When mutation is detected or cannot be determined safely, verification is invalidated and recent verification evidence is made stale.
-
-Historical Learning attribution is not Core authority. Ordinary Task transitions, mutation freshness, counters and continuity run without Learning stores, advisory or evidence materialization. Retiring artifact code never authorizes deleting historical user bytes.
 
 ## 7. Model-facing semantic tools and Tool Surface
 
@@ -365,4 +361,4 @@ Session. The hidden message is runtime metadata, not user intent.
 8. Reducer invariants remain valid even if the outer Gateway layer fails.
 9. Historical runtime metadata remains append-only until normal Pi compaction; it does not rewrite prior model history.
 10. Pi remains the sole low-level Agent Loop and Skill runtime.
-11. Retired Policy/Strategy tool names never gain Core authority; old flags/injections cannot activate Learning.
+11. Only registered semantic tools may be authorized; unknown or unsupported semantic effects fail closed.

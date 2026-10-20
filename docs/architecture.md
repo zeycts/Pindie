@@ -1,7 +1,5 @@
 # Pindie Architecture v0.3
 
-> Stable Mode: AL/SI/CPL are retired regardless of flags or overrides. Retired `policy.*` effects remain fail-closed. Code retirement does not authorize user-data migration or deletion; obsolete designs and audit documents are recoverable from Git, not current authority.
-
 ## 1. Purpose and ownership
 
 Pindie is a personal Agent Operating System for indie development. Pi is its current low-level execution runtime, not the owner of Pindie's process or active-session lifecycle. Pindie Host owns that lifecycle; the existing semantic integration remains extension-hosted without changing existing semantic behavior.
@@ -21,7 +19,7 @@ Pindie does not add a second Agent Loop, workflow engine, persisted phase machin
 
 ### Stable composition boundary
 
-`composition.ts` owns startup selection, explicit storage roots/default dependencies and narrow wiring. Core never imports the composition root or optional Discord/Notion adapters. Disabled features contribute no tools, commands, hooks, prompts or hidden adapter loads. AL/SI/CPL are always disabled; Remote, Work Memory, bundled Skills and Presentation keep independent selection.
+`composition.ts` owns startup selection, explicit storage roots/default dependencies and narrow wiring. Core never imports the composition root or optional Discord/Notion adapters. Disabled features contribute no tools, commands, hooks, prompts or hidden adapter loads. Remote, Work Memory, bundled Skills and Presentation keep independent selection.
 
 Core includes State/Task/Gate/Verification, Snapshot/capabilities, Gateway/mutation/evidence, Run identity/coherence, continuation and continuity. Native Pi, State safety, Handoff/Rollover and Host Task metrics are not optional. Disabling Presentation must not disable measurements, counters or completion summaries. Do not infer feature storage from a concrete StateStore type.
 
@@ -114,7 +112,7 @@ GateRunRelation       none | existed_before_run | opened_during_run
 
 Run-start object identity is only a coherent-Run immutable-State change detector. It is never persistent Task identity.
 
-Task-occurrence and external-State epochs remain Core authority facts. Historical user artifacts are not current State or continuation authority and are never loaded by production. Code retirement does not migrate or delete user data.
+Task-occurrence and external-State epochs remain Core authority facts. Only explicitly configured State and continuity sources supply current-work authority. Reading, migrating or deleting other user data requires explicit user authorization.
 
 ## 4. Capabilities and execution authority
 
@@ -137,7 +135,7 @@ gate.open
 gate.resolve
 ```
 
-Task/Verification/Gate capabilities are pure derived authority and never persisted. Legacy `policy.*` names classify retired calls for denial; they are not granted capabilities.
+Task/Verification/Gate capabilities are pure derived authority and never persisted. Unsupported tool effects never grant Core capabilities.
 
 Important capability consequences:
 
@@ -163,7 +161,6 @@ pindie_git_observe      → observe.git / mutation none
 edit / write            → project.mutate / mutation known
 bash / unknown/custom   → project.mutate / mutation ambiguous
 semantic Pindie tool    → exact semantic capability / mutation none
-retired Policy/Strategy tools → unavailable policy.* effects; never granted
 Work Memory tool        → memory.capture / mutation none
 ```
 
@@ -201,11 +198,11 @@ Internal reducer events remain tool-agnostic.
 
 Pi owns the active model Tool Surface. Pindie does not narrow, expand, capture, or restore that surface as semantic State changes. A currently unauthorized tool may remain visible to the model; visibility is not authorization.
 
-The Gateway remains authoritative for every consequential call, including races, stale pre-generated calls, and calls generated before a same-Run semantic change. It derives current capabilities from the current semantic Snapshot and blocks or allows the concrete effect at execution time. Retired Policy/Strategy calls remain denied even if captured in a stale tool baseline.
+The Gateway remains authoritative for every consequential call, including races, stale pre-generated calls, and calls generated before a same-Run semantic change. It derives current capabilities from the current semantic Snapshot and blocks or allows the concrete effect at execution time. Unsupported semantic calls remain denied even if present in a stale tool baseline.
 
 ## 7. Knowledge Surface and prompt ownership
 
-Pindie appends a deterministic static System Contract to Pi's already-chained system prompt in `before_agent_start`. The contract contains runtime authority, Gateway, Task, verification, Human Gate and append-only update semantics; no Seed/Policy/Trial guidance is mounted.
+Pindie appends a deterministic static System Contract to Pi's already-chained system prompt in `before_agent_start`. The contract contains runtime authority, Gateway, Task, verification, Human Gate and append-only update semantics.
 
 The same `SemanticSnapshot` used by capabilities produces a hidden Run Baseline message at Agent Run start. It may report:
 
@@ -487,7 +484,7 @@ Long Task Runtime v0.1 now uses that boundary as a Pindie-owned lifecycle
 scheduler rather than extension callback choreography. Its implemented,
 dogfooded, compatibility-closed, and frozen contract is documented in
 [Long Task runtime](./long-task-runtime.md). This ownership does not authorize
-background Learning executions or a second Agent Loop.
+a second Agent Loop.
 
 ### Quota Recovery v0.1
 
@@ -856,7 +853,7 @@ No `memory-store`, `memory-runtime`, `memory-manager`, memory queue, memory Stat
 19. Durable Remote metadata stores external routing/delivery identity only and never enters `PindieState`.
 20. Remote control targets only the current live Pi Session through Pi public boundaries; it never creates a parallel Session or queue.
 21. Remote/Discord failure must not alter local Pindie correctness or stop the local Agent.
-22. Retired Policy/Strategy tools have no Core grants; old flags and injections cannot reactivate Learning.
+22. Only registered semantic tools may be authorized; unknown or unsupported semantic effects fail closed.
 23. Runtime Independence is an ownership inversion, not a second Agent Loop: Pindie may own Agent/Session lifecycle while Pi remains the low-level execution runtime.
 24. Work Memory is an external projection and never becomes `PindieState`, Task continuity, Session truth, or a second memory database.
 25. Work Memory meaning and capture worthiness belong to the model; project identity, source, date, provenance, legality, and external-write mechanics belong to the Harness.
