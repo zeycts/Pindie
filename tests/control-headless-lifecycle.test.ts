@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -264,6 +264,73 @@ test("Pi 1.0.2 real Control prompt disposition, observe/timeline/wait and replac
     assert.notEqual(replacement.snapshot.lease, after.lease);
     assert.notEqual(replacement.snapshot.session.id, after.session.id);
     assert.equal(replacement.snapshot.latestAssistant, null);
+  } finally {
+    control?.dispose();
+    await host?.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi 1.3 native initial naming persists once and leaves synthetic old Sessions unchanged", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pindie-control-name-"));
+  const project = join(root, "project");
+  const agentDir = join(root, "agent");
+  const sessionDir = join(root, "sessions");
+  await mkdir(project);
+  await mkdir(agentDir);
+  const old = SessionManager.create(project, sessionDir);
+  old.appendMessage({ role: "user", content: "Synthetic old conversation", timestamp: Date.now() });
+  const oldPath = old.getSessionFile()!;
+  const oldBytes = await readFile(oldPath);
+  const manager = SessionManager.create(project, sessionDir);
+  const faux = fauxProvider({ provider: `control-name-${Date.now()}` });
+  const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null, refreshOnCreate: false });
+  modelRuntime.registerNativeProvider(faux.provider);
+  await modelRuntime.refresh({ allowNetwork: false });
+  let host: PindieHost | undefined;
+  let control: PindieControlClient | undefined;
+  try {
+    host = await createPindieHost({ cwd: project, agentDir, sessionManager: manager,
+      env: { PINDIE_BROWSER_ENABLED: "false" },
+      dependencies: {
+        createAgentSessionServices: (options) => createAgentSessionServices({ ...options, modelRuntime,
+          resourceLoaderOptions: { ...options.resourceLoaderOptions,
+            extensionFactories: [...options.resourceLoaderOptions?.extensionFactories ?? [],
+              { name: "name-input", factory: (pi) => { pi.on("input", (event) => event.text === "consume" ? { action: "handled" } : undefined); } }],
+          },
+        }),
+        createAgentSessionFromServices: (options) => createAgentSessionFromServices({ ...options, model: faux.getModel() }),
+        createInteractiveMode: () => ({ run: async () => {} }),
+      },
+    });
+    control = new PindieControlClient(host.runtime, host.presentation, {
+      bindActiveSession: () => host!.runtime.bindActiveSessionExtensions({ mode: "print" }),
+    });
+    await control.start();
+    const lease = control.observe().lease;
+    await assert.rejects(control.input({ lease, text: "consume", sessionName: "Must not be set" }));
+    assert.equal(manager.getSessionName(), undefined);
+    faux.setResponses([fauxAssistantMessage("Observed")]);
+    const result = await control.input({ lease, text: "Harmless observation", sessionName: "  Control · Native Naming  " });
+    assert.equal(result.snapshot.session.displayIdentity, "Control · Native Naming");
+    await control.wait({ lease, until: "settled", timeoutSeconds: 5 });
+    assert.equal(manager.getSessionName(), "Control · Native Naming");
+    // Native listing uses the metadata set above; all files here are generated
+    // fixtures under root, never real user Session storage.
+    assert.equal((await control.listSessions()).sessions.find(({ current }) => current)?.name, "Control · Native Naming");
+    control.dispose();
+    control = new PindieControlClient(host.runtime, host.presentation, {
+      bindActiveSession: () => host!.runtime.bindActiveSessionExtensions({ mode: "print" }),
+    });
+    await control.start();
+    const restartedLease = control.observe().lease;
+    await assert.rejects(control.input({ lease, text: "stale", sessionName: "No rename" }), (error: unknown) => error instanceof PindieControlError && error.code === "stale_control_lease");
+    faux.setResponses([fauxAssistantMessage("Continued")]);
+    await control.input({ lease: restartedLease, text: "Continue observation", sessionName: "No rename" });
+    await control.wait({ lease: restartedLease, until: "settled", timeoutSeconds: 5 });
+    const persisted = (await readFile(manager.getSessionFile()!, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(persisted.filter((entry) => entry.type === "session_info").map((entry) => entry.name), ["Control · Native Naming"]);
+    assert.deepEqual(await readFile(oldPath), oldBytes);
   } finally {
     control?.dispose();
     await host?.dispose();

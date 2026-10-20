@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  SessionManager,
   type AgentSession,
   type AgentSessionRuntime,
   type ContextUsage,
@@ -638,6 +639,35 @@ test("native model configuration delegates only to setModel despite scoped think
   assert.deepEqual(mutations, [[next]]);
   assert.deepEqual(levels, []);
   await assert.rejects(adapter.setActiveSessionModel("other", "hidden"), /no longer available/);
+});
+
+test("initial name capture uses only current native metadata and rejects parent, unknown or changed history", () => {
+  for (const scenario of ["setup", "parent", "no-header", "replaced", "file", "history", "clear", "custom"] as const) {
+    const manager = SessionManager.inMemory("/synthetic-naming", scenario === "parent" ? { parentSession: "/synthetic-parent" } : undefined);
+    manager.appendModelChange("synthetic", "model");
+    manager.appendThinkingLevelChange("off");
+    const native = { ...fakeSession(manager.getSessionId()), sessionManager: manager,
+      sessionFile: undefined as string | undefined,
+      setSessionName: (name: string) => { manager.appendSessionInfo(name); } } as AgentSession;
+    if (scenario === "no-header") manager.getHeader = () => null;
+    if (scenario === "custom") manager.appendCustomEntry("unknown-history", {});
+    const control = fakeRuntime(native);
+    const adapter = new PiRuntimeAdapter(control.runtime);
+    const apply = adapter.prepareInitialSessionName("Native title");
+    if (["parent", "no-header", "custom"].includes(scenario)) {
+      assert.equal(apply, undefined, scenario);
+      continue;
+    }
+    assert.ok(apply);
+    if (scenario === "replaced") control.setSession({ ...native }); // Same ID is not the same native object.
+    if (scenario === "file") Object.defineProperty(native, "sessionFile", { value: "/different-file" });
+    if (scenario === "history") manager.appendMessage({ role: "user", content: "intervening prompt", timestamp: 1 });
+    if (scenario === "clear") manager.appendSessionInfo("");
+    apply();
+    apply();
+    assert.equal(manager.getSessionName(), scenario === "setup" ? "Native title" : undefined, scenario);
+    assert.equal(manager.getEntries().filter((entry) => entry.type === "session_info").length, scenario === "setup" || scenario === "clear" ? 1 : 0, scenario);
+  }
 });
 
 test("Control idle wait and Session switch delegate to public Pi runtime APIs", async () => {

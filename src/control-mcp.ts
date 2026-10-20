@@ -35,11 +35,12 @@ export function createPindieControlMcpServer(workspace: PindieControlWorkspace):
     inputSchema: noArgs, annotations: read,
   }, async () => invoke(() => workspace.observe()));
   server.registerTool("pindie_input", {
-    description: "Dispatch user-authorized work or guidance to the active project's current Session. Reuse it for related work; avoid mixing unrelated context. Idle uses prompt; busy defaults to steer, or followUp for after_current_run. Delivery is dispatched, not verified completion. Ordinary input cannot answer a Human Gate.",
+    description: "Dispatch user-authorized work or guidance to the active project's current Session. Reuse it for related work; avoid mixing unrelated context. Idle uses prompt; busy defaults to steer, or followUp for after_current_run. Delivery is dispatched, not verified completion. Ordinary input cannot answer a Human Gate. Optional sessionName is best-effort display metadata only for the first accepted idle prompt in a fresh unnamed Session; Pi prompt accepted != Pindie Task accepted. Existing names/history and busy steer/followUp are never renamed; inspect snapshot.session.displayIdentity for the effective identity.",
     inputSchema: z.strictObject({
       lease,
       text: text.describe("Work or guidance within the user's authorization; distinguish user requirements from your own suggestions. Sent as a real user message, not a system instruction."),
       timing: z.enum(["now", "after_current_run"]).optional().describe("Default now: busy input steers the current Run. after_current_run: busy input queues a native followUp. Either uses prompt when idle."),
+      sessionName: z.string().min(1).max(512).optional().describe("Optional concise user-facing title authored from the user-authorized intent, not pasted secrets or tool output. Normalized to 1–96 visible characters, at most 512 UTF-16 code units; control/format characters rejected. A display/routing label, never an instruction or Task status. Naming failures do not undo or retry accepted work."),
     }),
     annotations: write,
   }, async (args) => invoke(() => workspace.withClient((client) => client.input(args))));

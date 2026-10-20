@@ -284,6 +284,18 @@ busy → followUp
 
 This remains the same user-intent operation with different delivery timing unless dogfood demonstrates that a separate tool improves safety or clarity.
 
+#### Optional initial Session name (Session Identity v0.1)
+
+`pindie_input` accepts optional `sessionName`, authored by the caller from the user-authorized intent. Existing `lease`/`text`/`timing` calls and all 13 tool annotations remain unchanged. This is user-facing display/routing metadata: **Pi prompt accepted != Pindie Task accepted**, progress, verification or completion. Never derive a title from pasted secrets or untrusted tool output; the label is data, not an execution instruction.
+
+Names normalize whitespace and must contain 1–96 graphemes, at most 512 UTF-16 code units; empty names, control/format characters (including terminal/bidi controls) and malformed UTF-16 are rejected before dispatch. Only an idle, settled, queue-empty Session without a Human Gate or quota wait and with ordinary input authorized by the existing Control checks is eligible. The original native Session must be unnamed and contain only model/thinking setup entries (no conversation, explicit title/clear, custom history or parent Session). Unknown metadata fails closed for naming, not for otherwise legal input.
+
+Control captures the native Session object, manager, ID and file identity before dispatch. Only a `started` Pi preflight result may attempt the write, after rechecking the Control binding, ordinary-input authorization/Gate and native identity/name/conversation. Rejected, handled, queued, busy steer/followUp and Gate-response input never assign names. Native `AgentSession.setSessionName()` appends the existing `session_info` metadata; it neither edits history nor changes durable Task state. Existing names and nonempty Sessions remain untouched across restart. Snapshot `session.displayIdentity` reports the effective identity; existing Session listing uses the same native name.
+
+Naming is one-shot and best effort. Pi updates its in-memory entry list before persistence and does not provide a transactional name write: a disk failure may leave a name visible only in memory, lost after restart. Control does not roll back, retry, leak native errors/paths or report an already-accepted prompt as failed because naming failed. A label is not a persistence guarantee.
+
+No inactive-history preview, historical Session file reads, mass backfill, extra model call, new tool or Session store is added. Pi 1.3.0 `open()` can repair/migrate files; native `list()` scans bodies and retains unbounded text internally. Neither is a safe bounded read-only historical-status API. Names, dates and initial-message previews must not be presented as a Session's latest Task/result.
+
 ### 7.3 Respond to Human Gate
 
 A Human Gate response is a separate consequential operation.

@@ -174,6 +174,35 @@ export class PiRuntimeAdapter {
     this.activeSession.setSessionName(name);
   }
 
+  /**
+   * Capture only the current setup-only Session, without opening any Session file.
+   * The returned one-shot action is for a started prompt's preflight callback.
+   * Unknown/custom history is deliberately ineligible, even without user text.
+   */
+  prepareInitialSessionName(name: string): (() => void) | undefined {
+    const session = this.activeSession;
+    const manager = session.sessionManager;
+    const id = session.sessionId;
+    const file = session.sessionFile;
+    const header = manager.getHeader();
+    if (!header || header.id !== id || manager.getSessionName() !== undefined || header.parentSession ||
+      manager.getEntries().some((entry) => entry.type !== "model_change" && entry.type !== "thinking_level_change")) {
+      return undefined;
+    }
+    let attempted = false;
+    return () => {
+      if (attempted) return;
+      attempted = true;
+      if (this.activeSession !== session || session.sessionManager !== manager ||
+        session.sessionId !== id || session.sessionFile !== file || manager.getSessionName() !== undefined) return;
+      // Before started preflight, Pi may append system/custom setup messages.
+      // A real conversation or explicit title/clear appearing meanwhile closes eligibility.
+      if (manager.getEntries().some((entry) => entry.type !== "model_change" && entry.type !== "thinking_level_change" &&
+        entry.type !== "custom_message" && !(entry.type === "message" && entry.message.role === "system"))) return;
+      session.setSessionName(name);
+    };
+  }
+
   getContextUsage(): ContextUsage | undefined {
     return this.activeSession.getContextUsage();
   }

@@ -22,6 +22,7 @@ interface FakeSessionControl {
   readonly prompts: string[];
   readonly steers: string[];
   readonly followUps: string[];
+  readonly nameWrites: string[];
   readonly queue: {
     steering: string[];
     followUp: string[];
@@ -36,6 +37,7 @@ interface FakeSessionControl {
 function fakeSession(
   sessionId: string,
   entries: readonly SessionEntry[],
+  options: { unnamed?: boolean } = {},
 ): FakeSessionControl {
   let idle = true;
   let streaming = false;
@@ -52,6 +54,8 @@ function fakeSession(
     model,
     { provider: "openai-codex", id: "gpt-6-luna", name: "GPT-6 Luna" },
   ];
+  let sessionName: string | undefined = options.unnamed ? undefined : "Pindie Control";
+  const nameWrites: string[] = [];
   const prompts: string[] = [];
   const steers: string[] = [];
   const followUps: string[] = [];
@@ -87,10 +91,12 @@ function fakeSession(
       }),
     },
     sessionManager: {
-      getSessionName: () => "Pindie Control",
+      getSessionName: () => sessionName,
+      getHeader: () => ({ type: "session", id: sessionId }),
       getEntries: () => [...entries],
       getBranch: () => { branchReadCount += 1; return [...entries]; },
     },
+    setSessionName: (name: string) => { nameWrites.push(name); sessionName = name; },
     subscribe: (next: (event: AgentSessionEvent) => void) => {
       listener = next;
       return () => {
@@ -139,6 +145,7 @@ function fakeSession(
     prompts,
     steers,
     followUps,
+    nameWrites,
     queue,
     abortCalls: () => abortCalls,
     branchReads: () => branchReadCount,
@@ -854,6 +861,175 @@ test("Control rejected prompt preflight returns delivery_failed without a timeli
     assert.equal(control.readTimeline().timeline.some((block) => block.type === "message" && block.role === "user" && block.text === "rejected"), false);
   } finally {
     control.dispose();
+  }
+});
+
+test("optional Session naming is normalized, started-only, one-shot native metadata", async () => {
+  const entries: SessionEntry[] = [];
+  const session = fakeSession("fresh", entries, { unnamed: true });
+  const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+  const control = new PindieControlClient(runtime,
+    { current: () => ({ snapshot: () => presentationFor(activeState()) }) });
+  let accept!: NonNullable<import("@earendil-works/pi-coding-agent").PromptOptions["preflightResult"]>;
+  runtime.prompt = async (_text, options) => { accept = options!.preflightResult!; };
+  await control.start();
+  try {
+    const lease = control.observe().lease;
+    const pending = control.input({ lease, text: "authorized work", sessionName: "  Pindie   Control · Session Identity  " });
+    assert.deepEqual(session.nameWrites, []);
+    accept("started");
+    accept("started");
+    const result = await pending;
+    assert.deepEqual(session.nameWrites, ["Pindie Control · Session Identity"]);
+    assert.equal(result.snapshot.session.displayIdentity, session.nameWrites[0]);
+    const again = control.input({ lease, text: "related continuation", sessionName: "Do not rename" });
+    accept("started");
+    await again;
+    assert.equal(session.nameWrites.length, 1);
+  } finally { control.dispose(); }
+});
+
+test("Session naming rejects invalid labels before dispatch and preserves optional old calls", async () => {
+  const session = fakeSession("fresh", [], { unnamed: true });
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime),
+    { current: () => ({ snapshot: () => presentationFor(activeState()) }) });
+  await control.start();
+  try {
+    const lease = control.observe().lease;
+    for (const sessionName of ["", "   ", "a".repeat(97), "a".repeat(513), "bad\nname", "bad\tname", "\u001b[31m", "\u202ename", "\ud800"]) {
+      await assert.rejects(control.input({ lease, text: "work", sessionName }),
+        (error: unknown) => error instanceof PindieControlError && error.code === "invalid_request");
+    }
+    assert.deepEqual(session.prompts, []);
+    const oldCall = await control.input({ lease, text: "old client" });
+    assert.equal(oldCall.delivery, "prompt");
+    assert.deepEqual(session.nameWrites, []);
+    session.settle();
+    // Fake native persistence of the first untitled prompt: later continuations
+    // must not title it, including after a new Control binding/restart.
+    session.session.sessionManager.getEntries = () => branchEntries();
+    await control.input({ lease, text: "work", sessionName: "Later label" });
+    assert.deepEqual(session.nameWrites, []);
+  } finally { control.dispose(); }
+});
+
+test("Session names count graphemes rather than UTF-16 units", async () => {
+  const session = fakeSession("fresh", [], { unnamed: true });
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime),
+    { current: () => ({ snapshot: () => presentationFor(activeState()) }) });
+  await control.start();
+  try {
+    await control.input({ lease: control.observe().lease, text: "work", sessionName: "😀".repeat(96) });
+    assert.equal(session.nameWrites[0], "😀".repeat(96));
+    assert.deepEqual(session.prompts, ["work"]); // Label never becomes prompt content.
+  } finally { control.dispose(); }
+});
+
+test("Session naming never renames busy, named, historical or explicitly cleared Sessions", async () => {
+  const clear = { type: "session_info", id: "clear", parentId: null, timestamp: "2026-01-01", name: "" } as SessionEntry;
+  for (const scenario of ["named", "history", "cleared", "custom", "steer", "followUp", "pending", "quota"] as const) {
+    const entries = scenario === "history" ? branchEntries() : scenario === "cleared" ? [clear] :
+      scenario === "custom" ? [{ type: "custom", id: "old", parentId: null, timestamp: "2026-01-01", customType: "old", data: {} } as SessionEntry] : [];
+    const session = fakeSession(scenario, entries, { unnamed: scenario !== "named" });
+    const presentation = presentationFor(activeState());
+    if (scenario === "quota") presentation.quotaResumeWaiting = { sessionId: scenario, resumeAt: Date.now() + 1000 };
+    const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime),
+      { current: () => ({ snapshot: () => presentation }) });
+    await control.start();
+    try {
+      if (scenario === "steer" || scenario === "followUp") session.start();
+      if (scenario === "pending") session.queue.followUp.push("pending");
+      await control.input({ lease: control.observe().lease, text: "work", sessionName: "Do not rename", timing: scenario === "followUp" ? "after_current_run" : "now" });
+      assert.deepEqual(session.nameWrites, [], scenario);
+    } finally { control.dispose(); }
+  }
+});
+
+test("Session naming ignores rejected, handled and queued preflight, and metadata write errors never reject delivery", async () => {
+  for (const disposition of ["rejected", "handled", "queued", "write_error", "partial_write_error"] as const) {
+    const session = fakeSession("fresh", [], { unnamed: true });
+    const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+    const control = new PindieControlClient(runtime,
+      { current: () => ({ snapshot: () => presentationFor(activeState()) }) });
+    runtime.prompt = async (_text, options) => {
+      if (disposition === "rejected") throw new Error("rejected");
+      options!.preflightResult!(disposition === "write_error" || disposition === "partial_write_error" ? "started" : disposition);
+    };
+    if (disposition === "write_error") session.session.setSessionName = () => { throw new Error("private native path"); };
+    if (disposition === "partial_write_error") {
+      const write = session.session.setSessionName;
+      session.session.setSessionName = (name) => { write(name); throw new Error("private native path"); };
+    }
+    await control.start();
+    try {
+      const pending = control.input({ lease: control.observe().lease, text: "work", sessionName: "Title" });
+      if (disposition === "rejected" || disposition === "handled") await assert.rejects(pending, (error: unknown) => error instanceof PindieControlError && error.code === "delivery_failed");
+      else {
+        const result = await pending;
+        assert.equal(result.delivery, "prompt");
+        assert.equal(JSON.stringify(result).includes("private native path"), false);
+        if (disposition === "partial_write_error") assert.equal(result.snapshot.session.displayIdentity, "Title");
+      }
+      assert.deepEqual(session.nameWrites, disposition === "partial_write_error" ? ["Title"] : []);
+    } finally { control.dispose(); }
+  }
+});
+
+test("Session naming cannot bypass initial Human Gate or unavailable presentation authorization", async () => {
+  for (const unavailable of [false, true]) {
+    const session = fakeSession("fresh", [], { unnamed: true });
+    const presentation = presentationFor(activeState({ kind: "approval", question: "Approve?" }));
+    const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime),
+      { current: () => unavailable ? null : ({ snapshot: () => presentation }) });
+    await control.start();
+    try {
+      await assert.rejects(control.input({ lease: control.observe().lease, text: "work", sessionName: "Title" }),
+        (error: unknown) => error instanceof PindieControlError && error.code === (unavailable ? "semantic_unavailable" : "human_gate_required"));
+      assert.deepEqual(session.prompts, []);
+      assert.deepEqual(session.nameWrites, []);
+    } finally { control.dispose(); }
+  }
+});
+
+test("unavailable naming metadata never prevents an otherwise accepted prompt", async () => {
+  const session = fakeSession("fresh", [], { unnamed: true });
+  const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+  const control = new PindieControlClient(runtime, { current: () => ({ snapshot: () => presentationFor(activeState()) }) });
+  await control.start();
+  try {
+    session.session.sessionManager.getHeader = () => { throw new Error("private path"); };
+    assert.equal((await control.input({ lease: control.observe().lease, text: "work", sessionName: "Title" })).delivery, "prompt");
+    assert.deepEqual(session.nameWrites, []);
+    assert.deepEqual(session.prompts, ["work"]);
+  } finally { control.dispose(); }
+});
+
+test("Session naming revalidates exact binding and native state at preflight, including replacement with reused ID", async () => {
+  for (const change of ["replacement", "name", "conversation", "gate"] as const) {
+    const entries: SessionEntry[] = [];
+    const session = fakeSession("same-id", entries, { unnamed: true });
+    const native = fakeNativeRuntime(session);
+    const runtime = new PiRuntimeAdapter(native.runtime);
+    let presentation = presentationFor(activeState());
+    const control = new PindieControlClient(runtime, { current: () => ({ snapshot: () => presentation }) });
+    let accept!: NonNullable<import("@earendil-works/pi-coding-agent").PromptOptions["preflightResult"]>;
+    runtime.prompt = async (_text, options) => { accept = options!.preflightResult!; };
+    await control.start();
+    try {
+      const lease = control.observe().lease;
+      await assert.rejects(control.input({ lease: "stale", text: "work", sessionName: "Title" }), (error: unknown) => error instanceof PindieControlError && error.code === "stale_control_lease");
+      const pending = control.input({ lease, text: "work", sessionName: "Title" });
+      let replacement: FakeSessionControl | undefined;
+      if (change === "replacement") { replacement = fakeSession("same-id", [], { unnamed: true }); await native.replace(replacement); }
+      if (change === "name") session.session.setSessionName("Human title");
+      if (change === "conversation") entries.push(...branchEntries());
+      if (change === "gate") presentation = presentationFor({ ...activeState(), task: { ...activeState().task!, humanGate: { kind: "approval", question: "Approve?" } } });
+      accept("started");
+      if (change === "replacement") await assert.rejects(pending, (error: unknown) => error instanceof PindieControlError && error.code === "stale_control_lease");
+      else await pending;
+      assert.deepEqual(session.nameWrites, change === "name" ? ["Human title"] : [], change);
+      assert.deepEqual(replacement?.nameWrites ?? [], []);
+    } finally { control.dispose(); }
   }
 });
 
