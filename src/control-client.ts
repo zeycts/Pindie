@@ -329,6 +329,7 @@ export class PindieControlClient {
     readonly lease: string;
     readonly text: string;
     readonly timing?: PindieControlInputTiming;
+    readonly sessionName?: string;
   }): Promise<PindieControlDeliveryResult> {
     const binding = this.requireLease(request.lease);
     const text = request.text.trim();
@@ -336,6 +337,7 @@ export class PindieControlClient {
       throw new PindieControlError("invalid_request", "Pindie Control input text is required.");
     }
 
+    const sessionName = request.sessionName === undefined ? undefined : normalizeInputSessionName(request.sessionName);
     const snapshot = this.observe();
     this.requireOrdinaryInputAllowed(snapshot);
     const facts = this.runtime.getActiveSessionFacts();
@@ -346,9 +348,17 @@ export class PindieControlClient {
         ? "followUp"
         : "steer";
 
+    let nameStartedPrompt: (() => void) | undefined;
+    if (sessionName !== undefined && delivery === "prompt" && facts.pendingMessageCount === 0 &&
+      snapshot.runtime.automaticWorkSettled && snapshot.recovery.quotaWaiting === null) {
+      try {
+        nameStartedPrompt = this.runtime.prepareInitialSessionName(sessionName);
+      } catch { /* Unavailable native metadata must not affect prompt delivery. */ }
+    }
+
     try {
       if (delivery === "prompt") {
-        await this.launchPrompt(text);
+        await this.launchPrompt(text, nameStartedPrompt);
         this.requireSameBinding(binding);
       } else if (delivery === "steer") {
         const disposition = await this.runtime.steer(text);
@@ -789,7 +799,7 @@ export class PindieControlClient {
     }
   }
 
-  private async launchPrompt(text: string): Promise<void> {
+  private async launchPrompt(text: string, nameStartedPrompt?: () => void): Promise<void> {
     const binding = this.binding;
     let reportPreflight!: (accepted: boolean) => void;
     let preflightReported = false;
@@ -806,10 +816,23 @@ export class PindieControlClient {
       pending = this.runtime.prompt(text, {
         // Pi 0.99 distinguishes extension-consumed input from an actual run/queue.
         preflightResult: (disposition) => {
+          if (preflightReported) return;
           const accepted = disposition === "started" || disposition === "queued";
-          // Preflight precedes agent_start. Do not expose a settled wait window
-          // between accepting the input and Pi emitting its first Run event.
+          // Preflight precedes agent_start. Close the settled window before
+          // naming can emit a native session_info_changed event.
           if (accepted && this.binding === binding) this.automaticWorkSettled = false;
+          if (disposition === "started" && nameStartedPrompt !== undefined && binding !== null) {
+            try {
+              this.requireSameBinding(binding);
+              const current = this.observe();
+              this.requireOrdinaryInputAllowed(current);
+              nameStartedPrompt();
+            } catch {
+              // Pi has already accepted the prompt. Metadata writes are not atomic
+              // and may update memory before failing on disk: never report a
+              // delivery failure or roll back/retry already-dispatched work.
+            }
+          }
           reportPreflight(accepted);
         },
       } satisfies PromptOptions);
@@ -1124,6 +1147,19 @@ function errorMessage(error: unknown): string {
 }
 
 const sessionTextSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function normalizeInputSessionName(value: string): string {
+  // Bound raw work as well as visible length; reject terminal/bidi controls and
+  // malformed UTF-16. This is caller-authored display data, never inferred text.
+  if (typeof value !== "string" || value.length > 512 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(value)) {
+    throw new PindieControlError("invalid_request", "Session name must be short display text without control or format characters.");
+  }
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  if (!normalized || Array.from(sessionTextSegmenter.segment(normalized)).length > 96) {
+    throw new PindieControlError("invalid_request", "Session name must contain 1–96 visible characters (maximum 512 UTF-16 code units).");
+  }
+  return normalized;
+}
 
 function boundedSessionText(value: string, maxGraphemes: number): string {
   const normalized = value.replace(/\s+/gu, " ").trim();

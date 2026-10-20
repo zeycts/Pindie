@@ -187,7 +187,14 @@ test("MCP orchestration metadata preserves the old API and communicates per-tool
     const { tools } = await wire.peer.listTools();
     const baseline: unknown = JSON.parse(await readFile(new URL("./fixtures/control-mcp-api-v0.1.json", import.meta.url), "utf8"));
     assert.equal(tools.length, 13);
-    assert.deepEqual(withoutDescriptions(tools.map(({ name, inputSchema, annotations }) => ({ name, inputSchema, annotations }))), baseline);
+    const schemas = withoutDescriptions(tools.map(({ name, inputSchema, annotations }) => ({ name, inputSchema, annotations }))) as { name: string; inputSchema: { properties: Record<string, unknown>; required: string[] } }[];
+    const input = schemas.find(({ name }) => name === "pindie_input")!.inputSchema;
+    assert.deepEqual(input.properties.sessionName, { type: "string", minLength: 1, maxLength: 512 });
+    assert.deepEqual(input.required, ["lease", "text"]);
+    // Keep the frozen old wire fixture: this one optional field is the ONLY
+    // schema change. Every old field/constraint/annotation remains identical.
+    delete input.properties.sessionName;
+    assert.deepEqual(schemas, baseline);
 
     const semantics: Record<string, RegExp[]> = {
       observe: [/no_active_project/, /project.*Session identity/, /Task.*verification.*Human Gate/, /lease\/revision/, /not the durable Task/, /not verified completion/],
@@ -297,6 +304,12 @@ test("MCP delegates six scoped operations after open; stale lease remains struct
     assert.equal((await invoke("observe", {})).structuredContent?.activeProject, "Pindie");
     const stale = await invoke("input", { lease: "old", text: "hi", timing: "after_current_run" });
     assert.deepEqual(stale.structuredContent, { code: "stale_control_lease", message: "Observe again", snapshot });
+    await invoke("input", { lease: "live", text: "work", sessionName: "Pindie Control · Session Identity" });
+    const count = calls.length;
+    for (const sessionName of [42, "", "x".repeat(513)]) {
+      assert.equal((await invoke("input", { lease: "live", text: "work", sessionName })).isError, true);
+    }
+    assert.equal(calls.length, count); // Schema failures never reach Control.
     await invoke("respond", { lease: "live", gateKey: "gate", response: "yes" });
     await invoke("stop", { lease: "live" });
     await invoke("fresh_session", { lease: "live" });
@@ -308,6 +321,7 @@ test("MCP delegates six scoped operations after open; stale lease remains struct
     await invoke("wait", { lease: "live", until: "settled", timeoutSeconds: 2 });
     assert.deepEqual(calls, [
       ["input", { lease: "old", text: "hi", timing: "after_current_run" }],
+      ["input", { lease: "live", text: "work", sessionName: "Pindie Control · Session Identity" }],
       ["respond", { lease: "live", gateKey: "gate", response: "yes" }],
       ["stop", { lease: "live" }], ["fresh", { lease: "live" }],
       ["configure", { lease: "live", model: { provider: "p", modelId: "m" }, thinkingLevel: "low" }],
