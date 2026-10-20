@@ -1,0 +1,155 @@
+{
+  "base": "ccdb5ca2fb295faaa2b705382c125f0c2c1a8b23",
+  "sources": [
+    "src/tools/policy.ts",
+    "src/trial-offer-contract.ts"
+  ],
+  "testFilesDeleted": [],
+  "retainedSourceChanges": [],
+  "deletedSourceOutgoingEdges": [
+    {
+      "from": "src/tools/policy.ts",
+      "to": "src/policy.ts"
+    },
+    {
+      "from": "src/tools/policy.ts",
+      "to": "src/liveness.ts"
+    },
+    {
+      "from": "src/trial-offer-contract.ts",
+      "to": "src/learning-v1-contract.ts"
+    }
+  ],
+  "whySafe": {
+    "src/tools/policy.ts": "Not registered by production; the retired pindie_policy_set factory existed only for its own historical tests. Tool-effect classification stays byte-for-byte in execution-semantics and remains denied.",
+    "src/trial-offer-contract.ts": "Only consumer was the passive frozen-history fixture; no production storage/protocol/migration caller. Its recorded default-policy fingerprint is preserved inline in the fixture and verified identical to the deleted helper output."
+  },
+  "retainedHistoricalBytes": "Both native historical-data tests still write and compare the same frozen v1 bytes; no user artifact is read, migrated or deleted.",
+  "modifiedTests": [
+    {
+      "file": "tests/policy.test.ts",
+      "change": "retire only the three tool-only cases; restore both mixed schema cases with every non-tool assertion and their original titles; keep the Core system-contract exclusion guard under a corrected title",
+      "removedCases": 3,
+      "retainedCases": 5
+    },
+    {
+      "file": "tests/strategy-adaptation.test.ts",
+      "change": "drop the deleted factory call inside the Candidate fingerprint case; all six cases retained",
+      "removedCases": 0,
+      "retainedCases": 6
+    },
+    {
+      "file": "tests/execution-semantics.test.ts",
+      "change": "keep the exact surviving factory inventory and require pindie_policy_set absent while its policy.declare classification and denial stay asserted",
+      "removedCases": 0,
+      "retainedCases": 16
+    },
+    {
+      "file": "tests/al-retirement.test.ts",
+      "change": "add both modules to the physical-absence guard",
+      "removedCases": 0,
+      "retainedCases": 5
+    },
+    {
+      "file": "tests/fixtures/trial-v1.ts",
+      "change": "inline the frozen offer-policy fingerprint instead of importing the deleted contract",
+      "removedCases": 0,
+      "retainedCases": 0
+    }
+  ],
+  "executedTAPAccounting": {
+    "tests/policy.test.ts": {
+      "base": 8,
+      "retained": 5,
+      "removed": 3
+    },
+    "tests/strategy-adaptation.test.ts": {
+      "base": 6,
+      "retained": 6,
+      "removed": 0
+    },
+    "tests/execution-semantics.test.ts": {
+      "base": 16,
+      "retained": 16,
+      "removed": 0
+    },
+    "tests/al-retirement.test.ts": {
+      "base": 5,
+      "retained": 5,
+      "removed": 0
+    },
+    "tests/trial-offers-pi.test.ts": {
+      "base": 2,
+      "retained": 2,
+      "removed": 0
+    },
+    "tests/trial-overlay-pi-r2.test.ts": {
+      "base": 9,
+      "retained": 9,
+      "removed": 0
+    },
+    "tests/learning-foundation-f1.test.ts": {
+      "base": 3,
+      "retained": 3,
+      "removed": 0
+    },
+    "tests/trial-evidence-r3.test.ts": {
+      "base": 1,
+      "retained": 1,
+      "removed": 0
+    }
+  },
+  "accounting": {
+    "baselineActive": 1260,
+    "removedALOnlyCases": 3,
+    "activeAfter": 1257,
+    "observedPass": 1257,
+    "observedFail": 0,
+    "observedCancelled": 0,
+    "observedSkipped": 0
+  },
+  "retirementStopEvidence": {
+    "coreRuntimeReachableSrcFiles": 73,
+    "runtimeUnreachableButTypeReachable": 34,
+    "fullyUnreachable": 8,
+    "note": "Of the eight fully unreachable modules, six are independent Control/Pindie CLI entrypoints (control-mcp-process, control-monitor*, control-watch, pindie.ts), not Learning code. The remaining two are the modules deleted here.",
+    "retainedTypeOnlyBoundary": "Extension keeps inert type-only option/accessor seams for Strategy/Trust/Policy artifacts and WorkEpisode; these are the reviewed compatibility boundary, not production mounts.",
+    "conclusion": "No further AL-only production source island exists. Remaining runtime-unreachable modules are reachable by retained artifact/store/mixed-test consumers or are historical-contract readers; retirement cleanup is complete at the source level."
+  },
+  "verifiedFacts": {
+    "coreEntrypointEmittedRuntimeIdentical": true,
+    "archiveTreeSHA": "ae453acf3c16ef139a5d22bd68cf999546c7b6f9",
+    "frozenOfferPolicyFingerprintIdentical": true,
+    "localFullCheck": {
+      "tests": 1257,
+      "pass": 1257,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "durationMs": 147112.576117
+    },
+    "focusedGuards": {
+      "tests": 281,
+      "pass": 281,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "durationMs": 46220.035309
+    }
+  },
+  "deletedExecutedTAPTitles": {
+    "tests/policy.test.ts": [
+      "SI02 policy declaration tool is optional, structured, and replaces the current Snapshot",
+      "pindie_policy_set bounds a hanging revision resolver and never installs its late result",
+      "pindie_policy_set uses the caller AbortSignal to cancel resolution",
+      "historical Policy tool remains standalone while Core contract excludes its guidance"
+    ]
+  },
+  "renamedExecutedTAPTitles": {
+    "tests/policy.test.ts": {
+      "from": "historical Policy tool remains standalone while Core contract excludes its guidance",
+      "to": "Core system contract excludes retired Seed and Policy guidance",
+      "reason": "the deleted factory no longer exists; the Core negative assertions are retained and strengthened with no pindie_policy_set guidance"
+    }
+  }
+}
