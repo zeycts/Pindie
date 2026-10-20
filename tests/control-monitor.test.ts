@@ -211,25 +211,50 @@ test("monitor polls no-active workspace at one-second cadence and attaches when 
 
 class FakeTerminal implements Terminal {
   writes: string[] = []; columns = 70; rows = 8; started = false; private input?: (data: string) => void;
+  private readonly frameListeners = new Set<(frame: string) => void>();
   get kittyProtocolActive() { return false; }
   start(onInput: (data: string) => void) { this.started = true; this.input = onInput; }
   stop() { this.started = false; }
   drainInput() { return Promise.resolve(); }
-  write(data: string) { this.writes.push(data); }
+  write(data: string) {
+    this.writes.push(data);
+    // TuiAltScreen writes each frame as one synchronized-output buffer.
+    if (data.endsWith("\u001b[?2026l")) {
+      for (const listener of this.frameListeners) listener(data);
+    }
+  }
+  waitForFrame(pattern: RegExp): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const onFrame = (frame: string) => {
+        if (!pattern.test(frame)) return;
+        clearTimeout(timeout);
+        this.frameListeners.delete(onFrame);
+        resolve(frame);
+      };
+      // Failure deadline only: successful waits resolve on terminal output, not elapsed time.
+      const timeout = setTimeout(() => {
+        this.frameListeners.delete(onFrame);
+        reject(new Error(`No completed terminal frame matched ${pattern}`));
+      }, 5_000);
+      this.frameListeners.add(onFrame);
+    });
+  }
   moveBy() {} hideCursor() {} showCursor() {} clearLine() {} clearFromCursor() {} clearScreen() {} setTitle() {} setProgress() {}
   emit(data: string) { this.input?.(data); }
 }
 
-test("monitor view renders canonical blocks, omitted history, gate read-only notice and local-only navigation/exit", async () => {
+test("monitor view renders canonical blocks, omitted history, gate read-only notice and local-only navigation/exit", async (t) => {
   const terminal = new FakeTerminal(); let exits = 0;
   const view = new PindieControlMonitorView({ terminal, onExit: () => { exits++; } });
+  t.after(() => view.stop());
   const blocks = Array.from({ length: 30 }, (_, i) => ({ type: "runtime" as const, id: `r${i}`, category: "generic" as const, title: `runtime-${i}`, defaultDisplayMode: "preview" as const }));
   const gated = snap(8, false, { kind: "approval", question: "Approve release?" });
   view.apply({ connection: "connected", project: "Modeloom", snapshot: gated, timeline: { ...timeline, timeline: blocks }, message: null });
-  view.start(); await turn(); view.getScrollView().scrollToStart();
+  const gateFrame = terminal.waitForFrame(/This monitor is read-only/);
+  view.start(); await gateFrame; view.getScrollView().scrollToStart();
   const before = view.getScrollView().scrollTop;
   view.apply({ connection: "connected", project: "Modeloom", snapshot: { ...gated, revision: 9 }, timeline: { ...timeline, revision: 9, timeline: blocks }, message: null });
-  await turn();
+  assert.equal(view.getRenderedState()?.snapshot?.revision, 9);
   assert.match(terminal.writes.join(""), /Pindie Monitor/);
   assert.match(terminal.writes.join(""), /Older timeline blocks omitted/);
   assert.match(terminal.writes.join(""), /HUMAN GATE/);
@@ -243,11 +268,17 @@ test("monitor view renders canonical blocks, omitted history, gate read-only not
   terminal.emit("\u001b[5~"); assert.equal(view.getScrollView().scrollTop, before);
   terminal.emit("\u001b[F"); assert.equal(view.getScrollView().isFollowingEnd, true);
   terminal.emit("G"); assert.equal(view.getScrollView().isFollowingEnd, true);
+  view.getScrollView().scrollToStart();
+  assert.equal(view.getScrollView().isFollowingEnd, false);
+  const idleFrame = terminal.waitForFrame(/IDLE · Task active · Verify 1\/3/);
   view.apply({ connection: "connected", project: "Pindie", snapshot: snap(1, true), timeline: { ...timeline, timeline: blocks }, message: null, epoch: 2 });
-  await turn(); assert.equal(view.getScrollView().isFollowingEnd, true);
+  assert.equal(view.getRenderedState()?.epoch, 2);
+  assert.equal(view.getRenderedState()?.snapshot?.runtime.idle, true);
+  const renderedIdle = await idleFrame;
+  assert.equal(view.getScrollView().isFollowingEnd, true);
   assert.match(terminal.writes.join(""), /gpt-test/);
-  assert.match(terminal.writes.join(""), /IDLE · Task active · Verify 1\/3/);
-  assert.match(terminal.writes.join(""), /pending 0/);
+  assert.match(renderedIdle, /IDLE · Task active · Verify 1\/3/);
+  assert.match(renderedIdle, /pending 0/);
   terminal.emit("\r"); assert.equal(exits, 0);
   terminal.emit("\u0003"); assert.equal(exits, 1);
   terminal.emit("q"); assert.equal(exits, 2);
