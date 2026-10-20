@@ -2,17 +2,24 @@ import { readFile, readdir } from "node:fs/promises";
 import { dirname, resolve, relative } from "node:path";
 import ts from "typescript";
 
-// PR1b inventory: these artifacts remain on disk until PR2/PR3.
-export const RETIRED_MODULES = new Set([
-  "cross-project-experience.ts", "cross-project-synthesis.ts", "cross-project-trial-validation.ts", "exact-identity.ts",
-  "experience-evaluation.ts", "experience-store.ts", "learning-v1-contract.ts", "policy.ts",
-  "run-experience-fingerprint.ts", "run-experience.ts", "strategies.ts", "strategy-candidates.ts", "strategy-decisions.ts",
-  "strategy-derivation-candidates.ts", "strategy-derivation-decisions.ts", "strategy-derivation.ts", "strategy-portfolio.ts",
+// Physically deleted in PR2; retain the names as an import-regression denylist.
+export const RETIRED_CPL_MODULES = new Set([
+  "cross-project-experience.ts", "cross-project-synthesis.ts", "cross-project-trial-validation.ts",
   "strategy-synthesis-candidates.ts", "strategy-synthesis-decisions.ts", "strategy-trust-safety.ts", "strategy-trust-scope-artifacts.ts",
-  "strategy-trust-scope-candidates.ts", "strategy-trust-scope-constants.ts", "strategy-trust-scope-decisions.ts",
-  "strategy-trust-scope-global.ts", "strategy-trust-scope-resolution.ts", "strategy-trust-scope-review.ts",
-  "work-episode-attribution.ts", "work-episode.ts",
+  "strategy-trust-scope-candidates.ts", "strategy-trust-scope-decisions.ts", "strategy-trust-scope-global.ts",
+  "strategy-trust-scope-resolution.ts", "strategy-trust-scope-review.ts",
 ].map((name) => `src/${name}`));
+
+// Full historical denylist, including the 17 artifacts still on disk for PR3.
+export const RETIRED_MODULES = new Set([
+  ...RETIRED_CPL_MODULES,
+  ...[
+    "exact-identity.ts", "experience-evaluation.ts", "experience-store.ts", "learning-v1-contract.ts", "policy.ts",
+    "run-experience-fingerprint.ts", "run-experience.ts", "strategies.ts", "strategy-candidates.ts", "strategy-decisions.ts",
+    "strategy-derivation-candidates.ts", "strategy-derivation-decisions.ts", "strategy-derivation.ts", "strategy-portfolio.ts",
+    "strategy-trust-scope-constants.ts", "work-episode-attribution.ts", "work-episode.ts",
+  ].map((name) => `src/${name}`),
+]);
 
 export function moduleSpecifiers(source: string): string[] {
   const file = ts.createSourceFile("audit.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
