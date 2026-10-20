@@ -16,10 +16,7 @@ type RemoteCompanionModule = typeof import("./remote-companion.ts");
 type NotionProjectMemoryModule = typeof import("./notion-project-memory.ts");
 type NotionSdkModule = { readonly Client: new (options: { readonly auth: string; readonly notionVersion: string }) => NotionProjectMemoryClient };
 
-/** Retired flags remain inert input compatibility until Phase 2. No override can enable them. */
 export interface PindieFeatureSelection {
-  readonly selfImprovement: boolean;
-  readonly crossProjectLearning: boolean;
   readonly remote: boolean;
   readonly workMemory: boolean;
   readonly bundledSkills: boolean;
@@ -35,8 +32,6 @@ export interface PindieStorageRoots {
 export type PindieStorageRootOverrides = Partial<PindieStorageRoots>;
 export interface PindieCompositionConfig {
   readonly configureOptionalFeatures?: boolean;
-  /** @deprecated Inert, retained for source compatibility only. */
-  readonly onExperienceSaved?: (projectRoot: string) => void;
   readonly env?: Record<string, string | undefined>;
 }
 export interface PindieComposition {
@@ -47,7 +42,6 @@ export interface PindieComposition {
   readonly warnings: readonly string[];
 }
 export const DEFAULT_PINDIE_FEATURE_SELECTION: PindieFeatureSelection = Object.freeze({
-  selfImprovement: false, crossProjectLearning: false,
   remote: false, workMemory: false, bundledSkills: true, presentation: true,
 });
 function configuredFlag(env: Record<string, string | undefined>, name: string): boolean | undefined {
@@ -65,7 +59,6 @@ export function resolvePindieFeatureSelection(
   const remoteAvailable = availability.remote === true;
   const workMemoryAvailable = availability.workMemory === true;
   return Object.freeze({
-    selfImprovement: false, crossProjectLearning: false,
     remote: (overrides.remote ?? configuredFlag(env, "PINDIE_REMOTE_ENABLED") ?? remoteAvailable) && remoteAvailable,
     workMemory: (overrides.workMemory ?? configuredFlag(env, "PINDIE_WORK_MEMORY_ENABLED") ?? workMemoryAvailable) && workMemoryAvailable,
     bundledSkills: overrides.bundledSkills ?? configuredFlag(env, "PINDIE_BUNDLED_SKILLS_ENABLED") ?? true,

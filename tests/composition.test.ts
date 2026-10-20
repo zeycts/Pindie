@@ -13,604 +13,168 @@ import {
   resolvePindieFeatureSelection,
   resolvePindieStorageRoots,
 } from "../src/composition.ts";
-import { FileRunExperienceStore } from "../src/experience-store.ts";
-import { FileStrategyCandidateStore } from "../src/strategy-candidates.ts";
-import { FileStrategyDecisionStore } from "../src/strategy-decisions.ts";
-import { FileStrategyDerivationCandidateStore } from "../src/strategy-derivation-candidates.ts";
-import { FileStrategyDerivationDecisionStore } from "../src/strategy-derivation-decisions.ts";
-import { FileStrategyTrustScopeCandidateStore } from "../src/strategy-trust-scope-candidates.ts";
-import { FileStrategyTrustScopeDecisionStore } from "../src/strategy-trust-scope-decisions.ts";
-import { FileProjectTrustedStrategyPortfolioReader } from "../src/strategy-trust-safety.ts";
-import {
-  FileStrategySynthesisCandidateReader,
-  FileStrategySynthesisCandidateStore,
-} from "../src/strategy-synthesis-candidates.ts";
-import { FileStrategySynthesisDecisionReader } from "../src/strategy-synthesis-decisions.ts";
 import { RemoteRoutingStore } from "../src/remote-routing.ts";
-import { FileGlobalWriterLock, FileStateStore } from "../src/store.ts";
+import { FileStateStore } from "../src/store.ts";
+import { FileQuotaResumePreferenceStore } from "../src/quota-resume.ts";
+import { FileQuotaFallbackPreferenceStore } from "../src/quota-fallback.ts";
 import { getProjectId } from "../src/store.ts";
 import { RemoteCompanion, type RemoteSurface } from "../src/remote-companion.ts";
 import type { ProjectMemorySink } from "../src/project-memory.ts";
 
-interface SourceImport {
-  readonly moduleSpecifier: string;
-  readonly typeOnly: boolean;
-  readonly names: readonly string[];
-}
-
-function sourceImports(source: string): SourceImport[] {
-  const imports: SourceImport[] = [];
-  const staticImportPattern = /(?:^|\n)\s*import\s+(type\s+)?([\s\S]*?)\s+from\s+["']([^"']+)["']/g;
-  for (const match of source.matchAll(staticImportPattern)) {
-    const clause = match[2]!.trim();
-    const namedClause = /^\{([\s\S]*)\}$/u.exec(clause);
-    const specifiers = namedClause === null
-      ? []
-      : namedClause[1]!
-        .split(",")
-        .map((specifier) => specifier.trim())
-        .filter((specifier) => specifier !== "");
-    const names = specifiers.map((specifier) =>
-      specifier.replace(/^type\s+/u, "").split(/\s+as\s+/u)[0]!.trim());
-    imports.push({
-      moduleSpecifier: match[3]!,
-      typeOnly: match[1] !== undefined ||
-        (namedClause !== null && specifiers.every((specifier) => specifier.startsWith("type "))),
-      names,
-    });
-  }
-
-  const dynamicImportPattern = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g;
-  for (const match of source.matchAll(dynamicImportPattern)) {
-    const precedingSource = source.slice(0, match.index ?? 0);
-    if (/\btypeof\s*$/u.test(precedingSource)) continue;
-    imports.push({ moduleSpecifier: match[1]!, typeOnly: false, names: [] });
-  }
-  return imports;
-}
-
-function importsFrom(source: string, moduleSpecifier: string): SourceImport[] {
-  return sourceImports(source).filter((entry) => entry.moduleSpecifier === moduleSpecifier);
-}
-
-function hasRuntimeImport(source: string, moduleSpecifier: string): boolean {
-  return importsFrom(source, moduleSpecifier).some((entry) => !entry.typeOnly);
-}
-
 const projectRoot = "/workspace/composable-pindie";
 const execFileAsync = promisify(execFile);
+const roots = {
+  projectsBaseDir: "/tmp/pindie-projects",
+  globalBaseDir: "/tmp/pindie-global",
+  remoteRoutingBaseDir: "/tmp/pindie-remote",
+};
+const retiredDependencies = [
+  "experienceStore", "experienceReader", "onExperienceSaved", "workEpisodes",
+  "trialAssignmentStore", "trialHypothesisReader", "trialAssignmentPolicy", "trialDiagnostic",
+  "strategyCandidateStore", "strategyCandidateReader", "strategyDerivationCandidateStore", "strategyDerivationCandidateReader",
+  "strategyDecisionStore", "strategyDecisionReader", "strategyDerivationDecisionStore", "strategyDerivationDecisionReader",
+  "strategyTrustScopeCandidateStore", "strategyTrustScopeDecisionStore", "strategyTrustScopeSourceResolver", "strategyTrustScopeWriterLock",
+  "crossProjectExperienceReader", "crossProjectTrustReader", "scopeProjectTrustReader",
+  "strategySynthesisCandidateReader", "strategySynthesisDecisionReader", "strategySynthesisCandidateStore", "strategySynthesisDecisionStore",
+];
+function assertRetiredAbsent(composition: ReturnType<typeof composePindieExtension>) {
+  for (const name of ["selfImprovement", "crossProjectLearning"]) assert.equal(Object.hasOwn(composition.featureSelection, name), false, name);
+  for (const name of retiredDependencies) assert.equal(Object.hasOwn(composition.extensionOptions, name), false, name);
+}
+// Explicit historical JS payload, not a supported typed feature selection.
+const legacySelection = (selfImprovement: boolean, crossProjectLearning: boolean) => ({ selfImprovement, crossProjectLearning, presentation: true });
 
 test("production composition excludes retired WorkEpisode and Learning dependencies", () => {
-  const { featureSelection, extensionOptions } = composeConfiguredPindieExtension(
-    { storageRoots: { projectsBaseDir: "/tmp/r0-projects", globalBaseDir: "/tmp/r0-global" } },
-    {},
-  );
-  assert.equal(featureSelection.selfImprovement, false);
-  assert.equal(featureSelection.crossProjectLearning, false);
-  assert.equal(extensionOptions.workEpisodes, undefined);
-  assert.equal(extensionOptions.experienceStore, undefined);
-  assert.equal(extensionOptions.strategyCandidateStore, undefined);
-  assert.equal(extensionOptions.crossProjectExperienceReader, undefined);
-  assert.equal("trialOffers" in extensionOptions, false);
-  assert.equal("trialOfferPolicy" in extensionOptions, false);
+  const composition = composeConfiguredPindieExtension({ storageRoots: roots }, {});
+  assertRetiredAbsent(composition);
+  assert.equal("trialOffers" in composition.extensionOptions, false);
+  assert.equal("trialOfferPolicy" in composition.extensionOptions, false);
 });
 
 test("Slice A resolves stable startup defaults and explicit dependency roots", () => {
-  assert.deepEqual(
-    resolvePindieFeatureSelection({}, {}, {}),
-    DEFAULT_PINDIE_FEATURE_SELECTION,
-  );
-  assert.deepEqual(
-    resolvePindieStorageRoots({}, "/isolated-home"),
-    {
-      projectsBaseDir: "/isolated-home/.pindie/projects",
-      globalBaseDir: "/isolated-home/.pindie/global",
-      remoteRoutingBaseDir: "/isolated-home/.pindie/remote/discord/projects",
-    },
-  );
-
-  const roots = {
-    projectsBaseDir: "/tmp/pindie-projects",
-    globalBaseDir: "/tmp/pindie-global",
-    remoteRoutingBaseDir: "/tmp/pindie-remote",
-  } as const;
-  const composition = composePindieExtension({
-    featureSelection: { selfImprovement: true, crossProjectLearning: true },
-    storageRoots: roots,
+  assert.deepEqual(resolvePindieFeatureSelection({}, {}, {}), DEFAULT_PINDIE_FEATURE_SELECTION);
+  assert.deepEqual(resolvePindieStorageRoots({}, "/isolated-home"), {
+    projectsBaseDir: "/isolated-home/.pindie/projects",
+    globalBaseDir: "/isolated-home/.pindie/global",
+    remoteRoutingBaseDir: "/isolated-home/.pindie/remote/discord/projects",
   });
-
+  const composition = composePindieExtension({ featureSelection: legacySelection(true, true), storageRoots: roots });
   assert.deepEqual(composition.storageRoots, roots);
-  assert.equal(
-    (composition.extensionOptions.store as FileStateStore).storageBaseDir,
-    roots.projectsBaseDir,
-  );
-  for (const name of ["experienceStore", "strategyCandidateStore", "strategyDecisionStore",
-    "strategyDerivationCandidateStore", "strategyDerivationDecisionStore", "strategyTrustScopeCandidateStore",
-    "strategyTrustScopeDecisionStore", "strategyTrustScopeWriterLock", "crossProjectTrustReader",
-    "strategySynthesisCandidateStore", "strategySynthesisCandidateReader", "strategySynthesisDecisionStore", "strategySynthesisDecisionReader"]) {
-    assert.equal(Object.hasOwn(composition.extensionOptions, name), false, name);
-  }
+  assert.equal((composition.extensionOptions.store as FileStateStore).storageBaseDir, roots.projectsBaseDir);
+  assert.ok(composition.extensionOptions.quotaResumePreferenceStore instanceof FileQuotaResumePreferenceStore);
+  assert.ok(composition.extensionOptions.quotaFallbackPreferenceStore instanceof FileQuotaFallbackPreferenceStore);
+  assert.deepEqual(composition.extensionOptions.quotaResumePreferenceStore, new FileQuotaResumePreferenceStore({ baseDir: roots.globalBaseDir }));
+  assert.deepEqual(composition.extensionOptions.quotaFallbackPreferenceStore, new FileQuotaFallbackPreferenceStore({ baseDir: roots.globalBaseDir }));
+  assertRetiredAbsent(composition);
 });
 
 test("Slice A gives configured Remote an explicit routing root", () => {
-  const roots = {
-    projectsBaseDir: "/tmp/pindie-projects",
-    globalBaseDir: "/tmp/pindie-global",
-    remoteRoutingBaseDir: "/tmp/pindie-remote",
-  } as const;
-  const composition = composeConfiguredPindieExtension(
-    { storageRoots: roots },
-    {
-      PINDIE_DISCORD_TOKEN: "token",
-      PINDIE_DISCORD_USER_ID: "123456789012345678",
-      PINDIE_DISCORD_GUILD_ID: "987654321098765432",
-    },
-  );
+  const composition = composeConfiguredPindieExtension({ storageRoots: roots }, {
+    PINDIE_DISCORD_TOKEN: "token", PINDIE_DISCORD_USER_ID: "123456789012345678", PINDIE_DISCORD_GUILD_ID: "987654321098765432",
+  });
   assert.ok(composition.remoteRoutingStore instanceof RemoteRoutingStore);
-  assert.equal(
-    composition.remoteRoutingStore?.path(projectRoot),
-    join(roots.remoteRoutingBaseDir, `${getProjectId(projectRoot)}.json`),
-  );
+  assert.equal(composition.remoteRoutingStore?.path(projectRoot), join(roots.remoteRoutingBaseDir, `${getProjectId(projectRoot)}.json`));
   assert.equal(composition.extensionOptions.remoteRoutingStore, composition.remoteRoutingStore);
 });
 
 test("Slice A never derives feature roots from an injected StateStore", () => {
-  const composition = composePindieExtension({
-    featureSelection: { selfImprovement: true, crossProjectLearning: false },
-    store: new FileStateStore({ baseDir: "/tmp/state-only" }),
-    storageRoots: {
-      projectsBaseDir: "/tmp/explicit-projects",
-      globalBaseDir: "/tmp/explicit-global",
-      remoteRoutingBaseDir: "/tmp/explicit-remote",
-    },
-  });
-
-  assert.equal(
-    (composition.extensionOptions.store as FileStateStore).storageBaseDir,
-    "/tmp/state-only",
-  );
-  assert.equal(composition.storageRoots.projectsBaseDir, "/tmp/explicit-projects");
-  assert.equal(composition.extensionOptions.experienceStore, undefined);
+  const composition = composePindieExtension({ featureSelection: legacySelection(true, false), store: new FileStateStore({ baseDir: "/tmp/state-only" }), storageRoots: roots });
+  assert.equal((composition.extensionOptions.store as FileStateStore).storageBaseDir, "/tmp/state-only");
+  assert.equal(composition.storageRoots.projectsBaseDir, roots.projectsBaseDir);
+  assertRetiredAbsent(composition);
 });
 
 test("retired SI and CPL overrides drop learning dependencies while other features remain configurable", () => {
-  const roots = {
-    projectsBaseDir: "/tmp/slice-d-projects",
-    globalBaseDir: "/tmp/slice-d-global",
-    remoteRoutingBaseDir: "/tmp/slice-d-remote",
-  } as const;
-  const injectedExperienceStore = new FileRunExperienceStore({ baseDir: "/tmp/not-selected" });
-  const composition = composePindieExtension({
-    featureSelection: { selfImprovement: false },
-    storageRoots: roots,
-    experienceStore: injectedExperienceStore,
+  for (const featureSelection of [legacySelection(false, true), legacySelection(true, false), legacySelection(true, true)]) {
+    const input = { featureSelection, storageRoots: roots };
+    for (const name of retiredDependencies) Object.defineProperty(input, name, { enumerable: true, get() { throw new Error(`retired getter: ${name}`); } });
+    const composition = composePindieExtension(input);
+    assertRetiredAbsent(composition);
+    assert.equal(composition.featureSelection.remote, false);
+    assert.equal(composition.featureSelection.workMemory, false);
+    assert.equal(composition.extensionOptions.remoteCompanion, undefined);
+    assert.equal(composition.extensionOptions.projectMemorySink, undefined);
+  }
+  const optionalDisabled = composeConfiguredPindieExtension({ featureSelection: { remote: false, workMemory: false } }, {
+    PINDIE_DISCORD_TOKEN: "token", PINDIE_DISCORD_USER_ID: "123456789012345678", PINDIE_DISCORD_GUILD_ID: "987654321098765432",
+    PINDIE_NOTION_TOKEN: "token", PINDIE_WORK_MEMORY_DATA_SOURCE_ID: "data-source",
   });
-
-  assert.equal(composition.featureSelection.selfImprovement, false);
-  assert.equal(composition.featureSelection.crossProjectLearning, false);
-  for (const dependency of [
-    "experienceStore",
-    "experienceReader",
-    "crossProjectExperienceReader",
-    "strategyCandidateStore",
-    "strategyCandidateReader",
-    "strategyDerivationCandidateStore",
-    "strategyDerivationCandidateReader",
-    "strategyDecisionStore",
-    "strategyDecisionReader",
-    "strategyDerivationDecisionStore",
-    "strategyDerivationDecisionReader",
-    "strategyTrustScopeCandidateStore",
-    "strategyTrustScopeDecisionStore",
-    "strategyTrustScopeSourceResolver",
-    "strategyTrustScopeWriterLock",
-    "crossProjectTrustReader",
-    "scopeProjectTrustReader",
-    "strategySynthesisCandidateReader",
-    "strategySynthesisDecisionReader",
-    "strategySynthesisCandidateStore",
-    "strategySynthesisDecisionStore",
-  ]) {
-    assert.equal(Object.hasOwn(composition.extensionOptions, dependency), false, dependency);
-  }
-  assert.equal(
-    (composition.extensionOptions.store as FileStateStore).storageBaseDir,
-    roots.projectsBaseDir,
-  );
-  assert.equal(composition.extensionOptions.experienceStore, undefined);
-
-  const siOnly = composePindieExtension({
-    featureSelection: { selfImprovement: true, crossProjectLearning: false },
-    storageRoots: roots,
-  });
-  assert.equal(siOnly.featureSelection.selfImprovement, false);
-  assert.equal(siOnly.featureSelection.crossProjectLearning, false);
-  for (const dependency of [
-    "experienceStore",
-    "strategyCandidateStore",
-    "strategyTrustScopeCandidateStore",
-    "strategyTrustScopeWriterLock",
-    "strategySynthesisCandidateReader",
-    "strategySynthesisDecisionReader",
-  ]) {
-    assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), false, dependency);
-  }
-  for (const dependency of [
-    "strategySynthesisCandidateStore",
-    "strategySynthesisDecisionStore",
-  ]) {
-    assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), false, dependency);
-  }
-  assert.equal(
-    siOnly.extensionOptions.strategySynthesisCandidateReader instanceof FileStrategySynthesisCandidateReader,
-    false,
-  );
-  assert.equal(
-    siOnly.extensionOptions.strategySynthesisDecisionReader instanceof FileStrategySynthesisDecisionReader,
-    false,
-  );
-  for (const dependency of [
-    "crossProjectExperienceReader",
-    "crossProjectTrustReader",
-    "scopeProjectTrustReader",
-  ]) {
-    assert.equal(Object.hasOwn(siOnly.extensionOptions, dependency), false, dependency);
-  }
-
-  assert.deepEqual(
-    resolvePindieFeatureSelection({ selfImprovement: false }, {}, {}),
-    {
-      selfImprovement: false,
-      crossProjectLearning: false,
-      remote: false,
-      workMemory: false,
-      bundledSkills: true,
-      presentation: true,
-    },
-  );
-  assert.equal(resolvePindieFeatureSelection({ selfImprovement: false, crossProjectLearning: true }, {}, {}).crossProjectLearning, false);
-  assert.equal(
-    resolvePindieFeatureSelection(
-      { selfImprovement: true, crossProjectLearning: false },
-      {},
-      {},
-    ).crossProjectLearning,
-    false,
-  );
-
-  const optionalDisabled = composeConfiguredPindieExtension(
-    {
-      featureSelection: { remote: false, workMemory: false },
-    },
-    {
-      PINDIE_DISCORD_TOKEN: "token",
-      PINDIE_DISCORD_USER_ID: "123456789012345678",
-      PINDIE_DISCORD_GUILD_ID: "987654321098765432",
-      PINDIE_NOTION_TOKEN: "token",
-      PINDIE_WORK_MEMORY_DATA_SOURCE_ID: "data-source",
-    },
-  );
   assert.equal(optionalDisabled.featureSelection.remote, false);
   assert.equal(optionalDisabled.featureSelection.workMemory, false);
   assert.equal(optionalDisabled.extensionOptions.remoteCompanion, undefined);
   assert.equal(optionalDisabled.extensionOptions.projectMemorySink, undefined);
 });
 
-test("Slice F protects the final Core/SI/CPL and trust runtime import boundaries", async () => {
-  const [coreSource, compositionSource, extensionSource, hostSource, controlWorkspaceSource, controlMcpSource, portfolioSource, trustSafetySource, globalSource] = await Promise.all(
-    [
-      "core-integration.ts",
-      "composition.ts",
-      "extension.ts",
-      "host.ts",
-      "control-workspace.ts",
-      "control-mcp.ts",
-      "strategy-portfolio.ts",
-      "strategy-trust-safety.ts",
-      "strategy-trust-scope-global.ts",
-    ].map((file) => readFile(new URL(`../src/${file}`, import.meta.url), "utf8")),
-  );
-
-  for (const moduleSpecifier of [
-    "./self-improvement-integration.ts",
-    "./cross-project-learning-integration.ts",
-    "./presentation-integration.ts",
-    "./remote-companion.ts",
-    "./discord-remote.ts",
-    "./notion-project-memory.ts",
-  ]) {
-    assert.equal(hasRuntimeImport(coreSource, moduleSpecifier), false, moduleSpecifier);
-  }
+test("Stable composition protects Core and optional adapter runtime import boundaries", async () => {
+  const coreSource = await readFile(new URL("../src/core-integration.ts", import.meta.url), "utf8");
+  const emitted = ts.transpileModule(coreSource, { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText;
+  assert.doesNotMatch(emitted, /(?:from\s*|import\s*\(|require\s*\()\s*["']\.\/(?:composition|presentation-integration|remote-companion|discord-remote|notion-project-memory)\.ts/);
   const taskSource = await readFile(new URL("../src/tools/task.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(taskSource, /(?:import|require)\s*.*learning-signal(?:\.ts)?/, "Core Task tools must not load SI signal implementation");
-  assert.doesNotMatch(taskSource, /learning-disposition-contract/, "Core completion has no learning seam");
-  assert.doesNotMatch(taskSource, /LearningSignalHolder|isValidLearningSignal/, "removed SI signal holder and validation must not return to Core");
-  for (const file of ["self-improvement-integration.ts", "cross-project-learning-integration.ts"]) {
-    await assert.rejects(access(new URL(`../src/${file}`, import.meta.url)), { code: "ENOENT" },
-      `Retired integration must be physically absent: ${file}`);
+  assert.doesNotMatch(taskSource, /learning-signal|learning-disposition-contract|LearningSignalHolder|isValidLearningSignal/);
+  for (const name of ["self-improvement-integration.ts", "cross-project-learning-integration.ts"]) {
+    await assert.rejects(access(new URL(`../src/${name}`, import.meta.url)), { code: "ENOENT" });
   }
-  // Inspect emitted code so interface import("...") types do not become false
-  // runtime edges. The transitive graph and retired-tool authorization are also
-  // checked in al-retirement.test.ts.
-  for (const source of [coreSource, compositionSource, extensionSource, hostSource, controlWorkspaceSource, controlMcpSource]) {
-    const emitted = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
-    for (const entry of sourceImports(emitted)) {
-      assert.doesNotMatch(entry.moduleSpecifier,
-        /^\.\/(?:self-improvement-|cross-project-|strategy-|strategies\.|policy\.|learning-|discovery-|project-discovery|trial-|ordinary-trial-|experience-|run-experience|work-episode|open-hypotheses|hypothesis-lineage)/,
-        `Core entrypoint must not import a retired runtime: ${entry.moduleSpecifier}`);
-    }
-  }
-
-  const portfolioDerivationDecisionImports = importsFrom(
-    portfolioSource,
-    "./strategy-derivation-decisions.ts",
-  );
-  assert.equal(portfolioDerivationDecisionImports.length, 1);
-  assert.equal(portfolioDerivationDecisionImports[0]!.typeOnly, true);
-
-  for (const moduleSpecifier of [
-    "./strategy-trust-scope-global.ts",
-    "./strategy-trust-scope.ts",
-    "./strategy-trust-scope-review.ts",
-    "./strategy-trust-scope-trial.ts",
-    "./strategy-trust-safety.ts",
-  ]) {
-    assert.equal(hasRuntimeImport(portfolioSource, moduleSpecifier), false, moduleSpecifier);
-  }
-  assert.equal(hasRuntimeImport(globalSource, "./strategy-portfolio.ts"), false);
-  assert.equal(hasRuntimeImport(globalSource, "./strategy-trust-scope-trial.ts"), false);
-  assert.equal(hasRuntimeImport(trustSafetySource, "./strategy-trust-scope-global.ts"), true);
+  // The complete source AST (including erased types) and transitive runtime graph
+  // are checked in al-retirement.test.ts, not against retired module internals.
 });
 
 test("retired master switch is inert both when enabled and disabled", () => {
-  assert.deepEqual(resolvePindieFeatureSelection({}, {}, {}), {
-    selfImprovement: false,
-    crossProjectLearning: false,
-    remote: false,
-    workMemory: false,
-    bundledSkills: true,
-    presentation: true,
-  });
-
-  assert.deepEqual(
-    resolvePindieFeatureSelection({}, {}, {
-      PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
-    }),
-    {
-      selfImprovement: false,
-      crossProjectLearning: false,
-      remote: false,
-      workMemory: false,
-      bundledSkills: true,
-      presentation: true,
-    },
-  );
-
-  assert.deepEqual(
-    resolvePindieFeatureSelection({}, {}, {
-      PINDIE_SELF_IMPROVEMENT_ENABLED: "true",
-      PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "true",
-    }),
-    DEFAULT_PINDIE_FEATURE_SELECTION,
-    "legacy fine-grained environment flags cannot silently leave Stable Mode",
-  );
-
-  assert.deepEqual(
-    resolvePindieFeatureSelection(
-      { selfImprovement: true, crossProjectLearning: true },
-      {},
-      {
-        PINDIE_AUTONOMOUS_LEARNING_ENABLED: "false",
-        PINDIE_SELF_IMPROVEMENT_ENABLED: "true",
-        PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "true",
-      },
-    ),
-    {
-      selfImprovement: false,
-      crossProjectLearning: false,
-      remote: false,
-      workMemory: false,
-      bundledSkills: true,
-      presentation: true,
-    },
-  );
+  for (const value of ["true", "false", "invalid"]) {
+    assert.deepEqual(resolvePindieFeatureSelection(legacySelection(true, true), {}, {
+      PINDIE_AUTONOMOUS_LEARNING_ENABLED: value, PINDIE_SELF_IMPROVEMENT_ENABLED: value, PINDIE_CROSS_PROJECT_LEARNING_ENABLED: value,
+    }), DEFAULT_PINDIE_FEATURE_SELECTION);
+  }
 });
 
 test("retired environment selection cannot enable SI or CPL even with conflicting old values", () => {
-  const siOff = composeConfiguredPindieExtension({}, {
-    PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
-    PINDIE_SELF_IMPROVEMENT_ENABLED: "false",
-  });
-  assert.equal(siOff.featureSelection.selfImprovement, false);
-  assert.equal(siOff.featureSelection.crossProjectLearning, false);
-  assert.equal(Object.hasOwn(siOff.extensionOptions, "experienceStore"), false);
-
-  const bothOff = composeConfiguredPindieExtension({}, {
-    PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
-    PINDIE_SELF_IMPROVEMENT_ENABLED: "off",
-    PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "no",
-  });
-  assert.equal(bothOff.featureSelection.selfImprovement, false);
-  assert.equal(bothOff.featureSelection.crossProjectLearning, false);
-
-  assert.equal(composeConfiguredPindieExtension({}, {
-    PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true", PINDIE_SELF_IMPROVEMENT_ENABLED: "false",
-    PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "true",
-  }).featureSelection.crossProjectLearning, false);
-  const siOnly = composeConfiguredPindieExtension({}, {
-    PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
-    PINDIE_SELF_IMPROVEMENT_ENABLED: "true",
-    PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "false",
-  });
-  assert.equal(siOnly.featureSelection.selfImprovement, false);
-  assert.equal(siOnly.featureSelection.crossProjectLearning, false);
-  assert.equal(Object.hasOwn(siOnly.extensionOptions, "crossProjectExperienceReader"), false);
-  assert.equal(Object.hasOwn(siOnly.extensionOptions, "scopeProjectTrustReader"), false);
-
-  assert.deepEqual(
-    siOnly.featureSelection,
-    resolvePindieFeatureSelection(
-      { selfImprovement: true, crossProjectLearning: false },
-      {},
-      {
-        PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true",
-        PINDIE_SELF_IMPROVEMENT_ENABLED: "true",
-        PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "false",
-      },
-    ),
-  );
+  for (const self of ["false", "true", "off", "invalid"]) {
+    const composition = composeConfiguredPindieExtension({}, {
+      PINDIE_AUTONOMOUS_LEARNING_ENABLED: "true", PINDIE_SELF_IMPROVEMENT_ENABLED: self, PINDIE_CROSS_PROJECT_LEARNING_ENABLED: "true",
+    });
+    assertRetiredAbsent(composition);
+    assert.deepEqual(composition.featureSelection, DEFAULT_PINDIE_FEATURE_SELECTION);
+  }
+  const env = {};
+  for (const name of ["PINDIE_AUTONOMOUS_LEARNING_ENABLED", "PINDIE_SELF_IMPROVEMENT_ENABLED", "PINDIE_CROSS_PROJECT_LEARNING_ENABLED"]) {
+    Object.defineProperty(env, name, { enumerable: true, get() { throw new Error(`retired flag read: ${name}`); } });
+  }
+  const overrides = { presentation: false };
+  for (const name of ["selfImprovement", "crossProjectLearning"]) {
+    Object.defineProperty(overrides, name, { enumerable: true, get() { throw new Error(`retired override read: ${name}`); } });
+  }
+  assert.deepEqual(resolvePindieFeatureSelection(overrides, {}, env), { ...DEFAULT_PINDIE_FEATURE_SELECTION, presentation: false });
+  const config = { env };
+  Object.defineProperty(config, "onExperienceSaved", { enumerable: true, get() { throw new Error("retired config callback read"); } });
+  assertRetiredAbsent(composePindieExtension({ storageRoots: roots, featureSelection: overrides }, config));
 });
 
-test("Slice F assembles the final composition matrix through the production composition root", () => {
-  const remoteSurface: RemoteSurface = {
+test("Stable composition matrix keeps Remote, Work Memory and Presentation independent", () => {
+  const surface: RemoteSurface = {
     ensureProject: async () => ({ channelId: "channel" }),
     ensureSession: async () => ({ threadId: "thread", anchorMessageId: "anchor", headerMessageId: null }),
-    send: async () => undefined,
-    updateSessionPresentation: async () => undefined,
+    send: async () => undefined, updateSessionPresentation: async () => undefined,
   };
-  const remoteCompanion = {
-    companion: new RemoteCompanion(remoteSurface),
-    guildId: "guild",
-  };
-  const projectMemorySink: ProjectMemorySink = {
-    capture: async () => ({ ok: true, outcome: "created" }),
-  };
-  const roots = {
-    projectsBaseDir: "/tmp/slice-f-projects",
-    globalBaseDir: "/tmp/slice-f-global",
-    remoteRoutingBaseDir: "/tmp/slice-f-remote",
-  } as const;
-  const compose = (input: Parameters<typeof composePindieExtension>[0]) =>
-    composePindieExtension({
-      ...input,
-      storageRoots: roots,
-    }, { env: {} });
-  const optionalInput = { remoteCompanion, projectMemorySink };
-  const selection = (
-    overrides: Partial<typeof DEFAULT_PINDIE_FEATURE_SELECTION> = {},
-  ) => ({
-    selfImprovement: false,
-    crossProjectLearning: false,
-    remote: false,
-    workMemory: false,
-    bundledSkills: false,
-    presentation: false,
-    ...overrides,
-  });
-  const cases = [
-    ["Core only", selection()],
-    ["Core + SI", selection({ selfImprovement: true })],
-    ["Core + SI + CPL", selection({ selfImprovement: true, crossProjectLearning: true })],
-    ["Core + Remote", selection({ remote: true })],
-    ["Core + Work Memory", selection({ workMemory: true })],
-  ] as const;
-
-  for (const [name, requestedSelection] of cases) {
-    const featureSelection = { ...requestedSelection, selfImprovement: false, crossProjectLearning: false };
-    const composition = compose({ ...optionalInput, featureSelection: requestedSelection });
-    assert.deepEqual(composition.featureSelection, featureSelection, name);
-    for (const dependency of [
-      "experienceStore",
-      "experienceReader",
-      "strategyCandidateStore",
-      "strategyCandidateReader",
-      "strategyDerivationCandidateStore",
-      "strategyDerivationCandidateReader",
-      "strategyDecisionStore",
-      "strategyDecisionReader",
-      "strategyDerivationDecisionStore",
-      "strategyDerivationDecisionReader",
-      "strategyTrustScopeCandidateStore",
-      "strategyTrustScopeDecisionStore",
-      "strategyTrustScopeSourceResolver",
-      "strategyTrustScopeWriterLock",
-    ]) {
-      assert.equal(
-        Object.hasOwn(composition.extensionOptions, dependency),
-        featureSelection.selfImprovement,
-        `${name}: ${dependency}`,
-      );
-    }
-    for (const dependency of [
-      "crossProjectExperienceReader",
-      "crossProjectTrustReader",
-      "scopeProjectTrustReader",
-    ]) {
-      assert.equal(
-        Object.hasOwn(composition.extensionOptions, dependency),
-        featureSelection.crossProjectLearning,
-        `${name}: ${dependency}`,
-      );
-    }
-    for (const dependency of [
-      "strategySynthesisCandidateReader",
-      "strategySynthesisDecisionReader",
-    ]) {
-      assert.equal(
-        Object.hasOwn(composition.extensionOptions, dependency),
-        featureSelection.selfImprovement,
-        `${name}: ${dependency}`,
-      );
-    }
-    for (const dependency of [
-      "strategySynthesisCandidateStore",
-      "strategySynthesisDecisionStore",
-    ]) {
-      assert.equal(
-        Object.hasOwn(composition.extensionOptions, dependency),
-        featureSelection.crossProjectLearning,
-        `${name}: ${dependency}`,
-      );
-    }
-    if (featureSelection.crossProjectLearning) {
-      assert.equal(
-        composition.extensionOptions.strategySynthesisCandidateReader,
-        composition.extensionOptions.strategySynthesisCandidateStore,
-        `${name}: shared Synthesis Candidate reader/store`,
-      );
-      assert.equal(
-        composition.extensionOptions.strategySynthesisDecisionReader,
-        composition.extensionOptions.strategySynthesisDecisionStore,
-        `${name}: shared Synthesis Decision reader/store`,
-      );
-    }
-    assert.equal(
-      Object.hasOwn(composition.extensionOptions, "remoteCompanion"),
-      featureSelection.remote,
-      `${name}: remoteCompanion`,
-    );
-    assert.equal(
-      Object.hasOwn(composition.extensionOptions, "projectMemorySink"),
-      featureSelection.workMemory,
-      `${name}: projectMemorySink`,
-    );
+  const remoteCompanion = { companion: new RemoteCompanion(surface), guildId: "guild" };
+  const projectMemorySink: ProjectMemorySink = { capture: async () => ({ ok: true, outcome: "created" }) };
+  for (const remote of [false, true]) for (const workMemory of [false, true]) for (const presentation of [false, true]) {
+    const featureSelection = { remote, workMemory, presentation, bundledSkills: false };
+    const input = { featureSelection, storageRoots: roots, remoteCompanion, projectMemorySink };
+    for (const name of retiredDependencies) Object.defineProperty(input, name, { enumerable: true, get() { throw new Error(`retired getter: ${name}`); } });
+    const composition = composePindieExtension(input, { env: {} });
+    assert.deepEqual(composition.featureSelection, featureSelection);
+    assertRetiredAbsent(composition);
+    assert.equal(composition.extensionOptions.remoteCompanion, remote ? remoteCompanion : undefined);
+    assert.equal(composition.extensionOptions.projectMemorySink, workMemory ? projectMemorySink : undefined);
   }
-
-  const defaultComposition = composePindieExtension({}, { env: {} });
-  assert.deepEqual(
-    defaultComposition.featureSelection,
-    DEFAULT_PINDIE_FEATURE_SELECTION,
-    "default full-feature composition",
-  );
-  assert.equal(Object.hasOwn(defaultComposition.extensionOptions, "remoteCompanion"), false);
-  assert.equal(Object.hasOwn(defaultComposition.extensionOptions, "projectMemorySink"), false);
+  assert.deepEqual(composePindieExtension({}, { env: {} }).featureSelection, DEFAULT_PINDIE_FEATURE_SELECTION);
 });
 
 test("Slice C accepts independent Presentation selection", () => {
-  const composition = composePindieExtension({
-    featureSelection: { presentation: false },
-  });
-
-  assert.equal(composition.featureSelection.presentation, false);
+  assert.equal(composePindieExtension({ featureSelection: { presentation: false } }).featureSelection.presentation, false);
 });
 
 test("Slice C drops injected Remote routing when Remote is explicitly disabled", () => {
-  const routing = new RemoteRoutingStore({ baseDir: "/tmp/should-not-be-exposed" });
-  const composition = composePindieExtension({
-    featureSelection: { remote: false },
-    remoteRoutingStore: routing,
-  });
-
+  const composition = composePindieExtension({ featureSelection: { remote: false }, remoteRoutingStore: new RemoteRoutingStore({ baseDir: "/tmp/should-not-be-exposed" }) });
   assert.equal(composition.remoteRoutingStore, null);
   assert.equal(Object.hasOwn(composition.extensionOptions, "remoteRoutingStore"), false);
   assert.equal(Object.hasOwn(composition.extensionOptions, "remoteCompanion"), false);
@@ -630,27 +194,13 @@ test("Slice C does not load disabled Discord or Notion adapters", async () => {
     import(${JSON.stringify(extensionUrl)}).then(() => import(${JSON.stringify(compositionUrl)})).then(({ composeConfiguredPindieExtension }) => {
       const composition = composeConfiguredPindieExtension(
         { featureSelection: { remote: false, workMemory: false } },
-        {
-          PINDIE_DISCORD_TOKEN: "token",
-          PINDIE_DISCORD_USER_ID: "123456789012345678",
-          PINDIE_DISCORD_GUILD_ID: "987654321098765432",
-          PINDIE_NOTION_TOKEN: "token",
-          PINDIE_WORK_MEMORY_DATA_SOURCE_ID: "data-source",
-        },
+        { PINDIE_DISCORD_TOKEN: "token", PINDIE_DISCORD_USER_ID: "123456789012345678", PINDIE_DISCORD_GUILD_ID: "987654321098765432",
+          PINDIE_NOTION_TOKEN: "token", PINDIE_WORK_MEMORY_DATA_SOURCE_ID: "data-source" },
       );
-      if (composition.remoteRoutingStore !== null || composition.extensionOptions.projectMemorySink !== undefined) {
-        throw new Error("disabled optional feature was composed");
-      }
+      if (composition.remoteRoutingStore !== null || composition.extensionOptions.projectMemorySink !== undefined) throw new Error("disabled optional feature was composed");
       process.stdout.write("ok");
-    }).catch((error) => {
-      console.error(error);
-      process.exitCode = 1;
-    });
+    }).catch((error) => { console.error(error); process.exitCode = 1; });
   `;
-  const result = await execFileAsync(
-    process.execPath,
-    ["--experimental-strip-types", "-e", script],
-    { cwd: process.cwd() },
-  );
+  const result = await execFileAsync(process.execPath, ["--experimental-strip-types", "-e", script], { cwd: process.cwd() });
   assert.equal(result.stdout, "ok");
 });

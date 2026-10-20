@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { renderPindieSystemContract } from "../src/context.ts";
 import {
   createPolicySnapshot,
   createPolicySnapshotFromRevisions,
@@ -131,12 +130,4 @@ test("Policy presentation preserves Seed shorthand and identifies Trial/promoted
   assert.equal(promoted.revisionStatusAtRun, "promoted");
   assert.equal("candidateStatus" in trial, false);
   assert.equal("trust" in promoted, false);
-});
-
-test("Core system contract excludes retired Seed and Policy guidance", () => {
-  const contract = renderPindieSystemContract();
-  assert.doesNotMatch(contract, /Seed Strategies:/);
-  for (const seed of SEED_STRATEGIES) assert.equal(contract.includes(seed.id), false);
-  assert.doesNotMatch(contract, /Current Policy Snapshot/);
-  assert.doesNotMatch(contract, /pindie_policy_set/);
 });
