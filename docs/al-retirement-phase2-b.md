@@ -1,6 +1,6 @@
 # AL retirement Phase 2-B — retire the remaining executable scheduler
 
-Base: `bf14847e693f4287c771cf28383ce61d3b7a95e0`, merged Phase 2-A PR #269 (CI #628: 1397 active cases). This is one bounded source-deletion slice, not completion of all Phase 2. Delivery is an independent Draft PR; no merge or deployment is authorized.
+Base: `bf14847e693f4287c771cf28383ce61d3b7a95e0`, merged Phase 2-A PR #269 (CI #628: 1397 active cases). Phase 2-B was independently reviewed and merged in PR #270 at `a66e47d8cfc335634501b4c36c65b19fd2a71443`, with CI #630 passing 1344/1344. The original Draft-stage delivery/verification instructions below are historical, not current PR status. This is one bounded slice, not completion of all Phase 2 or a deployment claim. See [Phase 2-C](al-retirement-phase2-c.md) for the next deletion boundary; later PRs require independent review and are not authorized to merge.
 
 ## Actual dependency boundary
 
