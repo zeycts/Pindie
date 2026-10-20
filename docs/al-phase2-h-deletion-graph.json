@@ -28,9 +28,9 @@
   "modifiedTests": [
     {
       "file": "tests/policy.test.ts",
-      "change": "remove five pindie_policy_set factory cases; keep both Policy Snapshot contract cases and rewrite the Core contract guard without the deleted factory",
-      "removedCases": 5,
-      "retainedCases": 3
+      "change": "retire only the three tool-only cases; restore both mixed schema cases with every non-tool assertion and their original titles; keep the Core system-contract exclusion guard under a corrected title",
+      "removedCases": 3,
+      "retainedCases": 5
     },
     {
       "file": "tests/strategy-adaptation.test.ts",
@@ -60,8 +60,8 @@
   "executedTAPAccounting": {
     "tests/policy.test.ts": {
       "base": 8,
-      "retained": 3,
-      "removed": 5
+      "retained": 5,
+      "removed": 3
     },
     "tests/strategy-adaptation.test.ts": {
       "base": 6,
@@ -101,9 +101,9 @@
   },
   "accounting": {
     "baselineActive": 1260,
-    "removedALOnlyCases": 5,
-    "activeAfter": 1255,
-    "observedPass": 1255,
+    "removedALOnlyCases": 3,
+    "activeAfter": 1257,
+    "observedPass": 1257,
     "observedFail": 0,
     "observedCancelled": 0,
     "observedSkipped": 0
@@ -119,6 +119,37 @@
   "verifiedFacts": {
     "coreEntrypointEmittedRuntimeIdentical": true,
     "archiveTreeSHA": "ae453acf3c16ef139a5d22bd68cf999546c7b6f9",
-    "frozenOfferPolicyFingerprintIdentical": true
+    "frozenOfferPolicyFingerprintIdentical": true,
+    "localFullCheck": {
+      "tests": 1257,
+      "pass": 1257,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "durationMs": 147112.576117
+    },
+    "focusedGuards": {
+      "tests": 281,
+      "pass": 281,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "durationMs": 46220.035309
+    }
+  },
+  "deletedExecutedTAPTitles": {
+    "tests/policy.test.ts": [
+      "SI02 policy declaration tool is optional, structured, and replaces the current Snapshot",
+      "pindie_policy_set bounds a hanging revision resolver and never installs its late result",
+      "pindie_policy_set uses the caller AbortSignal to cancel resolution",
+      "historical Policy tool remains standalone while Core contract excludes its guidance"
+    ]
+  },
+  "renamedExecutedTAPTitles": {
+    "tests/policy.test.ts": {
+      "from": "historical Policy tool remains standalone while Core contract excludes its guidance",
+      "to": "Core system contract excludes retired Seed and Policy guidance",
+      "reason": "the deleted factory no longer exists; the Core negative assertions are retained and strengthened with no pindie_policy_set guidance"
+    }
   }
 }

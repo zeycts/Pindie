@@ -98,7 +98,7 @@ Core entrypoint emitted runtime is byte-identical to base. Extension's inert Str
 
 | File | Baseline | Retained | Removed AL-only |
 | --- | ---: | ---: | ---: |
-| policy | 8 | 3 | 5 |
+| policy | 8 | 5 | 3 |
 | strategy-adaptation | 6 | 6 | 0 |
 | execution-semantics guards | 16 | 16 | 0 |
 | al-retirement guards | 5 | 5 | 0 |
@@ -107,9 +107,9 @@ Core entrypoint emitted runtime is byte-identical to base. Extension's inert Str
 | learning-foundation-f1 | 3 | 3 | 0 |
 | trial-evidence-r3 | 1 | 1 | 0 |
 
-**1260 = 1255 active + 5 removed AL-only cases.** Core assertions were preserved, not deleted: both Policy Snapshot contract cases, the Core system-contract exclusion guard, exact tool classification/denial, and every native historical-bytes case stay active with equivalent-or-stronger assertions. No skip/filter, glob/script/lockfile change or archive edit.
+**1260 = 1257 active + 3 removed AL-only cases.** Only the three factory-only `pindie_policy_set` cases are retired. Both mixed historical-schema cases are restored with every non-tool assertion and their original titles, including `createPolicySnapshotFromRevisions`/`createStrategyRevisionSelection`/`serializePolicySnapshot`/`policySnapshotIdentity`/`formatStrategySelectionLabel` identity and presentation behavior. The Core contract exclusion guard is kept under a corrected title (it no longer names a deleted factory) and still asserts no Seed/`Current Policy Snapshot`/`pindie_policy_set` guidance. Exact tool classification/denial and every native historical-bytes case remain active. No skip/filter, glob/script/lockfile change or archive edit.
 
-Evidence: frozen offline install and typecheck passed; policy **3/3**, strategy-adaptation **6/6**, retirement **5/5**, both native history files **2/2 + 9/9**, extra F1 **3/3** and R3 **1/1**; focused native Pi/Control/Quota/Browser/execution-semantics/composition/extension **276/276**, all zero fail/cancel/skip. Full `timeout -k 5s 480s ... pnpm run check`: **1255 pass / 0 fail / 0 cancel / 0 skip**, **165915.286403 ms**, exit 0. Isolated HOME/cache/tmp; no paid-model/service E2E or production dogfood claim. Exact-head CI is recorded on the Draft PR after observation.
+Evidence: frozen offline install and typecheck passed; policy **5/5**, strategy-adaptation **6/6**, retirement **5/5**, both native history files **2/2 + 9/9**, extra F1 **3/3** and R3 **1/1**; focused native Pi/Control/Quota/Browser/execution-semantics/composition/extension **276/276** and the full suite, all zero fail/cancel/skip. Full `timeout -k 5s 480s ... pnpm run check`: **1257 pass / 0 fail / 0 cancel / 0 skip**, **147112.576117 ms**, exit 0. Isolated HOME/cache/tmp; no paid-model/service E2E or production dogfood claim. Exact-head CI is recorded on the Draft PR after observation.
 
 **Retirement STOP decision:** no further AL-only production source island exists. Remaining runtime-unreachable modules are consumed by retained artifact/stores, mixed tests or frozen historical-contract readers, and their type-only Extension seams are deliberate compatibility, not mounts. Further source deletion would require removing real guard coverage for zero production benefit, so this is the end of source retirement — the next step is a separately authorized production-upgrade plan.
 
