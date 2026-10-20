@@ -75,7 +75,8 @@ pindie_memory_capture (when Work Memory is configured)
 
 ## Documentation
 
-- `docs/al-retirement-phase2-a.md` — bounded Phase 2-A source/test deletion manifest, preserved Core contracts and remaining cleanup.
+- `docs/al-retirement-phase2-a.md` — merged Phase 2-A source/test deletion manifest and preserved Core contracts.
+- `docs/al-retirement-phase2-b.md` — bounded scheduler/Discovery executor deletion, exact test accounting and remaining cleanup.
 
 - `docs/architecture.md` — current architecture and ownership boundaries.
 - `docs/behavior.md` — current semantic and behavioral contract.
