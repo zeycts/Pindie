@@ -11,8 +11,7 @@ import { PindieRuntime } from "../src/runtime.ts";
 import { assembleRunExperience } from "../src/run-experience.ts";
 import { FileRunExperienceStore } from "../src/experience-store.ts";
 
-// Mixed Core/AL file: retain both Host regressions, retire only the standalone
-// Discovery executor cases enumerated in docs/al-phase2-b-deletion-graph.json.
+// Retain both Host regressions; standalone Discovery executor cases are retired.
 async function setup(t: import("node:test").TestContext) {
   const dir = await mkdtemp(join(tmpdir(), "retired-discovery-host-"));
   t.after(() => rm(dir, { force: true, recursive: true }));
