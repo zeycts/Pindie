@@ -5,7 +5,6 @@ import {
   type AgentRunFactsContext,
 } from "./run-facts.ts";
 import { PindieRuntime } from "./runtime.ts";
-import type { PolicySnapshot } from "./policy.ts";
 import {
   deriveSemanticSnapshot,
   type PindieCapability,
@@ -14,7 +13,6 @@ import {
 } from "./semantics.ts";
 import type { ToolEffect } from "./execution-semantics.ts";
 import type { PindieState } from "./state.ts";
-import type { RunExperiencePolicy } from "./run-experience.ts";
 import { RunCounters, type RunExecutionCounters } from "./run-counters.ts";
 /** Pi-facing ownership for runtime-only Agent Run authority state. */
 export class RunIntegration {
@@ -22,11 +20,10 @@ export class RunIntegration {
   private unavailableReason: string | null = null;
   private agentRunFactsContext: AgentRunFactsContext | null = null;
   private continuationAttempted = false;
-  private currentPolicySnapshot: PolicySnapshot | null = null;
   private agentRunActive = false;
   private agentRunGeneration = 0;
   private agentRunSettlementInProgress = false;
-  readonly experience = new RunCounters();
+  private readonly counters = new RunCounters();
 
   constructor(runtime: PindieRuntime) {
     this.runtime = runtime;
@@ -59,10 +56,6 @@ export class RunIntegration {
     return this.continuationAttempted;
   }
 
-  get policySnapshot(): PolicySnapshot | null {
-    return this.currentPolicySnapshot;
-  }
-
   get hasActiveAgentRun(): boolean {
     return this.agentRunActive;
   }
@@ -90,28 +83,13 @@ export class RunIntegration {
   }
 
   get executionCounters(): RunExecutionCounters {
-    return this.experience.execution;
-  }
-
-  get policyAttribution(): RunExperiencePolicy {
-    return { finalSnapshot: null, declarationCount: 0, finalPolicyDeclarationCount: 0,
-      finalPolicyFirstDeclaredAfter: null, finalPolicyLastDeclaredAfter: null };
-  }
-
-  setPolicySnapshot(snapshot: PolicySnapshot): void {
-    // Retired compatibility seam. Policy cannot affect ordinary Runs.
-    void snapshot;
-  }
-
-  clearPolicySnapshot(): void {
-    this.currentPolicySnapshot = null;
+    return this.counters.execution;
   }
 
   resetAgentRun(): void {
     this.agentRunGeneration += 1;
     this.clearAgentRunBookkeeping();
-    this.clearPolicySnapshot();
-    this.experience.reset();
+    this.counters.reset();
   }
 
   deriveSnapshot(): SemanticDerivationResult {
@@ -160,26 +138,18 @@ export class RunIntegration {
   }
 
   recordAuthorizedCall(toolCallId: string, effect: ToolEffect): void {
-    this.experience.recordAuthorizedCall(toolCallId, effect);
+    this.counters.recordAuthorizedCall(toolCallId, effect);
   }
 
   recordDeniedCall(effect: ToolEffect): void {
-    this.experience.recordDeniedCall(effect);
+    this.counters.recordDeniedCall(effect);
   }
 
   recordToolResult(
     toolCallId: string,
     isError: boolean,
-  ): "execution" | "policy" | "self-improvement" | "memory" | null {
-    return this.experience.recordToolResult(toolCallId, isError);
-  }
-
-  recordSuccessfulPolicyDeclaration(): void {
-    // Retired; no attribution is collected.
-  }
-
-  recordFailedPolicyDeclaration(): void {
-    this.currentPolicySnapshot = null;
+  ): "execution" | "memory" | null {
+    return this.counters.recordToolResult(toolCallId, isError);
   }
 
   recordSuccessfulCapability(capability: PindieCapability): void {

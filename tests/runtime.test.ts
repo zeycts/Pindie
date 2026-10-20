@@ -140,19 +140,21 @@ function nextTurn(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function observerLedger(): import("../src/work-episode.ts").WorkEpisodeLedger {
-  let id: string | null = null;
-  return { reconcile: async () => id, current: async () => id, prepared: async () => undefined,
-    committed: async (_root, _before, _after, event) => {
-      if (event.type === "start_task" || event.type === "replace_task") id = event.type;
-      return id;
-    } };
+function legacyRuntime(store: PindieStateStore): PindieRuntime {
+  // Old JS callers may still pass extra inputs, but Core has no ledger API.
+  const ledger = new Proxy({}, { get() { throw new Error("Retired ledger accessed"); } });
+  return Reflect.construct(PindieRuntime, [store, ledger]);
 }
 
 test("retired episode observer is never invoked by Task dispatch/refine/progress/reload", async () => {
-  const store = new FakeStateStore(), runtime = new PindieRuntime(store, observerLedger());
+  const store = new FakeStateStore(), runtime = legacyRuntime(store);
+  for (const name of ["workEpisodes", "currentWorkEpisodeId", "observeWorkEpisode", "onWorkEpisodeOpened"]) {
+    assert.equal(name in runtime, false, name);
+  }
   let calls = 0;
-  runtime.onWorkEpisodeOpened = async () => { calls++; await new Promise(() => {}); };
+  Object.defineProperty(runtime, "onWorkEpisodeOpened", {
+    get() { calls++; throw new Error("Retired observer getter accessed"); },
+  });
   await runtime.load("/repo");
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -166,6 +168,8 @@ test("retired episode observer is never invoked by Task dispatch/refine/progress
   } finally { clearTimeout(timer); }
   assert.equal(calls, 0);
   assert.equal(runtime.state.task?.goal, "Refined");
+  assert.equal(runtime.taskOccurrenceEpoch, 2);
+  assert.equal(runtime.externalStateEpoch, 0);
 });
 
 test("retired episode observer cannot throw or reject into Core transitions", async (t) => {
@@ -174,11 +178,11 @@ test("retired episode observer cannot throw or reject into Core transitions", as
   const onUnhandled = (error: unknown) => { unhandled.push(error); };
   process.on("unhandledRejection", onUnhandled);
   t.after(() => process.off("unhandledRejection", onUnhandled));
-  const runtime = new PindieRuntime(new FakeStateStore(), observerLedger());
+  const runtime = legacyRuntime(new FakeStateStore());
   await runtime.load("/repo");
-  runtime.onWorkEpisodeOpened = () => { throw new Error("sync failure".repeat(100)); };
+  Object.assign(runtime, { onWorkEpisodeOpened: () => { throw new Error("sync failure".repeat(100)); } });
   assert.ok((await runtime.dispatch(START_EVENT)).ok);
-  runtime.onWorkEpisodeOpened = async () => { throw new Error("async failure".repeat(100)); };
+  Object.assign(runtime, { onWorkEpisodeOpened: async () => { throw new Error("async failure".repeat(100)); } });
   assert.ok((await runtime.dispatch({ ...START_EVENT, type: "replace_task", goal: "Replacement" })).ok);
   await nextTurn();
   assert.equal(warnings.length, 0);

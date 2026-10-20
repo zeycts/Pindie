@@ -8,7 +8,6 @@ import {
 } from "./liveness.ts";
 import { EMPTY_STATE, type PindieState } from "./state.ts";
 import type { PindieStateStore } from "./store.ts";
-import type { WorkEpisodeLedger } from "./work-episode.ts";
 import {
   reduceState,
   type PindieEvent,
@@ -89,25 +88,13 @@ function installProcessSemanticMutationFence(
 
 export class PindieRuntime {
   private readonly store: PindieStateStore;
-  readonly workEpisodes: WorkEpisodeLedger | undefined;
-  /** Neutral post-binding operational observer. Never called for reconciled/current episodes. */
-  onWorkEpisodeOpened?: (projectRoot: string, episodeId: string) => Promise<void>;
   private currentProjectRoot: string | null = null;
   private currentState: PindieState = EMPTY_STATE;
   private currentExternalStateEpoch = 0;
   private occurrenceEpoch = 0;
   private authorityGeneration = 0;
-  private observedWorkEpisodeId: string | null = null;
-  /** Latest coherently observed operational binding, never Task truth or persisted State. */
-  get currentWorkEpisodeId(): string | null { return this.observedWorkEpisodeId; }
-  observeWorkEpisode(root: string, state: PindieState, id: string | null): void {
-    if (this.currentProjectRoot === root && this.currentState === state) {
-      this.observedWorkEpisodeId = state.task && !state.task.completed ? id : null;
-    }
-  }
 
-  /** Retired ledger input is ignored; Task persistence never accesses learning storage. */
-  constructor(store: PindieStateStore, _workEpisodes?: WorkEpisodeLedger) { this.store = store; this.workEpisodes = undefined; }
+  constructor(store: PindieStateStore) { this.store = store; }
   get state(): PindieState { return this.currentState; }
   get projectRoot(): string | null { return this.currentProjectRoot; }
   get externalStateEpoch(): number { return this.currentExternalStateEpoch; }
@@ -116,7 +103,6 @@ export class PindieRuntime {
   unload(): void {
     this.authorityGeneration += 1;
     this.currentProjectRoot = null;
-    this.observedWorkEpisodeId = null;
     this.currentState = EMPTY_STATE;
     this.currentExternalStateEpoch = 0;
   }
@@ -218,7 +204,6 @@ export class PindieRuntime {
   private adoptExternal(latest: PindieState): boolean {
     if (isDeepStrictEqual(latest, this.currentState)) return false;
     this.currentState = latest;
-    this.observedWorkEpisodeId = null;
     this.currentExternalStateEpoch += 1;
     return true;
   }

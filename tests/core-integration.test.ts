@@ -144,7 +144,7 @@ test("Core-only assembly owns Task, Gateway and verification/Gate without retire
 
   assert.equal(tools.has("pindie_policy_set"), false);
   assert.equal(core.authorizeTool("pindie_policy_set").decision?.allowed, false);
-  assert.equal(core.run.policySnapshot, null);
+  assert.equal("policySnapshot" in core.run, false);
 
   await tools.get("pindie_task_start").execute("start", {
     goal: "Exercise the Core boundary",
@@ -367,6 +367,59 @@ test("Core settlement observer timeout cannot leave bookkeeping latched", async 
   assert.equal(core.run.hasActiveAgentRun, true);
 });
 
+test("Core settlement exposes real counters and authority epochs without Learning placeholders", async () => {
+  const core = createCoreIntegration({ store: new MemoryStateStore(), continuityStore });
+  const ctx = coreContext();
+  await core.runtime.load("/core-settlement");
+  core.beginAgentRun(ctx);
+  const generation = core.run.activeAgentRunGeneration;
+  assert.ok(generation !== null);
+
+  for (const name of ["getOrdinaryRunEpisode", "getRunStartEpisode", "captureRunStartEpisode"]) {
+    assert.equal(name in core, false, name);
+  }
+  for (const name of ["policySnapshot", "policyAttribution", "setPolicySnapshot", "clearPolicySnapshot",
+    "recordSuccessfulPolicyDeclaration", "recordFailedPolicyDeclaration", "experience"]) {
+    assert.equal(name in core.run, false, name);
+  }
+
+  assert.ok((await core.runtime.dispatch({ type: "start_task", goal: "Core facts", constraints: [], successCriteria: ["Persist"] })).ok);
+  core.run.recordSuccessfulCapability("task.start");
+  core.run.recordAuthorizedCall("read", core.classifyToolEffect("read"));
+  assert.equal(core.run.recordToolResult("read", false), "execution");
+  core.run.recordAuthorizedCall("edit", core.classifyToolEffect("edit"));
+  assert.equal(core.run.recordToolResult("edit", true), "execution");
+  core.run.recordDeniedCall(core.classifyToolEffect("write"));
+  // Retired calls stay denied even with a Task that permits ordinary mutation.
+  assert.equal(core.authorizeTool("edit").decision?.allowed, true);
+  const retired = core.classifyToolEffect("pindie_policy_set");
+  assert.equal(core.authorizeTool("pindie_policy_set").decision?.allowed, false);
+  core.run.recordDeniedCall(retired);
+  core.run.recordAuthorizedCall("stale-policy", retired);
+  assert.equal(core.run.recordToolResult("stale-policy", true), null);
+
+  const result = await core.settleAgentRun(ctx, []);
+  assert.equal(result.status, "settled");
+  const facts = result.facts!;
+  assert.equal(facts.settlementGeneration, generation);
+  assert.equal(facts.settlementOccurrenceEpoch, 1);
+  assert.equal(facts.settlementExternalStateEpoch, 0);
+  assert.equal(facts.task?.goal, "Core facts");
+  assert.equal(facts.snapshot?.authority, "coherent");
+  assert.equal(typeof facts.durationMs, "number");
+  assert.deepEqual(facts.execution, { toolCalls: 2, observations: 1, consequentialCalls: 1,
+    projectMutationEffectCalls: 1, verificationCalls: 0, toolErrors: 1, deniedCalls: 1 });
+  assert.equal(Object.isFrozen(facts), true);
+  assert.equal(Object.isFrozen(facts.execution), true);
+  assert.equal("policy" in facts, false);
+  assert.equal("runStartEpisode" in facts, false);
+  assert.equal(core.run.hasActiveAgentRun, false);
+  assert.equal(core.run.executionCounters.toolCalls, 0);
+  core.beginAgentRunFacts(ctx);
+  assert.notEqual(core.run.activeAgentRunGeneration, generation);
+  assert.equal(facts.execution.toolCalls, 2, "reset cannot mutate settled diagnostics");
+});
+
 test("Core-only authorization ignores caller-provided capability injection", async () => {
   const core = createCoreIntegration({
     store: new MemoryStateStore(),
@@ -388,6 +441,7 @@ test("Core-only authorization ignores caller-provided capability injection", asy
 test("Core integration has no optional feature implementation imports", async () => {
   const source = await readFile(new URL("../src/core-integration.ts", import.meta.url), "utf8");
 
-  assert.doesNotMatch(source, /(?:self-improvement|strategy-adaptation|strategy-derivation|strategy-candidate|strategy-trial|strategy-portfolio|cross-project|discord|remote|notion|project-memory)/iu);
+  assert.doesNotMatch(source, /(?:self-improvement|strategy-adaptation|strategy-derivation|strategy-candidate|strategy-trial|strategy-portfolio|cross-project|work-episode|run-experience|discord|remote|notion|project-memory)/iu);
+  assert.doesNotMatch(source, /from\s+["']\.\/policy\.ts["']/u);
   assert.doesNotMatch(source, /\b(?:event\s*bus|service\s*locator|dependency\s*registry|PindiePlugin)\b/iu);
 });

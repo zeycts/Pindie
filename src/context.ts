@@ -3,7 +3,6 @@ import {
   type PindieCapability,
   type SemanticSnapshot,
 } from "./semantics.ts";
-import type { PolicySnapshot } from "./policy.ts";
 import {
   getTaskStatus,
   getVerificationStatus,
@@ -153,9 +152,6 @@ export function renderCurrentPindieActionEligibility(
     ),
   ].join("\n");
 }
-
-// Inert compatibility argument: retired Policy never enters ordinary context.
-function renderCurrentPindiePolicySnapshot(_policySnapshot: PolicySnapshot | null): string[] { return []; }
 
 function renderUnavailableState(reason: string | null): string {
   return [
@@ -333,7 +329,6 @@ export function renderCurrentPindieGate(
 function renderPindieRunState(
   state: PindieState | null,
   snapshot: SemanticSnapshot,
-  policySnapshot: PolicySnapshot | null = null,
   unavailableReason: string | null = null,
 ): string {
   const lines = snapshot.authority === "unavailable"
@@ -345,7 +340,6 @@ function renderPindieRunState(
   return [
     lines,
     renderCurrentPindieActionEligibility(snapshot),
-    ...renderCurrentPindiePolicySnapshot(policySnapshot),
   ].join("\n");
 }
 
@@ -354,7 +348,7 @@ export function renderPindieRunBaseline(
   snapshot: SemanticSnapshot,
   unavailableReason: string | null = null,
 ): string {
-  const content = renderPindieRunState(state, snapshot, null, unavailableReason);
+  const content = renderPindieRunState(state, snapshot, unavailableReason);
 
   return [
     PINDIE_RUN_BASELINE_START,
@@ -372,15 +366,9 @@ export function renderPindieRunBaseline(
 export function renderPindieStateCheckpoint(
   state: PindieState | null,
   snapshot: SemanticSnapshot,
-  policySnapshot: PolicySnapshot | null = null,
   unavailableReason: string | null = null,
 ): string {
-  const content = renderPindieRunState(
-    state,
-    snapshot,
-    policySnapshot,
-    unavailableReason,
-  );
+  const content = renderPindieRunState(state, snapshot, unavailableReason);
   return [
     PINDIE_STATE_CHECKPOINT_START,
     "Pindie State Checkpoint",
@@ -397,7 +385,6 @@ export function renderPindieStateCheckpoint(
 export function createPindieStateCheckpointMessage(
   state: PindieState | null,
   snapshot: SemanticSnapshot,
-  policySnapshot: PolicySnapshot | null = null,
   unavailableReason: string | null = null,
 ) {
   return {
@@ -405,7 +392,6 @@ export function createPindieStateCheckpointMessage(
     content: renderPindieStateCheckpoint(
       state,
       snapshot,
-      policySnapshot,
       unavailableReason,
     ),
     display: false,
