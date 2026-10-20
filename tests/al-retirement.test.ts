@@ -12,7 +12,7 @@ import { renderPindieSystemContract } from "../src/context.ts";
 import { PindieRuntime } from "../src/runtime.ts";
 import { EMPTY_STATE, type PindieState } from "../src/state.ts";
 import type { PindieStateStore } from "../src/store.ts";
-import { importEdges, moduleSpecifiers, RETIRED_MODULES } from "./retired-module-imports.ts";
+import { importEdges, moduleSpecifiers, RETIRED_CPL_MODULES, RETIRED_MODULES } from "./retired-module-imports.ts";
 
 class MemoryStore implements PindieStateStore {
   state: PindieState = structuredClone(EMPTY_STATE);
@@ -161,6 +161,18 @@ test("all Stable source and mixed test AST edges exclude the 29 retired modules,
   assert.deepEqual(moduleSpecifiers(`import type { T } from "./a.ts"; type T2 = import("./b.ts").T;
     const a = import("./c.ts"); const b = require("./d.ts"); export type { T } from "./e.ts";
     import f = require("./f.ts");`), ["./a.ts", "./b.ts", "./c.ts", "./d.ts", "./e.ts", "./f.ts"]);
+});
+
+test("CPL source island and its fixture are physically absent with no remaining import consumers", async () => {
+  const root = resolve(import.meta.dirname, "..");
+  assert.equal(RETIRED_CPL_MODULES.size, 12);
+  const removed = new Set([...RETIRED_CPL_MODULES, "tests/synthesis-trial-fixture.ts"]);
+  for (const path of removed) {
+    await assert.rejects(access(resolve(root, path)), { code: "ENOENT" }, `Retired artifact must be absent: ${path}`);
+  }
+  for (const edge of await importEdges(root, ["src", "tests", "scripts"])) {
+    assert.equal(removed.has(edge.to), false, `${edge.from} -> ${edge.to}`);
+  }
 });
 
 test("production entrypoint emitted import graph cannot load retired Learning/Policy modules", async () => {
