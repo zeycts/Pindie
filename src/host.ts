@@ -7,7 +7,6 @@ import {
   getAgentDir,
   InteractiveMode,
   SessionManager,
-  type AgentSession,
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
   type ExtensionAPI,
@@ -62,10 +61,6 @@ import {
 } from "./quota-fallback-supervisor.ts";
 
 import { installQuotaFallbackReceiver } from "./quota-fallback-control.ts";
-// Retired input types only, never production activation paths.
-import type { LearningJobHandler } from "./learning-supervisor.ts";
-import type { LearningModelPolicy } from "./learning-session-runner.ts";
-import type { ProjectDiscoveryPolicy } from "./discovery-contract.ts";
 
 export interface PindieResourcePaths {
   extensionPath: string;
@@ -104,12 +99,6 @@ export interface PindieHostOptions {
   longTaskRollover?: LongTaskRolloverSupervisorOptions;
   quotaResume?: QuotaResumeSupervisorOptions;
   quotaFallback?: QuotaFallbackSupervisorOptions;
-  /** @deprecated Ignored. No Host learning handlers are registered. */
-  learningHandlers?: readonly LearningJobHandler[];
-  /** @deprecated Ignored. Host never resolves or invokes a learning model. */
-  learningModel?: { readonly provider: string; readonly modelId: string; readonly thinkingLevel?: "off" | "low" | "medium" };
-  /** @deprecated Ignored. Discovery is no longer mounted. */
-  discoveryPolicy?: ProjectDiscoveryPolicy;
   env?: Record<string, string | undefined>;
   dependencies?: PindieHostDependencies;
 }
@@ -122,8 +111,6 @@ export interface PindieHost {
   readonly runtime: PiRuntimeAdapter;
   readonly interactiveMode: PindieInteractiveMode;
   readonly presentation: PindiePresentationReaderLease;
-  /** @deprecated Always null; retained only for Phase 1 caller compatibility. */
-  readonly learningModelIdentity: LearningModelPolicy | null;
   run(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -151,12 +138,6 @@ export function createPindieRuntimeFactory(
     readonly storageRoots?: PindieStorageRootOverrides;
     readonly browserExtensionFactory?: (pi: ExtensionAPI) => void;
     readonly onPresentationReaderChange?: (reader: PindiePresentationReader | null) => void;
-    /** @deprecated All Learning lifecycle callbacks below are ignored. */
-    readonly onExperienceSaved?: (projectRoot: string) => void;
-    readonly onHumanRunStart?: () => void;
-    readonly onHumanRunSettled?: () => void;
-    readonly onSessionChange?: () => void;
-    readonly onSessionReady?: (session: AgentSession) => void;
   } = {},
 ): CreateAgentSessionRuntimeFactory {
   const createServices = dependencies.createAgentSessionServices ?? createAgentSessionServices;
@@ -396,7 +377,6 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       runtime,
       interactiveMode,
       presentation,
-      learningModelIdentity: null,
       run: async () => {
         try {
           await interactiveMode.run();
