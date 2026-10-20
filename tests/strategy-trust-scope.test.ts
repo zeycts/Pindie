@@ -3,7 +3,6 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-
 import {
   createCrossProjectExperienceRef,
   crossProjectExperienceRecordFingerprint,
@@ -45,7 +44,13 @@ import {
   FileStrategyTrustScopeDecisionStore,
   validateStrategyTrustScopeDecisionArtifact,
   validateStrategyTrustScopeDecisionBinding,
-} from "../src/strategy-trust-scope-decisions.ts";import { createScopeTrialBinding, parseScopeTrialCommandValue, resolveScopeTrialBinding, scopeTrialCommandValue } from "../src/strategy-trust-scope-trial.ts";
+} from "../src/strategy-trust-scope-decisions.ts";
+import {
+  createScopeTrialBinding,
+  parseScopeTrialCommandValue,
+  resolveScopeTrialBinding,
+  scopeTrialCommandValue,
+} from "../src/strategy-trust-scope-trial.ts";
 import { TrialRuntime } from "../src/strategy-trial.ts";
 import {
   FileStrategyTrustScopeSourceResolver,

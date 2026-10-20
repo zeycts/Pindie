@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import test from "node:test";import type { RunExperienceProjectReader, RunExperienceSourceRecord } from "../src/experience-store.ts";
+import test from "node:test";
+import type {
+  RunExperienceProjectReader,
+  RunExperienceSourceRecord,
+} from "../src/experience-store.ts";
 import { scanCrossProjectTrialEvidence } from "../src/cross-project-trial-validation.ts";
 import {
   assembleRunExperience,
@@ -11,7 +15,15 @@ import {
 } from "../src/policy.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
 import type { PindieState } from "../src/state.ts";
-import { getProjectId } from "../src/store.ts";import { createStrategySynthesisDecision, readSynthesisTrustedGlobalArtifacts } from "../src/strategy-synthesis-decisions.ts";import { strategySynthesisCandidateSemanticFingerprint, type StrategySynthesisCandidateV1 } from "../src/strategy-synthesis-candidates.ts";
+import { getProjectId } from "../src/store.ts";
+import {
+  createStrategySynthesisDecision,
+  readSynthesisTrustedGlobalArtifacts,
+} from "../src/strategy-synthesis-decisions.ts";
+import {
+  strategySynthesisCandidateSemanticFingerprint,
+  type StrategySynthesisCandidateV1,
+} from "../src/strategy-synthesis-candidates.ts";
 import { makeSynthesisTrialFixture } from "./synthesis-trial-fixture.ts";
 
 const TRIAL_PROJECT_NEW = getProjectId("/synthesis-review-new-trial");

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
 import {
   assembleRunExperience,
   parseRunExperience,
@@ -17,7 +16,15 @@ import {
 } from "../src/policy.ts";
 import {
   createPromotedStrategyRevisionCatalog,
-} from "../src/strategy-decisions.ts";import { createStrategyDerivationCandidate, strategyDerivationCandidateSemanticFingerprint } from "../src/strategy-derivation-candidates.ts";import { createPromotedDerivedStrategyCatalog, createStrategyDerivationDecision } from "../src/strategy-derivation-decisions.ts";
+} from "../src/strategy-decisions.ts";
+import {
+  createStrategyDerivationCandidate,
+  strategyDerivationCandidateSemanticFingerprint,
+} from "../src/strategy-derivation-candidates.ts";
+import {
+  createPromotedDerivedStrategyCatalog,
+  createStrategyDerivationDecision,
+} from "../src/strategy-derivation-decisions.ts";
 import {
   createTrustedStrategyPortfolio,
   formatPromotedTrustedStrategyPortfolio,
@@ -25,7 +32,12 @@ import {
   MAX_TRUSTED_PORTFOLIO_ENTRIES,
   resolveTrustedPortfolioRevisionSelection,
 } from "../src/strategy-portfolio.ts";
-import { MAX_USER_GLOBAL_DERIVED_STRATEGIES } from "../src/strategy-trust-scope-constants.ts";import { createStrategyTrustScopeCandidate, type StrategyTrustScopeCandidateReader, type StrategyTrustScopeSourceStrategyV1 } from "../src/strategy-trust-scope-candidates.ts";
+import { MAX_USER_GLOBAL_DERIVED_STRATEGIES } from "../src/strategy-trust-scope-constants.ts";
+import {
+  createStrategyTrustScopeCandidate,
+  type StrategyTrustScopeCandidateReader,
+  type StrategyTrustScopeSourceStrategyV1,
+} from "../src/strategy-trust-scope-candidates.ts";
 import {
   createStrategyTrustScopeDecision,
   type StrategyTrustScopeDecisionReader,
@@ -36,7 +48,15 @@ import type { ScopeProjectTrustReader } from "../src/strategy-trust-scope-review
 import type { StrategyTrustScopeSourceResolver } from "../src/strategy-trust-scope-resolution.ts";
 import { getProjectId } from "../src/store.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
-import type { PindieState } from "../src/state.ts";import { createStrategySynthesisDecision, type StrategySynthesisDecisionReader, type StrategySynthesisDecisionV1 } from "../src/strategy-synthesis-decisions.ts";import { type StrategySynthesisCandidateReader } from "../src/strategy-synthesis-candidates.ts";
+import type { PindieState } from "../src/state.ts";
+import {
+  createStrategySynthesisDecision,
+  type StrategySynthesisDecisionReader,
+  type StrategySynthesisDecisionV1,
+} from "../src/strategy-synthesis-decisions.ts";
+import {
+  type StrategySynthesisCandidateReader,
+} from "../src/strategy-synthesis-candidates.ts";
 import { makeSynthesisTrialFixture } from "./synthesis-trial-fixture.ts";
 import { loadUserGlobalTrustedDerivedStrategyProjection } from "../src/strategy-trust-scope-global.ts";
 

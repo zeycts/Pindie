@@ -615,5 +615,19 @@
     "coreRuntimeBehaviorModified": false,
     "retainedStores": "Scope/Synthesis Candidate and Decision stores, Scope project trust review, shared cross-project Trial validation, Strategy portfolio/trust safety, Policy and Experience schemas keep active schema/store tests and retained consumers",
     "userData": "no read, migration or deletion"
+  },
+  "hygiene": {
+    "commit": "formatting-only import layout repair",
+    "artifact": ";import glued declarations in three rewritten mixed tests",
+    "bodiesChanged": 0,
+    "retainedImportDeclarationsRestored": "multi-line style where base used it",
+    "fullCheckAfterHygiene": {
+      "tests": 1270,
+      "pass": 1270,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "durationMs": 148522.329984
+    }
   }
 }
