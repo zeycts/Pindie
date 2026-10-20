@@ -1,6 +1,6 @@
 # Pindie Agent Instructions
 
-Phase 2-A: `docs/al-retirement-phase2-a.md` records the explicit deletion of the standalone Learning Evaluation/Recovery island and unused Host Learning interfaces. Its manifest supersedes historical R4 source references. Other AL/SI/CPL cleanup remains pending; do not reactivate it or delete historical user data. Preserve `tests/archive/al-phase1/`.
+Phase 2-A: `docs/al-retirement-phase2-a.md` records the merged deletion of the standalone Learning Evaluation/Recovery island and unused Host Learning interfaces. Phase 2-B: `docs/al-retirement-phase2-b.md` records removal of the Learning scheduler/budget/Session runner and Discovery executor. These exact manifests supersede historical references to deleted source files. The job ledger and other AL/SI/CPL artifact/type cleanup remain pending; do not reactivate them or delete historical user data. Preserve `tests/archive/al-phase1/`.
 
 Pindie is a personal AI agent for indie development built on the Pi agent harness.
 

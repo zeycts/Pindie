@@ -2,7 +2,7 @@
 
 Historical Phase 1 snapshot: [Phase 2-A](al-retirement-phase2-a.md) now removes the standalone Evaluation/Recovery island and inert Host Learning interface types/results described as retained below. Other deletion work remains pending; no historical data is migrated or removed.
 
-Status: production hard isolation on Draft PR #268; **not merged/deployed**. This approved retirement contract supersedes historical Learning activation and SI/CPL integration-preservation guidance. Phase 2 production-source deletion is not included.
+Status: Phase 1 production hard isolation **merged in PR #268** at `d89ff6b48220bf0f8ad8d4a72ee9a7d393c6aeba`; Phase 2-A **merged in PR #269** at `bf14847e693f4287c771cf28383ce61d3b7a95e0` (CI #628: 1397/1397 passed). Merge is not deployment: the protected live worktree remains at `4d3139b` and no production service change is claimed. The verification counts and Draft-stage instructions below are historical Phase 1 evidence, not current PR status. This approved retirement contract supersedes historical Learning activation and SI/CPL integration-preservation guidance. See [Phase 2-B](al-retirement-phase2-b.md) for the subsequent bounded deletion slice.
 
 ## Production boundary
 
@@ -51,6 +51,6 @@ No production `src/` change was needed in this acceptance repair. Earlier resour
 
 ## Rollback and Phase 2
 
-Rollback is Git-only: revert the reviewed Phase 1 commits. Historical bytes/schema are unchanged, so no reverse migration is needed. Do not restart/deploy production merely to test rollback. Keep the PR Draft/unmerged until independent acceptance.
+Rollback is Git-only: revert the reviewed Phase 1 commits. Historical bytes/schema are unchanged, so no reverse migration is needed. Do not restart/deploy production merely to test rollback. The original instruction was to keep PR #268 Draft/unmerged until independent acceptance; that acceptance and merge are now complete. This is not authorization to merge later retirement PRs or deploy production.
 
 After acceptance, separately inventory/delete unreachable Learning/discovery/hypothesis/lineage, Trial/overlay/evidence, evaluation/evaluator/recovery, SI/CPL strategy/trust/knowledge and Experience implementations and their isolated tests/fixtures. Remove inert interfaces/results/helpers and reconcile historical docs. Preserve explicit fail-closed handling of retired tool names, independent Core counters and real authority epochs. Any archival/deletion of historical user data requires separate explicit authorization; never delete State/continuity, global preferences, remote routing or user Sessions as a shortcut.
