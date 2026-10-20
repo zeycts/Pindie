@@ -600,9 +600,6 @@ test("exact model availability uses Pi registry, not scoped picker choices or au
   const control = fakeRuntime(modelSession("first", () => [codex, deepseek]));
   const adapter = new PiRuntimeAdapter(control.runtime);
 
-  assert.deepEqual(adapter.getActiveSessionModelChoices(), [
-    { provider: "openai-codex", modelId: "gpt", displayName: "Codex", current: true },
-  ]);
   assert.equal(adapter.isActiveSessionModelAvailable("deepseek", "deepseek-flash"), true);
   assert.equal(adapter.isActiveSessionModelAvailable("deepseek", "other"), false);
   assert.equal(adapter.isActiveSessionModelAvailable("deepseek", "unknown"), false);
@@ -614,7 +611,7 @@ test("exact model availability uses Pi registry, not scoped picker choices or au
   assert.equal(adapter.isActiveSessionModelAvailable("deepseek", "deepseek-flash"), true);
 });
 
-test("direct model picker selection delegates only to setModel despite scoped thinking metadata", async () => {
+test("native model configuration delegates only to setModel despite scoped thinking metadata", async () => {
   const current = { provider: "openai", id: "current", name: "Current" };
   const next = { provider: "openai", id: "next", name: "Next" };
   const unavailable = { provider: "other", id: "hidden", name: "Hidden" };
@@ -637,40 +634,26 @@ test("direct model picker selection delegates only to setModel despite scoped th
     setThinkingLevel: (level: string) => levels.push(level),
   } as unknown as AgentSession;
   const adapter = new PiRuntimeAdapter(fakeRuntime(session).runtime);
-  assert.deepEqual(adapter.getActiveSessionModelChoices(), [
-    { provider: "openai", modelId: "current", displayName: "Current", current: true },
-    { provider: "openai", modelId: "next", displayName: "Next", current: false, scopedThinkingLevel: "high" },
-  ]);
   await adapter.setActiveSessionModel("openai", "next");
   assert.deepEqual(mutations, [[next]]);
   assert.deepEqual(levels, []);
   await assert.rejects(adapter.setActiveSessionModel("other", "hidden"), /no longer available/);
 });
 
-test("Extension command adapter actions delegate to current public Pi runtime APIs", async () => {
+test("Control idle wait and Session switch delegate to public Pi runtime APIs", async () => {
   const calls: string[] = [];
   const session = {
     ...fakeSession("session-command"),
     waitForIdle: async () => { calls.push("waitForIdle"); },
-    navigateTree: async () => { calls.push("navigateTree"); return { cancelled: false }; },
-    reload: async () => { calls.push("reload"); },
   } as unknown as AgentSession;
   const runtime = {
     session,
-    newSession: async () => { calls.push("newSession"); return { cancelled: false }; },
-    fork: async () => { calls.push("fork"); return { cancelled: false, selectedText: "ignored" }; },
     switchSession: async () => { calls.push("switchSession"); return { cancelled: false }; },
     dispose: async () => {},
   } as unknown as AgentSessionRuntime;
   const adapter = new PiRuntimeAdapter(runtime);
 
   await adapter.waitForActiveSessionIdle();
-  await adapter.newSession();
-  await adapter.forkActiveSession("entry");
-  await adapter.navigateActiveSessionTree("entry");
   await adapter.switchActiveSession("session.jsonl");
-  await adapter.reloadActiveSession();
-  assert.deepEqual(calls, [
-    "waitForIdle", "newSession", "fork", "navigateTree", "switchSession", "reload",
-  ]);
+  assert.deepEqual(calls, ["waitForIdle", "switchSession"]);
 });

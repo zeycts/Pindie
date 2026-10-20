@@ -1066,7 +1066,7 @@ If the required read-only surface is unavailable or incorrectly annotated, fail 
 
 #### 20.6.3 View boundary
 
-D2 uses a dedicated read-only monitor view. Do not instantiate the writable \`PindieTuiView\` with empty callbacks.
+D2 uses a dedicated read-only monitor view with neutral timeline/text rendering helpers, not an interactive shell with empty callbacks.
 
 The monitor view contains only:
 

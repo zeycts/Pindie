@@ -1,6 +1,6 @@
 import { Container, Key, matchesKey, ProcessTerminal, ScrollView, Text, TuiAltScreen, VStack, type Component, type Terminal, type TUI } from "@earendil-works/pi-tui";
-import { formatBlock } from "./tui/view.ts";
-import { boundedGraphemeText } from "./tui/bounded-text.ts";
+import { formatBlock } from "./timeline-text.ts";
+import { boundedGraphemeText } from "./bounded-text.ts";
 import type { PindieControlMonitorState, PindieControlMonitorViewPort } from "./control-monitor.ts";
 
 class MonitorBlockText implements Component {

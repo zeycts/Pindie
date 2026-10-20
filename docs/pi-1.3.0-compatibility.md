@@ -57,7 +57,7 @@ New `tests/pi-1.3-control.test.ts` uses real Pi with a faux provider, blocked na
 
 Quota refresh remains detached/fail-soft, once per quota-resume start, without blocking preparation or changing State. Automatic fallback/resume successors and same-Run continuation preserve their existing ownership and exactly-once semantics. No Control, Host, quota-policy or UI refactor was necessary.
 
-TUI policy stays **explicit Host override → explicit effective Pi setting → regular fallback**, in both production Pi InteractiveMode and the owned shell. No adoption of fullscreen default. Existing six-case precedence coverage and TUI/action tests pass. Home/End remain editor line movement; Ctrl+Home/End control fullscreen transcript bounds. Upstream fixes shifted-symbol keys, terminal reply fragmentation, fullscreen selection across Session changes and overlay ownership. EIO/raw-mode handling remains upstream; OSC 7501 and OSC 52 are optional Pi capabilities, not enabled by Pindie. No keybindings/settings files are rewritten.
+Native Pi InteractiveMode is the only interactive shell. TUI policy stays **explicit Host override → explicit effective Pi setting → regular fallback**. No adoption of fullscreen default. Host precedence and native UI tests cover this policy. Home/End remain editor line movement; Ctrl+Home/End control fullscreen transcript bounds. Upstream fixes shifted-symbol keys, terminal reply fragmentation, fullscreen selection across Session changes and overlay ownership. EIO/raw-mode handling remains upstream; OSC 7501 and OSC 52 are optional Pi capabilities, not enabled by Pindie. No keybindings/settings files are rewritten.
 
 ## Sequential verification and limits
 

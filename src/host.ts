@@ -24,10 +24,6 @@ import { createNativeInteractiveRuntime } from "./native-interactive-runtime.ts"
 import { observeNativeUiIdle } from "./native-ui-idle.ts";
 import { canReleaseBrowserIdle } from "./browser-idle-authority.ts";
 import { createBrowserRealityManager, type BrowserRealityManager } from "./browser-reality-manager.ts";
-import {
-  PindieInteractiveMode as OwnedPindieInteractiveMode,
-  type PindieInteractiveModeOptions,
-} from "./tui/pindie-interactive-mode.ts";
 import { registerConfiguredPindieExtension } from "./extension.ts";
 import type { PindiePresentationReader } from "./presentation-integration.ts";
 import {
@@ -69,7 +65,6 @@ export interface PindieResourcePaths {
 
 export interface PindieInteractiveMode {
   run(): Promise<void>;
-  canReleaseIdleResources?(): boolean;
 }
 
 export interface PindieHostDependencies {
@@ -79,10 +74,6 @@ export interface PindieHostDependencies {
   createInteractiveMode?: (
     runtime: AgentSessionRuntime,
     options: InteractiveModeOptions,
-  ) => PindieInteractiveMode;
-  createPindieInteractiveMode?: (
-    runtime: PiRuntimeAdapter,
-    options: PindieInteractiveModeOptions,
   ) => PindieInteractiveMode;
   createBrowserRealityRuntime?: (
     config: BrowserRealityConfig,
@@ -113,11 +104,6 @@ export interface PindieHost {
   readonly presentation: PindiePresentationReaderLease;
   run(): Promise<void>;
   dispose(): Promise<void>;
-}
-
-/** Temporary migration gate: only the exact value `1` selects the owned TUI. */
-export function isPindieTuiEnabled(env: Record<string, string | undefined>): boolean {
-  return env.PINDIE_TUI === "1";
 }
 
 export function getPindieResourcePaths(): PindieResourcePaths {
@@ -335,23 +321,9 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
         ?? nativeRuntime.session.settingsManager?.getSettings().tuiMode
         ?? "regular",
     };
-    const activeRuntime = runtime;
     let disposePromise: Promise<void> | undefined;
-    const interactiveMode: PindieInteractiveMode = isPindieTuiEnabled(env)
-      ? (dependencies.createPindieInteractiveMode ??
-        ((adapter, ownedModeOptions) => new OwnedPindieInteractiveMode(adapter, ownedModeOptions)))(
-          activeRuntime,
-          {
-            ...modeOptions,
-            cwd,
-            agentDir,
-            presentation,
-          },
-        )
-      : createMode(createNativeInteractiveRuntime(nativeRuntime, dispose), modeOptions);
-    uiIdle = isPindieTuiEnabled(env)
-      ? () => interactiveMode.canReleaseIdleResources?.() === true
-      : observeNativeUiIdle(interactiveMode);
+    const interactiveMode = createMode(createNativeInteractiveRuntime(nativeRuntime, dispose), modeOptions);
+    uiIdle = observeNativeUiIdle(interactiveMode);
     function dispose(): Promise<void> {
       disposePromise ??= (async () => {
         uiIdle = () => false;

@@ -106,14 +106,6 @@ export interface ActiveSessionClientLifecycle {
   rebindSession?: () => Promise<void>;
 }
 
-export interface ActiveSessionModelChoice {
-  readonly provider: string;
-  readonly modelId: string;
-  readonly displayName: string;
-  readonly current: boolean;
-  readonly scopedThinkingLevel?: AgentSession["thinkingLevel"];
-}
-
 export interface ActiveProjectSessionChoice {
   readonly path: string;
   readonly id: string;
@@ -232,35 +224,11 @@ export class PiRuntimeAdapter {
     return this.activeSession.waitForIdle();
   }
 
-  newSession(
-    options?: Parameters<AgentSessionRuntime["newSession"]>[0],
-  ): ReturnType<AgentSessionRuntime["newSession"]> {
-    return this.nativeRuntime.newSession(options);
-  }
-
-  forkActiveSession(
-    entryId: Parameters<AgentSessionRuntime["fork"]>[0],
-    options?: Parameters<AgentSessionRuntime["fork"]>[1],
-  ): ReturnType<AgentSessionRuntime["fork"]> {
-    return this.nativeRuntime.fork(entryId, options);
-  }
-
-  navigateActiveSessionTree(
-    targetId: Parameters<AgentSession["navigateTree"]>[0],
-    options?: Parameters<AgentSession["navigateTree"]>[1],
-  ): Promise<{ cancelled: boolean }> {
-    return this.activeSession.navigateTree(targetId, options);
-  }
-
   switchActiveSession(
     sessionPath: Parameters<AgentSessionRuntime["switchSession"]>[0],
     options?: Pick<NonNullable<Parameters<AgentSessionRuntime["switchSession"]>[1]>, "withSession">,
   ): ReturnType<AgentSessionRuntime["switchSession"]> {
     return this.nativeRuntime.switchSession(sessionPath, options);
-  }
-
-  reloadActiveSession(): Promise<void> {
-    return this.activeSession.reload();
   }
 
   /** Read Pi's native thinking level for the Session active at call time. */
@@ -297,27 +265,6 @@ export class PiRuntimeAdapter {
   getActiveSessionModelIdentity(): { provider: string; modelId: string } | null {
     const model = this.activeSession.model;
     return model ? { provider: model.provider, modelId: model.id } : null;
-  }
-
-  getActiveSessionModelChoices(): readonly ActiveSessionModelChoice[] {
-    const session = this.activeSession;
-    const registry = session.extensionRunner.getModelRegistry();
-    const available = registry.getAvailable();
-    const availableIds = new Set(available.map((model) => `${model.provider}\u0000${model.id}`));
-    const scoped = session.scopedModels;
-    const universe: ReadonlyArray<{
-      model: (typeof available)[number];
-      thinkingLevel?: AgentSession["thinkingLevel"];
-    }> = scoped.length > 0
-      ? scoped.filter(({ model }) => availableIds.has(`${model.provider}\u0000${model.id}`))
-      : available.map((model) => ({ model }));
-    return universe.map(({ model, thinkingLevel }) => ({
-      provider: model.provider,
-      modelId: model.id,
-      displayName: model.name ?? model.id,
-      current: session.model?.provider === model.provider && session.model?.id === model.id,
-      ...(thinkingLevel === undefined ? {} : { scopedThinkingLevel: thinkingLevel }),
-    }));
   }
 
   /** Check exact model availability in Pi's registry, independent of picker scope. */

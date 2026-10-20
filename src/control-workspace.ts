@@ -188,7 +188,6 @@ export class PindieControlWorkspace {
       try {
         host = await (this.options.createHost ?? createPindieHost)({
           cwd: target,
-          env: { ...process.env, PINDIE_TUI: "0" },
           dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
         });
         client = (this.options.createClient ?? ((h) => new PindieControlClient(h.runtime, h.presentation, {
