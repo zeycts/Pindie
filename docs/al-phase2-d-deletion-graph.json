@@ -1,0 +1,646 @@
+{
+  "base": "aa7b741cd6919a09c1aa232f8a64fb3a1aef507e",
+  "sources": [
+    "src/discovery-contract.ts",
+    "src/discovery-hypotheses.ts",
+    "src/hypothesis-lineage.ts",
+    "src/open-hypotheses.ts",
+    "src/ordinary-trial-overlay.ts",
+    "src/trial-assignment-v2.ts",
+    "src/trial-evidence-v2.ts",
+    "src/v1-experience-protection.ts",
+    "src/experience-lifecycle.ts"
+  ],
+  "testsAndFixtures": [
+    "tests/hypothesis-v2.test.ts",
+    "tests/trial-assignment-r2.test.ts",
+    "tests/experience-lifecycle.test.ts"
+  ],
+  "mixedTestsPreserved": [
+    "tests/trial-evidence-r3.test.ts",
+    "tests/trial-offers-pi.test.ts",
+    "tests/trial-overlay-pi-r2.test.ts",
+    "tests/al-retirement.test.ts"
+  ],
+  "modifiedSource": [
+    "src/extension.ts"
+  ],
+  "removedInertPublicFields": [
+    "trialAssignmentStore",
+    "trialHypothesisReader",
+    "trialAssignmentPolicy",
+    "trialDiagnostic"
+  ],
+  "scan": {
+    "roots": [
+      "src",
+      "tests",
+      "scripts"
+    ],
+    "files": 246,
+    "method": "relative .ts string literal import/export/type/dynamic references plus explicit basename/computed-source audit; emitted production graph verified independently",
+    "noPrefixDeletion": true
+  },
+  "baseIncomingEdges": [
+    {
+      "from": "src/discovery-hypotheses.ts",
+      "to": "src/hypothesis-lineage.ts"
+    },
+    {
+      "from": "src/discovery-hypotheses.ts",
+      "to": "src/discovery-contract.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/trial-assignment-v2.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/trial-evidence-v2.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/v1-experience-protection.ts"
+    },
+    {
+      "from": "src/extension.ts",
+      "to": "src/open-hypotheses.ts"
+    },
+    {
+      "from": "src/extension.ts",
+      "to": "src/trial-assignment-v2.ts"
+    },
+    {
+      "from": "src/extension.ts",
+      "to": "src/ordinary-trial-overlay.ts"
+    },
+    {
+      "from": "src/open-hypotheses.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "src/open-hypotheses.ts",
+      "to": "src/hypothesis-lineage.ts"
+    },
+    {
+      "from": "src/ordinary-trial-overlay.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "src/ordinary-trial-overlay.ts",
+      "to": "src/open-hypotheses.ts"
+    },
+    {
+      "from": "src/ordinary-trial-overlay.ts",
+      "to": "src/trial-assignment-v2.ts"
+    },
+    {
+      "from": "src/trial-assignment-v2.ts",
+      "to": "src/open-hypotheses.ts"
+    },
+    {
+      "from": "src/trial-assignment-v2.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "src/trial-evidence-v2.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "src/trial-evidence-v2.ts",
+      "to": "src/trial-assignment-v2.ts"
+    },
+    {
+      "from": "src/v1-experience-protection.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "tests/experience-lifecycle.test.ts",
+      "to": "src/experience-lifecycle.ts"
+    },
+    {
+      "from": "tests/hypothesis-v2.test.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "tests/hypothesis-v2.test.ts",
+      "to": "src/hypothesis-lineage.ts"
+    },
+    {
+      "from": "tests/hypothesis-v2.test.ts",
+      "to": "src/open-hypotheses.ts"
+    },
+    {
+      "from": "tests/hypothesis-v2.test.ts",
+      "to": "src/discovery-contract.ts"
+    },
+    {
+      "from": "tests/trial-assignment-r2.test.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "tests/trial-assignment-r2.test.ts",
+      "to": "src/open-hypotheses.ts"
+    },
+    {
+      "from": "tests/trial-assignment-r2.test.ts",
+      "to": "src/trial-assignment-v2.ts"
+    },
+    {
+      "from": "tests/trial-assignment-r2.test.ts",
+      "to": "src/ordinary-trial-overlay.ts"
+    },
+    {
+      "from": "tests/trial-evidence-r3.test.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "tests/trial-evidence-r3.test.ts",
+      "to": "src/trial-assignment-v2.ts"
+    },
+    {
+      "from": "tests/trial-evidence-r3.test.ts",
+      "to": "src/open-hypotheses.ts"
+    },
+    {
+      "from": "tests/trial-evidence-r3.test.ts",
+      "to": "src/experience-lifecycle.ts"
+    },
+    {
+      "from": "tests/trial-evidence-r3.test.ts",
+      "to": "src/trial-evidence-v2.ts"
+    },
+    {
+      "from": "tests/trial-offers-pi.test.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "tests/trial-offers-pi.test.ts",
+      "to": "src/open-hypotheses.ts"
+    },
+    {
+      "from": "tests/trial-overlay-pi-r2.test.ts",
+      "to": "src/trial-evidence-v2.ts"
+    },
+    {
+      "from": "tests/trial-overlay-pi-r2.test.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "tests/trial-overlay-pi-r2.test.ts",
+      "to": "src/trial-assignment-v2.ts"
+    }
+  ],
+  "retainedIncomingBeforeDetachment": [
+    {
+      "from": "src/extension.ts",
+      "to": "src/open-hypotheses.ts"
+    },
+    {
+      "from": "src/extension.ts",
+      "to": "src/trial-assignment-v2.ts"
+    },
+    {
+      "from": "src/extension.ts",
+      "to": "src/ordinary-trial-overlay.ts"
+    },
+    {
+      "from": "tests/trial-evidence-r3.test.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "tests/trial-evidence-r3.test.ts",
+      "to": "src/trial-assignment-v2.ts"
+    },
+    {
+      "from": "tests/trial-evidence-r3.test.ts",
+      "to": "src/open-hypotheses.ts"
+    },
+    {
+      "from": "tests/trial-evidence-r3.test.ts",
+      "to": "src/experience-lifecycle.ts"
+    },
+    {
+      "from": "tests/trial-evidence-r3.test.ts",
+      "to": "src/trial-evidence-v2.ts"
+    },
+    {
+      "from": "tests/trial-offers-pi.test.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "tests/trial-offers-pi.test.ts",
+      "to": "src/open-hypotheses.ts"
+    },
+    {
+      "from": "tests/trial-overlay-pi-r2.test.ts",
+      "to": "src/trial-evidence-v2.ts"
+    },
+    {
+      "from": "tests/trial-overlay-pi-r2.test.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "tests/trial-overlay-pi-r2.test.ts",
+      "to": "src/trial-assignment-v2.ts"
+    }
+  ],
+  "retainedImportReferencesAfterDetachment": [],
+  "deletedSourceOutgoingEdges": [
+    {
+      "from": "src/discovery-contract.ts",
+      "to": "src/exact-identity.ts"
+    },
+    {
+      "from": "src/discovery-contract.ts",
+      "to": "src/learning-v1-contract.ts"
+    },
+    {
+      "from": "src/discovery-hypotheses.ts",
+      "to": "src/store.ts"
+    },
+    {
+      "from": "src/discovery-hypotheses.ts",
+      "to": "src/learning-v1-contract.ts"
+    },
+    {
+      "from": "src/discovery-hypotheses.ts",
+      "to": "src/hypothesis-lineage.ts"
+    },
+    {
+      "from": "src/discovery-hypotheses.ts",
+      "to": "src/discovery-contract.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/experience-store.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/strategy-knowledge-file.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/store.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/run-experience.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/strategy-candidates.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/strategy-derivation-candidates.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/strategy-synthesis-candidates.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/strategy-decisions.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/strategy-derivation-decisions.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/strategy-trust-scope-decisions.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/strategy-synthesis-decisions.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/policy.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/learning-v1-contract.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/trial-assignment-v2.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/trial-evidence-v2.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/run-experience-fingerprint.ts"
+    },
+    {
+      "from": "src/experience-lifecycle.ts",
+      "to": "src/v1-experience-protection.ts"
+    },
+    {
+      "from": "src/hypothesis-lineage.ts",
+      "to": "src/learning-v1-contract.ts"
+    },
+    {
+      "from": "src/open-hypotheses.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "src/open-hypotheses.ts",
+      "to": "src/learning-v1-contract.ts"
+    },
+    {
+      "from": "src/open-hypotheses.ts",
+      "to": "src/strategy-trust-safety.ts"
+    },
+    {
+      "from": "src/open-hypotheses.ts",
+      "to": "src/strategy-portfolio.ts"
+    },
+    {
+      "from": "src/open-hypotheses.ts",
+      "to": "src/hypothesis-lineage.ts"
+    },
+    {
+      "from": "src/ordinary-trial-overlay.ts",
+      "to": "src/learning-v1-contract.ts"
+    },
+    {
+      "from": "src/ordinary-trial-overlay.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "src/ordinary-trial-overlay.ts",
+      "to": "src/open-hypotheses.ts"
+    },
+    {
+      "from": "src/ordinary-trial-overlay.ts",
+      "to": "src/policy.ts"
+    },
+    {
+      "from": "src/ordinary-trial-overlay.ts",
+      "to": "src/liveness.ts"
+    },
+    {
+      "from": "src/ordinary-trial-overlay.ts",
+      "to": "src/trial-assignment-v2.ts"
+    },
+    {
+      "from": "src/trial-assignment-v2.ts",
+      "to": "src/store.ts"
+    },
+    {
+      "from": "src/trial-assignment-v2.ts",
+      "to": "src/learning-v1-contract.ts"
+    },
+    {
+      "from": "src/trial-assignment-v2.ts",
+      "to": "src/open-hypotheses.ts"
+    },
+    {
+      "from": "src/trial-assignment-v2.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "src/trial-evidence-v2.ts",
+      "to": "src/store.ts"
+    },
+    {
+      "from": "src/trial-evidence-v2.ts",
+      "to": "src/learning-v1-contract.ts"
+    },
+    {
+      "from": "src/trial-evidence-v2.ts",
+      "to": "src/discovery-hypotheses.ts"
+    },
+    {
+      "from": "src/trial-evidence-v2.ts",
+      "to": "src/trial-assignment-v2.ts"
+    },
+    {
+      "from": "src/trial-evidence-v2.ts",
+      "to": "src/run-experience.ts"
+    },
+    {
+      "from": "src/trial-evidence-v2.ts",
+      "to": "src/run-experience-fingerprint.ts"
+    },
+    {
+      "from": "src/trial-evidence-v2.ts",
+      "to": "src/policy.ts"
+    },
+    {
+      "from": "src/v1-experience-protection.ts",
+      "to": "src/learning-v1-contract.ts"
+    },
+    {
+      "from": "src/v1-experience-protection.ts",
+      "to": "src/discovery-hypotheses.ts"
+    }
+  ],
+  "intentionalNegativeReferences": [
+    {
+      "from": "tests/al-retirement.test.ts",
+      "to": "src/discovery-contract.ts",
+      "kind": "access ENOENT physical-absence assertion"
+    },
+    {
+      "from": "tests/al-retirement.test.ts",
+      "to": "src/discovery-hypotheses.ts",
+      "kind": "access ENOENT physical-absence assertion"
+    },
+    {
+      "from": "tests/al-retirement.test.ts",
+      "to": "src/hypothesis-lineage.ts",
+      "kind": "access ENOENT physical-absence assertion"
+    },
+    {
+      "from": "tests/al-retirement.test.ts",
+      "to": "src/open-hypotheses.ts",
+      "kind": "access ENOENT physical-absence assertion"
+    },
+    {
+      "from": "tests/al-retirement.test.ts",
+      "to": "src/ordinary-trial-overlay.ts",
+      "kind": "access ENOENT physical-absence assertion"
+    },
+    {
+      "from": "tests/al-retirement.test.ts",
+      "to": "src/trial-assignment-v2.ts",
+      "kind": "access ENOENT physical-absence assertion"
+    },
+    {
+      "from": "tests/al-retirement.test.ts",
+      "to": "src/trial-evidence-v2.ts",
+      "kind": "access ENOENT physical-absence assertion"
+    },
+    {
+      "from": "tests/al-retirement.test.ts",
+      "to": "src/v1-experience-protection.ts",
+      "kind": "access ENOENT physical-absence assertion"
+    },
+    {
+      "from": "tests/al-retirement.test.ts",
+      "to": "src/experience-lifecycle.ts",
+      "kind": "access ENOENT physical-absence assertion"
+    }
+  ],
+  "deletedExecutedTAPTitles": {
+    "tests/hypothesis-v2.test.ts": [
+      "R1 v2 exact bounded principles, semantic identity and exact ref resolution",
+      "R1 pure executable compatibility with existing trial StrategyRevisionSelection, no activation",
+      "R1 exact v1/v1/v2 chains project one leaf; forks remain competing; malformed lineage fails closed"
+    ],
+    "tests/trial-assignment-r2.test.ts": [
+      "R2 strict versioned scheduling binding rejects runtime fields, fingerprints and namespaces",
+      "R2 filesystem transaction dedupes same episode, enforces cross-episode limits and restart counts",
+      "R2 committed cooldown and stable count/oldest/exact fairness",
+      "R2 strict lineage: competing v1/v2, closed parent, orphan, changed base, cross-project",
+      "R2 corrupt/full history fail closed without deletion",
+      "R2 one-shot advisory and exact approach selector with fresh authority",
+      "R2 one-shot advisory and exact modifier selector with fresh authority",
+      "R2 publication barrier: timeout before frontier cannot install late overlay",
+      "R2 publication barrier: timeout after frontier cannot install late overlay",
+      "R2 declaration refuses newly competing leaves, a closed parent and changed trusted base",
+      "R2 concurrent cooldown blocks a second episode; new exact revision has its own count",
+      "R2 late candidate read, abort and invalidation never reactivate; selector checks again after await"
+    ],
+    "tests/experience-lifecycle.test.ts": [
+      "retains <=256; recency uses recordedAt not filename; leaves unknown files untouched",
+      "schema-v4's non-ISO recordedAt cannot be ordered, so pruning fails closed",
+      "unresolved local sources and global Trial survive; terminal trust survives later pruning",
+      "unresolved Seed Revision source evidence is protected until a terminal Decision",
+      "unresolved local Trial evidence is retained until terminal Decision",
+      "open cross-project Scope Trial remains protected; terminal refs and discovery provenance do not pin Experience",
+      "incoherent source/Decision protection refuses all deletion; save remains authoritative on cleanup failure"
+    ],
+    "tests/trial-evidence-r3.test.ts": [
+      "R3 exact approach final trial declaration plus subsequent ordinary work only",
+      "R3 exact modifier final trial declaration plus subsequent ordinary work only",
+      "R3 strict bounded schema rejects lifecycle/verdict fields, malformed refs, counters, role and digest",
+      "R3 filesystem concurrent retry is immutable, exact and restart-persistent",
+      "R3 publication barrier before atomic frontier preserves exact restart outcome",
+      "R3 publication barrier after atomic frontier preserves exact restart outcome",
+      "R3 failed write and stale authority never publish; after-publication failure retries exact record",
+      "R3 corrupt, oversized and full immutable history fail closed without deleting artifacts",
+      "R3 retention pins unmaterialized exact support, then immutable evidence permits source pruning and restart lookup",
+      "R3 assignment comparison remains exact live support after trial source materialization",
+      "R3 retention refuses all deletion for evidence corruption",
+      "R3 retention refuses all deletion for assignment corruption",
+      "R3 retention refuses all deletion for source corruption",
+      "R3 retention refuses all deletion for binding corruption"
+    ]
+  },
+  "executedTAPAccounting": {
+    "tests/hypothesis-v2.test.ts": {
+      "base": 3,
+      "retained": 0,
+      "removed": 3
+    },
+    "tests/trial-assignment-r2.test.ts": {
+      "base": 12,
+      "retained": 0,
+      "removed": 12
+    },
+    "tests/experience-lifecycle.test.ts": {
+      "base": 7,
+      "retained": 0,
+      "removed": 7
+    },
+    "tests/trial-evidence-r3.test.ts": {
+      "base": 15,
+      "retained": 1,
+      "removed": 14
+    },
+    "tests/trial-offers-pi.test.ts": {
+      "base": 2,
+      "retained": 2,
+      "removed": 0
+    },
+    "tests/trial-overlay-pi-r2.test.ts": {
+      "base": 9,
+      "retained": 9,
+      "removed": 0
+    },
+    "tests/al-retirement.test.ts": {
+      "base": 5,
+      "retained": 5,
+      "removed": 0
+    }
+  },
+  "accounting": {
+    "baselineActive": 1340,
+    "removedALOnlyCases": 36,
+    "expectedActive": 1304,
+    "observedFinalFullCheckActive": 1304,
+    "observedPass": 1304,
+    "observedFail": 0,
+    "observedCancelled": 0,
+    "observedSkipped": 0
+  },
+  "keepReasons": {
+    "learning-v1-contract/trial-offer-contract": "Retained historical fixture, Experience/WorkEpisode and artifact schema consumers",
+    "Experience/WorkEpisode store/record/attribution": "Retained interfaces and artifact consumers; actual committed-byte store regression remains; Core authority/counters not altered",
+    "Strategy/Trust/Policy/candidate/decision": "Core/Extension inert type contracts and retained mutually dependent artifact consumers; separate Phase2-E closure",
+    "composition legacy deny-list": "Retained to discard stale untyped JS fields without getter reads despite public TS option removal"
+  },
+  "verifiedBoundaryFacts": {
+    "executedTAPTitleComparisonPassed": true,
+    "generatedTitlesIncludedAndNoUncountedNestedSubtests": true,
+    "retainedR3CommitTestBodyByteIdentical": true,
+    "extensionEmittedRuntimeByteIdenticalToBaseWithCommentsErased": true,
+    "archiveTreeSHA": "ae453acf3c16ef139a5d22bd68cf999546c7b6f9"
+  },
+  "documentationAudit": {
+    "codeVerifiedHeadBeforeDocsOnlyFollowup": "3984477338021e708dec52d9c2f18e3515c7aa98",
+    "recoverySource": "Git base aa7b741cd6919a09c1aa232f8a64fb3a1aef507e; no historical user artifacts involved",
+    "deletedDocuments": [
+      { "path": "docs/autonomous-learning-v1.md", "reason": "retired Learning scheduler/Discovery/Trial/autonomy roadmap, not current Core authority" },
+      { "path": "docs/autonomous-learning-r4-a.md", "reason": "Evaluation packet/result contracts removed in Phase2-A; no Core State/evidence contract" },
+      { "path": "docs/autonomous-learning-r4-b.md", "reason": "removed standalone Evaluation packet builder plan" },
+      { "path": "docs/autonomous-learning-r4-c1.md", "reason": "removed Evaluation packet storage plan" },
+      { "path": "docs/autonomous-learning-r4-c2.md", "reason": "removed EvaluationRun lifecycle, distinct from Core Run/Session" },
+      { "path": "docs/autonomous-learning-r4-c3-a.md", "reason": "removed capability-free evaluator contract, not Core Gateway authority" },
+      { "path": "docs/autonomous-learning-r4-c3-b1.md", "reason": "removed standalone evaluator execution/claim design" },
+      { "path": "docs/autonomous-learning-r4-c3-c1.md", "reason": "removed Evaluation execution-lease metadata design" },
+      { "path": "docs/autonomous-learning-r4-c3-c3.md", "reason": "removed Evaluation stale-assessment/future recovery roadmap, not Quota recovery" },
+      { "path": "docs/autonomous-learning-r4-c3-c5.md", "reason": "removed Evaluation confirmation/fencing store design, not Core authorization" },
+      { "path": "docs/autonomous-learning-r4-c3-c7.md", "reason": "removed Evaluation recovery admission/successor design, not Host/Quota recovery" },
+      { "path": "docs/autonomous-learning-r4-c3-c7-c.md", "reason": "retired Evaluation recovery readiness roadmap; Host/Pi/Quota ownership already retained in current architecture" },
+      { "path": "docs/self-improvement-v0.6.md", "reason": "retired SI adaptation/Trial/promotion design; remaining inert artifact schemas stay in source/tests, not production authority" },
+      { "path": "docs/self-improvement-v0.7.md", "reason": "retired Strategy derivation/decision roadmap; current Core Task/Gate/evidence ownership retained in architecture/behavior" },
+      { "path": "docs/cross-project-learning-v0.1.md", "reason": "retired cross-project Strategy trust-transfer design, no live Core capability" },
+      { "path": "docs/cross-project-learning-v0.2.md", "reason": "retired synthesis/global-validation design, not current execution or trust grants" },
+      { "path": "docs/composable-pindie-architecture-v0.1.md", "reason": "obsolete SI/CPL composition migration/Slice plan", "coreContractMigration": "docs/architecture.md#stable-composition-boundary: startup wiring/roots, Core independence, measurements vs UI, immutable narrow ports, declaration/Gateway safety and fixed settlement ordering" }
+    ],
+    "retainedCoreDocuments": ["docs/architecture.md", "docs/behavior.md", "docs/pindie-control-v0.1.md", "docs/pindie-control-v0.2.md", "docs/quota-fallback-v0.1.md", "docs/long-task-runtime.md", "docs/remote-companion.md", "docs/pi-1.3.0-compatibility.md", "docs/pindie-tui-v0.1.md"],
+    "navigation": "README/AGENTS point to Stable Core, Harness, native Skills/workflow; prior retirement manifests remain audit only",
+    "testArchivePreserved": "tests/archive/al-phase1 (not product design documentation)",
+    "validation": { "retainedMarkdownFiles": 22, "localMarkdownLinksChecked": 27, "brokenReferences": 0, "docsFocusedPass": 19, "docsFocusedFail": 0, "docsFocusedCancelled": 0, "docsFocusedSkipped": 0, "sourceTestsScriptsPackageUnchangedSinceCodeVerifiedHead": true },
+    "fullCheckScope": "Prior local full check 1304/1304 covers unchanged code; final docs HEAD receives fresh full CI rather than redundant local full rerun"
+  },
+  "classification": {
+    "deletedALOnly": [
+      "Hypothesis catalog/lineage",
+      "ordinary Trial assignment/overlay/evidence",
+      "AL-only Experience retention/protection"
+    ],
+    "CoreRuntimeSemanticsModified": false,
+    "retainedMixedContracts": [
+      "Task start/replacement/authority",
+      "native historical bytes and policy fail-closed",
+      "Experience committed bytes despite mutation/maintenance failure",
+      "Core emitted import graph and poisoned injection handling"
+    ]
+  }
+}

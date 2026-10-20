@@ -41,7 +41,7 @@ Capabilities
 
 The current semantic layer is deliberately small. Pindie does not add a second Agent Loop, workflow engine, task queue, planner framework, or separate Skill runtime.
 
-**AL / Self-Improvement / Cross-Project Learning are retired.** Phase 1 disconnects their production imports, scheduler, stores, commands/tools, Policy/advisory and Experience paths. Old environment flags and embedding overrides cannot reactivate them. Historical implementations and data are retained, not migrated or deleted. Development improvement uses models, Harness, native Skills/workflows and human review/tests. See [Phase 1 scope and verification](docs/al-retirement-phase1.md).
+**AL / Self-Improvement / Cross-Project Learning are retired.** Phase 1 disconnects their production imports, scheduler, stores, commands/tools, Policy/advisory and Experience paths. Old environment flags and embedding overrides cannot reactivate them. Historical user data stays untouched; dead implementation/design documents are removed and recoverable from Git history. Development improvement uses models, Harness, native Skills/workflows and human review/tests. See [Phase 1 scope and verification](docs/al-retirement-phase1.md).
 
 ## What Pindie adds
 
@@ -75,15 +75,13 @@ pindie_memory_capture (when Work Memory is configured)
 
 ## Documentation
 
-- `docs/al-retirement-phase2-a.md` — merged Phase 2-A source/test deletion manifest and preserved Core contracts.
-- `docs/al-retirement-phase2-b.md` — merged scheduler/Discovery executor deletion and exact test accounting.
-- `docs/al-retirement-phase2-c.md` — bounded disconnected SI/CPL integration and artifact-store deletion, preserved contracts and remaining cleanup.
-
-- `docs/architecture.md` — current architecture and ownership boundaries.
-- `docs/behavior.md` — current semantic and behavioral contract.
-- `docs/al-retirement-phase1.md` — current retirement boundary, verification and Phase 2 scope.
-- `docs/self-improvement-v0.6.md`, `docs/self-improvement-v0.7.md`, `docs/cross-project-learning-v0.1.md`, `docs/cross-project-learning-v0.2.md`, and `docs/autonomous-learning*.md` — historical research/contracts only; not production activation instructions.
-- `AGENTS.md` — repository instructions for agents working on Pindie.
+- [Architecture](docs/architecture.md) and [behavior](docs/behavior.md) — Stable Mode, Core/Host/Pi ownership, composition, Browser Reality and Work Memory.
+- [Control](docs/pindie-control-v0.2.md) / [runtime safety](docs/pindie-control-v0.1.md) — workspace selection, MCP and active Host control.
+- [Long Task runtime](docs/long-task-runtime.md), [Quota Fallback](docs/quota-fallback-v0.1.md), [Remote Companion](docs/remote-companion.md).
+- [Pi compatibility](docs/pi-1.3.0-compatibility.md) and [TUI](docs/pindie-tui-v0.1.md).
+- [Development execution](skills/development-execution/SKILL.md) and [Git workflow](skills/git-workflow/SKILL.md) — native Skills, not a second runtime.
+- [Agent instructions](AGENTS.md).
+- [Retirement audit](docs/al-retirement-phase2-d.md) — bounded deletion manifest and PR/CI evidence, not a future roadmap.
 
 Git history and tests are the record of the v0.2 migration; stable docs describe the system as it exists now.
 

@@ -158,9 +158,6 @@ import {
 } from "./liveness.ts";
 
 // Retired embedding options: type-only compatibility until Phase 2.
-import type { OpenHypothesisReader } from "./open-hypotheses.ts";
-import type { TrialAssignmentStore, AssignmentPolicy } from "./trial-assignment-v2.ts";
-import type { TrialDiagnostic } from "./ordinary-trial-overlay.ts";
 
 type ProjectRootResolver = (cwd: string, signal?: AbortSignal) => Promise<string>;
 
@@ -180,10 +177,6 @@ export interface PindieExtensionOptions {
   onExperienceSaved?: (projectRoot: string) => void;
   experienceReader?: RunExperienceReader;
   workEpisodes?: import("./work-episode.ts").WorkEpisodeLedger;
-  trialAssignmentStore?: TrialAssignmentStore;
-  trialHypothesisReader?: OpenHypothesisReader;
-  trialAssignmentPolicy?: AssignmentPolicy;
-  trialDiagnostic?: (diagnostic: TrialDiagnostic) => void;
   strategyCandidateStore?: StrategyCandidateStore;
   strategyCandidateReader?: StrategyCandidateReader;
   strategyDerivationCandidateStore?: StrategyDerivationCandidateStore;
