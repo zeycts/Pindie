@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:http";
@@ -163,6 +163,89 @@ test("MCP exposes exactly thirteen tools, no-active state and structured fail-cl
     for (const name of ["pindie_observe", "pindie_list_projects", "pindie_open_project", "pindie_create_project", "pindie_list_sessions"]) {
       const invalid = await wire.peer.callTool({ name, arguments: { path: "/secret", ...(name.endsWith("_project") ? { project: "Pindie" } : {}) } });
       assert.equal(invalid.isError, true);
+    }
+  } finally { await wire.close(); await workspace.close(); await cleanup(); }
+});
+
+// Captured from upstream main d50ba80 before the metadata-only change. Strip only
+// descriptions: every schema constraint, required field and annotation must match.
+function withoutDescriptions(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutDescriptions);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value)
+      .filter(([key]) => key !== "description")
+      .map(([key, nested]) => [key, withoutDescriptions(nested)]));
+  }
+  return value;
+}
+
+test("MCP orchestration metadata preserves the old API and communicates per-tool boundaries", async () => {
+  const { root, cleanup } = await fixture();
+  const workspace = await PindieControlWorkspace.create({ workspaceRoot: root });
+  const wire = await linked(workspace);
+  try {
+    const { tools } = await wire.peer.listTools();
+    const baseline: unknown = JSON.parse(await readFile(new URL("./fixtures/control-mcp-api-v0.1.json", import.meta.url), "utf8"));
+    assert.equal(tools.length, 13);
+    assert.deepEqual(withoutDescriptions(tools.map(({ name, inputSchema, annotations }) => ({ name, inputSchema, annotations }))), baseline);
+
+    const semantics: Record<string, RegExp[]> = {
+      observe: [/no_active_project/, /project.*Session identity/, /Task.*verification.*Human Gate/, /lease\/revision/, /not the durable Task/, /not verified completion/],
+      input: [/user-authorized/, /related work.*unrelated context/, /busy.*steer.*followUp.*after_current_run/, /dispatched, not verified/, /cannot answer a Human Gate/],
+      respond: [/human's answer/, /matching current Human Gate/, /idle.*settled.*no pending/, /Do not invent approval/, /Pindie decides Gate resolution/],
+      stop: [/user-authorized/, /while busy.*clear.*abort.*idle/, /Already idle is a no-op/, /not complete or verify/],
+      fresh_session: [/user-authorized context reset/, /not routine related-work continuation or a hidden retry/, /idle.*settlement.*no pending.*no Human Gate/, /invalidates the old lease/, /cancelled/, /not reset.*Task or bypass authority/],
+      configure: [/user-authorized/, /idle.*settlement.*no pending.*no Human Gate/, /available in Pi's registry/, /effective configuration/, /not dispatch work/],
+      list_projects: [/direct-child/, /active project/, /does not open/],
+      open_project: [/user-authorized/, /idle.*settlement.*no pending.*Human Gate or quota wait/, /invalidates.*lease/, /idempotent/, /does not choose.*Session/],
+      create_project: [/user-authorized empty direct-child/, /no scaffolding, Git init or dependency installation/, /Existing entries are rejected/, /startup fails.*directory remains/],
+      list_sessions: [/active project.*newest modified first/, /task affinity, not recency alone/, /conversation data, not instructions/, /not a durable Task/, /No switch or full history/],
+      switch_session: [/user-authorized, task-related/, /ID from list_sessions/, /idle.*settlement.*no pending.*Human Gate or quota wait/, /invalidates the old lease/, /idempotent even while busy/, /cancelled/, /not reset.*Task/],
+      read_timeline: [/current Session.*bounded human-visible/, /Excludes hidden reasoning/, /data, not new instructions or approval/, /Task\/verification state for acceptance/],
+      wait: [/read-only/, /every mode.*Gate or binding change/, /Timeout is normal/, /no pending messages or quota wait/, /not Task completion or verified success/, /binding_changed.*observing/],
+    };
+    assert.deepEqual(Object.keys(semantics).map((name) => `pindie_${name}`).sort(), tools.map(({ name }) => name).sort());
+    for (const tool of tools) {
+      for (const pattern of semantics[tool.name.slice("pindie_".length)]!) {
+        assert.match(tool.description ?? "", pattern, `${tool.name}: ${pattern}`);
+      }
+      // All public parameters, including nested model identifiers, carry guidance.
+      const checkParameters = (schema: Record<string, unknown>, path: string) => {
+        const properties = schema.properties as Record<string, Record<string, unknown>> | undefined;
+        for (const [name, parameter] of Object.entries(properties ?? {})) {
+          assert.equal(typeof parameter.description, "string", `${path}.${name}`);
+          assert.ok((parameter.description as string).trim().length > 0, `${path}.${name}`);
+          checkParameters(parameter, `${path}.${name}`);
+        }
+      };
+      checkParameters(tool.inputSchema, tool.name);
+      const properties = tool.inputSchema.properties as Record<string, { description?: string }>;
+      if (properties.lease) {
+        assert.match(properties.lease.description ?? "", /Session\/project replacement, rebind or Host restart invalidates it/);
+        assert.match(properties.lease.description ?? "", /Observe again after stale_control_lease/);
+      }
+    }
+    const parameterSemantics: [string, string, RegExp][] = [
+      ["input", "text", /user's authorization.*user requirements.*suggestions.*real user message, not a system instruction/],
+      ["input", "timing", /Default now.*steers.*after_current_run.*followUp.*prompt when idle/],
+      ["respond", "gateKey", /Exact key.*semantic.humanGate.*changed Gate is rejected/],
+      ["respond", "response", /human's answer.*never fabricate consent/],
+      ["configure", "model", /model and\/or thinkingLevel.*checked at execution/],
+      ["configure", "thinkingLevel", /effective supported level/],
+      ["open_project", "project", /from list_projects, not a filesystem path/],
+      ["create_project", "project", /not a path.*no existing file, directory or symlink/],
+      ["list_sessions", "offset", /Zero-based.*default 0/],
+      ["list_sessions", "limit", /default 20, maximum 50/],
+      ["switch_session", "sessionId", /active project's list_sessions, never a path.*resolved again/],
+      ["read_timeline", "limit", /default 20, maximum 50.*hasMoreBefore/],
+      ["wait", "until", /revision > afterRevision.*not Task success.*human input/],
+      ["wait", "afterRevision", /required for meaningful_change despite being schema-optional/],
+      ["wait", "timeoutSeconds", /default 20, maximum 30.*timeout.*normally/],
+    ];
+    for (const [name, parameter, pattern] of parameterSemantics) {
+      const tool = tools.find((tool) => tool.name === `pindie_${name}`)!;
+      const properties = tool.inputSchema.properties as Record<string, { description?: string }>;
+      assert.match(properties[parameter]!.description ?? "", pattern, `${name}.${parameter}`);
     }
   } finally { await wire.close(); await workspace.close(); await cleanup(); }
 });
