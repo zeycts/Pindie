@@ -1,6 +1,6 @@
 # Pindie Agent Instructions
 
-Pindie is a personal AI agent for indie development built on Pi. **Stable Mode is the only production mode.** Improvement uses model judgment, Harness constraints, native Skills/workflows, tests and human review—not an autonomous Learning Plane.
+Pindie is a personal AI agent for indie development built on Pi. Improvement uses model judgment, Harness constraints, native Skills/workflows, tests and human review.
 
 ## Authority
 
@@ -38,19 +38,17 @@ Do not implement a second Agent Loop, generic workflow/planner/Task queue, persi
 - Quota recovery uses authorized same-Session backup switching before existing Codex auto-resume; Host owns recovery leases, Pi owns provider execution.
 - Composition owns startup selection, explicit storage roots/default dependencies and narrow wiring. Core does not import optional adapters or composition. Presentation selection must not disable measurement or Task metrics.
 
-## Retirement safety
+## Safety boundaries
 
-AL/SI/CPL execution, commands, Policy tools and Learning persistence are retired regardless of old flags/overrides. Do not reactivate them. Old `policy.*` effects remain fail-closed and never become Core grants.
+Reserved unsupported Pindie semantic tool names are denied because their required capabilities are unavailable. Other unrecognized/custom tool calls are treated as ambiguous project mutations and require current `project.mutate` authorization. Ignore unsupported dependency-injection fields without reading their values or invoking getters. Preserve safety regressions for rejected tools, ignored payloads and Core authority.
 
-Obsolete feature designs, roadmaps, retirement audits and frozen test archives are deleted, recoverable from Git history. Do not rebuild their index or roadmap. Preserve live safety regressions for rejected tools, ignored legacy payloads and Core authority.
-
-Code retirement never authorizes reading, migrating or deleting historical `~/.pindie` data, State/continuity, preferences, routing, credentials or Sessions. Production deployment/restarts and PR merges need explicit user authority.
+Preserve user data, including State/continuity, preferences, routing, credentials and Sessions. Do not proactively read unrelated user files; migration or deletion requires explicit user authorization. Production deployment/restarts and PR merges need explicit user authority.
 
 ## Development workflow
 
 1. Read relevant current contracts/source/tests only. For Control selection read v0.2 then v0.1; for Remote read its contract first. Preserve Core composition/dependency invariants in `docs/architecture.md`.
 2. Preserve scope and unrelated user work; no speculative architecture milestones or cleanup.
-3. Add focused tests for changed contracts. Keep mixed Core assertions; remove only explicitly retired standalone feature coverage with exact accounting. No skip/filter/glob changes to manufacture green.
+3. Add focused tests for changed contracts. Preserve Core and safety assertions; remove coverage only with explicit scope approval and exact accounting. No skip/filter/glob changes to manufacture green.
 4. Use the smallest coherent implementation. Batch independent reads/checks when useful; avoid CPU-heavy contention and repeated full checks after small edits.
 5. Run targeted tests, then `pnpm run check` at the final implementation boundary. For docs-only follow-ups, document actual targeted/link validation and prior full results; exact-head CI may provide fresh full-suite evidence without duplicating a completed equivalent local run.
 6. Inspect actual diff and `git diff --check`; use native development/git-workflow Skills. Commit focused changes, push and open a reviewable Draft PR. Do not merge without explicit approval.
