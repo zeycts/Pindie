@@ -16,9 +16,6 @@ import {
 } from "../src/run-experience.ts";
 import type { RunExperienceSourceRecord } from "../src/experience-store.ts";
 import {
-  buildUnifiedCandidateCommandProjection,
-} from "../src/strategy-candidate-commands.ts";
-import {
   createPromotedDerivedStrategyCatalog,
   createStrategyDerivationDecision,
   FileStrategyDerivationDecisionStore,
@@ -273,37 +270,4 @@ test("promoted Derived catalog and trusted portfolio resolve only immutable trus
     decision: rejected,
     selection: catalog.entries[0]!.selection,
   }]), /Rejected|promoted/i);
-});
-
-test("unified lifecycle projection exposes Derivation promotion/rejection gates and exact IDs", async () => {
-  const value = candidate();
-  const records = [
-    sourceExperience("goal-one", createPolicySnapshot({ approach: "direct-action" }), "2026-05-01T00:00:00.000Z", "source-a"),
-    sourceExperience("goal-two", createPolicySnapshot({ approach: "explore-first" }), "2026-05-02T00:00:00.000Z", "source-b"),
-    sourceExperience("goal-one", createPolicySnapshot({ approach: "direct-action", modifiers: ["minimal-change"] }), "2026-05-03T00:00:00.000Z", "source-c"),
-    ...derivationTrialRecords(value),
-  ];
-  const experienceReader = {
-    read: async () => ({ records, loadedRecords: records.length, unsupportedSchema: 0, invalid: 0 }),
-  };
-  const derivationReader = {
-    read: async (_root: string, id: string) => id === value.candidateId ? value : null,
-    readAll: async () => [value],
-  };
-  const projection = await buildUnifiedCandidateCommandProjection({
-    projectRoot: "/repo",
-    command: "promote",
-    candidateReader: emptyRevisionReader(),
-    derivationCandidateReader: derivationReader,
-    decisionReader: emptyDecisionReader(),
-    derivationDecisionReader: emptyDecisionReader(),
-    experienceReader,
-    trustedPortfolio: portfolio(),
-  });
-  assert.deepEqual(projection.options.map((option) => option.value), [value.candidateId]);
-  const entry = projection.entries[0];
-  assert.equal(entry?.kind, "derivation");
-  assert.equal(entry?.promotionEligible, true);
-  assert.equal(entry?.decision, null);
-  assert.match(entry?.label ?? "", /boundary-first|promotion eligible/i);
 });

@@ -5,7 +5,8 @@ import test from "node:test";
 import ts from "typescript";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { composePindieExtension, resolvePindieFeatureSelection } from "../src/composition.ts";
-import { registerPindieExtension, type PindieExtensionOptions } from "../src/extension.ts";
+import { registerPindieExtension, type PindieExtensionOptions, type PindieExtensionIntegration } from "../src/extension.ts";
+import { classifyToolEffect } from "../src/execution-semantics.ts";
 import { renderPindieSystemContract } from "../src/context.ts";
 import { PindieRuntime } from "../src/runtime.ts";
 import { EMPTY_STATE, type PindieState } from "../src/state.ts";
@@ -38,6 +39,8 @@ test("composition drops poisoned learning injections without reading even their 
   const removedTrialTypes: Extract<keyof PindieExtensionOptions,
     "trialAssignmentStore" | "trialHypothesisReader" | "trialAssignmentPolicy" | "trialDiagnostic"> extends never ? true : false = true;
   assert.equal(removedTrialTypes, true, "retired Trial public fields cannot reappear");
+  const noGlobalDerivationRuntime: NonNullable<PindieExtensionIntegration["globalDerivation"]> extends never ? true : false = true;
+  assert.equal(noGlobalDerivationRuntime, true, "inert null accessor cannot expose a Learning runtime type");
   const input: any = { store: new MemoryStore(), featureSelection: { selfImprovement: true, crossProjectLearning: true } };
   for (const name of ["experienceStore", "experienceReader", "onExperienceSaved", "workEpisodes", "trialAssignmentStore",
     "trialHypothesisReader", "trialAssignmentPolicy", "trialDiagnostic", "strategyCandidateStore", "strategyTrustScopeWriterLock",
@@ -63,7 +66,11 @@ test("extension registers only live Core/Memory tools; retired calls are denied 
     featureSelection: { selfImprovement: true, crossProjectLearning: true, presentation: false },
     projectMemorySink: { async capture() {} } as any,
   });
+  assert.deepEqual([...tools.keys()].sort(), ["pindie_task_start", "pindie_task_replace", "pindie_task_refine",
+    "pindie_task_progress", "pindie_verification_record", "pindie_task_complete", "pindie_gate_open",
+    "pindie_gate_resolve", "pindie_git_observe", "pindie_memory_capture"].sort(), "exact selected Core/Memory registry; no retired factory registration");
   for (const name of retiredTools) {
+    assert.match(classifyToolEffect(name).requiredCapability, /^policy\./, "retired name cannot be reclassified as a Core grant");
     assert.equal(tools.has(name), false, name);
     assert.equal(integration.core.authorizeTool(name).decision?.allowed, false, name);
   }
@@ -106,7 +113,9 @@ test("production entrypoint emitted import graph cannot load retired Learning/Po
   for (const name of ["host.ts", "composition.ts", "extension.ts", "control-workspace.ts", "control-mcp.ts", "core-integration.ts"]) await visit(resolve(base, name));
   assert.ok(visited.size > 30);
   for (const name of ["discovery-contract.ts", "discovery-hypotheses.ts", "hypothesis-lineage.ts", "open-hypotheses.ts",
-    "ordinary-trial-overlay.ts", "trial-assignment-v2.ts", "trial-evidence-v2.ts", "v1-experience-protection.ts", "experience-lifecycle.ts"]) {
+    "ordinary-trial-overlay.ts", "trial-assignment-v2.ts", "trial-evidence-v2.ts", "v1-experience-protection.ts", "experience-lifecycle.ts",
+    "strategy-adaptation.ts", "strategy-global-derivation.ts", "strategy-candidate-commands.ts", "strategy-candidate-resolution.ts",
+    "learning-artifact-liveness.ts", "tools/strategy-candidate.ts", "tools/strategy-derivation-candidate.ts", "tools/strategy-synthesis-candidate.ts"]) {
     await assert.rejects(access(resolve(base, name)), { code: "ENOENT" }, `Retired AL module must be physically absent: ${name}`);
   }
 });
