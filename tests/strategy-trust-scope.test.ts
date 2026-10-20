@@ -24,7 +24,6 @@ import {
   type StrategyDerivationCandidateV1,
 } from "../src/strategy-derivation-candidates.ts";
 import {
-  createPromotedDerivedStrategyCatalog,
   createStrategyDerivationDecision,
   FileStrategyDerivationDecisionStore,
 } from "../src/strategy-derivation-decisions.ts";
@@ -46,13 +45,6 @@ import {
   validateStrategyTrustScopeDecisionBinding,
 } from "../src/strategy-trust-scope-decisions.ts";
 import {
-  createScopeTrialBinding,
-  parseScopeTrialCommandValue,
-  resolveScopeTrialBinding,
-  scopeTrialCommandValue,
-} from "../src/strategy-trust-scope-trial.ts";
-import { TrialRuntime } from "../src/strategy-trial.ts";
-import {
   FileStrategyTrustScopeSourceResolver,
 } from "../src/strategy-trust-scope-resolution.ts";
 import {
@@ -62,7 +54,6 @@ import {
 import { getSeedStrategy } from "../src/strategies.ts";
 import {
   createPolicySnapshot,
-  createStrategyRevisionSelection,
   type PolicySnapshot,
 } from "../src/policy.ts";
 import type { SemanticSnapshot } from "../src/semantics.ts";
@@ -539,162 +530,4 @@ test("global writer lock serializes competing operations and releases after fail
   assert.equal(await first, "first");
   assert.equal(await value.writerLock.withLock(async () => "released"), "released");
   assert.equal(await readFile(join(value.globalBaseDir, "writer.lock", "owner.json"), "utf8").catch(() => null), null);
-});
-
-test("Scope Trial binding enforces source, target, terminal, and stale-artifact gates", async (t) => {
-  const value = await fixture(t);
-  const scopeCandidate = createStrategyTrustScopeCandidate({
-    sourceStrategy: value.source,
-    candidateId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-    createdAt: "2026-07-08T00:00:00.000Z",
-  });
-  const targetPortfolio = portfolio(TARGET_A);
-  const binding = await createScopeTrialBinding(
-    scopeCandidate,
-    TARGET_A,
-    targetPortfolio,
-    value.sourceResolver,
-  );
-  assert.equal(binding.targetProjectId, getProjectId(TARGET_A));
-  assert.equal(binding.revisionSelection.revisionStatusAtRun, "trial");
-  assert.equal(binding.packet.selector.revisionIdentity, value.candidate.candidateId);
-  assert.doesNotMatch(binding.renderedPacket, /source-a|source-b|source-c|sourceRecordIds/);
-
-  await assert.rejects(
-    createScopeTrialBinding(scopeCandidate, SOURCE_ROOT, portfolio(SOURCE_ROOT), value.sourceResolver),
-    /source project/i,
-  );
-
-  const targetCandidate = derivedCandidate(SECOND_CANDIDATE_ID, TARGET_A);
-  const targetDecision = createStrategyDerivationDecision({
-    candidate: targetCandidate,
-    decision: "promoted",
-    trialRecordIds: ["target-trial-a", "target-trial-b"],
-  });
-  const targetSelection = createStrategyRevisionSelection({
-    strategyId: targetCandidate.proposal.strategyId,
-    kind: targetCandidate.proposal.kind,
-    revisionIdentity: targetCandidate.candidateId,
-    revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(targetCandidate),
-    revisionStatusAtRun: "promoted",
-    semantics: targetCandidate.proposal,
-  });
-  const conflictingTargetPortfolio = createTrustedStrategyPortfolio(
-    TARGET_A,
-    createPromotedStrategyRevisionCatalog([]),
-    createPromotedDerivedStrategyCatalog([{
-      candidate: targetCandidate,
-      decision: targetDecision,
-      selection: targetSelection,
-    }]),
-  );
-  await assert.rejects(
-    createScopeTrialBinding(scopeCandidate, TARGET_A, conflictingTargetPortfolio, value.sourceResolver),
-    /same-ID|logical Strategy ID|already trusts/i,
-  );
-
-  const terminalDecision = createStrategyTrustScopeDecision({
-    candidate: scopeCandidate,
-    decision: "rejected",
-    trialRefs: [],
-  });
-  const globalCandidateReader = {
-    read: async () => scopeCandidate,
-    readAll: async () => [scopeCandidate],
-  };
-  const terminalDecisionReader = {
-    read: async () => terminalDecision,
-    readAll: async () => [terminalDecision],
-  };
-  await assert.rejects(
-    resolveScopeTrialBinding({
-      candidateId: scopeCandidate.candidateId,
-      targetProjectRoot: TARGET_A,
-      targetPortfolio,
-      candidateReader: globalCandidateReader,
-      decisionReader: terminalDecisionReader,
-      sourceResolver: value.sourceResolver,
-    }),
-    /terminal.*Decision/i,
-  );
-
-  await assert.rejects(
-    createScopeTrialBinding(
-      scopeCandidate,
-      TARGET_A,
-      targetPortfolio,
-      { resolve: async () => { throw new Error("source namespace disappeared"); } },
-    ),
-    /resolution failed|disappeared/i,
-  );
-  await assert.rejects(
-    resolveScopeTrialBinding({
-      candidateId: scopeCandidate.candidateId,
-      targetProjectRoot: TARGET_A,
-      targetPortfolio,
-      candidateReader: { read: async () => scopeCandidate, readAll: async () => [{ bad: true } as any] },
-      decisionReader: { read: async () => null, readAll: async () => [] },
-      sourceResolver: value.sourceResolver,
-    }),
-    /invalid|malformed/i,
-  );
-});
-
-test("Scope Trial command values stay namespaced and the shared lease authorizes one exact Run", async (t) => {
-  const value = await fixture(t);
-  const scopeCandidate = createStrategyTrustScopeCandidate({
-    sourceStrategy: value.source,
-    candidateId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-    createdAt: "2026-07-08T00:00:00.000Z",
-  });
-  const binding = await createScopeTrialBinding(
-    scopeCandidate,
-    TARGET_A,
-    portfolio(TARGET_A),
-    value.sourceResolver,
-  );
-  const commandValue = scopeTrialCommandValue(scopeCandidate.candidateId);
-  assert.equal(parseScopeTrialCommandValue(commandValue), scopeCandidate.candidateId);
-  assert.equal(parseScopeTrialCommandValue(scopeCandidate.candidateId), null);
-  assert.throws(() => parseScopeTrialCommandValue("scope:not-a-uuid"), /UUID/i);
-
-  const runtime = new TrialRuntime();
-  assert.equal(runtime.establishScope("scope-session", binding), true);
-  assert.equal(runtime.pendingScopeTrial?.scopeCandidate.candidateId, scopeCandidate.candidateId);
-  assert.equal(runtime.pendingTrial, null);
-  assert.equal(runtime.establishDerivation("other-session", value.candidate), false);
-  assert.equal(runtime.bindScope("other-session", 7), null);
-  const active = runtime.bindScope("scope-session", 7);
-  assert.ok(active);
-  const selector = {
-    strategyId: active!.revisionSelection.strategyId,
-    revisionIdentity: active!.revisionSelection.revisionIdentity,
-    revisionFingerprint: active!.revisionSelection.revisionFingerprint,
-  };
-  const resolved = runtime.resolveScopeSelector("scope-session", 7, selector, "modifier");
-  assert.equal(resolved.revisionStatusAtRun, "trial");
-  assert.deepEqual(resolved.semantics, {
-    summary: value.candidate.proposal.summary,
-    useWhen: value.candidate.proposal.useWhen,
-    avoidWhen: value.candidate.proposal.avoidWhen,
-    principles: value.candidate.proposal.principles,
-  });
-  assert.throws(
-    () => runtime.resolveScopeSelector("scope-session", 7, selector, "approach"),
-    /wrong.*role/i,
-  );
-  assert.throws(
-    () => runtime.resolveScopeSelector("scope-session", 7, { ...selector, revisionFingerprint: `sha256:${"0".repeat(64)}` }, "modifier"),
-    /does not match|exact selector/i,
-  );
-  const changed = {
-    ...value.candidate,
-    proposal: { ...value.candidate.proposal, summary: "Changed after activation." },
-  } as StrategyDerivationCandidateV1;
-  assert.throws(
-    () => runtime.resolveScopeSelector("scope-session", 7, selector, "modifier", changed),
-    /changed|binding/i,
-  );
-  runtime.clear();
-  assert.equal(runtime.hasTrial, false);
 });

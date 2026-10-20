@@ -82,7 +82,6 @@ import type {
 import type {
   TrustedStrategyPortfolio,
 } from "./strategy-portfolio.ts";
-import type { TrialRuntime } from "./strategy-trial.ts";
 import type { DerivationRuntime } from "./strategy-derivation.ts";
 import type { RemoteCompanion, RemotePi, RemoteStatusFacts } from "./remote-companion.ts";
 import { classifyHumanSignal } from "./human-signal.ts";
@@ -232,7 +231,7 @@ export interface PindieExtensionIntegration {
   readonly runTimer: RunTimer;
   readonly taskMetrics: TaskMetricsTracker;
   readonly contextGovernor: CoreIntegration["contextGovernor"];
-  readonly trial: TrialRuntime | null;
+  readonly trial: null;
   readonly derivation: DerivationRuntime | null;
   readonly globalDerivation: null;
   readonly promotedStrategyRevisionCatalog: PromotedStrategyRevisionCatalog;
