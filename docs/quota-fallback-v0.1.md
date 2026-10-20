@@ -1,6 +1,6 @@
 # Pindie Quota Fallback v0.1 — Architecture Contract
 
-Status: **Implemented through final Slice E.** Production uses Pi InteractiveMode with Pi 0.86.1; the owned Pindie TUI remains a frozen opt-in experiment.
+Status: **Implemented through final Slice E.** The Host uses native Pi InteractiveMode as its only interactive shell; see the current Pi compatibility contract for the pinned runtime.
 
 Baseline: the implemented Quota Fallback and Quota Auto Resume behavior in `docs/behavior.md`.
 
@@ -423,7 +423,7 @@ API keys remain Pi/provider-owned secrets and must never be copied into:
 
 ### Production Pi TUI boundary
 
-Production uses Pi InteractiveMode and its public extension UI/model APIs. `/quota-fallback` is a two-row on/off selector; there is no parallel model picker or owned Pindie TUI dependency.
+Production uses Pi InteractiveMode and its public extension UI/model APIs. `/quota-fallback` is a two-row on/off selector; there is no parallel Pindie model picker.
 
 Pi's existing active-model indicator provides ambient visibility when the Session switches to DeepSeek. v0.1 adds no dedicated fallback footer, status line, toast, or Discord success message. Successful switch and source restore remain quiet.
 
@@ -477,12 +477,12 @@ Slices A–E are implemented. The following headings record their historical sco
 
 ### Slice A — Runtime Model Control
 
-Result: the smallest Pi runtime boundary for Host-owned fallback reuses the model controls left by the TUI experiment.
+Result: Host-owned fallback uses the Pi runtime adapter's native model controls.
 
 The runtime provides:
 
 - `getActiveSessionModelIdentity()`;
-- `getActiveSessionModelChoices()` for the interactive picker;
+- `isActiveSessionModelAvailable()` for exact registry availability, independent of picker scope;
 - `setActiveSessionModel(provider, modelId)`, which delegates to Pi and does not persist a global default;
 - `getActiveSessionThinkingLevel()`.
 
@@ -492,9 +492,9 @@ The completed slice adds:
 - a thin active-Session thinking-level setter that delegates to Pi and lets Pi clamp to model capabilities;
 - focused adapter tests proving active-Session-at-call-time behavior, authenticated availability semantics, no scoped-picker coupling, and no duplicate thinking policy.
 
-The existing picker semantics remain unchanged.
+Native Pi's model picker remains unchanged.
 
-No fallback policy, quota behavior, preference, Pi TUI changes, or owned Pindie TUI changes.
+No fallback policy, quota behavior, preference, or native Pi UI changes.
 
 Do not create a Pindie model registry, raw provider client, or DeepSeek-specific reasoning map.
 
@@ -550,7 +550,7 @@ The completed slice includes:
 - ambient active-model visibility via Pi InteractiveMode without a dedicated fallback status;
 - focused preference and Pi-TUI extension-UI tests.
 
-The selector reuses Pi extension UI; the frozen owned Pindie TUI is not a dependency.
+The selector uses native Pi extension UI.
 
 ### Slice E — Hardening + Documentation Sync
 
@@ -573,8 +573,8 @@ The architecture, behavior and agent guidance describe the implemented state.
 
 The 2026-09-23 pre-implementation review established:
 
-1. production model selection is Pi InteractiveMode / Pi model plumbing; the owned Pindie TUI is frozen and opt-in only;
-2. `PiRuntimeAdapter` already exposes active model identity, picker choices, and direct active-Session model switching;
+1. interactive model selection uses native Pi InteractiveMode / Pi model plumbing;
+2. `PiRuntimeAdapter` exposes active model identity, exact model availability, and direct active-Session model switching;
 3. Pi emits `model_select`, which remains the event seam for later distinguishing explicit human selection from supervisor-owned fallback mutations;
 4. Pindie's PresentationIntegration remains the existing status/extension presentation layer under Pi TUI;
 5. existing Quota Auto Resume settlement and Host ownership remain compatible with ordered recovery arbitration;
@@ -583,7 +583,7 @@ The 2026-09-23 pre-implementation review established:
 8. one fresh subscription-usage derivation can still feed both Fallback and Resume;
 9. Remote stopped classification now recognizes either committed fallback or Resume as a quota successor.
 
-UI ownership is Pi InteractiveMode's extension API, not the frozen owned Pindie TUI.
+UI ownership remains with Pi InteractiveMode's extension API.
 
 ---
 

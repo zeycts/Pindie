@@ -92,7 +92,7 @@ Control must derive from the same sources instead of recomputing semantic state.
 
 ### 3.4 Existing remote-input semantics
 
-The owned TUI and Remote Companion already establish these product semantics:
+Pindie presentation and Remote Companion establish these product semantics:
 
 ```text
 ordinary input:
@@ -428,11 +428,11 @@ Pindie Host
 └── one Control client
 ```
 
-The owned TUI and MCP Control client are separate client modes in v0.1.
+Native Pi InteractiveMode and the MCP Control client are separate lifecycle client modes. The read-only `control:watch` monitor observes the existing Control service and is not a lifecycle client.
 
 Do not run both as independent lifecycle clients simultaneously because Pi's active-session client lifecycle currently exposes single callback slots for invalidation/rebind.
 
-If future dogfood requires simultaneous TUI + MCP control, add one explicit Host-level lifecycle multiplexer rather than allowing clients to overwrite each other's callbacks.
+The read-only monitor must use Control observation APIs, never bind native Session lifecycle callbacks.
 
 ## 11. Single-project scope
 

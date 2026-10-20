@@ -78,7 +78,7 @@ pindie_memory_capture (when Work Memory is configured)
 - [Architecture](docs/architecture.md) and [behavior](docs/behavior.md) — Core/Host/Pi ownership, composition, Browser Reality and Work Memory.
 - [Control](docs/pindie-control-v0.2.md) / [runtime safety](docs/pindie-control-v0.1.md) — workspace selection, MCP and active Host control.
 - [Long Task runtime](docs/long-task-runtime.md), [Quota Fallback](docs/quota-fallback-v0.1.md), [Remote Companion](docs/remote-companion.md).
-- [Pi compatibility](docs/pi-1.3.0-compatibility.md) and [TUI](docs/pindie-tui-v0.1.md).
+- [Pi compatibility](docs/pi-1.3.0-compatibility.md).
 - [Development execution](skills/development-execution/SKILL.md) and [Git workflow](skills/git-workflow/SKILL.md) — native Skills, not a second runtime.
 - [Agent instructions](AGENTS.md).
 
@@ -93,11 +93,19 @@ pnpm test
 pnpm run check
 ```
 
-Launch the Host-owned interactive Pindie using the Pi version pinned by this repository:
+Launch the Pindie Host with native Pi `InteractiveMode`, the only local interactive shell, using the pinned Pi version:
 
 ```bash
 pnpm pindie
 ```
+
+To observe an already-running Control service without creating another Host or Session:
+
+```bash
+pnpm control:watch
+```
+
+This monitor is read-only: timeline, status and Human Gate notices with local scrolling/exit only. Respond through Pindie Control; it has no composer or runtime controls.
 
 The legacy direct-extension path remains available as a temporary diagnostic fallback:
 

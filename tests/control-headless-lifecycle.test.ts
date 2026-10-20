@@ -96,7 +96,7 @@ test("real pinned Pi Session navigation lists and switches native persisted Sess
       cwd: project,
       agentDir,
       sessionManager: managerA,
-      env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: "0" },
+      env: { PINDIE_BROWSER_ENABLED: "false" },
       dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
     });
     const boundSessions: string[] = [];
@@ -145,7 +145,7 @@ test("real pinned Pi Session events reach the live timeline and replacement rele
   try {
     host = await createPindieHost({
       cwd: project, agentDir, sessionManager: SessionManager.inMemory(project),
-      env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: "0" },
+      env: { PINDIE_BROWSER_ENABLED: "false" },
       dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
     });
     control = new PindieControlClient(host.runtime, host.presentation, {
@@ -185,7 +185,7 @@ test("Pi 1.0.2 real Control prompt disposition, observe/timeline/wait and replac
   let control: PindieControlClient | undefined;
   try {
     host = await createPindieHost({ cwd: project, agentDir, sessionManager: SessionManager.inMemory(project),
-      env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: "0" },
+      env: { PINDIE_BROWSER_ENABLED: "false" },
       dependencies: {
         createAgentSessionServices: (options) => createAgentSessionServices({
           ...options, modelRuntime,
@@ -284,7 +284,7 @@ test("real pinned Pi Control rebinds after fresh Session before exposing a new l
       cwd: project,
       agentDir,
       sessionManager: SessionManager.inMemory(project),
-      env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: "0" },
+      env: { PINDIE_BROWSER_ENABLED: "false" },
       dependencies: { createInteractiveMode: () => ({ run: async () => {} }) },
     });
     const boundSessions: string[] = [];

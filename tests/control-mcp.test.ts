@@ -10,7 +10,7 @@ import { PindieControlError, type PindieControlClient, type PindieControlSnapsho
 import { createPindieControlMcpServer } from "../src/control-mcp.ts";
 import { resolveControlWorkspaceRoot, startControlMcpProcess } from "../src/control-mcp-process.ts";
 import { PindieControlWorkspace } from "../src/control-workspace.ts";
-import { isPindieTuiEnabled, type PindieHost } from "../src/host.ts";
+import type { PindieHost } from "../src/host.ts";
 
 const asClient = (value: object) => value as PindieControlClient;
 const safe = (lease: string, overrides: object = {}) => ({
@@ -244,8 +244,10 @@ test("loopback boots without Host or TUI; disconnect keeps Host; shutdown dispos
       createHost: async (options) => {
         created++;
         assert.equal(options.cwd, join(root, "Pindie"));
-        assert.equal(isPindieTuiEnabled(options.env!), false);
-        assert.ok(options.dependencies?.createInteractiveMode);
+        assert.equal(options.env, undefined); // No retired UI environment override is needed.
+        const mode = options.dependencies?.createInteractiveMode!({} as never, {});
+        assert.ok(mode);
+        await mode.run(); // Independent Control Host installs only a no-op shell.
         return { dispose: async () => { disposed++; } } as PindieHost;
       },
       createClient: () => asClient({ start: async () => {}, dispose: () => { clientDisposed++; }, observe: () => safe("live") }),

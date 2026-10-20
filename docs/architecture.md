@@ -312,6 +312,8 @@ Historical continuation probes remain in session/model history. Pindie does not 
 
 ## 11. Runtime-only presentation and external projection
 
+Native Pi `InteractiveMode` is the only local interactive shell. Pindie owns Host lifetime and extension presentation, not a second interactive UI. `pnpm control:watch` remains a separate read-only observer over the existing Control service; its timeline formatter (`timeline-text.ts`) and bounded grapheme renderer (`bounded-text.ts`) do not own Session lifecycle or mutation authority.
+
 Activity, Run Timer, Run Cost, status presentation, and subscription usage observation are runtime-only systems, not semantic State. Pindie does not automatically select thinking levels or provide an auto/manual toggle. Pi owns explicit model and thinking configuration; status and `/efficiency` read Pi's effective thinking level. Control's safe-idle fixed thinking mutations and opt-in quota fallback's source thinking capture/restore remain supported.
 
 Run Activity follows actual Pi tool lifecycle rather than model-authored status. Status presentation consumes authoritative/derived runtime facts rather than becoming an independent source of truth.

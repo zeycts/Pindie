@@ -17,7 +17,6 @@ import {
   createPindieHost as createPindieHostRuntime,
   createPindieRuntimeFactory,
   getPindieResourcePaths,
-  isPindieTuiEnabled,
   type PindieInteractiveMode,
 } from "../src/host.ts";
 import {
@@ -259,7 +258,7 @@ test("Host creates one runtime and supplies a Host-disposal facade only to nativ
   assert.equal(disposeCalls(), 1);
 });
 
-test("Host preserves Pi TUI setting precedence and explicit overrides on both shells", async () => {
+test("Host preserves native Pi TUI setting precedence regardless of obsolete PINDIE_TUI", async () => {
   const cases = [
     { label: "unset setting defaults regular", settings: {}, option: undefined, expected: "regular" },
     { label: "settings regular", settings: { tuiMode: "regular" }, option: undefined, expected: "regular" },
@@ -267,13 +266,13 @@ test("Host preserves Pi TUI setting precedence and explicit overrides on both sh
     { label: "Host regular overrides settings fullscreen", settings: { tuiMode: "fullscreen" }, option: "regular", expected: "regular" },
     { label: "Host fullscreen overrides settings regular", settings: { tuiMode: "regular" }, option: "fullscreen", expected: "fullscreen" },
   ] as const;
-  for (const owned of [false, true]) {
+  for (const legacyFlag of [undefined, "0", "1", "true"]) {
     for (const scenario of cases) {
       const { runtime } = fakeRuntime();
       runtime.session.settingsManager = SettingsManager.inMemory(scenario.settings);
       let effectiveMode: string | undefined;
       const host = await createPindieHost({
-        env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: owned ? "1" : "0" },
+        env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: legacyFlag },
         sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
         interactiveModeOptions: { tuiMode: scenario.option },
         dependencies: {
@@ -282,82 +281,34 @@ test("Host preserves Pi TUI setting precedence and explicit overrides on both sh
             effectiveMode = options.tuiMode;
             return { run: async () => {} };
           },
-          createPindieInteractiveMode: (_runtime, options) => {
-            effectiveMode = options.tuiMode;
-            return { run: async () => {} };
-          },
         },
       });
-      try { assert.equal(effectiveMode, scenario.expected, `${owned ? "owned" : "Pi"}: ${scenario.label}`); }
+      try { assert.equal(effectiveMode, scenario.expected, `${legacyFlag ?? "unset"}: ${scenario.label}`); }
       finally { await host.dispose(); }
     }
   }
 });
 
-test("PINDIE_TUI enables only the exact feature-gate value", () => {
-  assert.equal(isPindieTuiEnabled({}), false);
-  assert.equal(isPindieTuiEnabled({ PINDIE_TUI: "0" }), false);
-  assert.equal(isPindieTuiEnabled({ PINDIE_TUI: "true" }), false);
-  assert.equal(isPindieTuiEnabled({ PINDIE_TUI: " 1" }), false);
-  assert.equal(isPindieTuiEnabled({ PINDIE_TUI: "1" }), true);
-});
-
-test("Host selects the owned mode with the same Adapter and Presentation lease", async () => {
+test("Host ignores retired owned-mode dependency getters and PINDIE_TUI=1", async () => {
   const { runtime, disposeCalls } = fakeRuntime();
-  const ownedMode: PindieInteractiveMode = { run: async () => {} };
-  let ownedCalls = 0;
-  let legacyCalls = 0;
-  let modeRuntime: unknown;
-  let modePresentation: unknown;
+  let nativeCalls = 0;
+  const dependencies = {
+    createAgentSessionRuntime: async () => runtime,
+    createInteractiveMode: () => {
+      nativeCalls += 1;
+      return { run: async () => {} };
+    },
+    get createPindieInteractiveMode(): never {
+      throw new Error("Retired dependency must not be read");
+    },
+  };
   const host = await createPindieHost({
     env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: "1" },
     sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
-    dependencies: {
-      createAgentSessionRuntime: async () => runtime,
-      createInteractiveMode: () => {
-        legacyCalls += 1;
-        return { run: async () => {} };
-      },
-      createPindieInteractiveMode: (createdRuntime, options) => {
-        ownedCalls += 1;
-        modeRuntime = createdRuntime;
-        modePresentation = options.presentation;
-        return ownedMode;
-      },
-    },
+    dependencies,
   });
-
-  assert.equal(ownedCalls, 1);
-  assert.equal(legacyCalls, 0);
-  assert.equal(modeRuntime, host.runtime);
-  assert.equal(modePresentation, host.presentation);
   await host.run();
-  assert.equal(disposeCalls(), 1);
-});
-
-test("PINDIE_TUI=0 preserves the injected legacy InteractiveMode path", async () => {
-  const { runtime, disposeCalls } = fakeRuntime();
-  let legacyCalls = 0;
-  let ownedCalls = 0;
-  const host = await createPindieHost({
-    env: { PINDIE_BROWSER_ENABLED: "false", PINDIE_TUI: "0" },
-    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
-    dependencies: {
-      createAgentSessionRuntime: async () => runtime,
-      createInteractiveMode: () => {
-        legacyCalls += 1;
-        return { run: async () => {} };
-      },
-      createPindieInteractiveMode: () => {
-        ownedCalls += 1;
-        return { run: async () => {} };
-      },
-    },
-  });
-
-  await host.run();
-  assert.equal(legacyCalls, 1);
-  assert.equal(ownedCalls, 0);
+  assert.equal(nativeCalls, 1);
   assert.equal(disposeCalls(), 1);
 });
 

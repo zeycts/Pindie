@@ -8,7 +8,7 @@ Pindie is a personal AI agent for indie development built on Pi. Improvement use
 2. `docs/pindie-control-v0.2.md` for workspace/project selection and active-project Host replacement; preserve `docs/pindie-control-v0.1.md` runtime/control safety.
 3. `docs/quota-fallback-v0.1.md` for quota recovery and temporary backup switching.
 4. `docs/architecture.md` and `docs/behavior.md` for current ownership, composition, semantic truth and behavior.
-5. `docs/remote-companion.md` for Remote/Discord; `docs/long-task-runtime.md` for continuation/rollover; current Pi compatibility and TUI docs for their respective surfaces.
+5. `docs/remote-companion.md` for Remote/Discord; `docs/long-task-runtime.md` for continuation/rollover; current Pi compatibility docs for native interactive UI.
 6. Source/tests as implemented runtime evidence.
 
 Report contradictions before widening scope. Do not retain obsolete behavior merely because an older test encoded it.
@@ -33,6 +33,7 @@ Do not implement a second Agent Loop, generic workflow/planner/Task queue, persi
 - Verification facts come from actual tool results with runtime-only refs. The model owns pass/fail meaning and criterion coverage.
 - Runtime Context is a factual Snapshot-aligned Knowledge Surface, not a global lifecycle-policy prompt.
 - Continuation is a one-shot Pi-native follow-up with deterministic Snapshot eligibility; its probe asks only about latest actual user intent. Filter historical probes from future model context.
+- Pi InteractiveMode is the only local interactive shell; `control:watch` is a separate read-only Control observer, never a runtime owner.
 - Native Pi/TUI, Task/Verification/Gate, State authority, Session/Run, Attention, metrics/counters, Handoff/Rollover, Quota, Browser, Control, Remote, Work Memory and Skills retain their ownership and safety boundaries.
 - Remote is an external projection/control surface over the same native Session, never a second Session/conversation/message queue. Persist only external routing IDs/cursors.
 - Quota recovery uses authorized same-Session backup switching before existing Codex auto-resume; Host owns recovery leases, Pi owns provider execution.
