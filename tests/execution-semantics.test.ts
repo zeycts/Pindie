@@ -78,10 +78,11 @@ test("every defined Pindie semantic tool has its explicit effect classification"
     [...source.matchAll(/\bname:\s*"(pindie_[a-z0-9_]+)"/g)].map((match) => match[1]!),
   );
   // Physical factory removal must not remove the legacy fail-closed effects.
-  const retiredFactories = new Set(["pindie_strategy_candidate_create",
+  const retiredFactories = new Set(["pindie_policy_set", "pindie_strategy_candidate_create",
     "pindie_strategy_derivation_candidate_create", "pindie_strategy_synthesis_candidate_create"]);
   assert.deepEqual(definedNames.sort(), semanticToolEffects.map(([name]) => name).filter((name) => !retiredFactories.has(name)).sort());
   for (const name of retiredFactories) assert.equal(definedNames.includes(name), false, name);
+  assert.equal(definedNames.includes("pindie_memory_capture"), true);
   for (const [name, capability, mutation] of semanticToolEffects) {
     assertEffect(name, capability, mutation);
   }

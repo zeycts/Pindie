@@ -23,7 +23,6 @@ import {
   SEED_STRATEGIES,
   type SeedStrategy,
 } from "../src/strategies.ts";
-import { createPindiePolicySetTool } from "../src/tools/policy.ts";
 import { PindieLivenessTimeoutError } from "../src/liveness.ts";
 import {
   assembleRunExperience,
@@ -209,12 +208,6 @@ test("Candidate fingerprints bind revision semantics and remain inactive outside
   assert.notEqual(
     policySnapshotIdentity(createPolicySnapshot({ approach: target.id })),
     policySnapshotIdentity(trialPolicy),
-  );
-
-  const policyTool = createPindiePolicySetTool({ onPolicySet: () => undefined });
-  await assert.rejects(
-    (policyTool.execute as any)("inactive", { approach: trialSelection }),
-    /approach must be a Seed Strategy ID/i,
   );
 });
 
