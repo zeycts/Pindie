@@ -51,6 +51,7 @@ test("GS03 git-workflow cleanup remains an approved, fail-closed post-merge hand
   assert.match(section, /exact PR ↔ branch ↔ registered worktree path/);
   assert.match(section, /current main contains its changes.*squash merges/s);
   assert.match(section, /--untracked-files=all/);
+  assert.match(section, /read-only check.*--ignored --untracked-files=all.*target worktree.*hidden directories\/files.*contents and ownership only within that worktree.*clean ordinary Git status does not establish ignored-file safety.*ownership or disposability is unclear, retain the worktree and report/s);
   assert.match(section, /unpublished distinct commits/);
   assert.match(section, /user-owned processes.*cwd\/open files.*known services/s);
   assert.match(section, /fail closed and report/);
