@@ -36,13 +36,21 @@ test("Core Work Memory calls stay outside ordinary execution telemetry on succes
 });
 
 test("Core counters ignore all retired Policy and adaptation calls, even stale authorized-call bookkeeping", () => {
-  const tracker = new RunCounters(), before = tracker.execution;
+  const tracker = new RunCounters();
+  tracker.recordAuthorizedCall("ordinary", classifyToolEffect("read"));
+  assert.equal(tracker.recordToolResult("ordinary", false), "execution");
+  const before = tracker.execution;
   for (const name of ["pindie_policy_set", "pindie_strategy_candidate_create", "pindie_strategy_derivation_candidate_create", "pindie_strategy_synthesis_candidate_create"]) {
     const effect = classifyToolEffect(name);
     assert.match(effect.requiredCapability, /^policy\./);
-    tracker.recordAuthorizedCall(name, effect);
-    tracker.recordDeniedCall(effect);
-    assert.equal(tracker.recordToolResult(name, true), null);
-    assert.deepEqual(tracker.execution, before);
+    for (const error of [false, true]) {
+      tracker.recordAuthorizedCall(name, effect);
+      tracker.recordDeniedCall(effect);
+      assert.equal(tracker.recordToolResult(name, error), null);
+      assert.deepEqual(tracker.execution, before);
+    }
   }
+  tracker.reset();
+  assert.equal(tracker.execution.toolCalls, 0);
+  assert.equal(tracker.execution.deniedCalls, 0);
 });

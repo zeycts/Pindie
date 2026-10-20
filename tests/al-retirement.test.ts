@@ -11,8 +11,9 @@ import { deriveCapabilities } from "../src/semantics.ts";
 import { renderPindieSystemContract } from "../src/context.ts";
 import { PindieRuntime } from "../src/runtime.ts";
 import { EMPTY_STATE, type PindieState } from "../src/state.ts";
+import * as stateStore from "../src/store.ts";
 import type { PindieStateStore } from "../src/store.ts";
-import { importEdges, moduleSpecifiers, RETIRED_CPL_MODULES, RETIRED_MODULES } from "./retired-module-imports.ts";
+import { importEdges, moduleSpecifiers, sourcePathSpecifiers, RETIRED_CPL_MODULES, RETIRED_MODULES } from "./retired-module-imports.ts";
 
 class MemoryStore implements PindieStateStore {
   state: PindieState = structuredClone(EMPTY_STATE);
@@ -140,39 +141,43 @@ test("ordinary Task transitions ignore a poisoned WorkEpisode ledger; semantic s
   assert.equal("workEpisodes" in runtime, false);
 });
 
-test("all Stable source and mixed test AST edges exclude the 29 retired modules, including erased types", async () => {
+test("all Stable source, test and script AST edges exclude the 29 retired modules, including erased types and source-reading fixtures", async () => {
   assert.equal(RETIRED_MODULES.size, 29);
   const root = resolve(import.meta.dirname, "..");
-  const edges = await importEdges(root);
-  const mixed = new Set(["composition", "extension", "al-retirement", "project-discovery", "trial-offers-pi", "trial-overlay-pi-r2"].map((name) => `tests/${name}.test.ts`));
-  const frontier = [...mixed], visited = new Set<string>();
-  while (frontier.length) {
-    const from = frontier.pop()!;
-    if (visited.has(from)) continue;
-    visited.add(from);
-    for (const edge of edges.filter((edge) => edge.from === from)) {
-      assert.equal(RETIRED_MODULES.has(edge.to), false, `${edge.from} -> ${edge.to}`);
-      if (edge.to.startsWith("tests/")) frontier.push(edge.to);
-    }
-  }
-  for (const edge of edges.filter((edge) => edge.from.startsWith("src/") && !RETIRED_MODULES.has(edge.from))) {
+  for (const edge of await importEdges(root)) {
     assert.equal(RETIRED_MODULES.has(edge.to), false, `${edge.from} -> ${edge.to}`);
   }
+  assert.deepEqual(sourcePathSpecifiers(`readFile(new URL("../src/retired.ts", import.meta.url));
+    const rootRelative = "src/retired.ts"; const template = \`./retired.ts\`;`),
+    ["../src/retired.ts", "./retired.ts", "src/retired.ts"]);
   assert.deepEqual(moduleSpecifiers(`import type { T } from "./a.ts"; type T2 = import("./b.ts").T;
     const a = import("./c.ts"); const b = require("./d.ts"); export type { T } from "./e.ts";
     import f = require("./f.ts");`), ["./a.ts", "./b.ts", "./c.ts", "./d.ts", "./e.ts", "./f.ts"]);
 });
 
-test("CPL source island and its fixture are physically absent with no remaining import consumers", async () => {
+test("CPL and SI source islands and their fixtures are physically absent with no remaining consumers", async () => {
   const root = resolve(import.meta.dirname, "..");
   assert.equal(RETIRED_CPL_MODULES.size, 12);
-  const removed = new Set([...RETIRED_CPL_MODULES, "tests/synthesis-trial-fixture.ts"]);
+  assert.equal(RETIRED_MODULES.size - RETIRED_CPL_MODULES.size, 17);
+  const removed = new Set([...RETIRED_MODULES,
+    ...["synthesis-trial-fixture.ts", "fixtures/trial-v1.ts"].map((name) => `tests/${name}`)]);
   for (const path of removed) {
     await assert.rejects(access(resolve(root, path)), { code: "ENOENT" }, `Retired artifact must be absent: ${path}`);
   }
   for (const edge of await importEdges(root, ["src", "tests", "scripts"])) {
     assert.equal(removed.has(edge.to), false, `${edge.from} -> ${edge.to}`);
   }
+});
+
+test("State storage no longer exposes or creates the retired global writer lock", async () => {
+  const retiredExports: Extract<keyof typeof stateStore,
+    "GlobalWriterLockBusyError" | "FileGlobalWriterLock"> extends never ? true : false = true;
+  assert.equal(retiredExports, true);
+  for (const name of ["GlobalWriterLockBusyError", "FileGlobalWriterLock"]) assert.equal(name in stateStore, false);
+  const source = await readFile(resolve(import.meta.dirname, "../src/store.ts"), "utf8");
+  assert.doesNotMatch(source, /GlobalWriterLock|writer\.lock/);
+  assert.equal(typeof stateStore.FileStateStore, "function");
+  assert.equal(typeof stateStore.FileTaskContinuityStore, "function");
 });
 
 test("production entrypoint emitted import graph cannot load retired Learning/Policy modules", async () => {

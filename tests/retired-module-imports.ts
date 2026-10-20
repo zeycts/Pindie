@@ -10,7 +10,7 @@ export const RETIRED_CPL_MODULES = new Set([
   "strategy-trust-scope-resolution.ts", "strategy-trust-scope-review.ts",
 ].map((name) => `src/${name}`));
 
-// Full historical denylist, including the 17 artifacts still on disk for PR3.
+// All 29 PR2/PR3 source artifacts are physically deleted.
 export const RETIRED_MODULES = new Set([
   ...RETIRED_CPL_MODULES,
   ...[
@@ -37,15 +37,29 @@ export function moduleSpecifiers(source: string): string[] {
   return [...specifiers].sort();
 }
 
-export async function importEdges(root: string, directories = ["src", "tests"]): Promise<Array<{ from: string; to: string }>> {
+// Include source-reading fixtures/assertions, not just executable import edges.
+// Computed paths still require the production emitted-graph and source audit checks.
+export function sourcePathSpecifiers(source: string): string[] {
+  const file = ts.createSourceFile("audit.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const paths = new Set<string>();
+  function visit(node: ts.Node) {
+    if (ts.isStringLiteralLike(node) && /^(?:\.{1,2}\/|src\/|tests\/|scripts\/).+\.ts$/.test(node.text)) paths.add(node.text);
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  return [...paths].sort();
+}
+
+export async function importEdges(root: string, directories = ["src", "tests", "scripts"]): Promise<Array<{ from: string; to: string }>> {
   const edges: Array<{ from: string; to: string }> = [];
   for (const directory of directories) {
     for (const name of (await readdir(resolve(root, directory), { recursive: true })).sort()) {
       if (!name.endsWith(".ts") || name.startsWith("archive/")) continue;
       const from = `${directory}/${name}`;
-      for (const specifier of moduleSpecifiers(await readFile(resolve(root, from), "utf8"))) {
-        if (!specifier.startsWith(".")) continue;
-        const to = relative(root, resolve(dirname(resolve(root, from)), specifier));
+      const source = await readFile(resolve(root, from), "utf8");
+      for (const specifier of new Set([...moduleSpecifiers(source), ...sourcePathSpecifiers(source)])) {
+        if (!specifier.startsWith(".") && !/^(?:src|tests|scripts)\//.test(specifier)) continue;
+        const to = relative(root, resolve(specifier.startsWith(".") ? dirname(resolve(root, from)) : root, specifier));
         edges.push({ from, to });
       }
     }
