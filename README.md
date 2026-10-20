@@ -41,7 +41,7 @@ Capabilities
 
 The current semantic layer is deliberately small. Pindie does not add a second Agent Loop, workflow engine, task queue, planner framework, or separate Skill runtime.
 
-**AL / Self-Improvement / Cross-Project Learning are retired.** Phase 1 disconnects their production imports, scheduler, stores, commands/tools, Policy/advisory and Experience paths. Old environment flags and embedding overrides cannot reactivate them. Historical user data stays untouched; dead implementation/design documents are removed and recoverable from Git history. Development improvement uses models, Harness, native Skills/workflows and human review/tests. See [Phase 1 scope and verification](docs/al-retirement-phase1.md).
+**AL / Self-Improvement / Cross-Project Learning are retired.** Phase 1 disconnects their production imports, scheduler, stores, commands/tools, Policy/advisory and Experience paths. Old environment flags and embedding overrides cannot reactivate them. Historical user data stays untouched; dead implementation/design documents are removed and recoverable from Git history. Development improvement uses models, Harness, native Skills/workflows and human review/tests. See [retirement scope and verification](docs/retirement.md).
 
 ## What Pindie adds
 
@@ -81,7 +81,7 @@ pindie_memory_capture (when Work Memory is configured)
 - [Pi compatibility](docs/pi-1.3.0-compatibility.md) and [TUI](docs/pindie-tui-v0.1.md).
 - [Development execution](skills/development-execution/SKILL.md) and [Git workflow](skills/git-workflow/SKILL.md) — native Skills, not a second runtime.
 - [Agent instructions](AGENTS.md).
-- [Retirement audit](docs/al-retirement-phase2-d.md) — bounded deletion manifest and PR/CI evidence, not a future roadmap.
+- [Retirement audit](docs/retirement.md) — bounded deletion manifest and PR/CI evidence, not a future roadmap.
 
 Git history and tests are the record of the v0.2 migration; stable docs describe the system as it exists now.
 

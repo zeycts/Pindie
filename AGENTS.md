@@ -42,7 +42,7 @@ Do not implement a second Agent Loop, generic workflow/planner/Task queue, persi
 
 AL/SI/CPL execution, commands, Policy tools and Learning persistence are retired regardless of old flags/overrides. Do not reactivate them. Old `policy.*` effects remain fail-closed and never become Core grants. Remaining Strategy/Trust/Policy/Experience/WorkEpisode artifacts/types are inert cleanup candidates, not activation APIs.
 
-`docs/al-retirement-phase2-d.md` and its exact deletion graph record the current slice; prior retirement records preserve bounded PR/CI evidence. Obsolete feature design/roadmap documents are deleted, recoverable from Git history. Do not rebuild their index or roadmap. `tests/archive/al-phase1/` remains historical test source and must be preserved.
+`docs/retirement.md` and `docs/al-phase2-e-deletion-graph.json` record the current cleanup slice and compact PR/CI evidence; prior exact JSON graphs remain audit sources. Obsolete feature design/roadmap documents are deleted, recoverable from Git history. Do not rebuild their index or roadmap. `tests/archive/al-phase1/` remains historical test source and must be preserved.
 
 Code retirement never authorizes reading, migrating or deleting historical `~/.pindie` data, State/continuity, preferences, routing, credentials or Sessions. Production deployment/restarts and PR merges need explicit user authority.
 

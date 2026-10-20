@@ -1,6 +1,6 @@
 # Pindie v0.3 — Behavior Specification
 
-> Stable Mode: no flag or override activates AL/SI/CPL, Policy tools, advisory or Learning persistence. Retired `policy.*` effects remain fail-closed. [Retirement evidence](al-retirement-phase2-d.md) is an audit boundary, not a roadmap.
+> Stable Mode: no flag or override activates AL/SI/CPL, Policy tools, advisory or Learning persistence. Retired `policy.*` effects remain fail-closed. [Retirement evidence](retirement.md) is an audit boundary, not a roadmap.
 
 This document defines the current semantic and behavioral contract. It describes what Pindie means and guarantees now; implementation history belongs in Git history and tests.
 
