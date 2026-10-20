@@ -1,6 +1,6 @@
 # Pindie Architecture v0.3
 
-> Stable Mode: AL/SI/CPL are retired regardless of flags or overrides. Retired `policy.*` effects remain fail-closed. [Retirement evidence](al-retirement-phase2-d.md) records code/data boundaries; obsolete designs are recoverable from Git, not current authority.
+> Stable Mode: AL/SI/CPL are retired regardless of flags or overrides. Retired `policy.*` effects remain fail-closed. [Retirement evidence](retirement.md) records code/data boundaries; obsolete designs are recoverable from Git, not current authority.
 
 ## 1. Purpose and ownership
 

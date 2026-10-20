@@ -77,7 +77,11 @@ test("every defined Pindie semantic tool has its explicit effect classification"
   const definedNames = sources.flatMap((source) =>
     [...source.matchAll(/\bname:\s*"(pindie_[a-z0-9_]+)"/g)].map((match) => match[1]!),
   );
-  assert.deepEqual(definedNames.sort(), semanticToolEffects.map(([name]) => name).sort());
+  // Physical factory removal must not remove the legacy fail-closed effects.
+  const retiredFactories = new Set(["pindie_strategy_candidate_create",
+    "pindie_strategy_derivation_candidate_create", "pindie_strategy_synthesis_candidate_create"]);
+  assert.deepEqual(definedNames.sort(), semanticToolEffects.map(([name]) => name).filter((name) => !retiredFactories.has(name)).sort());
+  for (const name of retiredFactories) assert.equal(definedNames.includes(name), false, name);
   for (const [name, capability, mutation] of semanticToolEffects) {
     assertEffect(name, capability, mutation);
   }
@@ -197,9 +201,12 @@ test("stale and unavailable authority preserve observation and deny consequences
 });
 
 test("retired Policy remains classified non-mutating but cannot be authorized", () => {
-  assert.equal(composed(EMPTY_STATE, facts({ taskRelation: "none" }), "pindie_policy_set").allowed, false);
-  assert.equal(composed({ task: task() }, facts(), "pindie_policy_set").allowed, false);
-  assert.equal(composed(null, { stateAvailable: false }, "pindie_policy_set").allowed, false);
+  for (const name of ["pindie_policy_set", "pindie_strategy_candidate_create",
+    "pindie_strategy_derivation_candidate_create", "pindie_strategy_synthesis_candidate_create"]) {
+    assert.equal(composed(EMPTY_STATE, facts({ taskRelation: "none" }), name).allowed, false);
+    assert.equal(composed({ task: task() }, facts(), name).allowed, false);
+    assert.equal(composed(null, { stateAvailable: false }, name).allowed, false);
+  }
   assert.deepEqual(classifyToolEffect("pindie_policy_set"), {
     requiredCapability: "policy.declare",
     projectMutation: "none",

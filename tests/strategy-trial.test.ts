@@ -36,7 +36,6 @@ import {
   strategyRevisionSelectionFromDerivationCandidate,
   TrialRuntime,
 } from "../src/strategy-trial.ts";
-import { resolveTrialCandidate } from "../src/strategy-candidate-resolution.ts";
 
 const CANDIDATE_ID = "00000000-0000-4000-8000-000000000001";
 const OTHER_CANDIDATE_ID = "00000000-0000-4000-8000-000000000002";
@@ -431,43 +430,5 @@ test("Derivation Trial uses the shared lease, bounded packet, and exact selector
   assert.throws(
     () => runtime.resolveDerivationSelector("session", 10, selector, "approach", selected),
     /without its active Derivation Trial/i,
-  );
-});
-
-test("Unified Trial candidate resolution checks both immutable stores and rejects UUID ambiguity", async () => {
-  const revision = candidate(CANDIDATE_ID);
-  const derivation = derivationCandidate(OTHER_CANDIDATE_ID);
-  const revisionReader = {
-    read: async (_root: string, id: string) => id === revision.candidateId ? revision : null,
-  };
-  const derivationReader = {
-    read: async (_root: string, id: string) => id === derivation.candidateId ? derivation : null,
-  };
-
-  const revisionRef = await resolveTrialCandidate({
-    projectRoot: "/project",
-    candidateId: revision.candidateId,
-    revisionReader,
-    derivationReader,
-  });
-  assert.equal(revisionRef?.kind, "revision");
-  const derivationRef = await resolveTrialCandidate({
-    projectRoot: "/project",
-    candidateId: derivation.candidateId,
-    revisionReader,
-    derivationReader,
-  });
-  assert.equal(derivationRef?.kind, "derivation");
-
-  await assert.rejects(
-    resolveTrialCandidate({
-      projectRoot: "/project",
-      candidateId: revision.candidateId,
-      revisionReader,
-      derivationReader: {
-        read: async () => revision as unknown as StrategyDerivationCandidateV1,
-      },
-    }),
-    /ambiguous|invalid/i,
   );
 });

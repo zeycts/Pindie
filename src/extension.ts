@@ -84,7 +84,6 @@ import type {
 } from "./strategy-portfolio.ts";
 import type { TrialRuntime } from "./strategy-trial.ts";
 import type { DerivationRuntime } from "./strategy-derivation.ts";
-import type { GlobalDerivationRuntime } from "./strategy-global-derivation.ts";
 import type { RemoteCompanion, RemotePi, RemoteStatusFacts } from "./remote-companion.ts";
 import { classifyHumanSignal } from "./human-signal.ts";
 import type { DiscordRemote } from "./discord-remote.ts";
@@ -235,7 +234,7 @@ export interface PindieExtensionIntegration {
   readonly contextGovernor: CoreIntegration["contextGovernor"];
   readonly trial: TrialRuntime | null;
   readonly derivation: DerivationRuntime | null;
-  readonly globalDerivation: GlobalDerivationRuntime | null;
+  readonly globalDerivation: null;
   readonly promotedStrategyRevisionCatalog: PromotedStrategyRevisionCatalog;
   /** Runtime-derived Seeds plus valid promoted Seed/Derived trust entries. */
   readonly trustedStrategyPortfolio: TrustedStrategyPortfolio | null;
