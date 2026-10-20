@@ -1,6 +1,6 @@
 # Pindie v0.3 — Behavior Specification
 
-> **AL retirement Phase 1:** [current boundary](al-retirement-phase1.md) supersedes historical Learning/SI/CPL/Policy/WorkEpisode behavior below. No flag or override reactivates it; no Policy/learning tools, commands, advisory, Experience persistence or Learning jobs are mounted. Core Task/Verification/Gate semantics are unchanged.
+> Stable Mode: no flag or override activates AL/SI/CPL, Policy tools, advisory or Learning persistence. Retired `policy.*` effects remain fail-closed. [Retirement evidence](al-retirement-phase2-d.md) is an audit boundary, not a roadmap.
 
 This document defines the current semantic and behavioral contract. It describes what Pindie means and guarantees now; implementation history belongs in Git history and tests.
 
@@ -86,65 +86,21 @@ GateRunRelation       none | existed_before_run | opened_during_run
 
 ## 4. Capability vocabulary and matrix
 
-```text
-observe.project
-observe.git
-project.mutate
-policy.declare
-policy.adapt
+Core capabilities are `observe.project`, `observe.git`, `project.mutate`, `task.start/refine/replace/progress/complete`, `verification.record`, and `gate.open/resolve`. Optional Memory adds its existing capture capability only when selected. Legacy `policy.*` effect names classify retired calls for denial; they never become grants.
 
-task.start
-task.refine
-task.replace
-task.progress
-task.complete
-
-verification.record
-
-gate.open
-gate.resolve
-```
-
-If Run authority is stale or unavailable, capabilities are exactly:
+Stale/unavailable Run authority permits observation only. Coherent states:
 
 ```text
-observe.project
-observe.git
-policy.declare
-```
-
-`policy.adapt` is a separate non-mutating control effect. It is admitted only for the Candidate tool during a live explicit `/adapt <strategy-id>` Run; it is not part of ordinary semantic Task capability sets.
-
-Coherent capability states:
-
-```text
-idle
-→ observe.project, observe.git, policy.declare, task.start
-
-done / completed_before_run
-→ observe.project, observe.git, policy.declare, task.start
-
-done / completed_during_run
-→ observe.project, observe.git, policy.declare
-
-active
-→ observe.project, observe.git, policy.declare, project.mutate,
-  task.refine, task.progress, verification.record, gate.open
-→ + task.replace iff preexisting_untouched
-→ + task.complete iff completionReady
-
-blocked
-→ observe.project, observe.git, policy.declare, project.mutate,
-  task.refine, task.progress, verification.record, gate.open
-→ + task.replace iff preexisting_untouched
-→ no task.complete
-
-waiting_human / opened_during_run
-→ observe.project, observe.git, policy.declare
-
-waiting_human / existed_before_run
-→ observe.project, observe.git, policy.declare, task.refine, gate.resolve
-→ + task.replace iff preexisting_untouched
+idle / done before Run → observation + task.start
+done during Run        → observation only
+active / blocked       → observation + project.mutate + task.refine/progress
+                         + verification.record + gate.open
+                       → + task.replace iff preexisting_untouched
+active                 → + task.complete iff completionReady
+blocked                → no task.complete
+waiting_human / opened_during_run → observation only
+waiting_human / existed_before_run → observation + task.refine + gate.resolve
+                                   + task.replace iff preexisting_untouched
 ```
 
 Questions may coexist with useful work but prevent completion. A Task-level blocker means the Task cannot currently be completed or proceed along its intended path, but a coherent Agent Run may still mutate the project to attempt recovery.
@@ -171,7 +127,7 @@ allowed = capabilities.has(effect.requiredCapability)
 
 Known observation tools keep the observation fast path. Consequential calls use authoritative refresh/coherence checks before capability authorization.
 
-The Gateway remains defense in depth for races, stale already-generated calls, external-State changes, and same-Run semantic transitions. Candidate creation uses the separate non-mutating `policy.adapt` effect and still requires a live explicit `/adapt <strategy-id>` adaptation lease.
+The Gateway remains defense in depth for races, stale already-generated calls, external-State changes, and same-Run semantic transitions. Retired Policy/Strategy calls remain denied even when present in an old captured tool baseline.
 
 ## 6. Project Mutation Freshness
 
@@ -192,23 +148,13 @@ Denied calls create no mutation window. Failed ambiguous tools are still observe
 
 When mutation is detected or cannot be determined safely, verification is invalidated and recent verification evidence is made stale.
 
-**Migration note:** Autonomous Learning v1 Slice 1 removed single-Run admission; Foundation F1 now keeps WorkEpisode identity outside State and stores factual schema-v5 Experience when coherently bound (v4 remains readable). A separate durable LearningJob ledger and F2 Host-owned idle/preemptible isolated Pi execution foundation exist, and D1 now performs non-LLM project-local discovery eligibility, freezes bounded packets and enqueues deduped jobs after committed Experience/startup/safe idle. D2 uses an isolated no-tool Pi model Run with an explicit frozen learning model identity independent of the Human Session and of any automatic startup fallback, persisting that exact provenance in terminal receipts/commits and reusing it on recovery, for bounded new-triggered project-discovery packets with reusable assessed Experience context; it accepts `none`, semantic `covered` against exact frozen open hypotheses, or bounded proposals, requires at least one new source for newly published cognition, protects unresolved hypothesis source Experience from pruning, and publishes bounded immutable untrusted hypotheses and exact terminal receipts, and recovers committed output without another model call. R0 has frozen legacy T1 automatic execution: production no longer prepares reservations/holds, claims T1 offers, creates T1 assignments/receipts, starts eligibility watchers, or runs T1 Session/Run fencing. R2 removes those obsolete execution modules while retaining frozen v1 readers. WorkEpisode identity/ledger, Local Discovery D1/D2, factual Run Experience v5 and legacy SI/CPL remain active; ordinary Task truth is unchanged; R2 optionally renders a one-shot experimental advisory only after a committed v2 assignment. Existing schema-v1 Trial artifacts are historical only and are not read by production Trial execution, modified, migrated or deleted. There is not yet a complete applied-Trial evidence/evaluation pipeline. R1 Executable Hypothesis v2 is complete. Old v1 hypotheses stay immutable/readable/non-executable with unchanged fingerprints and no automatic principle filling. All fresh Discovery uses packet v4 / selection v4 and mints only v2, with model-authored bounded principles included in semantic fingerprints; packet provenance is excluded. V4 comparisons explicitly distinguish v1 (principles=null) from v2; covered can assess new evidence only against an exact open v2 ref. Normal Discovery with new evidence may revise an exact v1 leaf into v2, preserving logical ID, kind and trusted base. Strict shared lineage projection exposes only leaves, fails closed on malformed/orphan/cyclic history and competing leaves, and limits open leaves to 64 without deleting parents. Experience protection retains full historical source provenance. Old v3 committed output recovers without model rerun, including receipt completion; uncommitted v3 jobs terminate stale. R2 TrialAssignment v2 + ordinary-work overlay is implemented. R3 immutable TrialEvidence v2 and retention are implemented; Evaluation and autonomous trust remain pending.
-
-R2 waits only for bounded local assignment I/O, never learning cognition. A coherent preexisting Task can receive an advisory on its first request after ordinary SI preparation; one authorized successful same-Run `task_start` can receive it on immediate continuation after State/WorkEpisode commit. Failed/null/ambiguous/stale/external-epoch/packet Runs skip it. Same-Run replacement never triggers placement and invalidates any old lease; the replacement may qualify next Run. Refine and context requests never schedule.
-
-The advisory is UNTRUSTED / EXPERIMENTAL / ADVISORY, optional and transient, naming the exact role and selector. It does not enter the native Session branch. Rendering is consumed once even when a downstream transform removes it, but the exact selector stays available in the same valid ordinary Run. Explicit `pindie_policy_set` selection revalidates immutable assignment, executable open hypothesis, current lineage/trusted base and Session/Run/episode epochs, then records `trial` status with normal Policy declaration chronology. Seeds/promoted/manual SI/CPL selectors still use their established paths. No declaration means no selection; neither assignment, rendering nor selection is TrialEvidence or proof of causal use.
-
-Committed episode assignments are not redelivered on later Runs, Sessions or restart, including ignored/crashed/unconfirmed offers. Timeouts/errors leave Human Task/tool results intact; a late commit remains in v2 attempt history but cannot revive an overlay. Unassigned episodes may retry next legal Run. SI disabled constructs/accesses no R2 store or request transform; CPL disabled still supports local R2. Assignment capacity/corruption fails closed for learning without deleting scheduling history. Exact hypothesis-v2 trial Experience uses the bounded ordinary recent window. R3 freezes a matching active assignment at settlement and publishes immutable evidence only after ordinary Experience commits with an exact ref, coherent v5 WorkEpisode attribution, exact final trial Policy in the assigned role and subsequent ordinary work after the last declaration. Ignoring an offer, selecting without later work, replacing the final Policy, ambiguous attribution, a failed save or missing exact source produces no evidence. Downstream advisory deletion alone is not an evidence gate. Evidence contains factual links/counters/outcome/verification/cost, never model attention, causal use, scoring or a verdict. Corrupt/full stores or stale publication fail closed for learning without changing Task truth. Unmaterialized support is protected from pruning; exact immutable support permits its raw source to age out. Comparison refs and unresolved hypothesis sources stay protected, and corrupt/conflicting histories stop pruning. Frozen schema-v1 artifacts remain unchanged. Production latency/frequency/selection dogfood has not been measured. [R4-A](autonomous-learning-r4-a.md) defines observational Evaluation packet/result contracts only: immutable TrialEvidence snapshots, explicit unavailable comparison facts, included-only episode counts and exact bound citations. Recommendations grant no trust and trigger no actions. R4-B now provides a standalone deterministic builder that resolves all supplied immutable refs before bounded selection and returns a deeply frozen valid packet; mismatched hypotheses are excluded, corruption/stale authority fails closed, and comparison refs remain provenance only. R4-C1 adds standalone durable immutable packet persistence and exact validated lookup: identical publications converge without changing bytes/timestamp, identity conflicts and corrupt artifacts fail closed, and abort/stale precommit writes leave no visible artifact. Lookup needs only frozen snapshots; publication revalidates exact immutable sources. R4-C2 adds standalone immutable EvaluationRun attempt records: only created → running → completed/failed is legal, exact packet identity/evaluator remain fixed, identical state retries converge and conflicts fail without overwrite. Completion is operational status, not a verdict or trust change. R4-C3-A adds standalone versioned Evaluator/context/output contracts with strict exact packet/attempt binding and detached deeply frozen input preparation. Output is observational/operational only, with no score/verdict/confidence/trust fields; context offers no writers or decision authority. This is not a runtime sandbox. R4-C3-B adds standalone registered evaluator invocation with durable exclusive claims and immutable running/completed/failed publication through the existing run store. Only the unique publisher of running invokes; competing and stale-created replay attempts reject. Packet failures, exceptions and invalid output commit bounded failed history without output publication or retries. Claimed terminal writes retain exact prior binding even if the packet becomes unavailable. A real evaluator/runtime sandbox, retry policy, timeout/cancellation, output persistence and production wiring remain pending; no retention/deletion or live Experience reads are added. [R4-C3-C1](autonomous-learning-r4-c3-c1.md) adds a pure ExecutionLease v1 metadata contract and immutable heartbeat helpers preserving exact owner/acquisition identity. Unique authority still comes from claimExecution; these pure helpers do not wire leases to the runner. R4-C3-C2 now adds standalone immutable lease persistence in `execution-leases-v1`, genuine-claim-bound origin publication, exact lookup and strictly advancing linked heartbeat snapshots; ExecutionRunner and claim execution authority remain unchanged. Stale detection, expiry, takeover and recovery remain pending. [R4-C3-C4](autonomous-learning-r4-c3-c3.md) adds standalone pure lease-freshness assessment with explicit policy/clock inputs and ACTIVE / STALE_CANDIDATE / UNKNOWN observations; no run/lease writes, owner confirmation, recovery eligibility, fencing or production wiring.
+Historical Learning attribution is not Core authority. Ordinary Task transitions, mutation freshness, counters and continuity run without Learning stores, advisory or evidence materialization. Retiring artifact code never authorizes deleting historical user bytes.
 
 ## 7. Model-facing semantic tools and Tool Surface
 
 Pindie exposes narrow semantic affordances:
 
 ```text
-pindie_policy_set          → policy.declare
-pindie_strategy_candidate_create → policy.adapt
-pindie_strategy_derivation_candidate_create → policy.derive
-pindie_strategy_synthesis_candidate_create → policy.derive
 pindie_memory_capture      → memory.capture (configured Work Memory)
 pindie_task_start          → task.start
 pindie_task_replace        → task.replace
@@ -252,7 +198,7 @@ It also includes the current action-eligibility affordance derived from the same
 
 It must not restate structural legality as lifecycle instructions.
 
-Prior history is never filtered, reordered, or rewritten. State-changing semantic tool results and mutation invalidation updates append current facts at their causal location; continuation probes remain in history until normal Pi compaction. Successful Pi compaction appends one hidden Pindie State Checkpoint with exact current State, Run authority, eligibility, and any current Run-scoped Policy Snapshot. Failed or aborted compaction does not emit one.
+Prior history is never filtered, reordered, or rewritten. State-changing semantic tool results and mutation invalidation updates append current facts at their causal location; continuation probes remain in history until normal Pi compaction. Successful Pi compaction appends one hidden Pindie State Checkpoint with exact current State, Run authority, eligibility. Failed or aborted compaction does not emit one.
 
 Run Baseline and State Checkpoint contain the full Task and verification projection, including materialized evidence. Normal semantic results append only the causal delta needed for that transition, so verification evidence is not duplicated in every later Task, progress, verification, or Gate result.
 
@@ -304,10 +250,10 @@ A Human Gate is an explicit human-authority boundary.
 
 ```text
 Gate opened during current Run
-→ observation + policy declaration capability space
+→ observation capability space
 
 Gate existed before current user-driven Run
-→ observation + policy declaration + gate.resolve + any other legal Task-boundary choices
+→ observation + gate.resolve + any other legal Task-boundary choices
 ```
 
 The model interprets the human reply among currently legal semantic actions. Gate lifecycle legality is structural and must not be reimplemented as a prompt tutorial or Skill rule.
@@ -419,4 +365,4 @@ Session. The hidden message is runtime metadata, not user intent.
 8. Reducer invariants remain valid even if the outer Gateway layer fails.
 9. Historical runtime metadata remains append-only until normal Pi compaction; it does not rewrite prior model history.
 10. Pi remains the sole low-level Agent Loop and Skill runtime.
-11. Strategy Revision Candidates are inactive hypotheses; only explicit `/adapt <strategy-id>` may create one, and it never becomes active Policy in SI v0.5.
+11. Retired Policy/Strategy tool names never gain Core authority; old flags/injections cannot activate Learning.

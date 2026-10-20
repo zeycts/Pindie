@@ -601,6 +601,34 @@
     "extensionEmittedRuntimeByteIdenticalToBaseWithCommentsErased": true,
     "archiveTreeSHA": "ae453acf3c16ef139a5d22bd68cf999546c7b6f9"
   },
+  "documentationAudit": {
+    "codeVerifiedHeadBeforeDocsOnlyFollowup": "3984477338021e708dec52d9c2f18e3515c7aa98",
+    "recoverySource": "Git base aa7b741cd6919a09c1aa232f8a64fb3a1aef507e; no historical user artifacts involved",
+    "deletedDocuments": [
+      { "path": "docs/autonomous-learning-v1.md", "reason": "retired Learning scheduler/Discovery/Trial/autonomy roadmap, not current Core authority" },
+      { "path": "docs/autonomous-learning-r4-a.md", "reason": "Evaluation packet/result contracts removed in Phase2-A; no Core State/evidence contract" },
+      { "path": "docs/autonomous-learning-r4-b.md", "reason": "removed standalone Evaluation packet builder plan" },
+      { "path": "docs/autonomous-learning-r4-c1.md", "reason": "removed Evaluation packet storage plan" },
+      { "path": "docs/autonomous-learning-r4-c2.md", "reason": "removed EvaluationRun lifecycle, distinct from Core Run/Session" },
+      { "path": "docs/autonomous-learning-r4-c3-a.md", "reason": "removed capability-free evaluator contract, not Core Gateway authority" },
+      { "path": "docs/autonomous-learning-r4-c3-b1.md", "reason": "removed standalone evaluator execution/claim design" },
+      { "path": "docs/autonomous-learning-r4-c3-c1.md", "reason": "removed Evaluation execution-lease metadata design" },
+      { "path": "docs/autonomous-learning-r4-c3-c3.md", "reason": "removed Evaluation stale-assessment/future recovery roadmap, not Quota recovery" },
+      { "path": "docs/autonomous-learning-r4-c3-c5.md", "reason": "removed Evaluation confirmation/fencing store design, not Core authorization" },
+      { "path": "docs/autonomous-learning-r4-c3-c7.md", "reason": "removed Evaluation recovery admission/successor design, not Host/Quota recovery" },
+      { "path": "docs/autonomous-learning-r4-c3-c7-c.md", "reason": "retired Evaluation recovery readiness roadmap; Host/Pi/Quota ownership already retained in current architecture" },
+      { "path": "docs/self-improvement-v0.6.md", "reason": "retired SI adaptation/Trial/promotion design; remaining inert artifact schemas stay in source/tests, not production authority" },
+      { "path": "docs/self-improvement-v0.7.md", "reason": "retired Strategy derivation/decision roadmap; current Core Task/Gate/evidence ownership retained in architecture/behavior" },
+      { "path": "docs/cross-project-learning-v0.1.md", "reason": "retired cross-project Strategy trust-transfer design, no live Core capability" },
+      { "path": "docs/cross-project-learning-v0.2.md", "reason": "retired synthesis/global-validation design, not current execution or trust grants" },
+      { "path": "docs/composable-pindie-architecture-v0.1.md", "reason": "obsolete SI/CPL composition migration/Slice plan", "coreContractMigration": "docs/architecture.md#stable-composition-boundary: startup wiring/roots, Core independence, measurements vs UI, immutable narrow ports, declaration/Gateway safety and fixed settlement ordering" }
+    ],
+    "retainedCoreDocuments": ["docs/architecture.md", "docs/behavior.md", "docs/pindie-control-v0.1.md", "docs/pindie-control-v0.2.md", "docs/quota-fallback-v0.1.md", "docs/long-task-runtime.md", "docs/remote-companion.md", "docs/pi-1.3.0-compatibility.md", "docs/pindie-tui-v0.1.md"],
+    "navigation": "README/AGENTS point to Stable Core, Harness, native Skills/workflow; prior retirement manifests remain audit only",
+    "testArchivePreserved": "tests/archive/al-phase1 (not product design documentation)",
+    "validation": { "retainedMarkdownFiles": 22, "localMarkdownLinksChecked": 27, "brokenReferences": 0, "docsFocusedPass": 19, "docsFocusedFail": 0, "docsFocusedCancelled": 0, "docsFocusedSkipped": 0, "sourceTestsScriptsPackageUnchangedSinceCodeVerifiedHead": true },
+    "fullCheckScope": "Prior local full check 1304/1304 covers unchanged code; final docs HEAD receives fresh full CI rather than redundant local full rerun"
+  },
   "classification": {
     "deletedALOnly": [
       "Hypothesis catalog/lineage",
