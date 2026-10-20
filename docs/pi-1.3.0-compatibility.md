@@ -2,7 +2,7 @@
 
 ## Scope and published packages
 
-Upgrade from exact 1.0.3 to exact **1.3.0**, based on fresh `main` at `8a1ed38c4c66f324bc3b548b70ee507561c49ba6`. [The 1.0.3 audit](pi-1.0.3-compatibility.md) and its linked earlier audits remain historical evidence, not current patch requirements. Implementation, installation and verification used a separate `chore/pi-1.3.0-compat` worktree; no production Host restart, dependency installation in the live checkout, user configuration migration or paid inference.
+Upgrade from exact 1.0.3 to exact **1.3.0**, based on fresh `main` at `8a1ed38c4c66f324bc3b548b70ee507561c49ba6`. Earlier compatibility audits remain recoverable from Git history, not current patch requirements. Implementation, installation and verification used a separate `chore/pi-1.3.0-compat` worktree; no production Host restart, dependency installation in the live checkout, user configuration migration or paid inference.
 
 Audited actual npm metadata and tarballs for `@earendil-works/{pi-ai,pi-coding-agent,pi-tui,pi-agent-core,pi-codemode,pi-mcp,pi-telemetry}`. npm's stable `latest` is 1.3.0, published **2026-10-15 19:13:30.662 UTC**. All seven tarball SHA-512 values match both npm `dist.integrity` and the lockfile. Every published file in these packages matches the installed file byte-for-byte (including both pi-ai peer snapshots).
 
