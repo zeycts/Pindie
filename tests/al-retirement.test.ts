@@ -7,10 +7,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { composePindieExtension, resolvePindieFeatureSelection } from "../src/composition.ts";
 import { registerPindieExtension, type PindieExtensionOptions, type PindieExtensionIntegration } from "../src/extension.ts";
 import { classifyToolEffect } from "../src/execution-semantics.ts";
+import { deriveCapabilities } from "../src/semantics.ts";
 import { renderPindieSystemContract } from "../src/context.ts";
 import { PindieRuntime } from "../src/runtime.ts";
 import { EMPTY_STATE, type PindieState } from "../src/state.ts";
 import type { PindieStateStore } from "../src/store.ts";
+import { importEdges, moduleSpecifiers, RETIRED_MODULES } from "./retired-module-imports.ts";
 
 class MemoryStore implements PindieStateStore {
   state: PindieState = structuredClone(EMPTY_STATE);
@@ -28,19 +30,23 @@ test("retired flags and direct overrides cannot reactivate AL, including malform
       PINDIE_AUTONOMOUS_LEARNING_ENABLED: value, PINDIE_SELF_IMPROVEMENT_ENABLED: value,
       PINDIE_CROSS_PROJECT_LEARNING_ENABLED: value,
     });
-    assert.equal(selection.selfImprovement, false);
-    assert.equal(selection.crossProjectLearning, false);
+    assert.equal("selfImprovement" in selection, false);
+    assert.equal("crossProjectLearning" in selection, false);
     assert.equal(selection.bundledSkills, true);
     assert.equal(selection.presentation, true);
   }
 });
 
 test("composition drops poisoned learning injections without reading even their getters", () => {
-  const removedTrialTypes: Extract<keyof PindieExtensionOptions,
+  const removedOptionTypes: Extract<keyof PindieExtensionOptions,
+    "experienceStore" | "experienceReader" | "onExperienceSaved" | "workEpisodes" |
+    "strategyCandidateStore" | "strategyDecisionReader" | "strategyDerivationCandidateReader" |
+    "strategyTrustScopeWriterLock" | "strategySynthesisDecisionStore" | "crossProjectExperienceReader" |
     "trialAssignmentStore" | "trialHypothesisReader" | "trialAssignmentPolicy" | "trialDiagnostic"> extends never ? true : false = true;
-  assert.equal(removedTrialTypes, true, "retired Trial public fields cannot reappear");
-  const noGlobalDerivationRuntime: NonNullable<PindieExtensionIntegration["globalDerivation"]> extends never ? true : false = true;
-  assert.equal(noGlobalDerivationRuntime, true, "inert null accessor cannot expose a Learning runtime type");
+  assert.equal(removedOptionTypes, true, "retired dependencies cannot reappear in the public API");
+  const removedIntegrationTypes: Extract<keyof PindieExtensionIntegration,
+    "trial" | "derivation" | "globalDerivation" | "promotedStrategyRevisionCatalog" | "trustedStrategyPortfolio"> extends never ? true : false = true;
+  assert.equal(removedIntegrationTypes, true, "retired null/empty accessors cannot reappear");
   const input: any = { store: new MemoryStore(), featureSelection: { selfImprovement: true, crossProjectLearning: true } };
   for (const name of ["experienceStore", "experienceReader", "onExperienceSaved", "workEpisodes", "trialAssignmentStore",
     "trialHypothesisReader", "trialAssignmentPolicy", "trialDiagnostic", "strategyCandidateStore", "strategyTrustScopeWriterLock",
@@ -48,7 +54,7 @@ test("composition drops poisoned learning injections without reading even their 
     Object.defineProperty(input, name, { enumerable: true, get() { throw new Error(`Retired access: ${name}`); } });
   }
   const composition = composePindieExtension(input);
-  assert.equal(composition.featureSelection.selfImprovement, false);
+  assert.equal("selfImprovement" in composition.featureSelection, false);
   for (const name of Object.keys(input).filter((k) => !["store", "featureSelection"].includes(k))) {
     assert.equal(Object.hasOwn(composition.extensionOptions, name), false);
   }
@@ -79,9 +85,47 @@ test("extension registers only live Core/Memory tools; retired calls are denied 
     assert.equal(tools.has(name), true, name);
   }
   assert.equal("workEpisodes" in integration.runtime, false);
-  assert.equal(integration.trial, null);
+  for (const name of ["trial", "derivation", "globalDerivation", "promotedStrategyRevisionCatalog", "trustedStrategyPortfolio"]) {
+    assert.equal(name in integration, false, name);
+  }
   assert.equal("policySnapshot" in integration, false);
   assert.doesNotMatch(renderPindieSystemContract(), /Seed Strategies|Policy Snapshot|\/adapt|\/trial|pindie_policy_set/);
+});
+
+const historicalSeedIds = ["direct-action", "reproduce-first", "explore-first", "hypothesis-driven", "architecture-first", "minimal-change", "verify-as-you-go"];
+
+test("Core contract remains deterministic without historical Seed guidance", () => {
+  const first = renderPindieSystemContract();
+  assert.equal(first, renderPindieSystemContract());
+  assert.match(first, /^<PINDIE_SYSTEM_CONTRACT>[\s\S]*<\/PINDIE_SYSTEM_CONTRACT>$/);
+  for (const term of ["Pindie System Contract", "Execution Gateway is authoritative", "Pindie Run Baseline", "Human Gate"]) assert.ok(first.includes(term), term);
+  assert.doesNotMatch(first, /Seed Strategies|Policy Snapshot|\/adapt|\/trial/);
+  for (const id of historicalSeedIds) assert.equal(first.includes(id), false, id);
+});
+
+test("Core system contract excludes retired Seed and Policy guidance", () => {
+  const contract = renderPindieSystemContract();
+  assert.doesNotMatch(contract, /Seed Strategies:|Current Policy Snapshot|pindie_policy_set/);
+  for (const id of historicalSeedIds) assert.equal(contract.includes(id), false, id);
+});
+
+test("retired tools remain denied with coherent project mutation authority and cannot enter State", async () => {
+  const api = { on() {}, registerEntryRenderer() {}, registerTool() {}, registerCommand() {} } as unknown as ExtensionAPI;
+  const store = new MemoryStore();
+  const integration = registerPindieExtension(api, { store, continuityStore: { async save() {} }, featureSelection: { presentation: false } });
+  await integration.runtime.load("/isolated-denial");
+  await integration.runtime.dispatch({ type: "start_task", goal: "Real work", successCriteria: ["deny retired tools"], constraints: [] });
+  integration.core.beginAgentRunFacts({ sessionManager: { getEntries: () => [], getSessionId: () => "denial-session" } } as any);
+  assert.equal(integration.core.authorizeTool("edit").decision?.allowed, true);
+  const snapshot = integration.core.run.deriveSnapshot();
+  assert.equal(snapshot.ok, true);
+  if (snapshot.ok) for (const capability of deriveCapabilities(snapshot.snapshot)) assert.doesNotMatch(capability, /^policy\./);
+  const before = structuredClone(store.state);
+  for (const name of retiredTools) {
+    assert.match(classifyToolEffect(name).requiredCapability, /^policy\./);
+    assert.equal(integration.core.authorizeTool(name).decision?.allowed, false, name);
+  }
+  assert.deepEqual(store.state, before);
 });
 
 test("ordinary Task transitions ignore a poisoned WorkEpisode ledger; semantic state still persists", async () => {
@@ -96,13 +140,27 @@ test("ordinary Task transitions ignore a poisoned WorkEpisode ledger; semantic s
   assert.equal("workEpisodes" in runtime, false);
 });
 
-test("Core authority modules have no retired imports, including erased type-only dependencies", async () => {
-  const retired = /\/(?:cross-project-|exact-identity\.|experience-|learning-|policy\.|run-experience|strategies\.|strategy-|work-episode)/u;
-  for (const name of ["core-integration.ts", "runtime.ts", "run-integration.ts", "context.ts"]) {
-    const source = await readFile(new URL(`../src/${name}`, import.meta.url), "utf8");
-    const imports = ts.preProcessFile(source, true, true).importedFiles;
-    for (const entry of imports) assert.doesNotMatch(entry.fileName, retired, `${name}: ${entry.fileName}`);
+test("all Stable source and mixed test AST edges exclude the 29 retired modules, including erased types", async () => {
+  assert.equal(RETIRED_MODULES.size, 29);
+  const root = resolve(import.meta.dirname, "..");
+  const edges = await importEdges(root);
+  const mixed = new Set(["composition", "extension", "al-retirement", "project-discovery", "trial-offers-pi", "trial-overlay-pi-r2"].map((name) => `tests/${name}.test.ts`));
+  const frontier = [...mixed], visited = new Set<string>();
+  while (frontier.length) {
+    const from = frontier.pop()!;
+    if (visited.has(from)) continue;
+    visited.add(from);
+    for (const edge of edges.filter((edge) => edge.from === from)) {
+      assert.equal(RETIRED_MODULES.has(edge.to), false, `${edge.from} -> ${edge.to}`);
+      if (edge.to.startsWith("tests/")) frontier.push(edge.to);
+    }
   }
+  for (const edge of edges.filter((edge) => edge.from.startsWith("src/") && !RETIRED_MODULES.has(edge.from))) {
+    assert.equal(RETIRED_MODULES.has(edge.to), false, `${edge.from} -> ${edge.to}`);
+  }
+  assert.deepEqual(moduleSpecifiers(`import type { T } from "./a.ts"; type T2 = import("./b.ts").T;
+    const a = import("./c.ts"); const b = require("./d.ts"); export type { T } from "./e.ts";
+    import f = require("./f.ts");`), ["./a.ts", "./b.ts", "./c.ts", "./d.ts", "./e.ts", "./f.ts"]);
 });
 
 test("production entrypoint emitted import graph cannot load retired Learning/Policy modules", async () => {
@@ -113,7 +171,7 @@ test("production entrypoint emitted import graph cannot load retired Learning/Po
     visited.add(path);
     const name = path.slice(base.length + 1);
     assert.equal(forbidden.test(name) || name === "tools/policy.ts" || name.startsWith("tools/strategy-"), false, `Production loads ${name}`);
-    // Type-only legacy interfaces are deliberately erased; test actual emitted imports.
+    // Independently check the actual emitted transitive runtime graph.
     const source = await readFile(path, "utf8");
     const emitted = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
     for (const match of emitted.matchAll(/(?:from\s*|import\s*\(|require\s*\()\s*["'](\.\.?\/[^"']+\.ts)["']/g)) {

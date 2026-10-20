@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { renderPindieSystemContract } from "../src/context.ts";
 import { SEED_STRATEGIES } from "../src/strategies.ts";
 
 const expectedStrategies = [
@@ -40,18 +39,4 @@ test("SI01 Seed Strategy catalog contains exactly the seven immutable priors", (
     assert.equal(Object.isFrozen(strategy.principles), true, strategy.id);
     assert.doesNotMatch(JSON.stringify(strategy), forbiddenWorkflowTerms, strategy.id);
   }
-});
-
-test("Core contract remains deterministic without historical Seed guidance",  () => {
-  const first = renderPindieSystemContract();
-  const second = renderPindieSystemContract();
-
-  assert.equal(first, second);
-  assert.match(first, /^<PINDIE_SYSTEM_CONTRACT>[\s\S]*<\/PINDIE_SYSTEM_CONTRACT>$/);
-  assert.match(first, /Pindie System Contract/);
-  assert.match(first, /Execution Gateway is authoritative/);
-  assert.match(first, /Pindie Run Baseline/);
-  assert.match(first, /Human Gate/);
-  assert.doesNotMatch(first, /Seed Strategies|Policy Snapshot|\/adapt|\/trial/);
-  for (const [id] of expectedStrategies) assert.equal(first.includes(id), false, id);
 });

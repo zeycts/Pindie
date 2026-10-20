@@ -38,28 +38,6 @@ import {
   PINDIE_QUOTA_RESUME_MESSAGE,
   PINDIE_QUOTA_RESUME_TYPE,
 } from "../src/quota-resume-supervisor.ts";
-import {
-  createPolicySnapshot,
-  createPolicySnapshotFromRevisions,
-  createStrategyRevisionSelection,
-  type PolicySnapshot,
-} from "../src/policy.ts";
-import {
-  createStrategyRevisionCandidate,
-  strategyCandidateSemanticFingerprint,
-  strategyRevisionSelectionFromCandidate,
-  type StrategyRevisionCandidate,
-} from "../src/strategy-candidates.ts";
-import { getSeedStrategy, SEED_STRATEGIES } from "../src/strategies.ts";
-import {
-  createStrategyDerivationCandidate,
-  strategyDerivationCandidateSemanticFingerprint,
-  type StrategyDerivationCandidateV1,
-} from "../src/strategy-derivation-candidates.ts";
-import {
-  createTrustedStrategyPortfolio,
-  createTrustedStrategyPortfolioForProjectId,
-} from "../src/strategy-portfolio.ts";
 import { DiscordRemote, type DiscordClientSeam } from "../src/discord-remote.ts";
 import { PINDIE_REMOTE_NOTICE_TYPE } from "../src/remote-notice.ts";
 import { RemoteCompanion, type RemoteSurface } from "../src/remote-companion.ts";
@@ -74,54 +52,10 @@ import type {
   ProjectMemoryCaptureResult,
   ProjectMemorySink,
 } from "../src/project-memory.ts";
-import { evaluateRunExperience } from "../src/experience-evaluation.ts";
-import {
-  assembleRunExperience,
-  type RunExperience,
-} from "../src/run-experience.ts";
 import { taskContractFingerprint } from "../src/task-continuity.ts";
-import type {
-  RunExperienceProjectReader,
-  RunExperienceReadResult,
-  RunExperienceReader,
-  RunExperienceStore,
-} from "../src/experience-store.ts";
-import {
-  createPromotedStrategyRevisionCatalog,
-  createStrategyRevisionDecision,
-  type StrategyRevisionDecision,
-  type StrategyRevisionDecisionStore,
-} from "../src/strategy-decisions.ts";
-import {
-  createPromotedDerivedStrategyCatalog,
-  createStrategyDerivationDecision,
-  type StrategyDerivationDecision,
-  type StrategyDerivationDecisionReader,
-} from "../src/strategy-derivation-decisions.ts";
-import { getProjectId } from "../src/store.ts";
 import type { PindieStateStore, TaskContinuityStore } from "../src/store.ts";
 import { PINDIE_TOOL_LIVENESS_TIMEOUT_MS } from "../src/liveness.ts";
 import type { TaskContinuityV1 } from "../src/task-continuity.ts";
-import type { SemanticSnapshot } from "../src/semantics.ts";
-import {
-  createStrategyTrustScopeCandidate,
-  type StrategyTrustScopeCandidateStore,
-} from "../src/strategy-trust-scope-candidates.ts";
-import {
-  createStrategyTrustScopeDecision,
-  type StrategyTrustScopeDecisionStore,
-  type StrategyTrustScopeDecisionV1,
-} from "../src/strategy-trust-scope-decisions.ts";
-import type { StrategyTrustScopeSourceResolver } from "../src/strategy-trust-scope-resolution.ts";
-import type { ProjectTrustedStrategyPortfolioReader } from "../src/strategy-trust-safety.ts";
-import {
-  createStrategySynthesisCandidate,
-  strategySynthesisCandidateArtifactFingerprint,
-  strategySynthesisCandidateSemanticFingerprint,
-  type StrategySynthesisCandidateStore,
-  type StrategySynthesisCandidateV1,
-} from "../src/strategy-synthesis-candidates.ts";
-import { makeSynthesisTrialFixture } from "./synthesis-trial-fixture.ts";
 
 type CapturedHandler = (
   event: Record<string, unknown>,
@@ -223,12 +157,13 @@ class CapturedExtensionAPI {
   }
 }
 
-class ExtensionTestExperienceStore implements RunExperienceStore {
-  readonly records: Array<{ projectRoot: string; experience: RunExperience }> = [];
+// Old JavaScript payloads are intentionally untyped: no retired module is loaded.
+class ExtensionTestExperienceStore {
+  readonly records: Array<{ projectRoot: string; experience: unknown }> = [];
   saveError: Error | null = null;
   events: string[] | null = null;
 
-  async save(projectRoot: string, experience: RunExperience): Promise<void> {
+  async save(projectRoot: string, experience: unknown): Promise<void> {
     if (this.saveError) throw this.saveError;
     this.events?.push("experience");
     this.records.push({ projectRoot, experience });
@@ -244,34 +179,6 @@ class ExtensionTestContinuityStore implements TaskContinuityStore {
     if (this.saveError) throw this.saveError;
     this.events?.push("continuity");
     this.records.push({ projectRoot, checkpoint });
-  }
-}
-
-class HangingExperienceStore implements RunExperienceStore {
-  readonly records: Array<{ projectRoot: string; experience: RunExperience }> = [];
-  readonly saveStarted: Promise<void>;
-  readonly saveFinished: Promise<void>;
-  private resolveSaveStarted!: () => void;
-  private resolveSaveFinished!: () => void;
-  private resolvePending!: () => void;
-  private readonly pending: Promise<void>;
-
-  constructor() {
-    this.saveStarted = new Promise((resolve) => { this.resolveSaveStarted = resolve; });
-    this.saveFinished = new Promise((resolve) => { this.resolveSaveFinished = resolve; });
-    this.pending = new Promise((resolve) => { this.resolvePending = resolve; });
-  }
-
-  releaseSave(): void { this.resolvePending(); }
-
-  async save(projectRoot: string, experience: RunExperience): Promise<void> {
-    this.records.push({ projectRoot, experience });
-    this.resolveSaveStarted();
-    try {
-      await this.pending;
-    } finally {
-      this.resolveSaveFinished();
-    }
   }
 }
 
@@ -303,8 +210,8 @@ class HangingContinuityStore implements TaskContinuityStore {
   }
 }
 
-class ExtensionTestExperienceReader implements RunExperienceReader {
-  result: RunExperienceReadResult = {
+class ExtensionTestExperienceReader {
+  result = {
     records: [],
     loadedRecords: 0,
     unsupportedSchema: 0,
@@ -313,7 +220,7 @@ class ExtensionTestExperienceReader implements RunExperienceReader {
   readonly roots: string[] = [];
   error: Error | null = null;
 
-  async read(projectRoot: string): Promise<RunExperienceReadResult> {
+  async read(projectRoot: string) {
     this.roots.push(projectRoot);
     if (this.error) throw this.error;
     return this.result;
@@ -429,347 +336,6 @@ function activeState(goal = "Wire Pi extension"): PindieState {
       completed: false,
     },
   };
-}
-
-function trialCandidate(
-  candidateId = "00000000-0000-4000-8000-000000000001",
-  targetId = "architecture-first",
-): StrategyRevisionCandidate {
-  return createStrategyRevisionCandidate({
-    target: getSeedStrategy(targetId)!,
-    candidateId,
-    createdAt: "2026-01-01T00:00:00.000Z",
-    proposal: {
-      summary: "Use a bounded architectural check before changing code.",
-      useWhen: ["the change crosses a known interface boundary"],
-      avoidWhen: ["the issue is already a local correction"],
-      principles: ["name the boundary", "verify the smallest coherent change"],
-      sourceRecordIds: ["record-one", "record-two"],
-      hypothesis: "A narrower boundary check may reduce avoidable rework.",
-    },
-  });
-}
-
-function derivationTrialCandidate(
-  candidateId = "00000000-0000-4000-8000-000000000006",
-  basePortfolio = createTrustedStrategyPortfolio(
-    "/repo",
-    createPromotedStrategyRevisionCatalog([]),
-  ),
-): StrategyDerivationCandidateV1 {
-  return createStrategyDerivationCandidate({
-    projectId: basePortfolio.projectId,
-    basePortfolio,
-    candidateId,
-    createdAt: "2026-01-01T00:00:00.000Z",
-    proposal: {
-      strategyId: "boundary-first",
-      kind: "approach",
-      summary: "Name the smallest boundary before choosing a broader change.",
-      useWhen: ["the requested change crosses a meaningful interface"],
-      avoidWhen: ["the correction is already local and clear"],
-      principles: ["make the boundary explicit", "verify the smallest coherent move"],
-      sourceRecordIds: ["derive-one", "derive-two", "derive-three"],
-      hypothesis: "Repeated trusted-policy Runs may expose a missing boundary-first abstraction.",
-    },
-  });
-}
-
-function derivedPromotionCandidate(
-  candidateId: string,
-  strategyId: string,
-  basePortfolio = createTrustedStrategyPortfolio(
-    "/repo",
-    createPromotedStrategyRevisionCatalog([]),
-  ),
-): StrategyDerivationCandidateV1 {
-  return createStrategyDerivationCandidate({
-    projectId: basePortfolio.projectId,
-    basePortfolio,
-    candidateId,
-    createdAt: "2026-01-01T00:00:00.000Z",
-    proposal: {
-      strategyId,
-      kind: "approach",
-      summary: `Name the smallest boundary before choosing ${strategyId}.`,
-      useWhen: ["the requested change crosses a meaningful interface"],
-      avoidWhen: ["the correction is already local and clear"],
-      principles: ["make the boundary explicit", "verify the smallest coherent move"],
-      sourceRecordIds: ["derive-one", "derive-two", "derive-three"],
-      hypothesis: `Repeated trusted-policy Runs may expose a missing ${strategyId} abstraction.`,
-    },
-  });
-}
-
-function derivationTrialPolicy(candidate: StrategyDerivationCandidateV1): PolicySnapshot {
-  return createPolicySnapshotFromRevisions({
-    approach: createStrategyRevisionSelection({
-      strategyId: candidate.proposal.strategyId,
-      kind: candidate.proposal.kind,
-      revisionIdentity: candidate.candidateId,
-      revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(candidate),
-      revisionStatusAtRun: "trial",
-      semantics: {
-        summary: candidate.proposal.summary,
-        useWhen: [...candidate.proposal.useWhen],
-        avoidWhen: [...candidate.proposal.avoidWhen],
-        principles: [...candidate.proposal.principles],
-      },
-    }),
-  });
-}
-
-function derivationPromotionRecords(candidate: StrategyDerivationCandidateV1): Array<{
-  readonly recordId: string;
-  readonly experience: RunExperience;
-}> {
-  return [
-    { recordId: "derive-one", experience: commandExperience("source one", createPolicySnapshot({ approach: "direct-action" })) },
-    { recordId: "derive-two", experience: commandExperience("source one", createPolicySnapshot({ approach: "architecture-first" })) },
-    { recordId: "derive-three", experience: commandExperience("source two", createPolicySnapshot({ approach: "explore-first" })) },
-    { recordId: "trial-one", experience: commandExperience("trial one", derivationTrialPolicy(candidate)) },
-    { recordId: "trial-two", experience: commandExperience("trial two", derivationTrialPolicy(candidate)) },
-  ];
-}
-
-function candidatePolicy(
-  candidate: StrategyRevisionCandidate,
-  status: "trial" | "promoted" = "trial",
-): PolicySnapshot {
-  return createPolicySnapshotFromRevisions({
-    approach: strategyRevisionSelectionFromCandidate(candidate, status),
-  });
-}
-
-function testDecisionStore(
-  initial: readonly StrategyRevisionDecision[] = [],
-): StrategyRevisionDecisionStore & { readonly decisions: Map<string, StrategyRevisionDecision> } {
-  const decisions = new Map(initial.map((decision) => [decision.candidateId, decision]));
-  return {
-    decisions,
-    read: async (_root, candidateId) => decisions.get(candidateId) ?? null,
-    readAll: async () => [...decisions.values()],
-    save: async (_root, decision) => {
-      if (decisions.has(decision.candidateId)) throw new Error("terminal Decision already exists");
-      decisions.set(decision.candidateId, decision);
-    },
-  };
-}
-
-function testDerivationDecisionReader(
-  initial: readonly StrategyDerivationDecision[] = [],
-): StrategyDerivationDecisionReader & { readonly decisions: Map<string, StrategyDerivationDecision> } {
-  const decisions = new Map(initial.map((decision) => [decision.candidateId, decision]));
-  return {
-    decisions,
-    read: async (_root, candidateId) => decisions.get(candidateId) ?? null,
-    readAll: async () => [...decisions.values()],
-  };
-}
-
-function scopeTrialTestDependencies() {
-  const sourcePortfolio = createTrustedStrategyPortfolio(
-    "/source",
-    createPromotedStrategyRevisionCatalog([]),
-  );
-  const sourceCandidate = derivationTrialCandidate(
-    "33333333-0000-4000-8000-000000000071",
-    sourcePortfolio,
-  );
-  const sourceDecision = createStrategyDerivationDecision({
-    candidate: sourceCandidate,
-    decision: "promoted",
-    trialRecordIds: ["scope-source-trial-one", "scope-source-trial-two"],
-    decidedAt: "2026-03-01T00:00:00.000Z",
-  });
-  const sourceSelection = createStrategyRevisionSelection({
-    strategyId: sourceCandidate.proposal.strategyId,
-    kind: sourceCandidate.proposal.kind,
-    revisionIdentity: sourceCandidate.candidateId,
-    revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(sourceCandidate),
-    revisionStatusAtRun: "promoted",
-    semantics: sourceCandidate.proposal,
-  });
-  const sourceCatalog = createPromotedDerivedStrategyCatalog([{
-    candidate: sourceCandidate,
-    decision: sourceDecision,
-    selection: sourceSelection,
-  }]);
-  const scopeCandidate = createStrategyTrustScopeCandidate({
-    candidateId: "44444444-0000-4000-8000-000000000072",
-    sourceStrategy: {
-      sourceProjectId: sourceCandidate.projectId,
-      strategyId: sourceCandidate.proposal.strategyId,
-      kind: sourceCandidate.proposal.kind,
-      revisionIdentity: sourceCandidate.candidateId,
-      revisionFingerprint: strategyDerivationCandidateSemanticFingerprint(sourceCandidate),
-    },
-    createdAt: "2026-03-02T00:00:00.000Z",
-  });
-  const globalCandidates = [scopeCandidate];
-  const globalCandidateStore: StrategyTrustScopeCandidateStore = {
-    read: async (candidateId) => globalCandidates.find((candidate) => candidate.candidateId === candidateId) ?? null,
-    readAll: async () => [...globalCandidates],
-    save: async (candidate) => { globalCandidates.push(candidate); },
-  };
-  const globalDecisionStore: StrategyTrustScopeDecisionStore = {
-    read: async () => null,
-    readAll: async () => [],
-    save: async () => undefined,
-  };
-  const sourceResolver: StrategyTrustScopeSourceResolver = {
-    resolve: async (sourceStrategy) => ({
-      sourceStrategy,
-      candidate: sourceCandidate,
-      decision: sourceDecision,
-      selection: sourceSelection,
-      promotedDerivedCatalog: sourceCatalog,
-    }),
-  };
-  return {
-    scopeCandidate,
-    globalCandidateStore,
-    globalDecisionStore,
-    sourceResolver,
-    sourceCandidate,
-    sourceDecision,
-    sourceSelection,
-    sourceCatalog,
-  };
-}
-
-function emptyScopeAuthority() {
-  const candidateStore: StrategyTrustScopeCandidateStore = {
-    read: async () => null,
-    readAll: async () => [],
-    save: async () => undefined,
-  };
-  const decisionStore: StrategyTrustScopeDecisionStore = {
-    read: async () => null,
-    readAll: async () => [],
-    save: async () => undefined,
-  };
-  const sourceResolver: StrategyTrustScopeSourceResolver = {
-    resolve: async () => { throw new Error("the empty global authority has no source to resolve"); },
-  };
-  return { candidateStore, decisionStore, sourceResolver };
-}
-
-function promotedGlobalScopeDecision(
-  scopeCandidate: ReturnType<typeof scopeTrialTestDependencies>["scopeCandidate"],
-): StrategyTrustScopeDecisionV1 {
-  return createStrategyTrustScopeDecision({
-    candidate: scopeCandidate,
-    decision: "promoted",
-    trialRefs: [
-      {
-        projectId: getProjectId("/scope-target-a"),
-        recordId: "11111111-1111-4111-8111-111111111111.json",
-        recordFingerprint: `sha256:${"a".repeat(64)}`,
-      },
-      {
-        projectId: getProjectId("/scope-target-b"),
-        recordId: "22222222-2222-4222-8222-222222222222.json",
-        recordFingerprint: `sha256:${"b".repeat(64)}`,
-      },
-    ],
-    decidedAt: "2026-03-03T00:00:00.000Z",
-  });
-}
-
-function trustedStrategyCommandArtifacts() {
-  const promotedSeedCandidate = trialCandidate(
-    "11111111-0000-4000-8000-000000000101",
-    "architecture-first",
-  );
-  const promotedSeedDecision = createStrategyRevisionDecision({
-    candidate: promotedSeedCandidate,
-    decision: "promoted",
-    trialRecordIds: ["seed-trial-one", "seed-trial-two"],
-    decidedAt: "2026-02-01T00:00:00.000Z",
-  });
-  const promotedSeedCatalog = createPromotedStrategyRevisionCatalog([{
-    candidate: promotedSeedCandidate,
-    decision: promotedSeedDecision,
-    selection: strategyRevisionSelectionFromCandidate(promotedSeedCandidate, "promoted"),
-  }]);
-  const basePortfolio = createTrustedStrategyPortfolio("/repo", promotedSeedCatalog);
-  const promotedDerivedCandidate = createStrategyDerivationCandidate({
-    projectId: basePortfolio.projectId,
-    basePortfolio,
-    candidateId: "22222222-0000-4000-8000-000000000102",
-    createdAt: "2026-01-01T00:00:00.000Z",
-    proposal: {
-      strategyId: "delivery-checkpoints",
-      kind: "modifier",
-      summary: "Make implementation and delivery progress explicit through bounded checkpoints.",
-      useWhen: ["the task has several independent deliverables to close"],
-      avoidWhen: ["the work is only exploratory discussion"],
-      principles: ["separate implementation, verification, and delivery checks", "keep checkpoints bounded"],
-      sourceRecordIds: ["derived-source-one", "derived-source-two", "derived-source-three"],
-      hypothesis: "Repeated delivery work may benefit from explicit bounded checkpoints.",
-    },
-  });
-  const promotedDerivedDecision = createStrategyDerivationDecision({
-    candidate: promotedDerivedCandidate,
-    decision: "promoted",
-    trialRecordIds: ["derived-trial-one", "derived-trial-two"],
-    decidedAt: "2026-02-02T00:00:00.000Z",
-  });
-  return {
-    promotedSeedCandidate,
-    promotedSeedDecision,
-    promotedDerivedCandidate,
-    promotedDerivedDecision,
-  };
-}
-
-function commandExperience(goal: string, policy: PolicySnapshot | null = null): RunExperience {
-  const coherentSnapshot: Extract<SemanticSnapshot, { authority: "coherent" }> = {
-    authority: "coherent",
-    taskStatus: "active",
-    verificationStatus: "pending",
-    hasBlockers: false,
-    hasQuestions: false,
-    completionReady: false,
-    taskRelation: "preexisting_untouched",
-    completionRelation: "not_completed",
-    gateRelation: "none",
-  };
-  const zero = {
-    toolCalls: 0,
-    observations: 0,
-    consequentialCalls: 0,
-    projectMutationEffectCalls: 0,
-    verificationCalls: 0,
-    toolErrors: 0,
-    deniedCalls: 0,
-  };
-  return assembleRunExperience({
-    task: activeState(goal).task!,
-    runStart: { taskStatus: "active", taskGoal: goal },
-    snapshot: coherentSnapshot,
-    policy: {
-      finalSnapshot: policy,
-      declarationCount: policy === null ? 0 : 1,
-      finalPolicyDeclarationCount: policy === null ? 0 : 1,
-      finalPolicyFirstDeclaredAfter: policy === null ? null : zero,
-      finalPolicyLastDeclaredAfter: policy === null ? null : zero,
-    },
-    execution: { ...zero, toolCalls: 1, observations: 1 },
-    durationMs: 10,
-    cost: 0.1,
-    recordedAt: "2026-01-01T00:00:00.000Z",
-  });
-}
-
-function completedBeforeCommandExperience(goal: string, policy: PolicySnapshot): RunExperience {
-  const record = structuredClone(commandExperience(goal, policy)) as any;
-  record.runStart.taskStatus = "done";
-  record.outcome.taskStatus = "done";
-  record.outcome.verificationStatus = "passed";
-  record.outcome.completionRelation = "completed_before_run";
-  return record;
 }
 
 function verifiedState(): PindieState {
@@ -995,7 +561,10 @@ function continuationProbe(
 function createHarness(
   entries: Array<[string, PindieState]> = [],
   resolvedRoots: Record<string, string> = {},
-  options: Omit<PindieExtensionOptions, "store"> = {},
+  options: Omit<PindieExtensionOptions, "store" | "featureSelection"> & {
+    featureSelection?: Partial<PindieExtensionOptions["featureSelection"]> & Record<string, unknown>;
+    [legacyField: string]: unknown;
+  } = {},
 ) {
   const api = new CapturedExtensionAPI();
   const store = new ExtensionTestStore(entries);
@@ -1006,14 +575,6 @@ function createHarness(
     {
       subscriptionUsageProvider: { fetchUsage: async () => null },
       ...options,
-      // This legacy integration harness exercises the complete SI/CPL surface.
-      // Production defaults are Stable Mode; SI/CPL-specific tests opt in here.
-      featureSelection: {
-        selfImprovement: options.featureSelection?.selfImprovement ?? true,
-        crossProjectLearning: options.featureSelection?.crossProjectLearning ??
-          (options.featureSelection?.selfImprovement ?? true),
-        ...options.featureSelection,
-      },
       store,
       experienceStore,
       experienceReader,
@@ -1085,10 +646,10 @@ test("Presentation can be disabled without removing Core settlement or reviving 
     },
   };
 
-  assert.equal(harness.integration.featureSelection.selfImprovement, false);
+  assert.equal("selfImprovement" in harness.integration.featureSelection, false);
   assert.equal(harness.integration.featureSelection.presentation, false);
-  assert.equal(harness.integration.trial, null);
-  assert.equal(harness.integration.derivation, null);
+  assert.equal("trial" in harness.integration, false);
+  assert.equal("derivation" in harness.integration, false);
   assert.equal(harness.integration.reasoning, null);
   assert.equal(harness.integration.runActivity, null);
   assert.equal(harness.api.commands.has("efficiency"), false);
@@ -1130,11 +691,11 @@ test("Core tools survive without Policy registration or SI store access", async 
     },
   );
 
-  assert.equal(harness.integration.featureSelection.selfImprovement, false);
-  assert.equal(harness.integration.featureSelection.crossProjectLearning, false);
-  assert.equal(harness.integration.trial, null);
-  assert.equal(harness.integration.derivation, null);
-  assert.equal(harness.integration.trustedStrategyPortfolio, null);
+  assert.equal("selfImprovement" in harness.integration.featureSelection, false);
+  assert.equal("crossProjectLearning" in harness.integration.featureSelection, false);
+  assert.equal("trial" in harness.integration, false);
+  assert.equal("derivation" in harness.integration, false);
+  assert.equal("trustedStrategyPortfolio" in harness.integration, false);
   for (const command of [
     "experience", "strategies", "trust-transfer", "adapt", "derive",
     "trial", "trial-review", "promote", "reject",
@@ -1172,7 +733,7 @@ test("Core tools survive without Policy registration or SI store access", async 
 
 test("retired SI overrides keep local presentation without global trust-safety reads", async () => {
   let globalReads = 0;
-  const globalCandidates: StrategyTrustScopeCandidateStore = {
+  const globalCandidates = {
     read: async () => null,
     readAll: async () => {
       globalReads += 1;
@@ -1180,7 +741,7 @@ test("retired SI overrides keep local presentation without global trust-safety r
     },
     save: async () => undefined,
   };
-  const globalDecisions: StrategyTrustScopeDecisionStore = {
+  const globalDecisions = {
     read: async () => null,
     readAll: async () => {
       globalReads += 1;
@@ -1190,8 +751,8 @@ test("retired SI overrides keep local presentation without global trust-safety r
   };
   const revisionReader = { read: async () => null, readAll: async () => [] };
   const derivationReader = { read: async () => null, readAll: async () => [] };
-  const decisions = testDecisionStore();
-  const derivationDecisions = testDerivationDecisionReader();
+  const decisions = { read: async () => null, readAll: async () => [] };
+  const derivationDecisions = { read: async () => null, readAll: async () => [] };
   const harness = createHarness(
     [["/repo", activeState("SI-only task")]],
     {},
@@ -1208,8 +769,8 @@ test("retired SI overrides keep local presentation without global trust-safety r
     },
   );
 
-  assert.equal(harness.integration.featureSelection.selfImprovement, false);
-  assert.equal(harness.integration.featureSelection.crossProjectLearning, false);
+  assert.equal("selfImprovement" in harness.integration.featureSelection, false);
+  assert.equal("crossProjectLearning" in harness.integration.featureSelection, false);
   for (const command of ["experience", "strategies", "adapt", "derive", "trial", "trial-review", "promote", "reject"]) {
     assert.equal(harness.api.commands.has(command), false, `retired SI command '${command}' must be absent`);
   }
@@ -1410,9 +971,9 @@ test("Slice F selected features keep one registration set and rebuild Core autho
   assert.equal(harness.integration.runtime.projectRoot, null);
   assert.equal(harness.integration.runTimer.active, false);
   assert.equal(harness.integration.runActivity?.activity, null);
-  assert.equal(harness.integration.trial, null);
-  assert.equal(harness.integration.derivation, null);
-  assert.equal(harness.integration.globalDerivation, null);
+  for (const name of ["trial", "derivation", "globalDerivation"]) {
+    assert.equal(name in harness.integration, false, name);
+  }
   assert.equal(harness.api.toolRegistrations.length, tools.length);
   assert.equal(harness.api.commandRegistrations.length, commands.length);
   assert.equal(harness.api.handlerRegistrations.length, handlers.length);
@@ -1441,9 +1002,9 @@ test("Slice F selected features keep one registration set and rebuild Core autho
   await sessionShutdown("done", "session-b");
   assert.equal(remote.activeSessionId, null);
   assert.equal(harness.integration.runtime.projectRoot, null);
-  assert.equal(harness.integration.trial, null);
-  assert.equal(harness.integration.derivation, null);
-  assert.equal(harness.integration.globalDerivation, null);
+  for (const name of ["trial", "derivation", "globalDerivation"]) {
+    assert.equal(name in harness.integration, false, name);
+  }
 });
 
 async function startSession(
@@ -3542,8 +3103,8 @@ test("Context Governor suppresses pending handoff guidance but retired adaptatio
   const reader = new ExtensionTestExperienceReader();
   reader.result = {
     records: [
-      { recordId: "adapt-one.json", experience: commandExperience("adapt one", createPolicySnapshot({ approach: "direct-action" })) },
-      { recordId: "adapt-two.json", experience: commandExperience("adapt two", createPolicySnapshot({ approach: "direct-action" })) },
+      { recordId: "adapt-one.json", experience: { task: { goal: "adapt one" }, policy: { approach: "direct-action" } } },
+      { recordId: "adapt-two.json", experience: { task: { goal: "adapt two" }, policy: { approach: "direct-action" } } },
     ],
     loadedRecords: 2,
     unsupportedSchema: 0,
@@ -4915,19 +4476,9 @@ test("automatic rollover preserves per-Run metrics and Task accounting without E
   const experienceStore = new ExtensionTestExperienceStore();
   const continuityStore = new ExtensionTestContinuityStore();
   const taskMetrics = new TaskMetricsTracker();
-  const promotedCandidate = trialCandidate("00000000-0000-4000-8000-000000000031");
-  const promotedDecision = createStrategyRevisionDecision({
-    candidate: promotedCandidate,
-    decision: "promoted",
-    trialRecordIds: [],
-    decidedAt: "2026-09-04T00:00:00.000Z",
-  });
-  const decisions = testDecisionStore([promotedDecision]);
-  const candidateReader = {
-    read: async (_root: string, candidateId: string) =>
-      candidateId === promotedCandidate.candidateId ? promotedCandidate : null,
-    readAll: async () => [promotedCandidate],
-  };
+  const retiredRead = async (): Promise<never> => { throw new Error("retired Strategy read during rollover"); };
+  const decisions = { read: retiredRead, readAll: retiredRead };
+  const candidateReader = { read: retiredRead, readAll: retiredRead };
   const sharedOptions = {
     enableTaskHandoff: true,
     experienceStore,

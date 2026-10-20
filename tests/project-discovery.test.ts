@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, readdir, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -8,8 +8,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createPindieHost } from "../src/host.ts";
 import { getProjectId, FileStateStore } from "../src/store.ts";
 import { PindieRuntime } from "../src/runtime.ts";
-import { assembleRunExperience } from "../src/run-experience.ts";
-import { FileRunExperienceStore } from "../src/experience-store.ts";
+import { legacyExperience } from "./legacy-learning-payload.ts";
 
 // Retain both Host regressions; standalone Discovery executor cases are retired.
 async function setup(t: import("node:test").TestContext) {
@@ -21,16 +20,11 @@ async function setup(t: import("node:test").TestContext) {
   const runtime = new PindieRuntime(new FileStateStore({ baseDir: projects }));
   await runtime.load(cwd);
   await runtime.dispatch({ type: "start_task", goal: "goal", constraints: [], successCriteria: ["done"] });
-  const store = new FileRunExperienceStore({ baseDir: projects });
+  const experienceDir = join(projects, getProjectId(cwd), "experience");
+  await mkdir(experienceDir, { recursive: true });
   for (let i = 0; i < 6; i++) {
-    await store.save(cwd, assembleRunExperience({ task: runtime.state.task!,
-      runStart: { taskStatus: "active", taskGoal: "goal" },
-      snapshot: { authority: "coherent", taskStatus: "active", verificationStatus: "pending", hasBlockers: false,
-        hasQuestions: false, completionReady: false, taskRelation: "preexisting_untouched", completionRelation: "not_completed", gateRelation: "none" },
-      policy: { finalSnapshot: null, declarationCount: 0, finalPolicyDeclarationCount: 0, finalPolicyFirstDeclaredAfter: null, finalPolicyLastDeclaredAfter: null },
-      execution: { toolCalls: 1, observations: 1, consequentialCalls: 0, projectMutationEffectCalls: 0, verificationCalls: 0, toolErrors: i % 2, deniedCalls: 0 },
-      durationMs: 1, cost: 0, recordedAt: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(), workEpisodeId: randomUUID(),
-    }));
+    // Persist opaque legacy payloads without loading retired writers/assemblers.
+    await writeFile(join(experienceDir, `${randomUUID()}.json`), JSON.stringify(legacyExperience(randomUUID(), i)));
   }
   return { cwd, agentDir, projects, global };
 }

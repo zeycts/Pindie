@@ -40,49 +40,6 @@ import {
   type PindiePresentationReader,
 } from "./presentation-integration.ts";
 import { PINDIE_REMOTE_NOTICE_TYPE, renderPindieRemoteNotice } from "./remote-notice.ts";
-import type {
-  RunExperienceProjectReader,
-  RunExperienceReader,
-  RunExperienceStore,
-} from "./experience-store.ts";
-import type {
-  StrategyCandidateReader,
-  StrategyCandidateStore,
-} from "./strategy-candidates.ts";
-import type {
-  StrategyDerivationCandidateReader,
-  StrategyDerivationCandidateStore,
-} from "./strategy-derivation-candidates.ts";
-import type {
-  StrategyTrustScopeCandidateStore,
-} from "./strategy-trust-scope-candidates.ts";
-import type {
-  StrategyTrustScopeDecisionStore,
-} from "./strategy-trust-scope-decisions.ts";
-import type { StrategyTrustScopeSourceResolver } from "./strategy-trust-scope-resolution.ts";
-import type { ScopeProjectTrustReader } from "./strategy-trust-scope-review.ts";
-import type { ProjectTrustedStrategyPortfolioReader } from "./strategy-trust-safety.ts";
-import type {
-  StrategySynthesisCandidateReader,
-  StrategySynthesisCandidateStore,
-} from "./strategy-synthesis-candidates.ts";
-import type {
-  StrategySynthesisDecisionReader,
-  StrategySynthesisDecisionStore,
-} from "./strategy-synthesis-decisions.ts";
-import type {
-  StrategyRevisionDecisionReader,
-  StrategyRevisionDecisionStore,
-  PromotedStrategyRevisionCatalog,
-} from "./strategy-decisions.ts";
-import type {
-  StrategyDerivationDecisionReader,
-  StrategyDerivationDecisionStore,
-} from "./strategy-derivation-decisions.ts";
-import type {
-  TrustedStrategyPortfolio,
-} from "./strategy-portfolio.ts";
-import type { DerivationRuntime } from "./strategy-derivation.ts";
 import type { RemoteCompanion, RemotePi, RemoteStatusFacts } from "./remote-companion.ts";
 import { classifyHumanSignal } from "./human-signal.ts";
 import type { DiscordRemote } from "./discord-remote.ts";
@@ -112,7 +69,6 @@ import {
 } from "./state.ts";
 import {
   StateLockBusyError,
-  type GlobalWriterLock,
   type TaskContinuityStore,
   type PindieStateStore,
 } from "./store.ts";
@@ -154,8 +110,6 @@ import {
   runBoundedOperation,
 } from "./liveness.ts";
 
-// Retired embedding options: type-only compatibility until Phase 2.
-
 type ProjectRootResolver = (cwd: string, signal?: AbortSignal) => Promise<string>;
 
 export interface PindieExtensionOptions {
@@ -169,32 +123,6 @@ export interface PindieExtensionOptions {
   continuityStore?: TaskContinuityStore;
   quotaResumePreferenceStore?: QuotaResumePreferenceStore;
   quotaFallbackPreferenceStore?: QuotaFallbackPreferenceStore;
-  experienceStore?: RunExperienceStore;
-  /** Host-only best-effort post-commit notification; not Task semantics. */
-  onExperienceSaved?: (projectRoot: string) => void;
-  experienceReader?: RunExperienceReader;
-  workEpisodes?: import("./work-episode.ts").WorkEpisodeLedger;
-  strategyCandidateStore?: StrategyCandidateStore;
-  strategyCandidateReader?: StrategyCandidateReader;
-  strategyDerivationCandidateStore?: StrategyDerivationCandidateStore;
-  strategyDerivationCandidateReader?: StrategyDerivationCandidateReader;
-  strategyDecisionStore?: StrategyRevisionDecisionStore;
-  strategyDecisionReader?: StrategyRevisionDecisionReader;
-  strategyDerivationDecisionStore?: StrategyDerivationDecisionStore;
-  strategyDerivationDecisionReader?: StrategyDerivationDecisionReader;
-  strategyTrustScopeCandidateStore?: StrategyTrustScopeCandidateStore;
-  strategyTrustScopeDecisionStore?: StrategyTrustScopeDecisionStore;
-  strategyTrustScopeSourceResolver?: StrategyTrustScopeSourceResolver;
-  strategyTrustScopeWriterLock?: GlobalWriterLock;
-  crossProjectExperienceReader?: RunExperienceProjectReader;
-  crossProjectTrustReader?: ProjectTrustedStrategyPortfolioReader;
-  scopeProjectTrustReader?: ScopeProjectTrustReader;
-  /** Read-only Synthesis authority used by SI even when CPL is disabled. */
-  strategySynthesisCandidateReader?: StrategySynthesisCandidateReader;
-  strategySynthesisDecisionReader?: StrategySynthesisDecisionReader;
-  /** Mutable Synthesis workflow stores; assembled only when CPL is enabled. */
-  strategySynthesisCandidateStore?: StrategySynthesisCandidateStore;
-  strategySynthesisDecisionStore?: StrategySynthesisDecisionStore;
   resolveProjectRoot?: ProjectRootResolver;
   subscriptionUsageProvider?: SubscriptionUsageProvider;
   getStatusWidth?: () => number | undefined;
@@ -230,12 +158,6 @@ export interface PindieExtensionIntegration {
   readonly runTimer: RunTimer;
   readonly taskMetrics: TaskMetricsTracker;
   readonly contextGovernor: CoreIntegration["contextGovernor"];
-  readonly trial: null;
-  readonly derivation: DerivationRuntime | null;
-  readonly globalDerivation: null;
-  readonly promotedStrategyRevisionCatalog: PromotedStrategyRevisionCatalog;
-  /** Runtime-derived Seeds plus valid promoted Seed/Derived trust entries. */
-  readonly trustedStrategyPortfolio: TrustedStrategyPortfolio | null;
   readonly stateUnavailableReason: string | null;
   readonly quotaAutoResumeEnabled: boolean;
   readonly quotaFallbackEnabled: boolean;
@@ -243,18 +165,6 @@ export interface PindieExtensionIntegration {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-const MAX_OPTIONAL_GLOBAL_DIAGNOSTIC_LENGTH = 256;
-
-function optionalGlobalUnavailableReason(error: unknown): string {
-  const reason = `optional user-global layer unavailable: ${errorMessage(error)}`
-    .replace(/[\r\n\t]+/gu, " ")
-    .replace(/\s{2,}/gu, " ")
-    .trim();
-  return reason.length <= MAX_OPTIONAL_GLOBAL_DIAGNOSTIC_LENGTH
-    ? reason
-    : `${reason.slice(0, MAX_OPTIONAL_GLOBAL_DIAGNOSTIC_LENGTH - 1)}…`;
 }
 
 const STALE_EXTENSION_CONTEXT_ERROR =
@@ -336,9 +246,7 @@ function registerComposedPindieExtension(
   let agentRunLifecycleGeneration = 0;
   let remoteCompletionReport: { generation: number; sessionId: string; text: string } | null = null;
   const taskHandoffEnabled = options.enableTaskHandoff === true || committedRolloverPublisher !== null;
-  // Composition supplies Core's production dependencies explicitly. Feature
-  // dependencies are validated and assembled only when Self-Improvement is
-  // selected; Core-only assembly never manufactures or touches them.
+  // Composition supplies Core's production dependencies explicitly.
   const stateStore = options.store!;
   const continuityStore = options.continuityStore!;
   const continuityNow = options.now ?? Date.now;
@@ -1449,12 +1357,6 @@ function registerComposedPindieExtension(
     runTimer: presentation.runTimer,
     taskMetrics: presentation.taskMetrics,
     contextGovernor,
-    trial: null,
-    derivation: null,
-    globalDerivation: null,
-    promotedStrategyRevisionCatalog: Object.freeze({ entries: [], selections: [],
-      resolve() { throw new Error("Strategy selection is retired."); } }),
-    trustedStrategyPortfolio: null,
     get stateUnavailableReason() {
       return run.stateUnavailableReason;
     },

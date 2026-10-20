@@ -8,8 +8,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { registerConfiguredPindieExtension, type PindieExtensionOptions } from "../src/extension.ts";
 import { FileStateStore, getProjectId } from "../src/store.ts";
-import { FileRunExperienceReader, FileRunExperienceStore } from "../src/experience-store.ts";
-import { hypothesisFingerprint, learningFingerprint } from "../src/learning-v1-contract.ts";
+import { legacyHypothesis, legacyPublication } from "./legacy-learning-payload.ts";
 
 // Deliberately inject old JS fields without restoring them to the public API.
 // Composition must still discard them without activation or getter access.
@@ -21,15 +20,10 @@ const progress = () => fauxAssistantMessage(fauxToolCall("pindie_task_progress",
 async function fixture(t: any, kind: "approach" | "modifier" = "approach", options: LegacyInjections = {}, deleteAdvisory = false) {
   const cwd = await mkdtemp(join(tmpdir(), "r2-native-pi-")), agentDir = join(cwd, "agent"), projectsBaseDir = join(cwd, "projects"), globalBaseDir = join(cwd, "global"), projectId = getProjectId(cwd);
   await mkdir(agentDir);
-  const semantics = { schemaVersion: 2 as const, scope: { kind: "project" as const, projectId }, logicalId: "bounded-check", kind, lineage: "new" as const, parent: null, baseRevisionFingerprint: null,
-    summary: "Check affected contracts", useWhen: ["Local edits"], avoidWhen: [], principles: ["Keep verification focused"], expectedEffect: "Fewer unrelated edits", failureSignals: ["Missed tests"], trialHints: [],
-    sources: [{ projectId, recordId: `${randomUUID()}.json`, fingerprint: `sha256:${"a".repeat(64)}` }], discoveryPacketFingerprint: `sha256:${"b".repeat(64)}` };
-  const h = { ...semantics, id: randomUUID(), fingerprint: hypothesisFingerprint(semantics) };
+  const h = legacyHypothesis(projectId, kind);
   const publish = async () => {
-    const ref = { schemaVersion: 1, family: "strategy-hypothesis", scope: h.scope, id: h.id, fingerprint: h.fingerprint };
-    const content = { schemaVersion: 2, packetFingerprint: h.discoveryPacketFingerprint, outcome: "published", refs: [ref], newHypotheses: [h], modelIdentity: { provider: "faux", modelId: "discovery", thinkingLevel: "off" } };
     const dir = join(projectsBaseDir, projectId, "learning-v1", "hypotheses"); await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, `${h.discoveryPacketFingerprint.slice(7)}.json`), JSON.stringify({ ...content, fingerprint: learningFingerprint(content) }));
+    await writeFile(join(dir, `${h.discoveryPacketFingerprint.slice(7)}.json`), JSON.stringify(legacyPublication(h)));
   };
   const faux = fauxProvider({ provider: `r2-${randomUUID()}` });
   const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null, refreshOnCreate: false });
@@ -60,7 +54,10 @@ async function fixture(t: any, kind: "approach" | "modifier" = "approach", optio
   t.after(async () => { try { await liveSession.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); } finally { liveSession.dispose(); await rm(cwd, { recursive: true, force: true, maxRetries: 5 }); } });
   const selector = { strategyId: h.logicalId, revisionIdentity: h.id, revisionFingerprint: h.fingerprint };
   const select = () => fauxAssistantMessage(fauxToolCall("pindie_policy_set", kind === "approach" ? { approach: selector } : { approach: "direct-action", modifiers: [selector] }), { stopReason: "toolUse" });
-  const experiences = async () => (await new FileRunExperienceReader({ baseDir: projectsBaseDir }).read(cwd)).records;
+  const experiences = async () => {
+    try { return await readdir(join(projectsBaseDir, projectId, "experience")); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; throw e; }
+  };
   const assignments = async () => { try { return (await readdir(join(projectsBaseDir, projectId, "learning-v1", "trial-assignments-v2"))).filter((v) => v.endsWith(".json")); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; throw e; } };
   const evidence = async () => {
     const dir = join(projectsBaseDir, projectId, "learning-v1", "trial-evidence-v2");
@@ -74,15 +71,10 @@ async function fixture(t: any, kind: "approach" | "modifier" = "approach", optio
 
 for (const failure of ["save", "no-ref", "source", "evidence"] as const) test(`native Pi retired ${failure} dependency cannot alter Task truth or fabricate evidence`, async (t) => {
   let f!: Awaited<ReturnType<typeof fixture>>;
+  let retiredCalls = 0;
   const options: LegacyInjections = failure === "evidence" ? {} : failure === "source" ? {
-    experienceStore: { save: async (projectRoot, experience, signal) => {
-      const store = new FileRunExperienceStore({ baseDir: f.projectsBaseDir });
-      const ref = await store.save(projectRoot, experience, signal);
-      const path = join(store.experienceDirectory(projectRoot), ref.recordId);
-      await writeFile(path, JSON.stringify({ ...experience, metrics: { durationMs: 0, cost: 999 } }));
-      return ref;
-    } },
-  } : { experienceStore: { save: async () => { if (failure === "save") throw new Error("Injected save failure"); } } };
+    experienceStore: { save: async () => { retiredCalls += 1; throw new Error("retired source callback must not execute"); } },
+  } : { experienceStore: { save: async () => { retiredCalls += 1; if (failure === "save") throw new Error("Injected save failure"); } } };
   f = await fixture(t, "approach", options);
   await f.publish();
   if (failure === "evidence") {
@@ -97,6 +89,7 @@ for (const failure of ["save", "no-ref", "source", "evidence"] as const) test(`n
   assert.deepEqual(await f.experiences(), []);
   assert.equal("policySnapshot" in f.integration, false);
   assert.deepEqual(await f.evidence(), historicalEvidence, "even corrupt historical bytes stay untouched; no retired reader executes");
+  assert.equal(retiredCalls, 0, "retired callback is never invoked, even best-effort");
 });
 
 test("native Pi replacement preserves Task identity boundaries without Trial placement", async (t) => {
@@ -154,6 +147,6 @@ test("native Pi external State epoch remains authoritative while retired Policy 
   assert.equal(f.integration.runtime.state.task?.goal, "External replacement");
   const policyResult = f.session.sessionManager.getBranch().find((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "pindie_policy_set");
   assert.ok(policyResult && policyResult.type === "message" && policyResult.message.role === "toolResult" && policyResult.message.isError);
-  assert.ok((await f.experiences()).every((r) => r.experience.policy.finalSnapshot === null));
+  assert.deepEqual(await f.experiences(), [], "no Experience files, not a vacuous Policy projection");
   assert.deepEqual(await f.evidence(), []);
 });
