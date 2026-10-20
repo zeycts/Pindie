@@ -35,6 +35,35 @@ test("GS01 bundled git-workflow Skill is exposed through Pi as procedure-only Gi
   assert.doesNotMatch(skill, /Pindie Core/i);
 });
 
+test("GS03 git-workflow cleanup remains an approved, fail-closed post-merge handoff", async () => {
+  const skill = await readFile(
+    new URL("../skills/git-workflow/SKILL.md", import.meta.url),
+    "utf8",
+  );
+  const review = skill.indexOf("### 8. Review cycle");
+  const cleanup = skill.indexOf("### 9. Post-merge / post-deployment cleanup");
+  const safety = skill.indexOf("## Safety");
+  assert.ok(review >= 0 && cleanup > review && safety > cleanup);
+  const section = skill.slice(cleanup, safety);
+  assert.match(section, /only after the PR actually merges.*deployment acceptance/s);
+  assert.match(section, /Never clean up while the task still uses the worktree/);
+  assert.match(section, /tool access is not blanket approval/);
+  assert.match(section, /exact PR ↔ branch ↔ registered worktree path/);
+  assert.match(section, /current main contains its changes.*squash merges/s);
+  assert.match(section, /--untracked-files=all/);
+  assert.match(section, /unpublished distinct commits/);
+  assert.match(section, /user-owned processes.*cwd\/open files.*known services/s);
+  assert.match(section, /fail closed and report/);
+  assert.match(section, /explicit cleanup authorization covering the exact target/);
+  assert.match(section, /`git worktree remove <exact path>` without force/);
+  assert.match(section, /directory and its worktree registration are removed/);
+  assert.match(section, /`git branch -d <exact branch>`.*independently establishing it is safe/s);
+  assert.match(section, /do not automatically use `-D`/);
+  assert.match(section, /retain it and report the leftover/);
+  assert.match(section, /No `rm -rf`, `git clean`, force worktree removal/);
+  assert.match(section, /Record concise factual completion status/);
+});
+
 test("GS02 development-execution is a bundled procedural Pi Skill for efficient development", async () => {
   const manifest = JSON.parse(
     await readFile(new URL("../package.json", import.meta.url), "utf8"),

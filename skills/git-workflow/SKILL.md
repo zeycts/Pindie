@@ -77,6 +77,24 @@ For review feedback:
 
 Do not open a replacement PR unless the existing PR cannot represent the work correctly.
 
+### 9. Post-merge / post-deployment cleanup
+
+At PR completion, consider cleanup of the known temporary worktree as a procedural handoff, not an unattended automatic action. Proceed only after the PR actually merges and any required deployment acceptance/verification is complete; CI is not deployment validation. Never clean up while the task still uses the worktree. An explicit user cleanup request may instead be handled in a dedicated follow-up after these checks. PR merge, deployment, and destructive cleanup retain their separate human approval boundaries; tool access is not blanket approval.
+
+Before removal:
+
+1. Establish the exact PR ↔ branch ↔ registered worktree path using PR metadata and `git worktree list --porcelain`; record the branch and worktree HEAD. Confirm the PR is merged and current main contains its changes, including for squash merges: ancestry alone may not prove content equivalence. A clean checkout is not proof of merge.
+2. Inspect `git status --porcelain=v1 --untracked-files=all` in that exact worktree: require clean tracked and untracked/unignored relevant files. Check for unpublished distinct commits or changes beyond the merged PR; upstream tracking or a successful branch deletion alone is not proof they are safe to discard. Preserve user data, including relevant ignored files; do not assume build/session artifacts are disposable.
+3. Check active use by relevant user-owned processes (including cwd/open files) and known services tied to the path. No blanket `/proc` scan of unrelated users is required. If linkage, content equivalence, cleanliness, or active-use checks are ambiguous, fail closed and report; do not stop services or sessions merely to permit cleanup.
+
+With explicit cleanup authorization covering the exact target, recheck the preconditions before mutation and run from outside the target:
+
+- Use ordinary `git worktree remove <exact path>` without force; verify both the directory and its worktree registration are removed. Respect all other worktrees; never sweep by age or name alone.
+- Optionally remove the associated local branch with `git branch -d <exact branch>` only after independently establishing it is safe. Squash merges can make `-d` reject: do not automatically use `-D`. Unless exact PR linkage, content equivalence, and explicit cleanup authorization cover that branch, retain it and report the leftover.
+- `git worktree prune --dry-run` is an optional read-only check, not permission to prune unrelated registrations. No `rm -rf`, `git clean`, force worktree removal, recursive deletion, history rewrite, or remote branch cleanup by default.
+
+Record concise factual completion status: PR/merge evidence, deployment acceptance (or not required), exact path/branch/HEAD, checks performed, what was removed or retained, and any blockers/leftovers. If deferred, say why; consideration at PR completion does not authorize destruction.
+
 ## Safety
 
 - Never discard unknown local work.
