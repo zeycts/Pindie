@@ -122,7 +122,6 @@ import {
   type StrategySynthesisCandidateV1,
 } from "../src/strategy-synthesis-candidates.ts";
 import { makeSynthesisTrialFixture } from "./synthesis-trial-fixture.ts";
-import { synthesisTrialCommandValue } from "../src/strategy-synthesis-trial.ts";
 
 type CapturedHandler = (
   event: Record<string, unknown>,

@@ -14,7 +14,8 @@ Merge is not deployment. Old phase prose is in Git; this table and exact manifes
 | 2-C orphan SI/CPL integration/stores | [271](https://github.com/zeycts/Pindie/pull/271), `aa7b741` | CI #632: 1340/1340 | [graph](al-phase2-c-deletion-graph.json) |
 | 2-D Trial/Hypothesis/retention | [272](https://github.com/zeycts/Pindie/pull/272), `1e9865f` | CI #635: 1304/1304 | [graph and 17 dead design deletions](al-phase2-d-deletion-graph.json) |
 | 2-E Candidate execution island | [273](https://github.com/zeycts/Pindie/pull/273), `ad8ce52` | CI #637: 1284/1284 | [graph](al-phase2-e-deletion-graph.json) |
-| 2-F Strategy knowledge/Scope/Synthesis review | Draft PR (this branch) | exact-head CI pending | [graph](al-phase2-f-deletion-graph.json) |
+| 2-F Strategy knowledge/Scope/Synthesis review | [274](https://github.com/zeycts/Pindie/pull/274), `4f7416d` | CI #640: 1270/1270 | [graph](al-phase2-f-deletion-graph.json) |
+| 2-G Trial runtime leases and packets | Draft PR (this branch) | exact-head CI pending | [graph](al-phase2-g-deletion-graph.json) |
 
 Archive tree SHA: `ae453acf3c16ef139a5d22bd68cf999546c7b6f9`. The archive is frozen test source, not current runtime guidance. A minimal [Phase1 bridge](al-retirement-phase1.md) stays because its untouched README refers to that path. Removed phase prose can be recovered at the Phase2-E base below.
 
@@ -64,8 +65,27 @@ Delete the standalone `strategy-knowledge.test.ts`. Four other mixed files keep 
 
 Evidence: frozen offline install and typecheck passed; affected baseline 28/28 plus 1/1, retained 15/15, focused Extension/native Pi/Control/Quota/Browser plus retirement/execution guards **269/269**, all zero fail/cancel/skip. Full bounded `timeout -k 5s 480s ... pnpm run check`: **1270 pass / 0 fail / 0 cancel / 0 skip**, **144955.078712 ms**, exit 0. Only manifest/docs/results changed afterward. Home/cache/tmp isolated at `/tmp/pindie-al-phase2f-g4hd8M`; no paid-model/service E2E or production dogfood claimed. Exact-head CI is recorded on the Draft PR only after observation.
 
+## Phase 2-G: Trial runtime leases, packets and admission
+
+Base **`4f7416dfb2094abc9a24318da7383502d2c7e33f`** (merged #274). Worktree `/home/dev/projects/Pindie-al-phase2g`, Draft branch `feature/al-retirement-phase2g`. [Explicit manifest](al-phase2-g-deletion-graph.json) holds every type/runtime/dynamic edge, negative reference, removed TAP title and the accounting.
+
+Delete three Trial runtime modules with no production mount: ordinary `TrialRuntime`/packet/selector admission, Synthesis Trial orchestration, and Scope Trial binding/command values. `src/extension.ts` only erases the `TrialRuntime` type-only import and narrows its already-null `trial` accessor to `null`; TypeScript-emitted Extension runtime is byte-identical to base. Every other retained source file is untouched, and Strategy Candidate/Decision/Derivation/Portfolio/Trust-Safety/Scope-Review stores, Policy, Experience/WorkEpisode/learning-v1 schemas keep their consumers and tests.
+
+| File | Baseline | Retained | Removed AL-only |
+| --- | ---: | ---: | ---: |
+| strategy-trial | 10 | 6 | 4 |
+| strategy-trust-scope | 10 | 8 | 2 |
+| strategy-synthesis-trial (deleted) | 4 | 0 | 4 |
+| extension (import only) | 180 | 180 | 0 |
+| al-retirement guards | 5 | 5 | 0 |
+| composition guards | 12 | 12 | 0 |
+
+**1270 = 1260 active + 10 removed AL-only cases.** All retained bodies are byte-identical to base except the retirement guard's added absence assertions. No skip/filter, glob/script/lockfile change or archive edit.
+
+Evidence: frozen offline install and typecheck passed; affected baseline 24/24 plus 4/4, retained 14/14, focused native Pi/Control/Quota/Browser/execution-semantics/Policy **92/92**, all zero fail/cancel/skip. Full `timeout -k 5s 480s ... pnpm run check`: **1260 pass / 0 fail / 0 cancel / 0 skip**, **149233.323153 ms**, exit 0. Isolated HOME/cache/tmp `/tmp/pindie-al-phase2g-O83Xnk`; no paid-model/service E2E or production dogfood claim. Exact-head CI is recorded on the Draft PR only after observation.
+
 ## Remaining boundary and production gate
 
-Phase2-G candidates are the retained Strategy/Trust/Policy/candidate/decision and Experience/WorkEpisode/learning-v1 artifact/type subgraphs, including the Scope/Synthesis stores used by shared review and portfolio reconstruction. Their mutual dependencies and Core/Extension type ports need another closed change; this slice does not claim all Phase2 cleanup complete. This is a cleanup frontier, not a Learning implementation roadmap.
+Phase2-H, if pursued, is the retained Strategy/Trust/Policy Candidate/Decision/Derivation/Portfolio stores, Scope/Synthesis review and cross-project evidence/report code, plus Experience/WorkEpisode/learning-v1 contracts and inert Core/Extension type ports. They still have mutual and mixed-test consumers, so another closed review is required; this slice does not claim total cleanup. Removing the Trial runtimes does not authorize a new Learning path, data migration or production change.
 
 Protected live main remains `4d3139b`; all old worktrees are unchanged. No service/tmux/tunnel stop/restart, active Pi Session switch, user config/credential or `~/.pindie` historical-data access. Production upgrade requires **separate explicit approval**, reviewed merged SHA, isolated acceptance and an independently authorized deployment/rollback plan. A green Draft PR does not authorize it. Git-only source rollback needs no data migration.
