@@ -1,5 +1,7 @@
 # Pindie Cross-Project Learning v0.2 — Strategy Synthesis and Global Validation
 
+> **Retired research history.** [AL retirement](al-retirement-phase1.md) supersedes activation and migration direction below; [Phase 2-D](al-retirement-phase2-d.md) is the current bounded deletion record. Remaining trust/decision artifacts are inert historical contracts, not permission to restore CPL or change user data.
+
 Status: implemented legacy artifact/trust contract through Slice E, retained for compatibility and history during migration. Approved `docs/autonomous-learning-v1.md` supersedes future autonomy direction, not these currently implemented trust semantics; implementation is pending.
 
 ## 1. Goal and exact boundary

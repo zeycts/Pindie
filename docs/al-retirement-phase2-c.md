@@ -1,6 +1,6 @@
 # AL retirement Phase 2-C — disconnected integration and artifact-store slice
 
-Base: `a66e47d8cfc335634501b4c36c65b19fd2a71443`, independently reviewed and merged Phase 2-B PR #270, CI #630 **1344/1344**. This is a bounded Phase 2-C sub-slice, not total removal of all Learning/decision artifacts. Delivery remains a separate Draft PR for independent review, never automatic merge or production deployment.
+Base: `a66e47d8cfc335634501b4c36c65b19fd2a71443`, independently reviewed and merged Phase 2-B PR #270, CI #630 **1344/1344**. Phase 2-C subsequently passed independent review and merged as PR #271 at `aa7b741cd6919a09c1aa232f8a64fb3a1aef507e`, CI #632 **1340/1340**. Draft-stage language below is historical, not current PR status or a deployment claim. This is a bounded sub-slice, not total Learning deletion; see [Phase 2-D](al-retirement-phase2-d.md) for the next exact boundary. No later PR is authorized to merge automatically.
 
 ## Exact closure, not a prefix deletion
 

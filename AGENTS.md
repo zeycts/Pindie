@@ -1,6 +1,6 @@
 # Pindie Agent Instructions
 
-Phase 2-A and 2-B are merged: `docs/al-retirement-phase2-a.md` and `docs/al-retirement-phase2-b.md` record removal of the Evaluation/Recovery island, Host inert Learning options and scheduler/Discovery execution. Phase 2-C: `docs/al-retirement-phase2-c.md` records the bounded removal of disconnected SI/CPL integration orchestrators, job/Discovery packet/receipt stores and the legacy Trial offer store. Exact deletion manifests supersede historical source references. Remaining artifact/decision/type consumers are deferred to Phase 2-D; do not reactivate Learning or delete historical user data. Preserve `tests/archive/al-phase1/`.
+Phases 2-A/2-B/2-C are merged: see their `docs/al-retirement-phase2-*.md` records for Evaluation/Recovery, scheduler/Discovery execution, SI/CPL orchestrator and artifact-store deletion. Phase 2-D: `docs/al-retirement-phase2-d.md` records removal of the Trial/Hypothesis/AL-retention closure and four inert Extension Trial option types. Exact manifests supersede historical source references. Remaining Strategy/Trust/Policy/candidate/decision and Experience/WorkEpisode/type consumers are deferred to Phase 2-E; do not reactivate Learning or delete historical user data. Preserve `tests/archive/al-phase1/`.
 
 Pindie is a personal AI agent for indie development built on the Pi agent harness.
 

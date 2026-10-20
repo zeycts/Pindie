@@ -1,5 +1,7 @@
 # Pindie Self-Improvement v0.6 — Candidate Trial & Promotion
 
+> **Retired research history.** [AL retirement](al-retirement-phase1.md) supersedes activation and migration direction below; [Phase 2-D](al-retirement-phase2-d.md) is the current bounded deletion record. Retained artifact contracts are not permission to reactivate SI or modify historical user data.
+
 Status: implemented and frozen SI v0.6 artifact/trust contract, retained for compatibility and history during migration; not authority for future Autonomous Learning v1. All four implementation slices are implemented.
 
 This document preserves the SI v0.1–v0.5 ownership model for the implemented v0.6 lifecycle. The approved target architecture is in `docs/autonomous-learning-v1.md` (implementation pending).
