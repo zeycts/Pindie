@@ -98,7 +98,7 @@ PindieState
     └── completed
 ```
 
-Task/verification statuses are derived. Capabilities, active tools, Run authority, presentation state, reasoning state, continuation fuses, Git fingerprints, recent evidence refs, evidence generations, and workflow phases are never persisted.
+Task/verification statuses are derived. Capabilities, active tools, Run authority, presentation state, continuation fuses, Git fingerprints, recent evidence refs, evidence generations, and workflow phases are never persisted.
 
 The reducer owns hard State invariants and consumes semantic `PindieEvent`s, not Pi tool names. Runtime owns project-scoped load/save, authoritative refresh, locking, external-State conflict detection, reducer dispatch, and save-before-publish.
 
@@ -310,9 +310,9 @@ Pindie uses only Pi's public extension contract. It does not infer private retry
 
 Historical continuation probes remain in session/model history. Pindie does not filter or reorder them; normal Pi compaction handles history growth.
 
-## 11. Runtime-only presentation, reasoning, and external projection
+## 11. Runtime-only presentation and external projection
 
-Activity, Run Timer, Run Cost, status presentation, subscription usage observation, and adaptive reasoning are runtime-only systems. They may present or tune execution but are not semantic State.
+Activity, Run Timer, Run Cost, status presentation, and subscription usage observation are runtime-only systems, not semantic State. Pindie does not automatically select thinking levels or provide an auto/manual toggle. Pi owns explicit model and thinking configuration; status and `/efficiency` read Pi's effective thinking level. Control's safe-idle fixed thinking mutations and opt-in quota fallback's source thinking capture/restore remain supported.
 
 Run Activity follows actual Pi tool lifecycle rather than model-authored status. Status presentation consumes authoritative/derived runtime facts rather than becoming an independent source of truth.
 

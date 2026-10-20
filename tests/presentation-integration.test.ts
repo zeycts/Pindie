@@ -205,7 +205,6 @@ test("presentation snapshot includes the existing status facts", async () => {
   presentation.setStatusContext(ui.ctx);
   presentation.runTimer.start();
   presentation.runCost.start([]);
-  presentation.reasoning?.setAuto();
   presentation.runActivity?.start();
   presentation.runActivity?.toolExecutionStart("call", "bash");
 
@@ -214,7 +213,8 @@ test("presentation snapshot includes the existing status facts", async () => {
 
   assert.deepEqual(snapshot.status.state, { task: null });
   assert.equal(snapshot.status.stateUnavailableReason, null);
-  assert.equal(snapshot.status.reasoningMode, "auto");
+  assert.equal(snapshot.status.reasoningMode, "manual");
+  assert.equal(snapshot.status.thinkingLevel, "medium");
   assert.equal(snapshot.status.activity, "running");
   assert.equal(snapshot.status.consumption?.scope, "run");
   assert.equal(snapshot.status.consumption?.cost, 0);

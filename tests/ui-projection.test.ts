@@ -79,7 +79,7 @@ function presentation(
     },
     status: {
       consumption: { scope: "run", durationMs: 1_000, cost: 0.01 },
-      reasoningMode: "auto",
+      reasoningMode: "manual",
       activity: "thinking",
       state: state(),
       stateUnavailableReason: null,

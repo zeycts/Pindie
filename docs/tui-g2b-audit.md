@@ -1,5 +1,7 @@
 # G2b Full Static + Automated Coverage Audit
 
+> **Retirement note:** References below to `/reasoning` describe the audited historical implementation; its auto/manual toggle has since been removed. Generic Extension dialog coverage remains.
+
 > **Closure note:** This audit is a historical experiment record. Later real dogfood led to the no-cutover architecture decision; this is not an active fix backlog. NOT COVERED and MANUAL DOGFOOD REQUIRED items do not need individual closure unless a concrete future need reopens them.
 
 Audited main SHA: `3dd868de0e517d60e5b4f644cc345474e6e9ed64` (audit branch forked directly from this main; **not** PR #178)

@@ -92,7 +92,6 @@ export type PindieControlErrorCode =
   | "human_gate_mismatch"
   | "unsafe_runtime_state"
   | "model_unavailable"
-  | "reasoning_auto"
   | "delivery_failed"
   | "session_not_found"
   | "session_ambiguous"
@@ -646,13 +645,6 @@ export class PindieControlClient {
     }
 
     if (request.thinkingLevel !== undefined) {
-      if (snapshot.executionConfig.reasoningMode === "auto") {
-        throw new PindieControlError(
-          "reasoning_auto",
-          "Pindie reasoning is in auto mode; a fixed thinking level would be overridden.",
-          snapshot,
-        );
-      }
       this.runtime.setActiveSessionThinkingLevel(request.thinkingLevel);
       this.requireSameBinding(binding);
     }

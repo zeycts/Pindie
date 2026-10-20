@@ -9,7 +9,6 @@ import {
   deriveEfficiencySnapshot,
   formatEfficiencyReport,
 } from "./efficiency.ts";
-import { ReasoningController } from "./reasoning.ts";
 import { RunActivityTracker } from "./run-activity.ts";
 import { RunCostTracker, type RunCost } from "./run-cost.ts";
 import { RunTimer } from "./run-timer.ts";
@@ -123,11 +122,10 @@ export interface PresentationIntegrationOptions {
   uiEnabled?: boolean;
 }
 
-/** Runtime-only reasoning, activity, efficiency, and status presentation ownership. */
+/** Runtime-only activity, efficiency, and status presentation ownership. */
 export class PresentationIntegration {
   private readonly pi: ExtensionAPI;
   private readonly uiEnabled: boolean;
-  readonly reasoning: ReasoningController | null;
   readonly runActivity: RunActivityTracker | null;
   readonly runCost: RunCostTracker;
   readonly runTimer: RunTimer;
@@ -158,7 +156,6 @@ export class PresentationIntegration {
   constructor(pi: ExtensionAPI, options: PresentationIntegrationOptions) {
     this.pi = pi;
     this.uiEnabled = options.uiEnabled !== false;
-    this.reasoning = this.uiEnabled ? new ReasoningController() : null;
     this.runActivity = this.uiEnabled
       ? new RunActivityTracker({
           now: options.now ?? Date.now,
@@ -197,7 +194,9 @@ export class PresentationIntegration {
       semantic: this.getSemanticSnapshot(),
       status: {
         consumption: this.consumptionStatus(ctx),
-        reasoningMode: this.reasoning?.snapshot.mode ?? null,
+        // Compatibility only: Pi owns explicit thinking configuration.
+        reasoningMode: this.uiEnabled ? "manual" : null,
+        thinkingLevel: this.effectiveThinkingLevel(),
         activity: this.runActivity?.activity ?? null,
         state: snapshotPindieState(this.getState()),
         stateUnavailableReason: this.getStateUnavailableReason(),
@@ -210,6 +209,16 @@ export class PresentationIntegration {
       quotaResumeWaiting,
       projectRoot: this.getProjectRoot(),
     };
+  }
+
+  private effectiveThinkingLevel(): PindieStatusSnapshot["thinkingLevel"] {
+    if (!this.uiEnabled) return null;
+    try {
+      return this.pi.getThinkingLevel();
+    } catch {
+      // Registration and teardown may have no bound Pi runtime yet.
+      return null;
+    }
   }
 
   private consumptionStatus(
@@ -276,7 +285,6 @@ export class PresentationIntegration {
   resetTrackers(): void {
     if (!this.uiEnabled) return;
     this.clearActivityLingerRefresh();
-    this.reasoning?.reset(this.pi.getThinkingLevel());
     this.runActivity?.reset();
     // RunCostTracker, RunTimer, and TaskMetricsTracker are Core-owned
     // measurement sources. Presentation only consumes their current facts.
@@ -318,20 +326,6 @@ export class PresentationIntegration {
     const statusContextGeneration = this.statusContextGeneration;
     await this.subscriptionUsageMonitor.refresh(ctx, options);
     if (statusContextGeneration === this.statusContextGeneration) this.refreshStatus(ctx);
-  }
-
-  applyRequestedThinkingLevel(): void {
-    const reasoning = this.reasoning;
-    if (reasoning === null || reasoning.snapshot.mode === "manual") return;
-    this.pi.setThinkingLevel(reasoning.snapshot.requestedLevel);
-    reasoning.synchronizeEffective(this.pi.getThinkingLevel());
-  }
-
-  reasoningStatus(): string {
-    const snapshot = this.reasoning?.snapshot;
-    if (snapshot === undefined) return "Reasoning presentation is disabled.";
-    const { mode, requestedLevel, effectiveLevel } = snapshot;
-    return `Reasoning: ${mode}; requested ${requestedLevel}; effective ${effectiveLevel}.`;
   }
 
   clearActivityLingerRefresh(): void {
@@ -419,8 +413,7 @@ export class PresentationIntegration {
     args: string,
     ctx: ExtensionCommandContext,
   ): void {
-    const reasoning = this.reasoning;
-    if (reasoning === null) return;
+    if (!this.uiEnabled) return;
     if (args.trim()) {
       ctx.ui.notify("Usage: /efficiency", "warning");
       return;
@@ -429,53 +422,10 @@ export class PresentationIntegration {
     const report = formatEfficiencyReport(deriveEfficiencySnapshot({
       entries,
       contextUsage: ctx.getContextUsage(),
-      reasoning: reasoning.snapshot,
+      thinkingLevel: this.pi.getThinkingLevel(),
       runCost: this.runCost.snapshot(entries),
     }));
     ctx.ui.notify(report, "info");
-  }
-
-
-  async handleReasoningCommand(
-    args: string,
-    ctx: ExtensionCommandContext,
-  ): Promise<void> {
-    let value = args.trim().toLowerCase();
-    if (!value && ctx.mode === "tui") {
-      const selected = await ctx.ui.select("Reasoning", ["auto", "manual"]);
-      if (!selected) return;
-      value = selected;
-    }
-    const reasoning = this.reasoning;
-    if (reasoning === null) return;
-    if (value === "auto") reasoning.setAuto();
-    else if (value === "manual") reasoning.setManual();
-    else {
-      ctx.ui.notify("Usage: /reasoning [auto|manual]", "warning");
-      return;
-    }
-    this.applyRequestedThinkingLevel();
-    this.refreshStatus(ctx);
-    ctx.ui.notify(this.reasoningStatus(), "info");
-  }
-
-  handleTurnEnd(
-    state: PindieState,
-    toolResults: readonly { toolName: string; isError: boolean }[],
-    ctx: ExtensionContext,
-  ): void {
-    if (this.reasoning?.decideNext(state, toolResults)) {
-      this.applyRequestedThinkingLevel();
-      this.refreshStatus(ctx);
-    }
-  }
-
-  synchronizeThinkingLevel(
-    level: Parameters<ReasoningController["synchronizeEffective"]>[0],
-    ctx: ExtensionContext,
-  ): void {
-    this.reasoning?.synchronizeEffective(level);
-    this.refreshStatus(ctx);
   }
 
   startCost(entries: readonly SessionEntry[]): void {

@@ -282,7 +282,7 @@ function presentationFor(
     semantic,
     status: {
       consumption: null,
-      reasoningMode: options.reasoningMode ?? "manual",
+      reasoningMode: options.reasoningMode === undefined ? "manual" : options.reasoningMode,
       activity: options.activity ?? null,
       state,
       stateUnavailableReason: null,
@@ -1450,6 +1450,7 @@ test("Control configure changes explicit model/thinking only at a safe idle boun
       modelId: "gpt-6-luna",
     });
     assert.equal(configured.executionConfig.thinkingLevel, "high");
+    assert.equal(configured.executionConfig.reasoningMode, "manual");
 
     await assert.rejects(
       control.configure({
@@ -1461,13 +1462,11 @@ test("Control configure changes explicit model/thinking only at a safe idle boun
         error.code === "model_unavailable",
     );
 
-    presentation = presentationFor(activeState(), { reasoningMode: "auto" });
-    await assert.rejects(
-      control.configure({ lease, thinkingLevel: "medium" }),
-      (error: unknown) =>
-        error instanceof PindieControlError &&
-        error.code === "reasoning_auto",
-    );
+    // Fixed native thinking mutations also work when the legacy mode is null.
+    presentation = presentationFor(activeState(), { reasoningMode: null });
+    const fixed = await control.configure({ lease, thinkingLevel: "medium" });
+    assert.equal(fixed.executionConfig.thinkingLevel, "medium");
+    assert.equal(fixed.executionConfig.reasoningMode, null);
 
     session.start();
     await assert.rejects(
