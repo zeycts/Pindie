@@ -361,4 +361,4 @@ Session. The hidden message is runtime metadata, not user intent.
 8. Reducer invariants remain valid even if the outer Gateway layer fails.
 9. Historical runtime metadata remains append-only until normal Pi compaction; it does not rewrite prior model history.
 10. Pi remains the sole low-level Agent Loop and Skill runtime.
-11. Only registered semantic tools may be authorized; unknown or unsupported semantic effects fail closed.
+11. Reserved unsupported Pindie semantic tool names are denied because their required capabilities are unavailable. Other unrecognized/custom tool calls are treated as ambiguous project mutations and require current `project.mutate` authorization.

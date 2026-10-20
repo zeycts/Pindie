@@ -40,7 +40,7 @@ Do not implement a second Agent Loop, generic workflow/planner/Task queue, persi
 
 ## Safety boundaries
 
-Only registered semantic tools may be authorized; unknown or unsupported semantic tool effects fail closed. Ignore unsupported dependency-injection fields without reading their values or invoking getters. Preserve safety regressions for rejected tools, ignored payloads and Core authority.
+Reserved unsupported Pindie semantic tool names are denied because their required capabilities are unavailable. Other unrecognized/custom tool calls are treated as ambiguous project mutations and require current `project.mutate` authorization. Ignore unsupported dependency-injection fields without reading their values or invoking getters. Preserve safety regressions for rejected tools, ignored payloads and Core authority.
 
 Preserve user data, including State/continuity, preferences, routing, credentials and Sessions. Do not proactively read unrelated user files; migration or deletion requires explicit user authorization. Production deployment/restarts and PR merges need explicit user authority.
 

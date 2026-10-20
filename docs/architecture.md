@@ -853,7 +853,7 @@ No `memory-store`, `memory-runtime`, `memory-manager`, memory queue, memory Stat
 19. Durable Remote metadata stores external routing/delivery identity only and never enters `PindieState`.
 20. Remote control targets only the current live Pi Session through Pi public boundaries; it never creates a parallel Session or queue.
 21. Remote/Discord failure must not alter local Pindie correctness or stop the local Agent.
-22. Only registered semantic tools may be authorized; unknown or unsupported semantic effects fail closed.
+22. Reserved unsupported Pindie semantic tool names are denied because their required capabilities are unavailable. Other unrecognized/custom tool calls are treated as ambiguous project mutations and require current `project.mutate` authorization.
 23. Runtime Independence is an ownership inversion, not a second Agent Loop: Pindie may own Agent/Session lifecycle while Pi remains the low-level execution runtime.
 24. Work Memory is an external projection and never becomes `PindieState`, Task continuity, Session truth, or a second memory database.
 25. Work Memory meaning and capture worthiness belong to the model; project identity, source, date, provenance, legality, and external-write mechanics belong to the Harness.
