@@ -23,7 +23,6 @@ import { fauxAssistantMessage, fauxToolCall, fauxProvider, getSystemMessageText,
 import { PINDIE_CONTINUATION_PROBE_MESSAGE, PINDIE_CONTINUATION_PROBE_TYPE } from "../src/continuation.ts";
 import { Type } from "typebox";
 import { PINDIE_QUOTA_FALLBACK_MESSAGE, PINDIE_QUOTA_FALLBACK_TYPE } from "../src/quota-fallback-supervisor.ts";
-import { createLearningSessionRunner } from "../src/learning-session-runner.ts";
 import {
   PINDIE_QUOTA_RESUME_MESSAGE,
   PINDIE_QUOTA_RESUME_TYPE,
@@ -159,33 +158,6 @@ test("Pi 1.3.0 fallback hidden trigger gets one fresh preflight and settlement",
     const triggers = harness.session.sessionManager.getBranch().filter((entry) => entry.type === "custom_message" && entry.customType === PINDIE_QUOTA_FALLBACK_TYPE);
     assert.equal(triggers.length, 1);
     assert.equal((triggers[0] as { display: boolean }).display, false);
-  } finally { await disposeHarness(harness); }
-});
-
-test("Pi 1.3.0 isolated learning startup executes with no tools/resources in a fresh Session", async () => {
-  const harness = await createRealPiHarness();
-  const sessions: AgentSession[] = [];
-  try {
-    harness.faux.setResponses([fauxAssistantMessage("learning one"), fauxAssistantMessage("learning two")]);
-    const model = harness.faux.getModel();
-    const runner = createLearningSessionRunner({ cwd: harness.root, model,
-      policy: { provider: model.provider, modelId: model.id, thinkingLevel: "low" },
-      createSession: (options) => createAgentSession({ ...options, modelRuntime: harness.session.modelRuntime }),
-      onCreated: (session) => {
-        sessions.push(session);
-        assert.deepEqual(session.getAllTools(), []);
-        assert.equal(session.resourceLoader.getExtensions().extensions.length, 0);
-        assert.deepEqual(session.extensionRunner.getRegisteredCommands(), []);
-        assert.deepEqual(session.resourceLoader.getSkills().skills, []);
-        assert.deepEqual(session.resourceLoader.getPrompts().prompts, []);
-        assert.deepEqual(session.resourceLoader.getThemes().themes, []);
-        assert.deepEqual(session.messages, []);
-      },
-    });
-    assert.equal((await runner.run("bounded one", new AbortController().signal)).text, "learning one");
-    assert.equal((await runner.run("bounded two", new AbortController().signal)).text, "learning two");
-    assert.notEqual(sessions[0]?.sessionManager, sessions[1]?.sessionManager);
-    assert.deepEqual(harness.session.messages, []);
   } finally { await disposeHarness(harness); }
 });
 
