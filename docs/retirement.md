@@ -15,7 +15,8 @@ Merge is not deployment. Old phase prose is in Git; this table and exact manifes
 | 2-D Trial/Hypothesis/retention | [272](https://github.com/zeycts/Pindie/pull/272), `1e9865f` | CI #635: 1304/1304 | [graph and 17 dead design deletions](al-phase2-d-deletion-graph.json) |
 | 2-E Candidate execution island | [273](https://github.com/zeycts/Pindie/pull/273), `ad8ce52` | CI #637: 1284/1284 | [graph](al-phase2-e-deletion-graph.json) |
 | 2-F Strategy knowledge/Scope/Synthesis review | [274](https://github.com/zeycts/Pindie/pull/274), `4f7416d` | CI #640: 1270/1270 | [graph](al-phase2-f-deletion-graph.json) |
-| 2-G Trial runtime leases and packets | Draft PR (this branch) | exact-head CI pending | [graph](al-phase2-g-deletion-graph.json) |
+| 2-G Trial runtime leases and packets | [275](https://github.com/zeycts/Pindie/pull/275), `ccdb5ca` | CI #642: 1260/1260 | [graph](al-phase2-g-deletion-graph.json) |
+| 2-H final frontier: Policy tool factory, Trial offer contract | Draft PR (this branch) | exact-head CI pending | [graph](al-phase2-h-deletion-graph.json) |
 
 Archive tree SHA: `ae453acf3c16ef139a5d22bd68cf999546c7b6f9`. The archive is frozen test source, not current runtime guidance. A minimal [Phase1 bridge](al-retirement-phase1.md) stays because its untouched README refers to that path. Removed phase prose can be recovered at the Phase2-E base below.
 
@@ -84,8 +85,36 @@ Delete three Trial runtime modules with no production mount: ordinary `TrialRunt
 
 Evidence: frozen offline install and typecheck passed; affected baseline 24/24 plus 4/4, retained 14/14, focused native Pi/Control/Quota/Browser/execution-semantics/Policy **92/92**, all zero fail/cancel/skip. Full `timeout -k 5s 480s ... pnpm run check`: **1260 pass / 0 fail / 0 cancel / 0 skip**, **149233.323153 ms**, exit 0. Isolated HOME/cache/tmp `/tmp/pindie-al-phase2g-O83Xnk`; no paid-model/service E2E or production dogfood claim. Exact-head CI is recorded on the Draft PR only after observation.
 
-## Remaining boundary and production gate
+## Phase 2-H: final source-retirement frontier
 
-Phase2-H, if pursued, is the retained Strategy/Trust/Policy Candidate/Decision/Derivation/Portfolio stores, Scope/Synthesis review and cross-project evidence/report code, plus Experience/WorkEpisode/learning-v1 contracts and inert Core/Extension type ports. They still have mutual and mixed-test consumers, so another closed review is required; this slice does not claim total cleanup. Removing the Trial runtimes does not authorize a new Learning path, data migration or production change.
+Base **`ccdb5ca2fb295faaa2b705382c125f0c2c1a8b23`** (merged #275). Worktree `/home/dev/projects/Pindie-al-phase2h`, Draft branch `feature/al-retirement-phase2h`. [Explicit manifest](al-phase2-h-deletion-graph.json).
+
+Reachability audit from Core production entrypoints (`host`, `extension`, `composition`, `control-workspace`, `control-mcp`, `core-integration`): **73** src files runtime-reachable, **34** runtime-unreachable but retained through type-only seams or artifact/test consumers, **8** fully unreachable. Six of those eight are independent Control/Pindie CLI entrypoints, not Learning code. The last two were the only remaining AL-only sources:
+
+- `src/tools/policy.ts` — retired `pindie_policy_set` factory, never registered by production; effect classification stays in `execution-semantics` and remains denied.
+- `src/trial-offer-contract.ts` — only the passive frozen-history fixture consumed it; no storage, protocol or migration caller. Its recorded default-policy fingerprint is inlined and verified identical.
+
+Core entrypoint emitted runtime is byte-identical to base. Extension's inert Strategy/Trust/Policy/WorkEpisode type seams remain as the reviewed compatibility boundary, and no retained store, reader, Policy contract, Experience/WorkEpisode implementation or historical fixture was removed.
+
+| File | Baseline | Retained | Removed AL-only |
+| --- | ---: | ---: | ---: |
+| policy | 8 | 3 | 5 |
+| strategy-adaptation | 6 | 6 | 0 |
+| execution-semantics guards | 16 | 16 | 0 |
+| al-retirement guards | 5 | 5 | 0 |
+| trial-offers-pi | 2 | 2 | 0 |
+| trial-overlay-pi-r2 | 9 | 9 | 0 |
+| learning-foundation-f1 | 3 | 3 | 0 |
+| trial-evidence-r3 | 1 | 1 | 0 |
+
+**1260 = 1255 active + 5 removed AL-only cases.** Core assertions were preserved, not deleted: both Policy Snapshot contract cases, the Core system-contract exclusion guard, exact tool classification/denial, and every native historical-bytes case stay active with equivalent-or-stronger assertions. No skip/filter, glob/script/lockfile change or archive edit.
+
+Evidence: frozen offline install and typecheck passed; policy **3/3**, strategy-adaptation **6/6**, retirement **5/5**, both native history files **2/2 + 9/9**, extra F1 **3/3** and R3 **1/1**; focused native Pi/Control/Quota/Browser/execution-semantics/composition/extension **276/276**, all zero fail/cancel/skip. Full `timeout -k 5s 480s ... pnpm run check`: **1255 pass / 0 fail / 0 cancel / 0 skip**, **165915.286403 ms**, exit 0. Isolated HOME/cache/tmp; no paid-model/service E2E or production dogfood claim. Exact-head CI is recorded on the Draft PR after observation.
+
+**Retirement STOP decision:** no further AL-only production source island exists. Remaining runtime-unreachable modules are consumed by retained artifact/stores, mixed tests or frozen historical-contract readers, and their type-only Extension seams are deliberate compatibility, not mounts. Further source deletion would require removing real guard coverage for zero production benefit, so this is the end of source retirement — the next step is a separately authorized production-upgrade plan.
+
+## Production upgrade gate
+
+Source retirement is complete. Retained Strategy/Trust/Policy stores, Scope/Synthesis review, cross-project evidence code and Experience/WorkEpisode/learning-v1 contracts are inert fail-closed compatibility surfaces, not a backlog; they must not be reactivated through flags, injections or new production imports. Historical user data is never migrated or deleted by cleanup.
 
 Protected live main remains `4d3139b`; all old worktrees are unchanged. No service/tmux/tunnel stop/restart, active Pi Session switch, user config/credential or `~/.pindie` historical-data access. Production upgrade requires **separate explicit approval**, reviewed merged SHA, isolated acceptance and an independently authorized deployment/rollback plan. A green Draft PR does not authorize it. Git-only source rollback needs no data migration.
