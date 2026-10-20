@@ -47,7 +47,6 @@ import type { RemoteRoutingStore } from "./remote-routing.ts";
 import type { ProjectMemorySink } from "./project-memory.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
 import type { ProjectFingerprint } from "./project-mutation.ts";
-import type { ReasoningController } from "./reasoning.ts";
 import type { RunActivityTracker } from "./run-activity.ts";
 import type { RunCostTracker } from "./run-cost.ts";
 import type { RunTimer } from "./run-timer.ts";
@@ -153,7 +152,6 @@ export interface PindieExtensionIntegration {
   readonly core: CoreIntegration;
   readonly runtime: PindieRuntime;
   readonly runActivity: RunActivityTracker | null;
-  readonly reasoning: ReasoningController | null;
   readonly runCost: RunCostTracker;
   readonly runTimer: RunTimer;
   readonly taskMetrics: TaskMetricsTracker;
@@ -554,16 +552,6 @@ function registerComposedPindieExtension(
     });
   }
 
-  if (featureSelection.presentation) {
-    pi.registerCommand("reasoning", {
-      description: "Choose who controls thinking level (auto|manual)",
-      getArgumentCompletions: (prefix) => ["auto", "manual"]
-        .filter((value) => value.startsWith(prefix))
-        .map((value) => ({ value, label: value })),
-      handler: async (args, ctx) => presentation.handleReasoningCommand(args, ctx),
-    });
-  }
-
   pi.on("session_start", async (_event, ctx) => {
     ++agentRunLifecycleGeneration;
     await quotaResume.restoreSession(ctx);
@@ -743,8 +731,6 @@ function registerComposedPindieExtension(
         markUnavailable(`Internal semantic derivation failed: ${derivation.error}`);
         derivation = run.deriveSnapshot();
       }
-      presentation.reasoning?.beforeAgentStart();
-      presentation.applyRequestedThinkingLevel();
       presentation.clearActivityLingerRefresh();
       presentation.runActivity?.start();
       core.startRunMeasurements(
@@ -1191,16 +1177,8 @@ function registerComposedPindieExtension(
   });
 
   if (featureSelection.presentation) {
-    pi.on("turn_end", (event, ctx) => {
-      if (event.toolResults.length === 0) return;
-      const state = runtime.projectRoot === null
-        ? { task: null }
-        : runtime.state;
-      presentation.handleTurnEnd(state, event.toolResults, ctx);
-    });
-
-    pi.on("thinking_level_select", (event, ctx) => {
-      presentation.synchronizeThinkingLevel(event.level, ctx);
+    pi.on("thinking_level_select", (_event, ctx) => {
+      presentation.refreshStatus(ctx);
     });
   }
 
@@ -1351,7 +1329,6 @@ function registerComposedPindieExtension(
     presentation: presentationReader,
     core,
     runtime,
-    reasoning: presentation.reasoning,
     runActivity: presentation.runActivity,
     runCost: presentation.runCost,
     runTimer: presentation.runTimer,

@@ -72,10 +72,10 @@ test("EI06-EI10 latest assistant request and CH follow Pi semantics", () => {
   ])), null);
 });
 
-test("EI11-EI19 report formatting handles context, reasoning, run cost, and deterministic output", () => {
+test("EI11-EI19 report formatting handles context, native thinking, run cost, and deterministic output", () => {
   const base = {
     entries: [assistant(usage(1_200, 20, 203_000, 0, 4.048))],
-    reasoning: { mode: "auto" as const, requestedLevel: "low" as const, effectiveLevel: "low" as const },
+    thinkingLevel: "low" as const,
     runCost: { cost: 0.94, active: true },
   };
   const known: ContextUsage = { tokens: 204_000, contextWindow: 272_000, percent: 74.8 };
@@ -88,7 +88,7 @@ test("EI11-EI19 report formatting handles context, reasoning, run cost, and dete
   assert.equal(formatTokenCount(1_800_000), "1.8M");
   assert.equal(formatTokenCount(11_000_000), "11M");
   assert.match(report, /Context: 204k \/ 272k · 74.8%/);
-  assert.match(report, /Reasoning: auto · requested low · effective low/);
+  assert.match(report, /Thinking: low \(Pi effective level\)/);
   assert.match(report, /current run \$0.94/);
   assert.equal(report, formatEfficiencyReport(deriveEfficiencySnapshot({ ...base, contextUsage: known })));
   assert.match(formatEfficiencyReport(deriveEfficiencySnapshot({ ...base, contextUsage: { ...known, tokens: null, percent: null } })), /Context: \? \/ 272k/);
@@ -96,8 +96,8 @@ test("EI11-EI19 report formatting handles context, reasoning, run cost, and dete
   assert.match(formatEfficiencyReport(deriveEfficiencySnapshot({
     ...base,
     contextUsage: known,
-    reasoning: { mode: "manual", requestedLevel: "max", effectiveLevel: "high" },
+    thinkingLevel: "high",
     runCost: { cost: 0.94, active: false },
-  })), /Reasoning: manual · requested max · effective high[\s\S]*last run \$0.94/);
+  })), /Thinking: high \(Pi effective level\)[\s\S]*last run \$0.94/);
   assert.match(formatEfficiencyReport(deriveEfficiencySnapshot({ ...base, contextUsage: known, runCost: null })), /Cost: session \$4.048$/);
 });

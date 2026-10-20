@@ -57,16 +57,17 @@ test("SSA-S02 active unfinished Task renders lifecycle before pending verificati
   ]);
 });
 
-test("AR36-AR38 status reports the reasoning authority before activity", () => {
-  assert.deepEqual(segments({ reasoningMode: "auto", activity: "running" }), [
+test("status reports native effective thinking before activity, not a policy mode", () => {
+  assert.deepEqual(segments({ reasoningMode: "manual", thinkingLevel: "high", activity: "running" }), [
     { text: "task 2m 14s", tone: "dim" },
     { text: "$0.000", tone: "dim" },
-    { text: "auto", tone: "dim" },
+    { text: "thinking high", tone: "dim" },
     { text: "running", tone: "accent" },
     { text: "active", tone: "text" },
     { text: "verify 0/4", tone: "text" },
   ]);
-  assert.equal(segments({ reasoningMode: "manual" }).some(({ text }) => text === "manual"), true);
+  assert.equal(segments({ reasoningMode: "manual" }).some(({ text }) => text === "manual"), false);
+  assert.equal(segments({ thinkingLevel: "off" }).some(({ text }) => text === "thinking off"), true);
 });
 
 test("Run Cost and accent Activity follow the timer before verification and attention", () => {
@@ -246,7 +247,6 @@ test("no-Task Run suppresses stale completed-Task lifecycle and verification", (
   assert.deepEqual(result, [
     { text: "run 42s", tone: "dim" },
     { text: "$0.006", tone: "dim" },
-    { text: "manual", tone: "dim" },
   ]);
   assert.equal(result.some(({ text }) => text.startsWith("last ")), false);
 });
@@ -406,13 +406,13 @@ test("Current Activity preserves right-aligned weekly usage", () => {
   assert.match(rendered, /wk 97% • ↻ 6d\+$/);
 });
 
-test("AR39 narrow-width rendering remains bounded with Auto", () => {
+test("narrow-width rendering remains bounded with native thinking level", () => {
   const layout = deriveStatusLayout({
-    ...snapshot({ reasoningMode: "auto", activity: "editing" }),
+    ...snapshot({ reasoningMode: "manual", thinkingLevel: "low", activity: "editing" }),
     consumption: { scope: "task", durationMs: 134_000, cost: 0.14 },
   });
   const rendered = renderStatusLayout({ fg: (_tone, text) => text }, layout, 18)!;
-  assert.match(rendered, /auto|verify|\$0.14/);
+  assert.match(rendered, /thinking low|verify|\$0.14/);
 });
 
 test("ANSI-aware layout aligns right usage, degrades narrowly, and falls back without width", () => {

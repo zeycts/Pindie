@@ -76,7 +76,7 @@ Pi continues to own the mature interactive terminal shell and low-level runtime.
 - Human Signal;
 - Remote / Discord;
 - quota resume and long-task rollover;
-- Work Memory, reasoning, and other Agent-native capabilities.
+- Work Memory, native thinking configuration, and other Agent-native capabilities.
 
 The following was the **experimental topology evaluated during the owned-TUI experiment**, not a target topology:
 
@@ -1098,7 +1098,7 @@ Do not send `stopped` for settled-blocked; those are distinct Human Signal kinds
 
 Runtime permission / Extension dialogs remain separate from semantic Human Signal State.
 
-The existing generic Pi `ui_prompt_start/ui_prompt_end` signal is not sufficient to synthesize a transport-independent Discord permission alert because it also covers locally initiated Extension dialogs such as model/reasoning UI.
+The existing generic Pi `ui_prompt_start/ui_prompt_end` signal is not sufficient to synthesize a transport-independent Discord permission alert because it also covers locally initiated Extension dialogs such as model-selection UI.
 
 G1 therefore does not manufacture an external permission notification from generic `ui_prompt_start`.
 
@@ -1181,7 +1181,7 @@ Automated tests cannot prove upstream key delivery, Chinese IME, terminal resize
 - Timeline navigation, fold, inspect, and copy;
 - Command Palette;
 - Model and Session picker;
-- `/reasoning` Extension dialog;
+- generic Extension choice dialog (the former `/reasoning` toggle is retired);
 - Human Gate options and free-form response;
 - authority-unavailable fail-closed Attention;
 - settled-blocked soft signal;

@@ -1,4 +1,4 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import type { RunActivity } from "./run-activity.ts";
@@ -46,7 +46,9 @@ export interface ConsumptionStatus {
 
 export interface PindieStatusSnapshot {
   consumption: ConsumptionStatus | null;
-  reasoningMode?: "auto" | "manual" | null;
+  /** Legacy snapshot compatibility; no Pindie thinking policy or toggle. */
+  reasoningMode?: "manual" | null;
+  thinkingLevel?: ReturnType<ExtensionAPI["getThinkingLevel"]> | null;
   activity?: RunActivity | null;
   state: PindieState | null;
   stateUnavailableReason: string | null;
@@ -142,8 +144,8 @@ export function deriveStatusSegments(
     });
   }
 
-  if (snapshot.reasoningMode) {
-    segments.push({ text: snapshot.reasoningMode, tone: "dim" });
+  if (snapshot.thinkingLevel) {
+    segments.push({ text: `thinking ${snapshot.thinkingLevel}`, tone: "dim" });
   }
 
   if (snapshot.activity) {

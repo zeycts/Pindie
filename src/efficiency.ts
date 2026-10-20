@@ -1,6 +1,5 @@
-import type { ContextUsage, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ContextUsage, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 
-import type { ReasoningSnapshot } from "./reasoning.ts";
 import { formatRunCost, getSessionCost, type RunCost } from "./run-cost.ts";
 
 export interface TokenUsage {
@@ -11,7 +10,7 @@ export interface TokenUsage {
 }
 
 export interface EfficiencySnapshot {
-  reasoning: ReasoningSnapshot;
+  thinkingLevel: ReturnType<ExtensionAPI["getThinkingLevel"]>;
   contextUsage: ContextUsage | undefined;
   sessionUsage: TokenUsage;
   latestRequest: TokenUsage | null;
@@ -104,12 +103,12 @@ export function formatTokenCount(count: number): string {
 export function deriveEfficiencySnapshot(input: {
   entries: readonly SessionEntry[];
   contextUsage: ContextUsage | undefined;
-  reasoning: ReasoningSnapshot;
+  thinkingLevel: EfficiencySnapshot["thinkingLevel"];
   runCost: RunCost | null;
 }): EfficiencySnapshot {
   const latestRequest = getLatestRequestUsage(input.entries);
   return {
-    reasoning: input.reasoning,
+    thinkingLevel: input.thinkingLevel,
     contextUsage: input.contextUsage,
     sessionUsage: aggregateSessionUsage(input.entries),
     latestRequest,
@@ -133,7 +132,7 @@ function formatSessionCost(cost: number): string {
 
 /** Formats one compact, read-only runtime efficiency report. */
 export function formatEfficiencyReport(snapshot: EfficiencySnapshot): string {
-  const { reasoning, latestRequest, latestCacheHitRate, sessionUsage, runCost } = snapshot;
+  const { thinkingLevel, latestRequest, latestCacheHitRate, sessionUsage, runCost } = snapshot;
   const latest = latestRequest ?? EMPTY_USAGE;
   const latestRequestLine = latestRequest
     ? `Latest request: input ${formatTokenCount(latest.input)} · cache read ${formatTokenCount(latest.cacheRead)} · cache write ${formatTokenCount(latest.cacheWrite)} · CH ${latestCacheHitRate === null ? "unavailable" : `${latestCacheHitRate.toFixed(1)}%`}`
@@ -145,7 +144,7 @@ export function formatEfficiencyReport(snapshot: EfficiencySnapshot): string {
   return [
     "Efficiency",
     "",
-    `Reasoning: ${reasoning.mode} · requested ${reasoning.requestedLevel} · effective ${reasoning.effectiveLevel}`,
+    `Thinking: ${thinkingLevel} (Pi effective level)`,
     formatContext(snapshot.contextUsage),
     latestRequestLine,
     `Session: input ${formatTokenCount(sessionUsage.input)} · output ${formatTokenCount(sessionUsage.output)} · cache read ${formatTokenCount(sessionUsage.cacheRead)} · cache write ${formatTokenCount(sessionUsage.cacheWrite)}`,

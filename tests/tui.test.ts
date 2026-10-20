@@ -3,9 +3,7 @@ import test from "node:test";
 
 import type {
   AgentSessionEvent,
-  ExtensionCommandContext,
   ExtensionUIContext,
-  ExtensionAPI,
   SessionEntry,
   TerminalInputHandler,
   WorkingIndicatorOptions,
@@ -13,11 +11,6 @@ import type {
 import { visibleWidth, type Terminal } from "@earendil-works/pi-tui";
 
 import type { HumanGate, PindieState, VerificationCheck } from "../src/state.ts";
-import { PresentationIntegration } from "../src/presentation-integration.ts";
-import { RunCostTracker } from "../src/run-cost.ts";
-import { RunTimer } from "../src/run-timer.ts";
-import { SubscriptionUsageMonitor } from "../src/subscription-usage.ts";
-import { TaskMetricsTracker } from "../src/task-metrics.ts";
 
 import {
   type ActiveSessionClientLifecycle,
@@ -1063,7 +1056,7 @@ function gatePresentation(gate: HumanGate | null, blockers: readonly string[] = 
     },
     status: {
       consumption: null,
-      reasoningMode: "auto",
+      reasoningMode: "manual",
       activity: null,
       state: tuiState({ humanGate: gate, blockers }),
       stateUnavailableReason: null,
@@ -2374,7 +2367,7 @@ test("Extension overlay outranks semantic Attention without resolving the Human 
   view.stop();
 });
 
-test("owned mode runs /reasoning through the generic ExtensionUIContext bridge", async () => {
+test("owned mode runs an extension choice through the generic ExtensionUIContext bridge", async () => {
   const runtime = new FakeRuntime();
   const terminal = new FakeTerminal();
   const presentationLease = { current: () => null };
@@ -2392,40 +2385,14 @@ test("owned mode runs /reasoning through the generic ExtensionUIContext bridge",
   assert.equal(binding.mode, "tui");
   assert.ok(binding.uiContext instanceof PindieExtensionUIBridge);
 
-  const appliedThinkingLevels: string[] = [];
-  const pi = {
-    getThinkingLevel: () => "medium",
-    setThinkingLevel: (level: string) => appliedThinkingLevels.push(level),
-  } as unknown as ExtensionAPI;
-  const presentation = new PresentationIntegration(pi, {
-    getSemanticSnapshot: () => ({ ok: false, error: "not needed" }),
-    getState: () => ({ task: null }),
-    getProjectRoot: () => "/repo",
-    getAuthoritativeState: () => ({ task: null }),
-    getStateUnavailableReason: () => null,
-    getRunStale: () => false,
-    subscriptionUsageMonitor: new SubscriptionUsageMonitor({ fetchUsage: async () => null }),
-    runTimer: new RunTimer(),
-    runCost: new RunCostTracker(),
-    taskMetrics: new TaskMetricsTracker(),
-  });
-  const command = presentation.handleReasoningCommand("", {
-    mode: "tui",
-    ui: binding.uiContext,
-    sessionManager: { getEntries: () => [] },
-  } as unknown as ExtensionCommandContext);
-
+  const choice = binding.uiContext.select("Extension choice", ["First", "Second"]);
   await waitForTuiRender();
   const selector = terminal.writes.join("");
-  assert.match(selector, /Reasoning/);
-  assert.match(selector, /auto/);
-  assert.match(selector, /manual/);
+  assert.match(selector, /Extension choice/);
+  assert.match(selector, /First/);
+  assert.match(selector, /Second/);
   terminal.emit("\r");
-  await command;
-  assert.equal(presentation.reasoning?.snapshot.mode, "auto");
-  assert.deepEqual(appliedThinkingLevels, ["medium"]);
-  await waitForTuiRender();
-  assert.match(terminal.writes.join(""), /Reasoning: auto/);
+  assert.equal(await choice, "First");
 
   terminal.emit("\u0004");
   await running;
