@@ -1,11 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
-
-import { composePindieExtension } from "../src/composition.ts";
-
 import {
   assembleRunExperience,
   parseRunExperience,
@@ -26,12 +20,10 @@ import {
 import {
   createStrategyDerivationCandidate,
   strategyDerivationCandidateSemanticFingerprint,
-  type StrategyDerivationCandidateV1,
 } from "../src/strategy-derivation-candidates.ts";
 import {
   createPromotedDerivedStrategyCatalog,
   createStrategyDerivationDecision,
-  type StrategyDerivationDecisionV1,
 } from "../src/strategy-derivation-decisions.ts";
 import {
   createTrustedStrategyPortfolio,
@@ -42,13 +34,8 @@ import {
 } from "../src/strategy-portfolio.ts";
 import { MAX_USER_GLOBAL_DERIVED_STRATEGIES } from "../src/strategy-trust-scope-constants.ts";
 import {
-  buildScopeDecisionCommandProjection,
-  deriveStrategyTrustScopeTrialReview,
-} from "../src/strategy-trust-scope-review.ts";
-import {
   createStrategyTrustScopeCandidate,
   type StrategyTrustScopeCandidateReader,
-  type StrategyTrustScopeCandidateV1,
   type StrategyTrustScopeSourceStrategyV1,
 } from "../src/strategy-trust-scope-candidates.ts";
 import {
@@ -57,9 +44,6 @@ import {
   type StrategyTrustScopeDecisionStore,
   type StrategyTrustScopeDecisionV1,
 } from "../src/strategy-trust-scope-decisions.ts";
-import {
-  createStrategyTrustScopeDecisionForHuman,
-} from "../src/strategy-trust-scope.ts";
 import type { ScopeProjectTrustReader } from "../src/strategy-trust-scope-review.ts";
 import type { StrategyTrustScopeSourceResolver } from "../src/strategy-trust-scope-resolution.ts";
 import { getProjectId } from "../src/store.ts";
@@ -67,18 +51,13 @@ import type { SemanticSnapshot } from "../src/semantics.ts";
 import type { PindieState } from "../src/state.ts";
 import {
   createStrategySynthesisDecision,
-  FileStrategySynthesisDecisionStore,
   type StrategySynthesisDecisionReader,
   type StrategySynthesisDecisionV1,
 } from "../src/strategy-synthesis-decisions.ts";
 import {
-  FileStrategySynthesisCandidateStore,
-  strategySynthesisCandidateArtifactFingerprint,
-  strategySynthesisCandidateSemanticFingerprint,
   type StrategySynthesisCandidateReader,
 } from "../src/strategy-synthesis-candidates.ts";
 import { makeSynthesisTrialFixture } from "./synthesis-trial-fixture.ts";
-import { deriveStrategySynthesisTrialReview } from "../src/strategy-synthesis-review.ts";
 import { loadUserGlobalTrustedDerivedStrategyProjection } from "../src/strategy-trust-scope-global.ts";
 
 const SOURCE_ROOT = "/slice-d-source";
@@ -520,96 +499,6 @@ function decisionFixture(boundaryChange = false) {
   };
 }
 
-test("Scope promote/reject completion is namespaced and Human promotion writes one immutable terminal Decision", async () => {
-  const value = decisionFixture();
-  const rejectProjection = await buildScopeDecisionCommandProjection({
-    command: "reject",
-    candidateReader: value.candidateReader,
-    decisionReader: value.decisionStore,
-    sourceResolver: value.sourceResolver,
-  });
-  assert.deepEqual(rejectProjection.options.map((option) => option.value), [`scope:${SCOPE_CANDIDATE_ID}`]);
-  assert.match(rejectProjection.options[0]!.label, /rejection is not falsification/);
-
-  const promoteProjection = await buildScopeDecisionCommandProjection({
-    command: "promote",
-    candidateReader: value.candidateReader,
-    decisionReader: value.decisionStore,
-    sourceResolver: value.sourceResolver,
-    experienceReader: value.experienceReader,
-    projectTrustReader: value.projectTrustReader,
-    currentProjectRoot: TARGET_A_ROOT,
-  });
-  assert.deepEqual(promoteProjection.options.map((option) => option.value), [`scope:${SCOPE_CANDIDATE_ID}`]);
-  assert.match(promoteProjection.options[0]!.label, /user-global trust eligible/);
-
-  const result = await createStrategyTrustScopeDecisionForHuman({
-    candidateId: SCOPE_CANDIDATE_ID,
-    decision: "promoted",
-    decidedAt: "2026-07-07T00:00:00.000Z",
-    currentProjectRoot: TARGET_A_ROOT,
-  }, {
-    candidateReader: value.candidateReader,
-    decisionStore: value.decisionStore,
-    sourceResolver: value.sourceResolver,
-    writerLock: value.writerLock,
-    experienceReader: value.experienceReader,
-    projectTrustReader: value.projectTrustReader,
-  });
-  assert.equal(result.decision.decision, "promoted");
-  assert.equal(result.decision.evidence.trialRefs.length, 2);
-  assert.equal(value.saved.length, 1);
-  assert.equal(value.lockCalls, 1);
-  await assert.rejects(
-    createStrategyTrustScopeDecisionForHuman({ candidateId: SCOPE_CANDIDATE_ID, decision: "promoted" }, {
-      candidateReader: value.candidateReader,
-      decisionStore: value.decisionStore,
-      sourceResolver: value.sourceResolver,
-      writerLock: value.writerLock,
-      experienceReader: value.experienceReader,
-      projectTrustReader: value.projectTrustReader,
-    }),
-    /terminal|replacement/i,
-  );
-  assert.equal(value.saved.length, 1);
-});
-
-test("Scope promotion rejects changed boundary evidence without writing, while rejection needs no evidence gate", async () => {
-  const stale = decisionFixture(true);
-  await assert.rejects(
-    createStrategyTrustScopeDecisionForHuman({
-      candidateId: SCOPE_CANDIDATE_ID,
-      decision: "promoted",
-      decidedAt: "2026-07-08T00:00:00.000Z",
-    }, {
-      candidateReader: stale.candidateReader,
-      decisionStore: stale.decisionStore,
-      sourceResolver: stale.sourceResolver,
-      writerLock: stale.writerLock,
-      experienceReader: stale.experienceReader,
-      projectTrustReader: stale.projectTrustReader,
-    }),
-    /Eligibility|changed|fingerprint|resolv/i,
-  );
-  assert.equal(stale.saved.length, 0);
-  assert.equal(stale.lockCalls, 1);
-
-  const rejected = decisionFixture();
-  const result = await createStrategyTrustScopeDecisionForHuman({
-    candidateId: SCOPE_CANDIDATE_ID,
-    decision: "rejected",
-    decidedAt: "2026-07-09T00:00:00.000Z",
-  }, {
-    candidateReader: rejected.candidateReader,
-    decisionStore: rejected.decisionStore,
-    sourceResolver: rejected.sourceResolver,
-    writerLock: rejected.writerLock,
-  });
-  assert.equal(result.decision.decision, "rejected");
-  assert.deepEqual(result.decision.evidence.trialRefs, []);
-  assert.equal(rejected.saved.length, 1);
-});
-
 test("Slice E transfer and Synthesis origins coexist in one normal global trust projection", async () => {
   const scope = decisionFixture();
   const scopeDecision = createStrategyTrustScopeDecision({
@@ -688,175 +577,4 @@ test("Slice E transfer and Synthesis origins coexist in one normal global trust 
     }, portfolio, synthesized.selection.kind)?.revisionStatusAtRun,
     "promoted",
   );
-});
-
-test("Scope and Synthesis reviews share bidirectional global logical-ID safety", async () => {
-  const scope = decisionFixture();
-  const scopeDecision = createStrategyTrustScopeDecision({
-    candidate: scope.fixture.scopeCandidate,
-    decision: "promoted",
-    trialRefs: [
-      reference(getProjectId(TARGET_A_ROOT), RECORD_A, "a"),
-      reference(getProjectId(TARGET_B_ROOT), RECORD_B, "b"),
-    ],
-    decidedAt: "2026-07-10T00:00:00.000Z",
-  });
-  const promotedScopeAuthority = scopeAuthorityReaders([scope.fixture], [scopeDecision]);
-  const openScopeAuthority = scopeAuthorityReaders([scope.fixture], []);
-  const synthesis = await makeSynthesisTrialFixture(
-    "00000000-0000-4000-8000-000000000051",
-    { strategyId: scope.fixture.sourceStrategy.strategyId },
-  );
-  const synthesisDecision = createStrategySynthesisDecision({
-    candidate: synthesis.candidate,
-    decision: "promoted",
-    trialRefs: [
-      reference(getProjectId("/slice-d-synthesis-trial-a"), RECORD_A, "a"),
-      reference(getProjectId("/slice-d-synthesis-trial-b"), RECORD_B, "b"),
-    ],
-    decidedAt: "2026-07-11T00:00:00.000Z",
-  });
-  const openSynthesisAuthority = synthesisAuthorityReaders([synthesis.candidate], []);
-  const promotedSynthesisAuthority = synthesisAuthorityReaders([synthesis.candidate], [synthesisDecision]);
-
-  const synthesisReview = await deriveStrategySynthesisTrialReview({
-    candidate: synthesis.candidate,
-    candidateReader: openSynthesisAuthority.candidateReader,
-    decisionReader: openSynthesisAuthority.decisionReader,
-    experienceReader: scope.experienceReader,
-    projectTrustReader: scope.projectTrustReader,
-    scopeCandidateReader: promotedScopeAuthority.candidateReader,
-    scopeDecisionReader: promotedScopeAuthority.decisionReader,
-    sourceResolver: promotedScopeAuthority.sourceResolver,
-  });
-  assert.equal(synthesisReview.globalStateComplete, true);
-  assert.equal(synthesisReview.promotionEligibility.globalLogicalIdAvailable, false);
-  assert.equal(synthesisReview.promotionEligibility.eligible, false);
-  assert.match(synthesisReview.reasons.join(" "), /user-global logical Strategy ID is unavailable/i);
-
-  const scopeReview = await deriveStrategyTrustScopeTrialReview({
-    candidate: scope.fixture.scopeCandidate,
-    candidateReader: openScopeAuthority.candidateReader,
-    decisionReader: openScopeAuthority.decisionReader,
-    sourceResolver: openScopeAuthority.sourceResolver,
-    experienceReader: scope.experienceReader,
-    projectTrustReader: scope.projectTrustReader,
-    synthesisCandidateReader: promotedSynthesisAuthority.candidateReader,
-    synthesisDecisionReader: promotedSynthesisAuthority.decisionReader,
-  });
-  assert.equal(scopeReview.globalStateComplete, true);
-  assert.equal(scopeReview.promotionEligibility.globalLogicalIdAvailable, false);
-  assert.equal(scopeReview.promotionEligibility.eligible, false);
-  assert.match(scopeReview.reasons.join(" "), /user-global logical Strategy ID is unavailable/i);
-
-  const scopePromotionOptions = await buildScopeDecisionCommandProjection({
-    command: "promote",
-    candidateReader: openScopeAuthority.candidateReader,
-    decisionReader: openScopeAuthority.decisionReader,
-    sourceResolver: openScopeAuthority.sourceResolver,
-    experienceReader: scope.experienceReader,
-    projectTrustReader: scope.projectTrustReader,
-    synthesisCandidateReader: promotedSynthesisAuthority.candidateReader,
-    synthesisDecisionReader: promotedSynthesisAuthority.decisionReader,
-  });
-  assert.deepEqual(scopePromotionOptions.options, [], "completion must apply the same combined global trust gate as promotion");
-  const scopeRejectionOptions = await buildScopeDecisionCommandProjection({
-    command: "reject",
-    candidateReader: openScopeAuthority.candidateReader,
-    decisionReader: openScopeAuthority.decisionReader,
-    sourceResolver: openScopeAuthority.sourceResolver,
-  });
-  assert.deepEqual(scopeRejectionOptions.options.map((option) => option.value),
-    [`scope:${scope.fixture.scopeCandidate.candidateId}`], "collision does not prevent rejection of an open hypothesis");
-});
-
-test("Scope and Synthesis promotion reviews enforce the combined user-global capacity", async () => {
-  const scope = decisionFixture();
-  const promotedScopeDecision = createStrategyTrustScopeDecision({
-    candidate: scope.fixture.scopeCandidate,
-    decision: "promoted",
-    trialRefs: [
-      reference(getProjectId(TARGET_A_ROOT), RECORD_A, "a"),
-      reference(getProjectId(TARGET_B_ROOT), RECORD_B, "b"),
-    ],
-    decidedAt: "2026-07-12T00:00:00.000Z",
-  });
-  const promotedScopeAuthority = scopeAuthorityReaders([scope.fixture], [promotedScopeDecision]);
-  const existingSynthesisCandidates: SynthesisCandidate[] = [];
-  const existingSynthesisDecisions: StrategySynthesisDecisionV1[] = [];
-  for (let index = 0; index < MAX_USER_GLOBAL_DERIVED_STRATEGIES - 1; index += 1) {
-    const fixture = await makeSynthesisTrialFixture(
-      `00000000-0000-4000-8000-${(0x60 + index).toString(16).padStart(12, "0")}`,
-      { strategyId: `synthesis-capacity-${index}` },
-    );
-    existingSynthesisCandidates.push(fixture.candidate);
-    existingSynthesisDecisions.push(createStrategySynthesisDecision({
-      candidate: fixture.candidate,
-      decision: "promoted",
-      trialRefs: [
-        reference(getProjectId(`/slice-d-capacity-a-${index}`), RECORD_A, "a"),
-        reference(getProjectId(`/slice-d-capacity-b-${index}`), RECORD_B, "b"),
-      ],
-      decidedAt: `2026-08-0${index + 1}T00:00:00.000Z`,
-    }));
-  }
-  const targetSynthesis = await makeSynthesisTrialFixture(
-    "00000000-0000-4000-8000-000000000068",
-    { strategyId: "synthesis-capacity-target" },
-  );
-  const synthesisWithTarget = synthesisAuthorityReaders(
-    [...existingSynthesisCandidates, targetSynthesis.candidate],
-    existingSynthesisDecisions,
-  );
-  const synthesisReview = await deriveStrategySynthesisTrialReview({
-    candidate: targetSynthesis.candidate,
-    candidateReader: synthesisWithTarget.candidateReader,
-    decisionReader: synthesisWithTarget.decisionReader,
-    experienceReader: scope.experienceReader,
-    projectTrustReader: scope.projectTrustReader,
-    scopeCandidateReader: promotedScopeAuthority.candidateReader,
-    scopeDecisionReader: promotedScopeAuthority.decisionReader,
-    sourceResolver: promotedScopeAuthority.sourceResolver,
-  });
-  assert.equal(synthesisReview.globalStateComplete, true);
-  assert.equal(synthesisReview.promotionEligibility.globalLogicalIdAvailable, true);
-  assert.equal(synthesisReview.promotionEligibility.userGlobalCapacityAvailable, false);
-  assert.equal(synthesisReview.promotionEligibility.eligible, false);
-
-  const existingScope = sourceFixture(
-    "scope-d-capacity-existing",
-    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-    "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-  );
-  const existingScopeDecision = createStrategyTrustScopeDecision({
-    candidate: existingScope.scopeCandidate,
-    decision: "promoted",
-    trialRefs: [
-      reference(getProjectId(TARGET_A_ROOT), RECORD_A, "c"),
-      reference(getProjectId(TARGET_B_ROOT), RECORD_B, "d"),
-    ],
-    decidedAt: "2026-08-10T00:00:00.000Z",
-  });
-  const combinedScopeAuthority = scopeAuthorityReaders(
-    [scope.fixture, existingScope],
-    [existingScopeDecision],
-  );
-  const existingSynthesisAuthority = synthesisAuthorityReaders(
-    existingSynthesisCandidates,
-    existingSynthesisDecisions,
-  );
-  const scopeReview = await deriveStrategyTrustScopeTrialReview({
-    candidate: scope.fixture.scopeCandidate,
-    candidateReader: combinedScopeAuthority.candidateReader,
-    decisionReader: combinedScopeAuthority.decisionReader,
-    sourceResolver: combinedScopeAuthority.sourceResolver,
-    experienceReader: scope.experienceReader,
-    projectTrustReader: scope.projectTrustReader,
-    synthesisCandidateReader: existingSynthesisAuthority.candidateReader,
-    synthesisDecisionReader: existingSynthesisAuthority.decisionReader,
-  });
-  assert.equal(scopeReview.globalStateComplete, true);
-  assert.equal(scopeReview.promotionEligibility.globalLogicalIdAvailable, true);
-  assert.equal(scopeReview.promotionEligibility.userGlobalCapacityAvailable, false);
-  assert.equal(scopeReview.promotionEligibility.eligible, false);
 });

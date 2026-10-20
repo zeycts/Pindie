@@ -115,7 +115,8 @@ test("production entrypoint emitted import graph cannot load retired Learning/Po
   for (const name of ["discovery-contract.ts", "discovery-hypotheses.ts", "hypothesis-lineage.ts", "open-hypotheses.ts",
     "ordinary-trial-overlay.ts", "trial-assignment-v2.ts", "trial-evidence-v2.ts", "v1-experience-protection.ts", "experience-lifecycle.ts",
     "strategy-adaptation.ts", "strategy-global-derivation.ts", "strategy-candidate-commands.ts", "strategy-candidate-resolution.ts",
-    "learning-artifact-liveness.ts", "tools/strategy-candidate.ts", "tools/strategy-derivation-candidate.ts", "tools/strategy-synthesis-candidate.ts"]) {
+    "learning-artifact-liveness.ts", "tools/strategy-candidate.ts", "tools/strategy-derivation-candidate.ts", "tools/strategy-synthesis-candidate.ts",
+    "strategy-knowledge.ts", "strategy-knowledge-file.ts", "strategy-trust-scope.ts", "strategy-synthesis-review.ts"]) {
     await assert.rejects(access(resolve(base, name)), { code: "ENOENT" }, `Retired AL module must be physically absent: ${name}`);
   }
 });

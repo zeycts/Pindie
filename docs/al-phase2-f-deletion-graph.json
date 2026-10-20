@@ -1,0 +1,633 @@
+{
+  "base": "ad8ce52aa93ec2428b68eabe9f28498c705a11b4",
+  "sources": [
+    "src/strategy-knowledge-file.ts",
+    "src/strategy-knowledge.ts",
+    "src/strategy-trust-scope.ts",
+    "src/strategy-synthesis-review.ts"
+  ],
+  "testFilesDeleted": [
+    "tests/strategy-knowledge.test.ts"
+  ],
+  "mixedTestsPreserved": [
+    "tests/strategy-trust-scope.test.ts",
+    "tests/strategy-trust-scope-slice-d.test.ts",
+    "tests/strategy-synthesis-review.test.ts"
+  ],
+  "retainedSourceChanges": [],
+  "scan": {
+    "roots": [
+      "src",
+      "tests",
+      "scripts"
+    ],
+    "filesScanned": 226,
+    "method": "relative .ts string literals for imports/exports/type-only/dynamic references, plus explicit computed-source inspection audit; production emitted graph checked independently",
+    "explicitDeletionOnly": true
+  },
+  "baseIncomingEdges": [
+    {
+      "from": "src/strategy-knowledge-file.ts",
+      "to": "src/strategy-knowledge.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/strategy-knowledge-file.ts"
+    },
+    {
+      "from": "tests/strategy-knowledge.test.ts",
+      "to": "src/strategy-knowledge-file.ts"
+    },
+    {
+      "from": "tests/strategy-synthesis-review.test.ts",
+      "to": "src/strategy-synthesis-review.ts"
+    },
+    {
+      "from": "tests/strategy-trust-scope-slice-d.test.ts",
+      "to": "src/strategy-trust-scope.ts"
+    },
+    {
+      "from": "tests/strategy-trust-scope-slice-d.test.ts",
+      "to": "src/strategy-synthesis-review.ts"
+    },
+    {
+      "from": "tests/strategy-trust-scope.test.ts",
+      "to": "src/strategy-trust-scope.ts"
+    }
+  ],
+  "retainedIncomingBeforeDetachment": [
+    {
+      "from": "tests/strategy-knowledge.test.ts",
+      "to": "src/strategy-knowledge-file.ts"
+    },
+    {
+      "from": "tests/strategy-synthesis-review.test.ts",
+      "to": "src/strategy-synthesis-review.ts"
+    },
+    {
+      "from": "tests/strategy-trust-scope-slice-d.test.ts",
+      "to": "src/strategy-trust-scope.ts"
+    },
+    {
+      "from": "tests/strategy-trust-scope-slice-d.test.ts",
+      "to": "src/strategy-synthesis-review.ts"
+    },
+    {
+      "from": "tests/strategy-trust-scope.test.ts",
+      "to": "src/strategy-trust-scope.ts"
+    }
+  ],
+  "retainedImportReferencesAfterDetachment": [],
+  "deletedSourceOutgoingEdges": [
+    {
+      "from": "src/strategy-knowledge-file.ts",
+      "to": "src/strategy-candidates.ts"
+    },
+    {
+      "from": "src/strategy-knowledge-file.ts",
+      "to": "src/strategy-decisions.ts"
+    },
+    {
+      "from": "src/strategy-knowledge-file.ts",
+      "to": "src/strategy-derivation-candidates.ts"
+    },
+    {
+      "from": "src/strategy-knowledge-file.ts",
+      "to": "src/strategy-derivation-decisions.ts"
+    },
+    {
+      "from": "src/strategy-knowledge-file.ts",
+      "to": "src/strategy-trust-scope-candidates.ts"
+    },
+    {
+      "from": "src/strategy-knowledge-file.ts",
+      "to": "src/strategy-trust-scope-decisions.ts"
+    },
+    {
+      "from": "src/strategy-knowledge-file.ts",
+      "to": "src/strategy-synthesis-candidates.ts"
+    },
+    {
+      "from": "src/strategy-knowledge-file.ts",
+      "to": "src/strategy-synthesis-decisions.ts"
+    },
+    {
+      "from": "src/strategy-knowledge-file.ts",
+      "to": "src/strategy-trust-scope-resolution.ts"
+    },
+    {
+      "from": "src/strategy-knowledge-file.ts",
+      "to": "src/strategy-trust-safety.ts"
+    },
+    {
+      "from": "src/strategy-knowledge-file.ts",
+      "to": "src/strategy-knowledge.ts"
+    },
+    {
+      "from": "src/strategy-knowledge-file.ts",
+      "to": "src/strategy-trust-scope-global.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-candidates.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-decisions.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-derivation-candidates.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-derivation-decisions.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-trust-scope-candidates.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-trust-scope-decisions.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-synthesis-candidates.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-synthesis-decisions.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-trust-safety.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-trust-scope-resolution.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-candidates.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-decisions.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-derivation-candidates.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-derivation-decisions.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-trust-scope-candidates.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-trust-scope-decisions.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-synthesis-candidates.ts"
+    },
+    {
+      "from": "src/strategy-knowledge.ts",
+      "to": "src/strategy-synthesis-decisions.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/cross-project-experience.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/experience-store.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/cross-project-trial-validation.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategy-synthesis-candidates.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategy-synthesis-decisions.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategy-trust-scope-artifacts.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategy-trust-scope-global.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategy-trust-scope-candidates.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategy-derivation-candidates.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategy-derivation-decisions.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/policy.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategy-trust-scope-review.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/store.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/store.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategy-trust-scope-constants.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategies.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategy-trust-scope-decisions.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategy-trust-scope-resolution.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategy-trust-scope-decisions.ts"
+    },
+    {
+      "from": "src/strategy-synthesis-review.ts",
+      "to": "src/strategy-trust-scope-resolution.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/strategy-knowledge-file.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/strategy-trust-scope-candidates.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/strategy-trust-scope-decisions.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/strategy-trust-scope-resolution.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/store.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/strategy-derivation-candidates.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/strategy-derivation-decisions.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/policy.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/experience-store.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/strategy-synthesis-candidates.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/strategy-synthesis-decisions.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/strategy-trust-scope-review.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/strategy-trust-safety.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/strategies.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/strategy-portfolio.ts"
+    },
+    {
+      "from": "src/strategy-trust-scope.ts",
+      "to": "src/cross-project-experience.ts"
+    }
+  ],
+  "intentionalNegativeReferences": [
+    {
+      "from": "tests/al-retirement.test.ts",
+      "to": "src/strategy-knowledge-file.ts",
+      "kind": "access ENOENT physical-absence guard"
+    },
+    {
+      "from": "tests/al-retirement.test.ts",
+      "to": "src/strategy-knowledge.ts",
+      "kind": "access ENOENT physical-absence guard"
+    },
+    {
+      "from": "tests/al-retirement.test.ts",
+      "to": "src/strategy-trust-scope.ts",
+      "kind": "access ENOENT physical-absence guard"
+    },
+    {
+      "from": "tests/al-retirement.test.ts",
+      "to": "src/strategy-synthesis-review.ts",
+      "kind": "access ENOENT physical-absence guard"
+    },
+    {
+      "from": "tests/composition.test.ts",
+      "to": "src/strategy-trust-scope.ts",
+      "kind": "forbidden runtime import specifier for portfolio source"
+    }
+  ],
+  "deletedExecutedTAPTitles": {
+    "tests/strategy-trust-scope.test.ts": [
+      "only a promoted Derived entry is transferable and completion remains meaning-first",
+      "trust-transfer completion excludes hypotheses that creation would reject as duplicates",
+      "locked Candidate creation enforces source, duplicates, rejection closure, and no copied semantics"
+    ],
+    "tests/strategy-trust-scope-slice-d.test.ts": [
+      "Scope promote/reject completion is namespaced and Human promotion writes one immutable terminal Decision",
+      "Scope promotion rejects changed boundary evidence without writing, while rejection needs no evidence gate",
+      "Scope and Synthesis reviews share bidirectional global logical-ID safety",
+      "Scope and Synthesis promotion reviews enforce the combined user-global capacity"
+    ],
+    "tests/strategy-synthesis-review.test.ts": [
+      "Synthesis review validates exact Trial evidence and shows discovery overlap without excluding it",
+      "Synthesis Promotion rejects a project-local owner with a different revision",
+      "Synthesis Promotion rejects a project-local owner with the exact candidate revision",
+      "Synthesis Human Decisions are terminal, lock-protected, and reconcile an ambiguous immutable promotion write",
+      "Synthesis rejection is terminal without a Trial gate, while promoted trust projects through both portfolio addressing paths",
+      "Synthesis promotion fails closed when a terminal Decision appears after its initial scan"
+    ],
+    "tests/strategy-knowledge.test.ts": [
+      "portable cognition preserves exact local/global trust without exporting unrelated state"
+    ]
+  },
+  "executedTAPAccounting": {
+    "tests/strategy-trust-scope.test.ts": {
+      "baseExecuted": 13,
+      "retainedExecuted": 10,
+      "removedALOnly": 3
+    },
+    "tests/strategy-trust-scope-slice-d.test.ts": {
+      "baseExecuted": 7,
+      "retainedExecuted": 3,
+      "removedALOnly": 4
+    },
+    "tests/strategy-synthesis-review.test.ts": {
+      "baseExecuted": 8,
+      "retainedExecuted": 2,
+      "removedALOnly": 6
+    },
+    "tests/strategy-knowledge.test.ts": {
+      "baseExecuted": 1,
+      "retainedExecuted": 0,
+      "removedALOnly": 1
+    },
+    "tests/al-retirement.test.ts": {
+      "baseExecuted": 5,
+      "retainedExecuted": 5,
+      "removedALOnly": 0
+    },
+    "tests/composition.test.ts": {
+      "baseExecuted": 12,
+      "retainedExecuted": 12,
+      "removedALOnly": 0
+    }
+  },
+  "retainedRegistrationDigests": {
+    "tests/strategy-trust-scope.test.ts": [
+      {
+        "title": "StrategyTrustScopeCandidateV1 is exact, immutable, and occurrence-independent",
+        "sha256": "2dd405e7e707070491834a109f3d4503db0b4f8e4651319e23fd47aee2fafed8",
+        "identicalToBase": true
+      },
+      {
+        "title": "CrossProjectExperienceRefV1 is strict and record fingerprints are canonical",
+        "sha256": "dde9a312d7020ca8335afa4b19bdeef146378c38fd3a2da8a6bb68b4f048ba14",
+        "identicalToBase": true
+      },
+      {
+        "title": "Scope Decision V1 is strict and Candidate-bound",
+        "sha256": "46efa254c219492f877303681f1f6ea7ac51a4e828c003d7ec29ce675a5a9db8",
+        "identicalToBase": true
+      },
+      {
+        "title": "global Scope Candidate and Decision stores are immutable and deterministically ordered",
+        "sha256": "ad9315304aeb58c5c405157830550ac7856dcbcbe8d5dffb75a799d6f210ce9f",
+        "identicalToBase": true
+      },
+      {
+        "title": "malformed global artifacts fail closed",
+        "sha256": "a675bba4a9ab64bf71ce919a995387e2e93f715536d1d60dca1dc8543ac9b7d3",
+        "identicalToBase": true
+      },
+      {
+        "title": "strict source resolver accepts only one exact promoted Derived revision",
+        "sha256": "17f3da84bdc972305e3378f1d6ebdf4cf9416c96ce86bd79b1aa15b296c976ae",
+        "identicalToBase": true
+      },
+      {
+        "title": "source resolver fails closed for missing, malformed, rejected, and cross-store ambiguous artifacts",
+        "sha256": "8f634a0e99f7ba49a23b16535d6af7f8d6f86ba8b2d2645b8bdf51791d41fdd0",
+        "identicalToBase": true
+      },
+      {
+        "title": "global writer lock serializes competing operations and releases after failure",
+        "sha256": "e0be55d4783c0b12800fcae91dd62069c9277626fe9fc009e5251a303a2bd404",
+        "identicalToBase": true
+      },
+      {
+        "title": "Scope Trial binding enforces source, target, terminal, and stale-artifact gates",
+        "sha256": "593ecf7af5c596320213483514cdca260c1f26a9cc6926680e280b91db443d47",
+        "identicalToBase": true
+      },
+      {
+        "title": "Scope Trial command values stay namespaced and the shared lease authorizes one exact Run",
+        "sha256": "43fff48c044b8c154f607ec290d6b5064b7751b73f7390e1aaeae45eb12dc74d",
+        "identicalToBase": true
+      }
+    ],
+    "tests/strategy-trust-scope-slice-d.test.ts": [
+      {
+        "title": "promoted user-global trust reconstructs after restart without historical Trial reads",
+        "sha256": "9d0de5fb752d458658c1d6bf76d9bcf0cac9ce4a857f22d0db789b79a2780915",
+        "identicalToBase": true
+      },
+      {
+        "title": "TrustedStrategyPortfolio deduplicates exact global/local identity, rejects conflicts, and derives bounds",
+        "sha256": "88498edcd5a96c6e751db1299f42bc4a94fa6db853743841c2f024e39ba33d9e",
+        "identicalToBase": true
+      },
+      {
+        "title": "Slice E transfer and Synthesis origins coexist in one normal global trust projection",
+        "sha256": "5add8751671a5bb6ce2bc2e24b7f1075f956fa74b63ed627ebb6465ebf7e2735",
+        "identicalToBase": true
+      }
+    ],
+    "tests/strategy-synthesis-review.test.ts": [
+      {
+        "title": "normal trusted Synthesis reconstruction ignores rejected Candidate authority and fails closed for promoted authority",
+        "sha256": "ac460e3971b9889a7e5517b26ae99124dd64b6bd0b3d84584f5d3cdec80b6dc5",
+        "identicalToBase": true
+      },
+      {
+        "title": "shared Trial ref selection preserves one eligible project witness before deterministic extras",
+        "sha256": "16c80b1e9ce648a2614be8dc30b975b7d5f36fd67560bf6adbf778b53672e7a3",
+        "identicalToBase": true
+      }
+    ],
+    "tests/al-retirement.test.ts": [
+      {
+        "title": "retired flags and direct overrides cannot reactivate AL, including malformed values",
+        "sha256": "b7228e25e9df86adc7924baf0fd0960a7fe99df79c5d5837c3f1c167e30673e5",
+        "identicalToBase": true
+      },
+      {
+        "title": "composition drops poisoned learning injections without reading even their getters",
+        "sha256": "c1eae9860728e4a9f089646a366433bc8bddf862fa1d9366340c59f978476aa0",
+        "identicalToBase": true
+      },
+      {
+        "title": "extension registers only live Core/Memory tools; retired calls are denied and advisory is absent",
+        "sha256": "fa5cb902788e540149b09cb7ee2867e29c3dba57dbca389c3898b2e0a2121989",
+        "identicalToBase": true
+      },
+      {
+        "title": "ordinary Task transitions ignore a poisoned WorkEpisode ledger; semantic state still persists",
+        "sha256": "78275924f21a4085f6fd29b8a98df3155d61d96748f0bddf8b80fad070717995",
+        "identicalToBase": true
+      },
+      {
+        "title": "production entrypoint emitted import graph cannot load retired Learning/Policy modules",
+        "sha256": "c8898c0785451f41c2e32ba25b27804785646dd1e0dc9647b3b87e107a978993",
+        "identicalToBase": false
+      }
+    ],
+    "tests/composition.test.ts": [
+      {
+        "title": "production composition excludes retired WorkEpisode and Learning dependencies",
+        "sha256": "36a22db2b25a57a4fc7f3ac276374f91be768b3cbdaf7f143e08c76780fc3960",
+        "identicalToBase": true
+      },
+      {
+        "title": "Slice A resolves stable startup defaults and explicit dependency roots",
+        "sha256": "8b76c4350860085a7459ced0ac53d9eda04c2d030a703e45b105701796502334",
+        "identicalToBase": true
+      },
+      {
+        "title": "Slice A gives configured Remote an explicit routing root",
+        "sha256": "0aeebd3fafb16b9a14199d892ceadc67b68f6d23d3aaf5b3d3adc25940f22ea4",
+        "identicalToBase": true
+      },
+      {
+        "title": "Slice A never derives feature roots from an injected StateStore",
+        "sha256": "8950e99c8c5c1d778b341375cd39808a53c67f3b71efdc8cb76af2ff4553ce60",
+        "identicalToBase": true
+      },
+      {
+        "title": "retired SI and CPL overrides drop learning dependencies while other features remain configurable",
+        "sha256": "5a426ffeb8354ee11b8f60bd3cd293dadf6d666563c3c4ba46ee18adaa8f1fd0",
+        "identicalToBase": true
+      },
+      {
+        "title": "Slice F protects the final Core/SI/CPL and trust runtime import boundaries",
+        "sha256": "8229cb89a376a62e201f1a4e12283c3f5400c560714ec179505aaf1b40926b8f",
+        "identicalToBase": true
+      },
+      {
+        "title": "retired master switch is inert both when enabled and disabled",
+        "sha256": "8b0225d0090b0f80ce37290f195f03b4c25d4e132f7961dd294ceb8e3f98c0f7",
+        "identicalToBase": true
+      },
+      {
+        "title": "retired environment selection cannot enable SI or CPL even with conflicting old values",
+        "sha256": "d85b70c87ac877387a4ce8741b7dcf09d7c1f6d9adb9597f7a4c4af2e92c7814",
+        "identicalToBase": true
+      },
+      {
+        "title": "Slice F assembles the final composition matrix through the production composition root",
+        "sha256": "6f9e1bf5fbdabb15e5c2d09b6b313ed8b093c40fdb69f2c107b480f89a55cb6a",
+        "identicalToBase": true
+      },
+      {
+        "title": "Slice C accepts independent Presentation selection",
+        "sha256": "e21bb5faad9b441400ec07cf65e3f87b31248504e1c3433b57e8d23f25a9b2e3",
+        "identicalToBase": true
+      },
+      {
+        "title": "Slice C drops injected Remote routing when Remote is explicitly disabled",
+        "sha256": "bb15832ef090aa083b17c068ff1c05c49e80130baa188b9160139f651cbd0762",
+        "identicalToBase": true
+      },
+      {
+        "title": "Slice C does not load disabled Discord or Notion adapters",
+        "sha256": "04babc49b06bc84baea287b9e050327b193b9a65ce7ffeb8630582412a2d0150",
+        "identicalToBase": true
+      }
+    ]
+  },
+  "retainedBodyNote": "al-retirement.test.ts keeps all five titles; its emitted-graph case intentionally gains four absence guards, so only that body digest differs. Every other retained body is byte-identical.",
+  "accounting": {
+    "baselineActive": 1284,
+    "removedALOnlyCases": 14,
+    "expectedActive": 1270,
+    "newTestRegistrations": 0,
+    "observedFinalPass": 1270,
+    "observedFinalFail": 0,
+    "observedFinalCancelled": 0,
+    "observedFinalSkipped": 0
+  },
+  "classification": {
+    "deleted": "portable StrategyKnowledge store/interfaces, Scope transfer Candidate/Decision orchestration, Synthesis promotion review",
+    "coreRuntimeBehaviorModified": false,
+    "retainedStores": "Scope/Synthesis Candidate and Decision stores, Scope project trust review, shared cross-project Trial validation, Strategy portfolio/trust safety, Policy and Experience schemas keep active schema/store tests and retained consumers",
+    "userData": "no read, migration or deletion"
+  },
+  "hygiene": {
+    "commit": "formatting-only import layout repair",
+    "artifact": ";import glued declarations in three rewritten mixed tests",
+    "bodiesChanged": 0,
+    "retainedImportDeclarationsRestored": "multi-line style where base used it",
+    "fullCheckAfterHygiene": {
+      "tests": 1270,
+      "pass": 1270,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "durationMs": 148522.329984
+    }
+  }
+}
