@@ -73,7 +73,17 @@ test("pinned Streamable HTTP monitor adapter verifies 13-tool service and decode
     current = snapshot;
     const attached = await monitor.observe();
     assert.equal(attached.state, "active_project");
-    if (attached.state === "active_project") assert.equal(attached.control.lease, "lease-1");
+    if (attached.state === "active_project") {
+      assert.equal(attached.control.lease, "lease-1");
+      assert.equal(attached.control.semantic.authority, undefined); // old server: unknown, not coherent
+    }
+    for (const authority of ["coherent", "stale", "unavailable", "presentation-unavailable", "unexpected"]) {
+      current = { ...snapshot, semantic: { ...snapshot.semantic, authority } };
+      const observed = await monitor.observe();
+      assert.equal(observed.state, "active_project");
+      if (observed.state === "active_project") assert.equal(observed.control.semantic.authority, authority === "unexpected" ? undefined : authority);
+    }
+    current = snapshot;
     const timeline = await monitor.readTimeline(50);
     assert.equal(timeline.timeline.length, 1);
     assert.equal(timeline.timeline[0]?.type, "runtime");

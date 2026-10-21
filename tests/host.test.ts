@@ -260,7 +260,7 @@ test("Host creates one runtime and supplies a Host-disposal facade only to nativ
 
 test("Host preserves native Pi TUI setting precedence regardless of obsolete PINDIE_TUI", async () => {
   const cases = [
-    { label: "unset setting defaults regular", settings: {}, option: undefined, expected: "regular" },
+    { label: "unset setting defaults fullscreen", settings: {}, option: undefined, expected: "fullscreen" },
     { label: "settings regular", settings: { tuiMode: "regular" }, option: undefined, expected: "regular" },
     { label: "settings fullscreen", settings: { tuiMode: "fullscreen" }, option: undefined, expected: "fullscreen" },
     { label: "Host regular overrides settings fullscreen", settings: { tuiMode: "fullscreen" }, option: "regular", expected: "regular" },

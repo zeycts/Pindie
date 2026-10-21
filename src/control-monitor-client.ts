@@ -9,6 +9,7 @@ export interface MonitorSnapshot {
   readonly session: { readonly id: string; readonly displayIdentity: string };
   readonly runtime: { readonly idle: boolean; readonly pendingMessageCount: number; readonly automaticWorkSettled: boolean };
   readonly semantic: {
+    readonly authority?: "coherent" | "stale" | "unavailable" | "presentation-unavailable";
     readonly taskStatus: string | null;
     readonly verificationStatus: string | null;
     readonly verificationProgress: { readonly covered: number; readonly total: number } | null;
@@ -130,6 +131,8 @@ function snapshot(value: unknown): MonitorSnapshot {
     session: { id: session.id as string, displayIdentity: session.displayIdentity as string },
     runtime: { idle: runtime.idle as boolean, pendingMessageCount: runtime.pendingMessageCount as number, automaticWorkSettled: runtime.automaticWorkSettled as boolean },
     semantic: {
+      ...(["coherent", "stale", "unavailable", "presentation-unavailable"].includes(String(semantic.authority))
+        ? { authority: semantic.authority as NonNullable<MonitorSnapshot["semantic"]["authority"]> } : {}),
       taskStatus: semantic.taskStatus as string | null, verificationStatus: semantic.verificationStatus as string | null,
       verificationProgress: progress === null ? null : { covered: progress.covered as number, total: progress.total as number },
       humanGate: gate === null ? null : { kind: gate.kind as "decision" | "approval" | "input", question: gate.question as string },

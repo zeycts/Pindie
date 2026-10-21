@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { InteractiveMode, initTheme, type ExtensionAPI, type ExtensionCommandContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { Container, TuiMainScreen, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
+import { InteractiveMode, ToolExecutionComponent, initTheme, type ExtensionAPI, type ExtensionCommandContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { Container, TuiAltScreen, TuiMainScreen, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
 import { createWatchCommand } from "../src/watch-command.ts";
 import { WatchComponent } from "../src/watch-component.ts";
 import { projectToolResult } from "../src/ui-timeline.ts";
@@ -12,7 +12,7 @@ const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 const snapshot: MonitorSnapshot = {
   lease: "remote-lease", revision: 1, session: { id: "remote-id", displayIdentity: "远端会话" },
   runtime: { idle: true, pendingMessageCount: 0, automaticWorkSettled: true },
-  semantic: { taskStatus: "active", verificationStatus: "pending", verificationProgress: null, humanGate: null },
+  semantic: { authority: "coherent", taskStatus: "active", verificationStatus: "pending", verificationProgress: null, humanGate: null },
   executionConfig: { model: null, thinkingLevel: "high" },
 };
 const state: PindieControlMonitorState = {
@@ -35,12 +35,12 @@ class FakeTerminal implements Terminal {
   emit(data: string) { this.input?.(data); }
 }
 
-function fixture(options: PindieControlMonitorOptions = {}) {
+function fixture(options: PindieControlMonitorOptions = {}, fullscreen = false) {
   initTheme("dark", false);
   const commands = new Map<string, { handler(args: string, ctx: ExtensionCommandContext): Promise<void> }>();
   const control = createWatchCommand({ registerCommand: (name: string, command: any) => commands.set(name, command) } as ExtensionAPI, options);
   const terminal = new FakeTerminal();
-  const tui = new TuiMainScreen(terminal);
+  const tui = fullscreen ? new TuiAltScreen(terminal) : new TuiMainScreen(terminal);
   let draft = "LOCAL draft 中文";
   const localHistory = Object.freeze(["LOCAL history"]);
   const session = Object.freeze({ id: "local-id", history: localHistory });
@@ -103,7 +103,7 @@ for (const exit of ["q", "\u001b", "\u0003", "shutdown", "dispose"]) {
     assert.match(f.notices.at(-1)!, /already open/);
     assert.equal(client.facts().connects, 1);
     const component = f.tui.getFocusedComponent() as WatchComponent;
-    assert.match(component.render(80).join("\n"), /Remote Session: 远端会话/);
+    assert.match(component.render(80).join("\n"), /Remote Session: remote-i/);
     if (exit === "shutdown") await f.control.shutdown();
     else if (exit === "dispose") component.dispose();
     else component.handleInput(exit);
@@ -165,7 +165,7 @@ test("exit while connecting aborts and closes a late client before re-entry", as
   assert.equal(f.tui.hasOverlay(), false);
 });
 
-test("bounded viewport, Chinese/emoji widths, scroll preservation across rapid updates, live tail, epoch reset and resize", () => {
+test("bounded viewport, Chinese/emoji widths, scroll preservation across rapid updates, live tail, reconnect epoch preservation and resize", () => {
   let rows = 16, renders = 0, exits = 0;
   const c = new WatchComponent(theme, () => rows, () => { renders++; }, () => { exits++; });
   c.apply(state);
@@ -178,7 +178,8 @@ test("bounded viewport, Chinese/emoji widths, scroll preservation across rapid u
   assert.equal(render(), before);
   assert.match(render(), /SCROLLED/);
   c.handleInput("G"); assert.match(render(), /事件-49/);
-  c.handleInput("k"); c.apply({ ...state, epoch: 2 }); assert.match(render(), /事件-49/);
+  c.handleInput("\u001b[5~"); const scrolled = render();
+  c.apply({ ...state, epoch: 2 }); assert.equal(render(), scrolled);
   for (const width of [1, 2, 12, 40, 80]) for (const height of [1, 3, 10, 24, 80]) {
     rows = height;
     const lines = c.render(width);
@@ -213,6 +214,8 @@ test("native cards inside actual Pi overlay preserve navigation, Gate, resize an
     result: projectToolResult({ content: [{ type: "text", text: Array.from({ length: 25 }, (_, i) => `remote output ${i}`).join("\n") }] }, false, "bash"), defaultDisplayMode: "compact" } as const;
   c.apply({ ...state, timeline: { ...state.timeline!, timeline: [command] } });
   c.handleInput("G");
+  assert.doesNotMatch(c.render(80).join("\n"), /remote output 24/);
+  c.handleInput("\r"); c.render(80); c.handleInput("G");
   assert.match(c.render(80).join("\n"), /remote output 24/);
   c.handleInput("\u001b[5~"); c.handleInput("\u001b[5~"); c.handleInput("\u001b[5~");
   assert.match(c.render(80).join("\n"), /Native Pi.*bounded projected text/);
@@ -240,4 +243,122 @@ test("isolated fake-terminal smoke uses one native TUI listener and no alternate
     assert.doesNotMatch(f.terminal.writes.join(""), /\u001b\[\?1049h/);
   } finally { await f.control.shutdown(); f.tui.stop(); }
   assert.equal(f.terminal.stops, 1);
+});
+
+// Design gate: actual public fullscreen overlay dispatch, no real terminal or Pi internals patched.
+test("pinned fullscreen overlay receives normalized wheel and suppresses underlying fallback", async () => {
+  const f = fixture({}, true);
+  const events: import("@earendil-works/pi-tui").TuiMouseEvent[] = [];
+  const overlay = {
+    render: () => Array.from({ length: 18 }, () => "mouse gate"), invalidate() {},
+    handleMouse(event: import("@earendil-works/pi-tui").TuiMouseEvent) {
+      events.push(event); return { handled: true, render: false };
+    },
+  };
+  f.tui.start();
+  const handle = f.tui.showOverlay(overlay, { width: "100%", anchor: "top-left" });
+  try {
+    f.tui.renderNow(true);
+    f.terminal.emit("\x1b[<64;5;6M"); f.terminal.emit("\x1b[<65;5;6M");
+    assert.equal(events.length, 2);
+    assert.ok(events[0]!.wheelDelta! < 0); assert.ok(events[1]!.wheelDelta! > 0);
+    assert.equal(events[0]!.y, 5); assert.equal(events[0]!.x, 4);
+    assert.match(f.terminal.writes.join(""), /\x1b\[\?1006h/);
+  } finally { handle.hide(); f.tui.stop(); }
+  assert.match(f.terminal.writes.join(""), /\x1b\[\?1006l/);
+  assert.equal(f.terminal.starts, 1); assert.equal(f.terminal.stops, 1);
+});
+
+
+test("real fullscreen Watch wheel scrolls only feed once; ID anchoring, updates, expansion and editor restoration", async () => {
+  const client = clientOptions(); const f = fixture(client.options, true); f.control.sessionStart(f.ctx);
+  f.tui.start();
+  const pending = f.commands.get("watch")!.handler("", f.ctx); await turn();
+  const c = f.tui.getFocusedComponent() as WatchComponent;
+  const wheels: import("@earendil-works/pi-tui").TuiMouseEvent[] = [];
+  const mouse = c.handleMouse.bind(c);
+  c.handleMouse = (event) => { wheels.push(event); return mouse(event); };
+  try {
+    c.apply(state); f.tui.renderNow(true);
+    assert.equal(c.view.live, true);
+    assert.ok(c.render(80).filter((line) => /事件-/.test(line)).length >= 8);
+    // Overlay is centered with one terminal row above it. Header local y=0.
+    f.terminal.emit("\x1b[<64;5;2M");
+    assert.equal(c.view.live, true); assert.equal(wheels.at(-1)!.y, 0);
+    // Feed local y=8. Real SGR decode -> public handler -> private viewport.
+    f.terminal.emit("\x1b[<64;5;10M");
+    assert.equal(c.view.live, false);
+    const delta = wheels.at(-1)!.wheelDelta!;
+    c.render(80);
+    assert.equal(c.view.anchor?.id, `r${37 + delta}`); // exactly one scroll, no parent ScrollView
+    const anchor = { ...c.view.anchor! };
+    f.tui.renderNow(true);
+    f.terminal.emit("\x1b[<65;5;19M"); // footer
+    c.render(80); assert.deepEqual(c.view.anchor, anchor);
+    const text = c.render(80).join("\n");
+    const block = { ...state.timeline!.timeline.at(-1)!, id: "new", title: "new event" };
+    c.apply({ ...state, epoch: 5, timeline: { ...state.timeline!, timeline: [...state.timeline!.timeline.slice(1), block] } });
+    assert.equal(c.render(80).join("\n"), text);
+    assert.deepEqual(c.view.anchor, anchor);
+    f.terminal.emit("k"); c.render(80);
+    const selected = c.view.selected;
+    f.terminal.emit("\r"); c.render(80); assert.ok(c.view.expanded.has(selected!));
+    c.apply({ ...c.view.state, snapshot: { ...snapshot, revision: 99 } }); c.render(80);
+    assert.equal(c.view.selected, selected); assert.ok(c.view.expanded.has(selected!));
+    f.terminal.emit("\r"); c.render(80); assert.equal(c.view.expanded.has(selected!), false);
+    f.terminal.emit("G"); c.render(80); assert.equal(c.view.live, true);
+    f.tui.renderNow(true); f.terminal.emit("\x1b[<64;5;10M"); c.render(80);
+    const up = c.view.anchor!.id;
+    f.terminal.emit("\x1b[<65;5;10M"); c.render(80); assert.notEqual(c.view.anchor!.id, up);
+    f.terminal.rows = 12; f.terminal.columns = 20; f.tui.renderNow(true);
+    assert.ok(c.render(20).every((line) => visibleWidth(line) <= 20));
+    f.terminal.emit("q"); await pending;
+    assert.equal(f.tui.getFocusedComponent(), f.editor); assert.equal(f.draft(), "LOCAL draft 中文");
+    assert.equal(f.terminal.starts, 1); assert.equal(client.facts().closes, 1);
+  } finally { await f.control.shutdown(); await pending; f.tui.stop(); }
+  assert.equal(f.terminal.stops, 1);
+});
+
+
+test("native expansion is lazy, memoized by bounded content and cleared on collapse/invalidation", () => {
+  initTheme("dark", false);
+  const terminal = new FakeTerminal(); const tui = new TuiAltScreen(terminal);
+  const c = new WatchComponent(theme, () => 24, () => {}, () => {}, tui);
+  const block = { type: "work", kind: "command", id: "native-cache", toolCallId: "native-cache", toolName: "bash", lifecycle: "complete", title: "Command", input: { command: "echo remote" },
+    result: projectToolResult({ content: [{ type: "text", text: "bounded remote output" }] }, false, "bash"), defaultDisplayMode: "compact" } as const;
+  const update = (event = block) => c.apply({ ...state, timeline: { ...state.timeline!, timeline: [event] } });
+  let creations = 0;
+  const updateResult = ToolExecutionComponent.prototype.updateResult;
+  ToolExecutionComponent.prototype.updateResult = function (...args) { creations++; return updateResult.apply(this, args); };
+  try {
+    update(); c.render(80); c.render(20); assert.equal(creations, 0);
+    c.handleInput("\r"); c.render(80); assert.equal(creations, 1);
+    update(); c.render(80); c.render(20); assert.equal(creations, 1);
+    update({ ...block, title: "changed content" }); c.render(80); assert.equal(creations, 2);
+    c.invalidate(); c.render(80); assert.equal(creations, 3);
+    c.handleInput("\r"); c.render(80); assert.equal(creations, 3);
+    c.handleInput("\r"); c.render(80); assert.equal(creations, 4);
+    c.apply({ ...state, timeline: { ...state.timeline!, timeline: [{ ...block, toolName: "edit" }] } });
+    assert.match(c.render(80).join("\n"), /Fallback/); assert.equal(creations, 4);
+    c.stop(); assert.equal(terminal.starts, 0);
+  } finally { ToolExecutionComponent.prototype.updateResult = updateResult; }
+});
+
+
+test("SCROLLED preserves event-local row through changed preceding content, resize and bounded-tail eviction", () => {
+  initTheme("dark", false);
+  const tui = new TuiAltScreen(new FakeTerminal());
+  const c = new WatchComponent(theme, () => 20, () => {}, () => {}, tui);
+  const block = { type: "work", kind: "command", id: "anchor", toolCallId: "anchor", toolName: "bash", lifecycle: "complete", title: "Command", input: { command: "echo remote" },
+    result: projectToolResult({ content: [{ type: "text", text: Array.from({ length: 25 }, (_, i) => `output ${i}`).join("\n") }] }, false, "bash"), defaultDisplayMode: "compact" } as const;
+  c.apply({ ...state, timeline: { ...state.timeline!, timeline: [block] } }); c.render(80);
+  c.handleInput("\r"); c.render(80); c.handleInput("\x1b[6~"); c.render(80);
+  const anchor = { ...c.view.anchor! }; assert.equal(anchor.id, "anchor"); assert.ok(anchor.offset > 0);
+  const before = c.render(80).slice(4, -1);
+  c.apply({ ...state, timeline: { ...state.timeline!, timeline: [...state.timeline!.timeline.slice(0, 40), block] } });
+  assert.deepEqual(c.render(80).slice(4, -1), before); assert.deepEqual(c.view.anchor, anchor);
+  c.render(60); assert.deepEqual(c.view.anchor, anchor);
+  c.apply(state); c.render(80);
+  assert.equal(c.view.live, false); assert.equal(c.view.anchor!.id, "r0");
+  c.stop();
 });

@@ -315,11 +315,11 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       startupDiagnostics: [...nativeRuntime.diagnostics],
       modelFallbackMessage: nativeRuntime.modelFallbackMessage,
       ...options.interactiveModeOptions,
-      // Preserve Pi 0.99.1 precedence: explicit Host option, effective explicit
-      // Pi setting, then regular. Pi 1.x getTuiMode() cannot distinguish unset.
+      // Pindie defaults to fullscreen for native overlay mouse support. Respect
+      // explicit Host/Pi choices; getTuiMode() cannot distinguish an unset setting.
       tuiMode: options.interactiveModeOptions?.tuiMode
         ?? nativeRuntime.session.settingsManager?.getSettings().tuiMode
-        ?? "regular",
+        ?? "fullscreen",
     };
     let disposePromise: Promise<void> | undefined;
     const interactiveMode = createMode(createNativeInteractiveRuntime(nativeRuntime, dispose), modeOptions);
