@@ -38,7 +38,12 @@ class FakeTerminal implements Terminal {
 function fixture(options: PindieControlMonitorOptions = {}, fullscreen = false) {
   initTheme("dark", false);
   const commands = new Map<string, { handler(args: string, ctx: ExtensionCommandContext): Promise<void> }>();
-  const control = createWatchCommand({ registerCommand: (name: string, command: any) => commands.set(name, command) } as ExtensionAPI, options);
+  let statusScopes = 0;
+  const control = createWatchCommand({ registerCommand: (name: string, command: any) => commands.set(name, command) } as ExtensionAPI, options, () => {
+    statusScopes++;
+    let released = false;
+    return () => { if (!released) { released = true; statusScopes--; } };
+  });
   const terminal = new FakeTerminal();
   const tui = fullscreen ? new TuiAltScreen(terminal) : new TuiMainScreen(terminal);
   let draft = "LOCAL draft 中文";
@@ -54,7 +59,7 @@ function fixture(options: PindieControlMonitorOptions = {}, fullscreen = false) 
     hasUI: true, mode: "tui", sessionManager: new Proxy({}, { get() { throw new Error("Watch must not inspect local Session"); } }),
     ui: { custom: mode.showExtensionCustom.bind(mode), notify: (message: string) => notices.push(message) },
   } as unknown as ExtensionCommandContext;
-  return { control, commands, terminal, tui, editor, editorContainer, mode, ctx, notices, session, draft: () => draft };
+  return { control, commands, terminal, tui, editor, editorContainer, mode, ctx, notices, session, draft: () => draft, statusScopes: () => statusScopes };
 }
 function clientOptions() {
   let connects = 0, closes = 0, calls = 0;
@@ -87,7 +92,7 @@ test("/watch registers only on native UI startup; no resources at registration, 
   assert.equal(client.facts().connects, 0);
 });
 
-for (const exit of ["q", "\u001b", "\u0003", "shutdown", "dispose"]) {
+for (const exit of ["q", "\u001b", "\u0003", "shutdown", "dispose", "session-swap"]) {
   test(`actual pinned custom overlay exits by ${JSON.stringify(exit)}, restores LOCAL editor focus, closes only observer; can reopen`, async () => {
     const client = clientOptions(); const f = fixture(client.options);
     f.control.sessionStart(f.ctx);
@@ -95,6 +100,7 @@ for (const exit of ["q", "\u001b", "\u0003", "shutdown", "dispose"]) {
     const pending = handler("", f.ctx);
     await turn();
     assert.equal(f.tui.hasOverlay(), true);
+    assert.equal(f.statusScopes(), 1);
     assert.equal(f.tui.isOverlayFocused(), true);
     assert.equal(f.editorContainer.children[0], f.editor);
     assert.equal(f.mode.session, f.session);
@@ -104,10 +110,12 @@ for (const exit of ["q", "\u001b", "\u0003", "shutdown", "dispose"]) {
     assert.equal(client.facts().connects, 1);
     const component = f.tui.getFocusedComponent() as WatchComponent;
     assert.match(component.render(80).join("\n"), /Remote Session: remote-i/);
-    if (exit === "shutdown") await f.control.shutdown();
+    if (exit === "session-swap") f.control.sessionStart({ ...f.ctx });
+    else if (exit === "shutdown") await f.control.shutdown();
     else if (exit === "dispose") component.dispose();
     else component.handleInput(exit);
     await pending;
+    assert.equal(f.statusScopes(), 0);
     assert.equal(f.tui.hasOverlay(), false);
     assert.equal(f.tui.getFocusedComponent(), f.editor);
     assert.equal(f.draft(), "LOCAL draft 中文");
@@ -116,6 +124,7 @@ for (const exit of ["q", "\u001b", "\u0003", "shutdown", "dispose"]) {
     assert.equal(f.terminal.starts, 0); // custom UI never starts a terminal/listener
     const second = handler("", f.ctx); await turn(); await f.control.shutdown(); await second;
     assert.equal(client.facts().closes, 2);
+    assert.equal(f.statusScopes(), 0);
   });
 }
 
@@ -125,6 +134,7 @@ test("parallel Pi overlay prevents monitor creation; custom rejection and pre-mo
   await f.commands.get("watch")!.handler("", f.ctx);
   assert.equal(client.facts().connects, 0);
   assert.match(f.notices.at(-1)!, /Close the current Pi overlay/);
+  assert.equal(f.statusScopes(), 0);
   other.hide();
   const pending = f.commands.get("watch")!.handler("", f.ctx);
   await f.control.shutdown(); await pending; await turn();
@@ -133,6 +143,31 @@ test("parallel Pi overlay prevents monitor creation; custom rejection and pre-mo
   assert.equal(client.facts().connects, 0);
   await f.commands.get("watch")!.handler("", { ...f.ctx, ui: { ...f.ctx.ui, custom: async () => { throw new Error("UI failed"); } } });
   assert.match(f.notices.at(-1)!, /UI failed/);
+  assert.equal(f.statusScopes(), 0);
+});
+
+test("normal custom completion and post-factory exceptions always release Watch status", async () => {
+  for (const fail of [false, true]) {
+    const f = fixture(); f.control.sessionStart(f.ctx);
+    await f.commands.get("watch")!.handler("", { ...f.ctx, ui: { ...f.ctx.ui, custom: async (factory: any) => {
+      factory(f.tui, theme, {}, () => {});
+      assert.equal(f.statusScopes(), 1);
+      if (fail) throw new Error("after factory");
+    } } });
+    assert.equal(f.statusScopes(), 0);
+    if (fail) assert.match(f.notices.at(-1)!, /after factory/);
+    await f.control.shutdown();
+  }
+});
+
+test("monitor termination restores status and permits reentry", async () => {
+  const f = fixture({ createClient: async () => { throw new Error("offline"); }, sleep: async () => { throw new Error("monitor failed"); } });
+  f.control.sessionStart(f.ctx);
+  await f.commands.get("watch")!.handler("", f.ctx);
+  assert.equal(f.statusScopes(), 0);
+  assert.equal(f.tui.hasOverlay(), false);
+  await f.commands.get("watch")!.handler("", f.ctx);
+  assert.equal(f.statusScopes(), 0);
 });
 
 test("closing Watch does not dismiss or steal focus from a later Pi dialog", async () => {
@@ -157,12 +192,14 @@ test("exit while connecting aborts and closes a late client before re-entry", as
   const pending = f.commands.get("watch")!.handler("", f.ctx); await turn();
   (f.tui.getFocusedComponent() as WatchComponent).handleInput("q");
   assert.equal(signal.aborted, true);
+  assert.equal(f.statusScopes(), 0); // restore before asynchronous client cleanup
   await f.commands.get("watch")!.handler("", f.ctx);
   assert.match(f.notices.at(-1)!, /already open or closing/);
   release({ async close() { closes++; }, async observe() { throw new Error("must not observe after close"); }, async readTimeline() { throw new Error("unexpected"); }, async wait() { throw new Error("unexpected"); } });
   await pending;
   assert.equal(closes, 1);
   assert.equal(f.tui.hasOverlay(), false);
+  assert.equal(f.statusScopes(), 0);
 });
 
 test("bounded viewport, Chinese/emoji widths, scroll preservation across rapid updates, live tail, reconnect epoch preservation and resize", () => {
@@ -269,6 +306,61 @@ test("pinned fullscreen overlay receives normalized wheel and suppresses underly
   assert.equal(f.terminal.starts, 1); assert.equal(f.terminal.stops, 1);
 });
 
+
+test("actual fullscreen SGR press/release/click targets Watch-local rows; double-click toggles without native input or boundary toggles", async () => {
+  const client = clientOptions(); const f = fixture(client.options, true); f.control.sessionStart(f.ctx);
+  f.tui.start();
+  const pending = f.commands.get("watch")!.handler("", f.ctx); await turn();
+  const c = f.tui.getFocusedComponent() as WatchComponent;
+  c.apply({ ...state, timeline: { ...state.timeline!, timeline: state.timeline!.timeline.slice(0, 3) } });
+  const received: import("@earendil-works/pi-tui").TuiMouseEvent[] = [];
+  const mouse = c.handleMouse.bind(c);
+  c.handleMouse = (event) => { received.push(event); return mouse(event); };
+  const paint = () => { f.tui.renderNow(); return c.render(80); };
+  const click = (y: number, x = 3, button = 0) => {
+    // Centered overlay is 18 rows in a 20-row terminal: one-row screen offset.
+    f.terminal.emit(`\x1b[<${button};${x + 1};${y + 2}M`);
+    f.terminal.emit(`\x1b[<${button};${x + 1};${y + 2}m`);
+  };
+  try {
+    f.tui.renderNow(true);
+    for (const expanded of [true, false, true, false]) {
+      const y = paint().findIndex((line) => line.includes("事件-1"));
+      assert.ok(y >= 4);
+      click(y); assert.equal(c.view.expanded.has("r1"), !expanded);
+      click(y); assert.equal(c.view.expanded.has("r1"), expanded);
+      paint();
+    }
+    assert.ok(received.some((event) => event.type === "click" && event.clickCount === 2));
+    assert.ok(received.some((event) => event.type === "release" && event.button === "left"));
+    assert.ok(received.every((event) => event.screenY === event.y + 1 && event.width === 80 && event.height === 18));
+    for (const [y, x, button] of [[0, 3, 0], [17, 3, 0], [5, 79, 0], [5, 3, 2]]) {
+      click(y!, x!, button!); click(y!, x!, button!);
+      assert.equal(c.view.expanded.size, 0);
+    }
+    const y = paint().findIndex((line) => line.includes("事件-1"));
+    click(y); click(y + 1); assert.equal(c.view.expanded.size, 0);
+    c.apply({ ...state, timeline: { ...state.timeline!, timeline: [{
+      type: "work", kind: "command", id: "native-mouse", toolCallId: "native-mouse", toolName: "bash", lifecycle: "complete", title: "Command",
+      input: { command: "echo projected" }, defaultDisplayMode: "compact",
+      result: projectToolResult({ content: [{ type: "text", text: "unique projected native body" }] }, false, "bash"),
+    }] } });
+    const titleRow = paint().findIndex((line) => line.startsWith(">+") || line.startsWith(" +"));
+    click(titleRow); click(titleRow);
+    assert.ok(c.view.expanded.has("native-mouse"));
+    const bodyRow = paint().findIndex((line) => line.includes("unique projected native body"));
+    assert.ok(bodyRow > titleRow);
+    click(bodyRow); click(bodyRow);
+    assert.equal(c.view.expanded.has("native-mouse"), false);
+    assert.equal(c.view.selected, "native-mouse");
+    assert.equal(c.view.live, false);
+    assert.equal(client.facts().calls, 3); // Input remains entirely presentation-only.
+    c.handleInput("q"); await pending;
+    assert.equal(f.draft(), "LOCAL draft 中文");
+    assert.equal(f.tui.getFocusedComponent(), f.editor);
+    assert.equal(client.facts().closes, 1);
+  } finally { await f.control.shutdown(); await pending; f.tui.stop(); }
+});
 
 test("real fullscreen Watch wheel scrolls only feed once; ID anchoring, updates, expansion and editor restoration", async () => {
   const client = clientOptions(); const f = fixture(client.options, true); f.control.sessionStart(f.ctx);

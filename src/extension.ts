@@ -546,7 +546,9 @@ function registerComposedPindieExtension(
       now: () => new Date(continuityNow()),
     }));
   }
-  const watch = featureSelection.presentation ? createWatchCommand(pi) : null;
+  const watch = featureSelection.presentation
+    ? createWatchCommand(pi, {}, () => presentation.beginWatchStatus())
+    : null;
   if (featureSelection.presentation) {
     pi.registerCommand("efficiency", {
       description: "Show read-only runtime efficiency facts",

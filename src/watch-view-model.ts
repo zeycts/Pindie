@@ -1,9 +1,11 @@
+import { stripVTControlCharacters } from "node:util";
+import { boundedGraphemeText } from "./bounded-text.ts";
 import type { PindieControlMonitorState } from "./control-monitor.ts";
 import type { UiTimelineBlock } from "./ui-projection.ts";
 
 /** Remote strings are data, never terminal instructions (including bidi controls). */
 export function watchText(text: string): string {
-  return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, "").replace(/[\r\n\t]/gu, " ");
+  return stripVTControlCharacters(text).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, "").replace(/[\r\n\t]/gu, " ");
 }
 export interface WatchRow { readonly id: string; readonly offset: number }
 
@@ -44,7 +46,7 @@ export class WatchViewModel {
     this.live = false;
   }
   follow(): void { this.live = true; this.selected = this.blocks.at(-1)?.id ?? null; this.anchor = null; }
-  header(): string[] {
+  header(width = 120): string[] {
     const { state } = this;
     const snapshot = state.snapshot;
     const fresh = state.connection === "connected" && snapshot !== null;
@@ -52,13 +54,18 @@ export class WatchViewModel {
     const progress = semantic?.verificationProgress;
     const runtime = fresh ? snapshot.runtime : null;
     // Never infer Task completion from idle. Settled is a separate runtime fact.
-    const activity = runtime ? !runtime.idle ? "running" : runtime.pendingMessageCount > 0 ? "pending" : runtime.automaticWorkSettled ? "settled" : "idle · automatic work unsettled" : "unknown";
+    const activity = runtime ? !runtime.idle ? "running" : runtime.pendingMessageCount > 0 ? "pending" : runtime.automaticWorkSettled ? "settled" : "idle · automatic work unsettled" : "unavailable";
+    const text = (value: string, columns: number) => boundedGraphemeText(watchText(value.slice(0, 2_048)), columns, 240, 1)[0]!;
+    const task = semantic
+      ? `Task: ${semantic.taskStatus ?? "none"} · Verify: ${semantic.verificationStatus ?? "none"}${progress ? ` ${progress.covered}/${progress.total}` : ""}${semantic.taskGoal ? ` · ${text(semantic.taskGoal, 60)}` : ""}`
+      : "Task unavailable (stale) · Verify unavailable (stale)";
     return [
       `Watch · Remote read-only · ${state.connection.toUpperCase()} · Esc/q back`,
-      `Remote Project: ${state.project ?? "unknown"} · Remote Session: ${snapshot?.session.id.slice(0, 8) ?? "unknown"}`,
-      `Task: ${semantic?.taskStatus ?? "unknown"} · Verify: ${semantic?.verificationStatus ?? "unknown"} ${progress ? `${progress.covered}/${progress.total}` : "?/?"} · ${activity}`,
-      `Model: ${fresh ? snapshot.executionConfig.model?.modelId ?? "unknown" : "unknown"} · thinking: ${fresh ? snapshot.executionConfig.thinkingLevel : "unknown"}`,
-    ];
+      // displayIdentity may be the first raw prompt; no separately exposed native name exists.
+      `Remote Project: ${text(state.project ?? "unavailable", 24)} · Remote Session: ${text(snapshot?.session.id.slice(0, 8) ?? "unavailable", 16)}`,
+      task,
+      `Runtime: ${activity} · Model: ${text(fresh ? snapshot.executionConfig.model?.modelId ?? "unavailable" : "unavailable", 40)} · thinking: ${fresh ? snapshot.executionConfig.thinkingLevel : "unavailable"}`,
+    ].map((line) => text(line, Math.max(1, width)));
   }
   alerts(): string[] {
     const gate = this.state.snapshot?.semantic.humanGate;
