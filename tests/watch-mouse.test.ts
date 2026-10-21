@@ -18,7 +18,7 @@ const state: PindieControlMonitorState = {
 
 function fixture() {
   let time = 1_000, width = 80, height = 28;
-  const c = new WatchComponent({ fg: (_tone: string, text: string) => text } as Theme, () => height, () => {}, () => {}, undefined, () => time);
+  const c = new WatchComponent({ fg: (_tone: string, text: string) => text, bg: (_tone: string, text: string) => text, bold: (text: string) => text } as Theme, () => height, () => {}, () => {}, undefined, () => time);
   c.apply(state);
   const render = () => c.render(width);
   const row = (id: number) => {

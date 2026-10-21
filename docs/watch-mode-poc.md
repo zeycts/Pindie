@@ -134,6 +134,29 @@ cannot physically fit. Long notices/questions are truncated, not independently
 scrollable. Unicode widths use Pi utilities and bounded grapheme formatting.
 Remote metadata and fallback text strip terminal/bidi controls.
 
+## Semantic color and hierarchy
+
+Watch uses the active Pi theme, not a separate palette. User/assistant role
+prefixes use `accent`; ordinary tool titles and all prompt/command bodies retain
+neutral foreground. Work markers alone show running (`accent`), complete
+(`success`) or failed (`error`). Semantic headings are bold: Task uses accent
+(or warning for blocked/waiting-human), Verification uses its recorded status,
+and successful Completed events use success. Failed semantic operations take
+precedence over status colors. These are **historical event facts**, never a
+replacement for the live snapshot authority in the header.
+
+Exactly one selected title uses Pi's `selectedBg` plus a bold accent `>`; `+`/`−`
+and lifecycle icons remain meaningful without color. Metadata, preview notices
+and ordinary fallback details recede; failed work/semantic diagnostics retain
+normal text contrast. Native read/bash card lines keep Pi's own rendering,
+without an outer Watch color wrapper. Current/last-observed sticky alerts and
+stale semantic metadata use warning, preserving their existing factual labels.
+Remote data is sanitized and bounded before styling; colors add no rows or
+hit-test geometry. Theme/terminal palettes determine actual hues and selection
+contrast. Narrow terminals still truncate content, and no-color terminals rely
+on markers, labels and selection rather than hue. Human screenshot acceptance
+is still required after an approved deployment.
+
 ## Expansion fidelity and privacy
 
 Enter expands only on demand. The adapter never assumes native
