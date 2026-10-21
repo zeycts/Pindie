@@ -3,7 +3,8 @@ import { Key, matchesKey, ScrollView, truncateToWidth, type Component, type TUI,
 import { boundedGraphemeText } from "./bounded-text.ts";
 import type { PindieControlMonitorState, PindieControlMonitorViewPort } from "./control-monitor.ts";
 import { formatBlock } from "./timeline-text.ts";
-import { watchEventTitle, watchPreviewTone } from "./watch-event-style.ts";
+import { watchGroupTitle, type WatchEventId, type WatchFeedId } from "./watch-activity-grouping.ts";
+import { watchEventTone, watchEventTitle, watchPreviewTone } from "./watch-event-style.ts";
 import { watchNativeComponents } from "./watch-native-presentation.ts";
 import { WatchViewModel, watchText, type WatchRow } from "./watch-view-model.ts";
 
@@ -18,9 +19,9 @@ export class WatchComponent implements Component, PindieControlMonitorViewPort {
   private feedHeight = 0;
   private revealSelection = false;
   private mouseLayout: { width: number; height: number; key: string; rows: readonly WatchRow[] } | null = null;
-  private mousePress: { key: string; id: string; released: boolean } | null = null;
+  private mousePress: { key: string; id: WatchFeedId; released: boolean } | null = null;
   private lastClick: { key: string; time: number } | null = null;
-  private readonly nativeCache = new Map<string, { version: string; components: ReturnType<typeof watchNativeComponents> }>();
+  private readonly nativeCache = new Map<WatchEventId, { version: string; components: ReturnType<typeof watchNativeComponents> }>();
   private readonly theme: Theme;
   private readonly rows: () => number;
   private readonly requestRender: () => void;
@@ -37,30 +38,48 @@ export class WatchComponent implements Component, PindieControlMonitorViewPort {
     if (this.stopped) return;
     this.invalidateMouseLayout(); // Async updates can move/reflow rows, even in the same Session.
     this.captureAnchor();
-    if (this.view.apply(state)) { this.rowMap = []; this.nativeCache.clear(); }
-    for (const id of this.nativeCache.keys()) if (!this.view.expanded.has(id)) this.nativeCache.delete(id);
+    if (this.view.apply(state)) this.nativeCache.clear();
+    this.rowMap = []; // Old painted rows must not overwrite the VM's normalized anchor.
+    const visible = new Set(this.view.displayed().map((item) => item.id));
+    for (const id of this.nativeCache.keys()) if (!this.view.expanded.has(id) || !visible.has(id)) this.nativeCache.delete(id);
     this.requestRender();
   }
   invalidate(): void { this.invalidateMouseLayout(); this.nativeCache.clear(); this.scroll.invalidate(); }
   private clearMouseGesture(): void { this.mousePress = null; this.lastClick = null; }
   private invalidateMouseLayout(): void { this.clearMouseGesture(); this.mouseLayout = null; }
   private captureAnchor(): void {
-    if (!this.view.live) this.view.anchor = this.rowMap[this.scroll.scrollTop] ?? this.view.anchor;
+    if (!this.view.live) {
+      const row = this.rowMap[this.scroll.scrollTop];
+      if (row) {
+        const parent = this.view.feed.find((item) => item.kind === "group" && !this.view.expanded.has(item.id) && item.children.some((child) => child.id === row.id));
+        this.view.anchor = parent ? { id: parent.id, offset: 0 } : row;
+      }
+    }
   }
   private timelineLines(width: number): string[] {
     this.rowMap = [];
     const lines: string[] = [];
-    for (const block of this.view.blocks) {
-      const expanded = this.view.expanded.has(block.id);
+    for (const item of this.view.displayed()) {
+      const expanded = this.view.expanded.has(item.id);
+      if (item.kind === "group") {
+        const title = boundedGraphemeText(watchText(watchGroupTitle(item).slice(0, 2_048)), Math.max(1, width - 2), 240, 1)[0]!;
+        const selected = item.id === this.view.selected;
+        const marker = selected ? this.theme.bold(this.theme.fg("accent", ">")) : " ";
+        const line = marker + this.theme.fg("dim", expanded ? "−" : "+") + title;
+        lines.push(selected ? this.theme.bg("selectedBg", line) : line);
+        this.rowMap.push({ id: item.id, offset: 0 });
+        continue;
+      }
+      const block = item.block;
       // Collapsed titles use the verified compact formatter, not native setExpanded(false).
       const title = watchText(boundedGraphemeText(watchText(formatBlock(block, "compact")), Math.max(1, width - 2), 240, 1)[0]!);
-      const eventLines = [watchEventTitle(this.theme, block, title, expanded, block.id === this.view.selected)];
+      const eventLines = [watchEventTitle(this.theme, block, title, expanded, item.id === this.view.selected)];
       if (expanded) {
-        let cached = this.nativeCache.get(block.id);
+        let cached = this.nativeCache.get(item.id);
         const version = JSON.stringify(block);
         if (!cached || cached.version !== version) {
           cached = { version, components: this.tui ? watchNativeComponents(block, this.tui) : null };
-          this.nativeCache.set(block.id, cached);
+          this.nativeCache.set(item.id, cached);
         }
         if (cached.components) {
           const native = cached.components.flatMap((component) => component.render(width));
@@ -72,7 +91,7 @@ export class WatchComponent implements Component, PindieControlMonitorViewPort {
               .map((line) => this.theme.fg(watchPreviewTone(block), line)));
         }
       }
-      for (let offset = 0; offset < eventLines.length; offset++) this.rowMap.push({ id: block.id, offset });
+      for (let offset = 0; offset < eventLines.length; offset++) this.rowMap.push({ id: item.id, offset });
       lines.push(...eventLines);
     }
     return lines.length ? lines : ["Waiting for remote timeline…"];
@@ -116,12 +135,16 @@ export class WatchComponent implements Component, PindieControlMonitorViewPort {
     if (this.mouseLayout?.key !== key) this.clearMouseGesture();
     this.mouseLayout = { width, height, key, rows: mouseRows };
     while (viewport.length < this.feedHeight) viewport.push("");
-    const fresh = this.view.state.connection === "connected" && this.view.state.snapshot?.semantic.authority === "coherent";
+    const fresh = this.view.state.connection === "connected" && this.view.state.snapshot?.semantic.authority === "coherent" &&
+      (!this.view.state.timeline || this.view.state.timeline.sessionId === this.view.state.snapshot.session.id);
+    const outcome = this.view.historicalOutcome();
     const styledTop = top.map((line, index) => {
       const fitted = truncateToWidth(watchText(line), width);
       // Alerts are current/last-observed facts from the view model, not timeline failures.
       const tone = index === 0 ? this.view.state.connection === "connected" ? "accent" : "warning"
-        : index <= alerts.length ? "warning" : index === alerts.length + 2 ? fresh ? "text" : "warning" : "dim";
+        : index <= alerts.length ? "warning"
+        : index === alerts.length + 2 ? fresh ? "text" : "warning"
+        : index === alerts.length + 4 && outcome ? watchEventTone(outcome) : "dim";
       return this.theme.fg(tone, fitted);
     });
     return [...styledTop, ...viewport, this.theme.fg("dim", legend)].slice(0, height)
@@ -134,7 +157,7 @@ export class WatchComponent implements Component, PindieControlMonitorViewPort {
     this.captureAnchor();
     this.requestRender();
   }
-  private mouseHit(event: TuiMouseEvent): { key: string; id: string } | null {
+  private mouseHit(event: TuiMouseEvent): { key: string; id: WatchFeedId } | null {
     const layout = this.mouseLayout;
     if (!layout || event.button !== "left" || event.shift || event.alt || event.ctrl ||
       ![event.x, event.y, event.screenX, event.screenY].every(Number.isSafeInteger) ||
@@ -179,7 +202,8 @@ export class WatchComponent implements Component, PindieControlMonitorViewPort {
   private toggleSelected(): void {
     this.invalidateMouseLayout();
     this.view.toggle();
-    if (this.view.selected && !this.view.expanded.has(this.view.selected)) this.nativeCache.delete(this.view.selected);
+    const visible = new Set(this.view.displayed().map((item) => item.id));
+    for (const id of this.nativeCache.keys()) if (!this.view.expanded.has(id) || !visible.has(id)) this.nativeCache.delete(id);
     this.revealSelection = true;
   }
   handleInput(data: string): void {

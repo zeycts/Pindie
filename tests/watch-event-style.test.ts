@@ -49,7 +49,7 @@ test("typed roles/lifecycles/semantic categories choose restrained tokens, not p
     assert.equal(watchEventTone({ ...message, role, text: "FAILED ✓ Completed" }), role === "custom" ? "muted" : "accent");
   }
   for (const lifecycle of ["running", "complete", "failed"] as const) {
-    assert.equal(watchEventTone({ ...work, lifecycle, title: "arbitrary remote command" }), { running: "accent", complete: "success", failed: "error" }[lifecycle]);
+    assert.equal(watchEventTone({ ...work, lifecycle, result: { ...work.result, isError: lifecycle === "failed" }, title: "arbitrary remote command" }), { running: "accent", complete: "success", failed: "error" }[lifecycle]);
     for (const block of [task, verification, completion, gate]) {
       if (lifecycle !== "complete") assert.equal(watchEventTone({ ...block, lifecycle }), lifecycle === "failed" ? "error" : "accent");
       assert.equal(watchEventTone({ ...block, error: "stale evidence ref" }), "error");
@@ -81,7 +81,7 @@ test("only structural prefixes get event color; selectedBg and bold marker ident
 
 test("preview notices/details recede while failed work and typed diagnostics keep normal contrast", () => {
   assert.equal(watchPreviewTone(message), "text");
-  assert.equal(watchPreviewTone({ ...work, lifecycle: "complete" }), "muted");
+  assert.equal(watchPreviewTone({ ...work, lifecycle: "complete", result: { ...work.result, isError: false } }), "muted");
   assert.equal(watchPreviewTone(work), "text");
   assert.equal(watchPreviewTone(verification), "muted");
   assert.equal(watchPreviewTone({ ...verification, error: "stale evidence ref" }), "text");
@@ -138,7 +138,7 @@ test("sticky warnings remain snapshot-driven and historical failures do not chan
   const disconnected = { ...state([work, completion]), connection: "disconnected" as const, message: "offline" };
   c.apply({ ...disconnected, snapshot: { ...disconnected.snapshot!, semantic: { ...disconnected.snapshot!.semantic, humanGate: { kind: "approval", question: "Review?" } } } });
   const lines = c.render(120).map(watchText);
-  assert.ok(lines.some((line) => line.includes("Task unavailable (stale)")));
+  assert.ok(lines.some((line) => line.includes("Task state stale · current outcome unconfirmed")));
   assert.ok(lines.some((line) => line.includes("HUMAN GATE (last observed)")));
   assert.ok(lines.some((line) => line.includes("✕ Command failed")));
   c.apply(state([work, completion]));
