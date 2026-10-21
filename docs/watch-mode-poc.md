@@ -1,208 +1,170 @@
-# Watch Mode UI PoC
+# Native Watch v1 (Pi 1.3.0)
 
-## Scope and operation
+## Architecture and ownership
 
-With Presentation enabled in native Pi InteractiveMode, `/watch` opens a temporary
-**Remote read-only** Control monitor overlay. Esc, q or Ctrl+C closes only that
-observer and returns focus to the original local Pi editor. The local chat,
-history, Session and agent execution are not replaced, aborted or resumed.
+`/watch` is a temporary **Remote read-only** overlay inside native Pi
+InteractiveMode, not another terminal, Agent, Session or Control surface:
 
-The remote Project/Session labels refer to the independently running loopback
-Control service, **not** the local Pi Session hosting `/watch`. Respond to remote
-Human Gates through ChatGPT / Pindie Control, not the local chat. No composer,
-project/session selector, Control mutation or model invocation is added.
+```text
+existing loopback Control → existing read-only monitor → WatchViewModel
+                                                      → WatchComponent
+                                                      → Pi-owned custom overlay
+```
 
-Navigation: j/k or arrows, PageUp/PageDown, G/End to follow live. The remote tail
-remains limited to 50 blocks. Fallback blocks are bounded to 1,600 graphemes
-and 12 rows; native cards use the existing bounded output excerpts, at most eight
-read cards per observation block and 160 rendered rows per block (then a cap notice). Older omitted blocks are labelled. Connection loss and Human Gates
-use the existing monitor reconnect/wait state machine. `pnpm control:watch` and
-its separate terminal implementation are unchanged.
+- `watch-command.ts` owns one observer interaction and idempotent shutdown.
+  Registration requires Presentation plus native `mode === "tui"`/`hasUI`.
+- `control-monitor-client.ts` exposes only observe/readTimeline/wait/close;
+  startup verifies the three read-only MCP tool schemas and annotations.
+- `control-monitor.ts` owns existing reconnect/wait/Gate cadence. There is no
+  Session database, history reader, new status authority or model invocation.
+- `watch-view-model.ts` owns ephemeral selection, expanded event IDs, live mode
+  and an event-ID/local-row anchor. Header/status uses snapshot facts only.
+- `watch-component.ts` owns bounded formatting and navigation. Its private
+  ScrollView stores position; it is **not** mounted as a layout child. The
+  adapter slices once. Fullscreen cannot discover a second scroll topology.
+- `watch-native-presentation.ts` retains the audited presentation-only adapter
+  for actual public Pi read/bash components. No new renderer/theme is added.
 
-## Stage A: pinned API findings (Pi coding-agent and pi-tui 1.3.0)
+`pnpm control:watch` remains unchanged. No server tool, protocol output content,
+service configuration, Pi dependency/version/lockfile or upstream Pi is changed.
+The monitor additionally retains the already-exposed semantic authority field;
+missing/unrecognized authority is unknown, not implicitly coherent.
 
-Inspected the installed package declarations, implementation and native overlay
-example, not an assumed full-screen API:
+## Fullscreen default and public API design gate
 
-- `core/extensions/types.d.ts`: `registerCommand(name, { description, handler })`
-  supplies an `ExtensionCommandContext`. `mode === "tui"` **and** `hasUI` are
-  required: RPC also has UI but does not support custom terminal components.
-  Extension loading itself has no native UI context. Registration is therefore
-  deferred to native `session_start`; the handler guards again. The loader's
-  `registerCommand` writes the extension's command Map; the runner reads this
-  Map dynamically. InteractiveMode builds autocomplete after binding extensions
-  (including Session startup). Presentation-disabled startup adds no command.
-- `ExtensionUIContext.custom<T>(factory, options?): Promise<T>` passes the
-  existing `TUI`, `Theme`, `KeybindingsManager` and `done(result)` to the factory.
-  The factory can return a component synchronously or asynchronously; components
-  provide `render(width): string[]`, optional `handleInput` and `dispose`.
-- `modes/interactive/interactive-mode.js`, `showExtensionCustom`: default custom
-  UI replaces **only the editor container**, not the full interactive screen.
-  It saves editor text and restores editor/text/focus on completion. With
-  `overlay: true`, it instead mounts using the existing TUI's `showOverlay`.
-  Calling `done` hides that exact overlay, resolves the promise, then invokes
-  component `dispose`. We never call an overlay handle's `hide` ourselves.
-- `pi-tui/dist/tui.js`, `showOverlay`: captures pre-overlay focus, focuses the
-  visible overlay and restores the top remaining overlay or original component
-  on hide. Input goes to the focused component; the PoC creates **no** terminal,
-  alternate screen, process input listener or independent renderer. Another
-  overlay already present is rejected before creating a monitor. Later Pi
-  overlays retain Pi's native stacking/focus ownership.
-- `OverlayOptions` supports percentage width and `maxHeight`, anchor and margins;
-  `maxHeight` clips output, it does not allocate a component viewport. This PoC
-  explicitly budgets `min(30, terminal.rows - 2)` rows (at least one) and uses a
-  full-width centered overlay. It is **not** a fullscreen mode switch. It works
-  within either Pi renderer's overlay support without changing terminal modes.
-- ScrollView's public `render`, `updateLayout`, `scrollTop`, `viewportHeight`,
-  `scrollBy`, `scrollToEnd` and `isFollowingEnd` provide scroll/follow state. The
-  adapter explicitly budgets/slices its viewport because plain component render
-  has width only, not height. Pi's `Key`/`matchesKey`, theme callback and
-  `truncateToWidth` provide key parsing, styling and column-aware line fitting.
-- `custom` has **no AbortSignal, automatic Esc action, session-lifetime disposal
-  guarantee, or concurrency lock**. Its completion closure is idempotent. A
-  factory that calls `done` before mounting can skip Pi's component disposal;
-  this is why our factory is synchronous, observation starts in `onHandle`
-  (after mount), and our own `finally`/Session shutdown cleanup is idempotent.
-  Shutdown/reload/Session replacement closes the interaction and awaits the
-  monitor's abort/client cleanup. Re-entry remains locked until cleanup settles.
-  A late connect is closed before the next interaction is admitted.
-- Normal exit does not use `ctx.abort`, `ctx.signal` (an agent-operation signal,
-  often absent for commands), Session switching or Host disposal. Hard process
-  death/SIGKILL cannot guarantee asynchronous cleanup; no new watchdog is added.
+Pindie's interactive Host now resolves mode in this order:
 
-References: installed `docs/extensions.md` (UI/modes/lifecycle), `docs/tui.md`,
-`docs/themes.md`, `examples/extensions/overlay-test.ts`; installed
-`core/extensions/loader.js`, `core/agent-session.js` command dispatch,
-`modes/interactive/interactive-mode.js` custom UI and extension binding;
-`pi-tui/dist/tui.{js,d.ts}` and `components/scroll-view.{js,d.ts}`.
-Repository boundaries: [architecture](architecture.md#11-runtime-only-presentation-and-external-projection),
-[Control v0.2 D2](pindie-control-v0.2.md#206-slice-d2--local-read-only-monitor),
-[Control v0.1](pindie-control-v0.1.md#10-headless-host-mode).
+1. Explicit `interactiveModeOptions.tuiMode`.
+2. Explicit effective Pi setting `settingsManager.getSettings().tuiMode`.
+3. Pindie fallback **`fullscreen`**.
 
-## Implementation and evidence
+Pi's `getTuiMode()` cannot distinguish an unset setting from its own fallback.
+Only Pindie's interactive default changes; no setting is written and headless
+Control/MCP does not construct InteractiveMode. To retain terminal-owned
+scrollback, explicitly choose `"tuiMode": "regular"` in Pi settings. Regular
+mode still supports Watch keyboard navigation, but does not enable native mouse.
 
-`watch-command.ts` owns one temporary observer interaction, not a Session or
-Host. `watch-component.ts` adapts the existing `PindieControlMonitor` view port;
-protocol validation, wait, reconnect and Gate handling remain unchanged.
-`timeline-text.ts` remains the canonical fallback formatter. Existing standalone monitor
-source and entrypoint are untouched.
+Verified against the pinned installed declarations and implementation:
 
-`tests/watch.test.ts` exercises the actual pinned `showExtensionCustom` and
-Pi TUI overlay lifecycle using an inert local Session and fake terminal. It
-checks registration/mode safety, exits, focus/draft preservation, re-entry,
-parallel overlays, pre-mount shutdown, late client cleanup, disconnected/Gate
-rendering, rapid updates, scroll/follow, resize and Chinese/emoji widths. The
-fake-terminal smoke starts exactly one Pi main-screen renderer/input listener,
-renders Watch, sends keys **only to that fake terminal**, and returns to the
-original editor without an alternate-screen escape. Existing monitor/client
-coverage verifies read-only protocol, Gate cadence, binding replacement and
-reconnect. Extension integration tests check Presentation/native registration.
-No live user terminal, real Session file, model, service restart or deployment
-is part of this validation.
+- `@earendil-works/pi-tui` root publicly exports `TuiAltScreen`, `TuiMouseEvent`
+  and `TuiMouseEventResult` (`dist/index.d.ts`).
+- `Component.handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined`
+  is the real public signature (`dist/tui.d.ts`). Coordinates `x/y` are local,
+  zero-based; `wheelDelta?: number` is logical rows, negative upward.
+  `{ handled: true }` suppresses renderer fallback.
+- `dist/tui-alt-screen.js` enables/restores mouse reporting, decodes SGR wheel
+  input and dispatches to overlays before renderer scroll fallback.
+  `dist/tui.js` translates terminal coordinates to overlay-local coordinates.
+- Native InteractiveMode imports both public renderers and selects the requested
+  mode; regular mode leaves mouse/scrollback to the terminal.
+- The isolated design-gate test starts real `TuiAltScreen` on an in-memory fake
+  Terminal, mounts an overlay and injects SGR wheel-up/down. It verifies signed
+  deltas, local coordinates and mouse enable/restore writes **only in memory**.
+  No mouse sequence, input or mode switch is sent to the user's active TUI.
 
-## Pindie-only native tool presentation reuse (Pi 1.3.0)
+SSH/tmux must pass mouse reporting through; tmux copy-mode or terminal settings
+can intercept wheels. Human fullscreen/tmux/SSH visual acceptance is still
+required. This work does not claim such acceptance or alter a running Host.
 
-This follow-up uses **actual exported `ToolExecutionComponent` instances**, with
-stock read/bash `renderCall` and `renderResult` obtained through public root
-`createReadToolDefinition` / `createBashToolDefinition` exports. Only the renderer
-callbacks are retained. No `execute`, AgentSession, transcript replay/attach,
-InteractiveMode construction, history write or second terminal is involved.
-All implementation is in Pindie; no dependency source, version or lockfile change.
-The branch starts from origin/main `5edabcd226c62b26fcafc3fd29a637ab5006f63a`.
+## First screen and interaction
 
-### Read-only audit and exact seam
+Default events are one-row compact titles, not expanded logs. A normal-size
+terminal shows multiple events without native syntax-highlighting work on first
+paint. Metadata is bounded to one row each, using Pi width-aware truncation:
 
-Inspected installed package source/declarations (paths below are audit citations,
-**not private import paths**):
+- connection and exit affordance;
+- remote Project and short Session ID;
+- Task status, verification status/covered-total counts and runtime activity;
+- remote model/thinking when available;
+- sticky Human Gate and connection/error notices above the feed.
 
-- `dist/index.d.ts:26,37-38` exports the definition factories, message components,
-  `ToolExecutionComponent`, Pi types and theme helpers from the public package
-  root. `package.json` exports only `.` and `./rpc-entry`: renderer source subpaths
-  are not a supported seam. No public conversation attach/replay API was found.
-- `dist/modes/interactive/components/tool-execution.js:35-91,197-272` constructs
-  presentation from args and `ToolRenderers`, invokes callbacks with a render
-  context, and uses Pi's active native theme. The constructor needs a TUI for
-  invalidation, **not** a Session. Overlay code passes the existing Pi TUI.
-  Images can initialize conversion machinery, so the adapter supplies text only
-  and `showImages:false`. Details and durations are not forwarded.
-- `dist/core/tools/read.js:46-60,180` and `bash.js:158-175,321-323` construct tool
-  definitions without executing their closures. `renderers/read.js:22-25,82-125`
-  formats supplied paths/ranges/text and highlights supplied content, not disk
-  contents. `renderers/bash.js:72-91` formats supplied command/text; it does not
-  spawn a shell. `render-utils.js:114-145` can start local elapsed-time intervals
-  when execution is marked started. The observer never calls
-  `markExecutionStarted`, never supplies a duration, and only adapts final events.
-  It also avoids `setArgsComplete`, which requests another TUI render: these two
-  renderers do not consult that flag. Thus rendering does not self-schedule.
-- `renderers/write.js:86-153` displays/highlights supplied write content without
-  writing files, but write is outside this PoC's whitelist.
-- **Unsafe for remote watch:** `renderers/edit.js:115-134` can call
-  `computeEditsDiff` before a final result preview is installed; `edit-diff.js`
-  imports `fs/promises.access/readFile`. Even an event with precomputed result
-  details must not be fed through that stock call path. No edit renderer is
-  obtained or invoked. Edit/write and all unsupported data use labeled fallback.
-- `docs/extensions.md` (tool rendering, UI/modes) and `docs/tui.md` (custom
-  overlays/themes) document composition inside `ctx.ui.custom`. This remains
-  a Pi-owned overlay, **not** an attached stock InteractiveMode transcript.
+The current monitor contract provides `displayIdentity`, which can be a raw
+first prompt, not a verified title. Watch deliberately uses an eight-character
+Session ID fallback, never that prompt. No Task summary is invented or parsed
+from timeline text. A future title needs a distinguishable title field.
 
-### DTO fidelity and privacy
+Only connected, coherently authoritative semantic metadata supplies Task and
+verification status; otherwise these are **unknown**. Runtime idle, pending and
+automatic-work-settled remain distinct facts. Idle alone never implies Task
+completion. Gates retained during disconnect/retry are labeled last observed;
+the observer cannot answer them. Respond via ChatGPT / Pindie Control, not local
+chat. A fresh authoritative snapshot can clear the Gate. The last connection
+error remains labeled during retry until connected/waiting replaces it.
 
-`ui-projection.ts` reconciles live/persisted calls by toolCallId and delegates
-bounded inputs/results to `ui-timeline.ts`. Existing DTOs carry tool names, IDs,
-lifecycle, JSON-shaped input, result summary/details, observation labels, visible
-message text and semantic/runtime blocks. They do **not** carry full native result
-content arrays, image bytes, reasoning, durations, native AssistantMessage model/
-usage metadata or a replayable Session. Observation input was present at the
-server but deliberately replaced with null by `control-monitor-client.ts`.
-Labels must not be parsed back into invented call arguments.
+| Gesture | Behavior |
+|---|---|
+| ↑/↓, k/j | Select previous/next event and reveal its title; leave LIVE |
+| Enter | Toggle selected event expansion; leave LIVE |
+| PgUp/PgDn | Scroll feed one viewport page; leave LIVE |
+| Wheel | Scroll feed by Pi's normalized delta; leave LIVE |
+| G/End | Select latest event and resume LIVE tail follow |
+| Esc/q/Ctrl+C | Close only observer, restore original editor/focus/draft |
 
-The only additive result field is optional `textContent`: a genuine text-only
-excerpt, emitted for read/bash **only when identical to the already exposed
-bounded summary**. It is never synthesized from details. Read stays capped at
-4,000 UTF-16 units; bash at 3,000 units / last 25 lines. Details-only, empty or
-merged-content-plus-details summaries do not qualify. This exposes no additional
-output bytes or secrets beyond the existing projection. Older servers omit it
-and safely use fallback. It is not a raw output stream or new Control tool.
+Wheel over header/footer is consumed without movement, so it cannot scroll the
+underlying chat. With unavailable coordinates the entire overlay is accepted.
+Only LIVE auto-follows updates. SCROLLED preserves top event ID plus local row
+offset across asynchronous content updates, bounded-tail shifts and resize;
+selection/expansion are ID-based. If the anchor is evicted from the 50-event tail,
+clamp to the oldest retained event without silently resuming LIVE. Project or
+Session change resets view state; same-Session reconnect epochs preserve it.
+Mismatched Session timeline data is hidden pending fresh data.
 
-The monitor now retains only validated read `path` (or file_path), positive safe
-integer offset/limit from existing input; all other observation input is still
-discarded. The native adapter independently validates fields, selects only bash
-`command`, rejects terminal-control payloads, requires final lifecycle/error
-agreement and matching excerpt provenance, and drops **all** raw details/extra
-args. A neutral `/` is used for path formatting, not a local or remote project cwd.
-No local file is read to fill gaps. It does not promise secret redaction of text
-that Control already exposes.
+Overlay height follows terminal rows (minus two), not a fixed 30-row cap. On
+very small terminals connection/exit and alerts outrank metadata/feed; all facts
+cannot physically fit. Long notices/questions are truncated, not independently
+scrollable. Unicode widths use Pi utilities and bounded grapheme formatting.
+Remote metadata and fallback text strip terminal/bidi controls.
 
-Native cards are always expanded and labeled `bounded projected text excerpt`.
-Missing/invalid arguments or results, running tools, mixed/oversized observation
-groups, edit/write and unsupported tools retain the bounded textual formatter,
-explicitly labeled fallback. Messages/semantic/runtime blocks retain their prior
-formatter. There is no new bespoke theme or alternate summarized timeline.
-Standalone `control:watch` formatting and monitor orchestration are unchanged.
+## Expansion fidelity and privacy
 
-Tests use actual Pi components and stock snapshots, filesystem/process tripwires
-after Pi import/theme setup, excerpt/privacy bounds, invalid-input fallback,
-real custom-overlay focus/scroll/resize/Gate/cleanup fixtures, and no Session
-mutation. These are isolated fake-terminal tests, not human visual dogfood.
+Enter expands only on demand. The adapter never assumes native
+`setExpanded(false)` is a readable short title. Supported expanded read/bash use
+stock `ToolExecutionComponent` plus public `createReadToolDefinition` /
+`createBashToolDefinition` render callbacks. Components are cached by event ID
+and serialized bounded content version, evicted on collapse/tail eviction and
+cleared on invalidation/shutdown. No components are created for collapsed events.
 
-### Remaining fidelity/data needs
+Native adaptation requires bona fide complete/failed tools, validated arguments,
+lifecycle/error agreement and genuine `textContent` identical to the existing
+bounded summary. It forwards no execute callback, Session, cwd, image, duration,
+raw details or extra arguments. It never marks execution started (no elapsed-time
+timer), calls `setArgsComplete` or reads local files to fill missing remote data.
+A neutral `/` is only a path-formatting base. Stock edit rendering is forbidden:
+Pi's edit renderCall can asynchronously inspect the observer's filesystem.
 
-Full Pi experience would need a separately reviewed Pindie display protocol for
-larger faithful text content, safe truncation metadata, streaming calls, mixed
-groups and any precomputed edit diffs. This PoC deliberately does not widen those
-privacy/bounds. Native messages, images, timing, mouse card expansion, transcript
-attach and complete/older output are not implemented. No upstream change is
-needed for the supported read/bash presentation path.
+Unchanged output privacy: read excerpts ≤4,000 UTF-16 units; bash ≤3,000 units /
+last 25 lines. Native groups ≤8 cards and ≤160 rendered rows per event, followed
+by an omission marker. All native cards are labeled **bounded projected text
+excerpt**, never complete logs. Invalid/unsupported/running tools use labeled
+bounded preview fallback (≤1,600 graphemes / 12 rows); other event types use the
+same canonical `formatBlock` compact/preview modes. This is not full transcript
+replay, full output, hidden reasoning, image support or older-history access.
+Older omitted history is indicated. No new output bytes or redaction promises.
 
-## Remaining PoC gaps
+## Lifecycle, verification and limits
 
-- This is a bounded overlay, not the eventual redesigned full-screen Watch UI.
-  Tiny terminals truncate labels/Gate text; full details and older history are
-  intentionally not navigable. No mouse UX or polished empty/error layouts.
-- No global Pi dialog lock is invented. A later native dialog can take focus;
-  Pi owns overlay stacking. The Watch lock covers its own open/closing lifetime.
-- Automated smoke uses an isolated fake terminal plus real pinned renderer,
-  not a human visual/PTY dogfood run or production Control connection. No claim
-  is made about every terminal/IME/theme combination.
-- The read-only connection uses the existing configured loopback endpoint. It
-  does not discover/start the service or infer a relationship to the local Session.
+Pi's `ctx.ui.custom(..., { overlay: true })` owns mounting/stacking/completion and
+focus restoration. Watch creates no terminal, input listener or second renderer.
+A concurrent Watch is rejected until cleanup completes; an existing Pi overlay
+prevents monitor creation. Later Pi dialogs retain Pi's stacking/focus ownership.
+Session shutdown/reload/replacement closes the observer and awaits abort/client
+cleanup. A late connect is closed before re-entry. Hard process death cannot
+guarantee asynchronous cleanup; no watchdog is added.
+
+Tests exercise the actual pinned custom-overlay implementation, real regular
+and fullscreen renderers on fake Terminals, signed synthetic wheels, header/
+footer exclusion, single-scroll topology, ID anchoring through tail changes,
+Enter expansion/collapse, native read/bash snapshots, content privacy and
+filesystem/process tripwires, fallback, Session mismatch/replacement, Gate/
+error persistence, Unicode/resize, draft/focus, duplicate activation and cleanup.
+Existing monitor tests cover reconnect, Gate cadence, read-only calls and
+binding replacement; Host tests cover explicit options/settings and fallback.
+These are automated fake-terminal tests, **not** PTY/human visual or production
+Control dogfood. The ≤3-second readability goal remains a human acceptance check.
+
+References: [architecture](architecture.md#11-runtime-only-presentation-and-external-projection),
+[Control D2](pindie-control-v0.2.md#206-slice-d2--local-read-only-monitor),
+[Control safety](pindie-control-v0.1.md#5-control-projection), and pinned Pi
+`docs/tui.md`, `docs/extensions.md`, `dist/tui{,-alt-screen}.js`,
+`dist/components/scroll-view.js`, `dist/modes/interactive/components/tool-execution.js`,
+`dist/core/tools/renderers/{read,bash,edit}.js` (audit citations, not private imports).
