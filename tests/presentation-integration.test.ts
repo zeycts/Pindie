@@ -118,6 +118,74 @@ function usageSnapshotWithCredits(): SubscriptionUsageSnapshot {
   };
 }
 
+test("Watch scope hides all local status but preserves account quotas and semantic facts; latest-context release is idempotent", async () => {
+  const state = stateFixture();
+  state.task!.completed = true;
+  state.task!.humanGate = null;
+  state.task!.openLoops.blockers = [];
+  const before = structuredClone(state);
+  const p = createPresentation({ state, provider: { fetchUsage: async () => usageSnapshot(20) } });
+  const first = uiContext("local-one");
+  p.setStatusContext(first.ctx);
+  await p.refreshSubscriptionUsage(first.ctx);
+  assert.match(first.statuses.at(-1)!, /done.*✓ 1\/1/);
+  const release = p.beginWatchStatus();
+  assert.match(first.statuses.at(-1)!, /WATCH · remote read-only.*5h 80%/);
+  assert.doesNotMatch(first.statuses.at(-1)!, /done|✓|verify|1\/1/);
+  p.runActivity?.start();
+  p.runTimer.start();
+  p.setQuotaResumeWaiting({ sessionId: "local-one", resumeAt: 10 });
+  p.refreshStatus();
+  assert.doesNotMatch(first.statuses.at(-1)!, /waiting|quota|run |\$|active|done|✓/);
+  assert.deepEqual(state, before);
+  const second = uiContext("local-two");
+  p.setStatusContext(second.ctx);
+  p.refreshStatus();
+  const oldCount = first.statuses.length;
+  const newerRelease = p.beginWatchStatus();
+  release(); // an older lease must not unmask a newer Watch
+  assert.match(second.statuses.at(-1)!, /WATCH/);
+  p.runTimer.reset();
+  newerRelease();
+  assert.doesNotMatch(second.statuses.at(-1)!, /WATCH/);
+  assert.match(second.statuses.at(-1)!, /5h 80%/);
+  assert.equal(first.statuses.length, oldCount); // no stale-context write
+  const count = second.statuses.length;
+  newerRelease();
+  assert.equal(second.statuses.length, count);
+  p.setStatusContext(null);
+  p.beginWatchStatus()(); // shutdown has no UI to repaint
+  assert.equal(second.statuses.length, count);
+});
+
+test("in-flight quota refresh respects Watch mode and release without changing subscriptions", async () => {
+  let resolve!: (usage: SubscriptionUsageSnapshot) => void;
+  let calls = 0;
+  const p = createPresentation({ provider: { fetchUsage: () => { calls++; return new Promise((done) => { resolve = done; }); } } });
+  const f = uiContext("local"); p.setStatusContext(f.ctx);
+  const release = p.beginWatchStatus();
+  const refresh = p.refreshSubscriptionUsage(f.ctx);
+  resolve(usageSnapshot(30)); await refresh;
+  assert.match(f.statuses.at(-1)!, /WATCH.*5h 70%/);
+  const later = p.refreshSubscriptionUsage(f.ctx, { force: true });
+  release();
+  resolve(usageSnapshot(40)); await later;
+  assert.doesNotMatch(f.statuses.at(-1)!, /WATCH/);
+  assert.match(f.statuses.at(-1)!, /5h 60%/);
+  assert.equal(calls, 2);
+});
+
+test("Watch masks local gates/blockers and restores ordinary current local status", () => {
+  const p = createPresentation({ state: stateFixture() });
+  const f = uiContext("local"); p.setStatusContext(f.ctx); p.refreshStatus();
+  const ordinary = f.statuses.at(-1);
+  const release = p.beginWatchStatus();
+  assert.equal(f.statuses.at(-1), "WATCH · remote read-only");
+  assert.doesNotMatch(f.statuses.at(-1)!, /gate|block|Original|verify/i);
+  release();
+  assert.equal(f.statuses.at(-1), ordinary);
+});
+
 test("presentation State snapshots detach every mutable nested value", () => {
   const authoritativeState = stateFixture();
   const presentation = createPresentation({ state: authoritativeState });

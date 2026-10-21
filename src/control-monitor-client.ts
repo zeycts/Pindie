@@ -11,6 +11,7 @@ export interface MonitorSnapshot {
   readonly semantic: {
     readonly authority?: "coherent" | "stale" | "unavailable" | "presentation-unavailable";
     readonly taskStatus: string | null;
+    readonly taskGoal?: string | null;
     readonly verificationStatus: string | null;
     readonly verificationProgress: { readonly covered: number; readonly total: number } | null;
     readonly humanGate: { readonly kind: "decision" | "approval" | "input"; readonly question: string } | null;
@@ -134,6 +135,8 @@ function snapshot(value: unknown): MonitorSnapshot {
       ...(["coherent", "stale", "unavailable", "presentation-unavailable"].includes(String(semantic.authority))
         ? { authority: semantic.authority as NonNullable<MonitorSnapshot["semantic"]["authority"]> } : {}),
       taskStatus: semantic.taskStatus as string | null, verificationStatus: semantic.verificationStatus as string | null,
+      ...(semantic.taskGoal === null || (string(semantic.taskGoal) && semantic.taskGoal.length <= 50_000)
+        ? { taskGoal: semantic.taskGoal } : {}),
       verificationProgress: progress === null ? null : { covered: progress.covered as number, total: progress.total as number },
       humanGate: gate === null ? null : { kind: gate.kind as "decision" | "approval" | "input", question: gate.question as string },
     },

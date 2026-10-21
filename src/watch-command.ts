@@ -3,7 +3,11 @@ import { PindieControlMonitor, type PindieControlMonitorOptions } from "./contro
 import { WatchComponent } from "./watch-component.ts";
 
 /** Register only after a native interactive context is known. No resources until /watch. */
-export function createWatchCommand(pi: ExtensionAPI, monitorOptions: PindieControlMonitorOptions = {}) {
+export function createWatchCommand(
+  pi: ExtensionAPI,
+  monitorOptions: PindieControlMonitorOptions = {},
+  beginWatchStatus: () => () => void = () => () => {},
+) {
   let registered = false;
   let active: { close: () => void; stopped: Promise<void> | null } | null = null;
   const handler = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
@@ -14,14 +18,19 @@ export function createWatchCommand(pi: ExtensionAPI, monitorOptions: PindieContr
     let component: WatchComponent | undefined;
     let done: (() => void) | undefined;
     let closed = false;
+    let releaseStatus: (() => void) | undefined;
     const interaction = {
       stopped: null as Promise<void> | null,
       close: () => {
         if (closed) return;
         closed = true;
-        component?.stop();
-        interaction.stopped = monitor?.stop() ?? Promise.resolve();
-        done?.();
+        try {
+          component?.stop();
+          interaction.stopped = monitor?.stop() ?? Promise.resolve();
+        } finally {
+          releaseStatus?.();
+          done?.();
+        }
       },
     };
     active = interaction;
@@ -30,6 +39,7 @@ export function createWatchCommand(pi: ExtensionAPI, monitorOptions: PindieContr
         // Do not compete with another custom overlay. No global focus/input hooks.
         if (tui.hasOverlay()) throw new Error("Close the current Pi overlay before /watch.");
         done = () => finish();
+        if (!closed) releaseStatus = beginWatchStatus();
         component = new WatchComponent(theme, () => tui.terminal.rows, () => tui.requestRender(), interaction.close, tui);
         monitor = new PindieControlMonitor(component, monitorOptions);
         return component;
@@ -39,19 +49,26 @@ export function createWatchCommand(pi: ExtensionAPI, monitorOptions: PindieContr
         // Start only after Pi has mounted and focused the synchronous component.
         onHandle: () => {
           if (closed) { done?.(); return; }
-          void monitor!.start().catch(() => interaction.close());
+          void monitor!.start().then(() => interaction.close(), () => interaction.close());
         },
       });
     } catch (error) {
       ctx.ui.notify(error instanceof Error ? error.message : "Watch unavailable", "warning");
     } finally {
-      interaction.close();
-      await interaction.stopped;
-      if (active === interaction) active = null;
+      try {
+        interaction.close();
+        await interaction.stopped;
+      } catch (error) {
+        ctx.ui.notify(error instanceof Error ? error.message : "Watch cleanup failed", "warning");
+      } finally {
+        releaseStatus?.();
+        if (active === interaction) active = null;
+      }
     }
   };
   return {
     sessionStart(ctx: ExtensionContext): void {
+      active?.close();
       if (!registered && ctx.hasUI && ctx.mode === "tui") {
         pi.registerCommand("watch", { description: "Watch remote Pindie Control (read-only)", handler });
         registered = true;

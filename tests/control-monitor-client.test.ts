@@ -83,6 +83,14 @@ test("pinned Streamable HTTP monitor adapter verifies 13-tool service and decode
       assert.equal(observed.state, "active_project");
       if (observed.state === "active_project") assert.equal(observed.control.semantic.authority, authority === "unexpected" ? undefined : authority);
     }
+    for (const taskGoal of [undefined, null, "Concise authoritative goal", 42, "x".repeat(50_001)]) {
+      current = { ...snapshot, semantic: { ...snapshot.semantic, taskGoal } };
+      const observed = await monitor.observe();
+      assert.equal(observed.state, "active_project");
+      if (observed.state === "active_project") {
+        assert.equal(observed.control.semantic.taskGoal, taskGoal === null || (typeof taskGoal === "string" && taskGoal.length <= 50_000) ? taskGoal : undefined);
+      }
+    }
     current = snapshot;
     const timeline = await monitor.readTimeline(50);
     assert.equal(timeline.timeline.length, 1);

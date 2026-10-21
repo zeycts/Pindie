@@ -148,6 +148,7 @@ export class PresentationIntegration {
   ) => void;
   private statusContext: ExtensionContext | null = null;
   private statusContextGeneration = 0;
+  private watchStatusScope: object | null = null;
   private quotaResumeWaiting: QuotaResumeWaitingStatus | null = null;
   private notifiedQuotaWaitingKey: string | null = null;
   private activityLingerTimer: ReturnType<typeof setTimeout> | null = null;
@@ -288,6 +289,18 @@ export class PresentationIntegration {
     this.presentStatusBestEffort(ctx, () => undefined);
   }
 
+  /** Presentation-only lease. Release always renders the latest context, never a captured Session. */
+  beginWatchStatus(): () => void {
+    const scope = {};
+    this.watchStatusScope = scope;
+    this.refreshStatus();
+    return () => {
+      if (this.watchStatusScope !== scope) return;
+      this.watchStatusScope = null;
+      this.refreshStatus();
+    };
+  }
+
   refreshStatus(ctx = this.statusContext): void {
     if (!this.uiEnabled) return;
     this.presentStatusBestEffort(ctx, (activeContext) => {
@@ -295,7 +308,10 @@ export class PresentationIntegration {
       const layout = deriveStatusLayout(snapshot.status, this.now());
       return renderStatusLayout(
         activeContext.ui.theme,
-        layout,
+        this.watchStatusScope === null ? layout : {
+          ...layout,
+          left: [{ text: "WATCH · remote read-only", tone: "dim" }],
+        },
         this.getStatusWidth(),
       );
     });

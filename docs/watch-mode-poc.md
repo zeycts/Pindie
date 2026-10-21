@@ -51,7 +51,11 @@ Verified against the pinned installed declarations and implementation:
 - `Component.handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined`
   is the real public signature (`dist/tui.d.ts`). Coordinates `x/y` are local,
   zero-based; `wheelDelta?: number` is logical rows, negative upward.
-  `{ handled: true }` suppresses renderer fallback.
+  `{ handled: true }` suppresses renderer fallback. The pinned event types include
+  `press`, `release`, `move`, `drag`, `click`, and `wheel`, with left/middle/right/none
+  buttons. There is no `doubleClick` event. Fullscreen synthesizes `click` after
+  an unmoved press/release, with an optional screen-cell `clickCount` cycling
+  through triple-clicks; overlay dispatch supplies local coordinates and bounds.
 - `dist/tui-alt-screen.js` enables/restores mouse reporting, decodes SGR wheel
   input and dispatches to overlays before renderer scroll fallback.
   `dist/tui.js` translates terminal coordinates to overlay-local coordinates.
@@ -74,17 +78,21 @@ paint. Metadata is bounded to one row each, using Pi width-aware truncation:
 
 - connection and exit affordance;
 - remote Project and short Session ID;
-- Task status, verification status/covered-total counts and runtime activity;
-- remote model/thinking when available;
+- authoritative Task status, verification status/covered-total counts and bounded Task goal when available;
+- separate remote runtime activity and model/thinking when available;
 - sticky Human Gate and connection/error notices above the feed.
 
 The current monitor contract provides `displayIdentity`, which can be a raw
 first prompt, not a verified title. Watch deliberately uses an eight-character
-Session ID fallback, never that prompt. No Task summary is invented or parsed
-from timeline text. A future title needs a distinguishable title field.
+Session ID fallback, never that prompt. No separately exposed native Session
+name exists in the current Control snapshot. A future Session title needs a
+distinguishable name field. The existing authoritative `taskGoal` may supply a
+concise bounded Task title, never a Session name or a timeline-derived summary.
 
 Only connected, coherently authoritative semantic metadata supplies Task and
-verification status; otherwise these are **unknown**. Runtime idle, pending and
+verification status; otherwise these are explicitly **unavailable (stale)**
+(including missing authority and disconnected snapshots), without fabricated
+`?/?` coverage. Runtime idle, pending and
 automatic-work-settled remain distinct facts. Idle alone never implies Task
 completion. Gates retained during disconnect/retry are labeled last observed;
 the observer cannot answer them. Respond via ChatGPT / Pindie Control, not local
@@ -95,10 +103,21 @@ error remains labeled during retry until connected/waiting replaces it.
 |---|---|
 | ↑/↓, k/j | Select previous/next event and reveal its title; leave LIVE |
 | Enter | Toggle selected event expansion; leave LIVE |
+| Left double-click feed card | Toggle that event's expansion; leave LIVE |
 | PgUp/PgDn | Scroll feed one viewport page; leave LIVE |
 | Wheel | Scroll feed by Pi's normalized delta; leave LIVE |
 | G/End | Select latest event and resume LIVE tail follow |
 | Esc/q/Ctrl+C | Close only observer, restore original editor/focus/draft |
+
+Double-click uses one bounded Pindie-local pair of completed left clicks within
+400ms, matching stable event ID, event-local rendered row and pointer cell.
+Single clicks do not toggle or select. Hit testing uses the painted feed row map,
+including wrapped previews/native card rows and overlay-local coordinates; no
+second scroll topology or Pi patch is introduced. Motion/drag, modifiers, other
+buttons, wheel/keyboard navigation, resize/reflow, async updates and Session
+replacement cancel pending gestures. Header/footer, blank rows, outside-feed
+coordinates and the reserved rightmost/scrollbar column cannot toggle; one-column
+terminals retain keyboard-only expansion. Stale/unpainted layouts fail closed.
 
 Wheel over header/footer is consumed without movement, so it cannot scroll the
 underlying chat. With unavailable coordinates the entire overlay is accepted.
@@ -143,7 +162,19 @@ Older omitted history is indicated. No new output bytes or redaction promises.
 
 ## Lifecycle, verification and limits
 
-Pi's `ctx.ui.custom(..., { overlay: true })` owns mounting/stacking/completion and
+While Watch is active, a runtime-only Presentation lease replaces Pindie's
+local lifecycle/verification/activity/Gate/blocker/cost/time status with
+`WATCH · remote read-only`. Account subscription/quota windows remain in the
+right side of the shared status line. This strip never claims remote Task
+truth; native Pi model/thinking presentation stays Pi-owned. Local semantic
+State, measurements and quota observation continue unchanged. The lease
+releases on close, errors, monitor termination, Session start/replacement and
+shutdown, before asynchronous client cleanup; final cleanup is idempotent and
+repaints only the current Presentation context, never a captured old Session.
+
+Pi's public `ui.setStatus(key, text | undefined)` supports replacing Pindie's
+own status entry without owning the native footer or editing Pi. Its
+`ctx.ui.custom(..., { overlay: true })` owns mounting/stacking/completion and
 focus restoration. Watch creates no terminal, input listener or second renderer.
 A concurrent Watch is rejected until cleanup completes; an existing Pi overlay
 prevents monitor creation. Later Pi dialogs retain Pi's stacking/focus ownership.
@@ -154,7 +185,9 @@ guarantee asynchronous cleanup; no watchdog is added.
 Tests exercise the actual pinned custom-overlay implementation, real regular
 and fullscreen renderers on fake Terminals, signed synthetic wheels, header/
 footer exclusion, single-scroll topology, ID anchoring through tail changes,
-Enter expansion/collapse, native read/bash snapshots, content privacy and
+Enter and deterministic left-double-click expansion/collapse, actual fullscreen
+SGR press/release/click dispatch and native body-row hit tests, native read/bash
+snapshots, content privacy and
 filesystem/process tripwires, fallback, Session mismatch/replacement, Gate/
 error persistence, Unicode/resize, draft/focus, duplicate activation and cleanup.
 Existing monitor tests cover reconnect, Gate cadence, read-only calls and
