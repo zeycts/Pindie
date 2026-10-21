@@ -303,7 +303,7 @@ Those constraints remain Harness-owned.
 
 ## 13. Runtime-only supporting systems
 
-Activity, Run Timer, Run Cost, status presentation, and subscription usage observation are runtime-only. They must not become persisted semantic State or independent correctness authorities. Automatic thinking-level selection and `/reasoning` auto/manual toggling are retired. Use Pi's native explicit model/thinking controls or Control's safe-idle configure operation; status and `/efficiency` report Pi's effective level. Quota resume and opt-in fallback's temporary model recovery and source thinking restore are unchanged.
+Activity, Run Timer, Run Cost, status presentation, and subscription usage observation are runtime-only. They must not become persisted semantic State or independent correctness authorities. Automatic thinking-level selection and `/reasoning` auto/manual toggling are retired. Use Pi's native explicit model/thinking controls or Control's safe-idle configure operation; Pi's native model/thinking display and `/efficiency` report the effective level. Pindie's own status strip does not duplicate or reserve space for that level. Quota resume and opt-in fallback's temporary model recovery and source thinking restore are unchanged.
 
 Run Activity reflects actual Pi tool lifecycle. Presentation reads authoritative/derived runtime state; it does not define it.
 

@@ -214,7 +214,7 @@ test("presentation snapshot includes the existing status facts", async () => {
   assert.deepEqual(snapshot.status.state, { task: null });
   assert.equal(snapshot.status.stateUnavailableReason, null);
   assert.equal(snapshot.status.reasoningMode, "manual");
-  assert.equal(snapshot.status.thinkingLevel, "medium");
+  assert.equal("thinkingLevel" in snapshot.status, false);
   assert.equal(snapshot.status.activity, "running");
   assert.equal(snapshot.status.consumption?.scope, "run");
   assert.equal(snapshot.status.consumption?.cost, 0);

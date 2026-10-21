@@ -1176,12 +1176,6 @@ function registerComposedPindieExtension(
     };
   });
 
-  if (featureSelection.presentation) {
-    pi.on("thinking_level_select", (_event, ctx) => {
-      presentation.refreshStatus(ctx);
-    });
-  }
-
   pi.on("agent_settled", async (_event, ctx) => {
     // Pi can dispose an old session runner before its in-flight Agent Run reaches
     // the finally-path that emits agent_settled. Its context is then deliberately
