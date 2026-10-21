@@ -1,21 +1,23 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { UiTimelineBlock } from "./ui-projection.ts";
+import { watchBlockFailed, watchWorkFailed } from "./watch-activity-grouping.ts";
 
 /** Presentation only: classify projection facts, never prompt/command text. */
 export function watchEventTone(block: UiTimelineBlock): ThemeColor {
+  if (watchBlockFailed(block)) return "error";
   switch (block.type) {
     case "message":
       return block.lifecycle === "error" ? "error" : block.role === "custom" ? "muted" : "accent";
     case "runtime": return "dim"; // Historical runtime notices are not current alarms.
     case "work":
-      return block.lifecycle === "failed" ? "error" : block.lifecycle === "running" ? "accent" : "success";
+      return watchWorkFailed(block) ? "error" : block.lifecycle === "running" ? "accent" : "success";
     case "semantic":
       if (block.lifecycle === "failed" || block.error !== null) return "error";
       if (block.lifecycle === "running") return "accent";
       switch (block.category) {
         case "task": return block.taskStatus === "blocked" || block.taskStatus === "waiting_human" ? "warning" : "accent";
         case "human-gate": return block.state === "open" ? "warning" : "success";
-        case "completion": return "success";
+        case "completion": return block.verificationStatus === "failed" || block.checks.some((check) => check.status === "failed") ? "error" : "success";
         case "verification":
           return block.verificationStatus === "passed" ? "success" : block.verificationStatus === "failed" ? "error" : block.verificationStatus === "stale" ? "warning" : "accent";
       }
@@ -25,6 +27,7 @@ export function watchEventTone(block: UiTimelineBlock): ThemeColor {
 /** Input is already sanitized and width/grapheme-bounded. Only the formatter's
  * structural prefix is emphasized; remote body text can never choose a style. */
 export function watchEventTitle(theme: Theme, block: UiTimelineBlock, title: string, expanded: boolean, selected: boolean): string {
+  if ((block.type === "work" || block.type === "semantic") && watchBlockFailed(block) && block.lifecycle !== "failed") title = `✕ Failed · ${title}`;
   const separator = title.indexOf(" · ");
   const prefixLength = block.type === "message" || (block.type === "semantic" && block.category !== "verification")
     ? separator < 0 ? title.length : separator
@@ -40,7 +43,7 @@ export function watchEventTitle(theme: Theme, block: UiTimelineBlock, title: str
  * Native ToolExecutionComponent output never passes through this helper. */
 export function watchPreviewTone(block: UiTimelineBlock): ThemeColor {
   if (block.type === "message") return "text";
-  if (block.type === "work" && block.lifecycle === "failed") return "text";
+  if (block.type === "work" && watchWorkFailed(block)) return "text";
   if (block.type === "semantic" && (block.lifecycle === "failed" || block.error !== null ||
     ((block.category === "verification" || block.category === "completion") && block.checks.some((check) => check.status === "failed")))) return "text";
   return "muted";

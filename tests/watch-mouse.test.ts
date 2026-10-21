@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { TuiMouseEvent } from "@earendil-works/pi-tui";
+import { watchEventId } from "../src/watch-activity-grouping.ts";
 import { WatchComponent } from "../src/watch-component.ts";
 import type { PindieControlMonitorState } from "../src/control-monitor.ts";
 
@@ -44,16 +45,16 @@ test("completed same-row left-click pairs toggle repeatedly, never a single clic
   for (const expanded of [true, false, true, false]) {
     const y = f.row(1);
     f.click(y);
-    assert.equal(f.c.view.expanded.has("e1"), !expanded);
+    assert.equal(f.c.view.expanded.has(watchEventId("e1")), !expanded);
     f.advance(300);
     f.click(y);
-    assert.equal(f.c.view.expanded.has("e1"), expanded);
-    assert.equal(f.c.view.selected, "e1");
+    assert.equal(f.c.view.expanded.has(watchEventId("e1")), expanded);
+    assert.equal(f.c.view.selected, watchEventId("e1"));
     assert.equal(f.c.view.live, false);
     f.render();
   }
-  f.c.handleInput("\r"); assert.ok(f.c.view.expanded.has("e1"));
-  f.c.handleInput("\r"); assert.equal(f.c.view.expanded.has("e1"), false);
+  f.c.handleInput("\r"); assert.ok(f.c.view.expanded.has(watchEventId("e1")));
+  f.c.handleInput("\r"); assert.equal(f.c.view.expanded.has(watchEventId("e1")), false);
 });
 
 test("different rows, timeout, motion/drag, modifiers, non-left buttons and unmatched click events cannot form a double-click", () => {
@@ -126,17 +127,17 @@ test("row movement or async update between press and release cannot reuse a stal
 test("expanded wrapped content hits its owning event and event-local row, not the next card; narrow terminals fail closed at boundaries", () => {
   const f = fixture();
   f.click(f.row(1)); f.click(f.row(1));
-  assert.ok(f.c.view.expanded.has("e1"));
+  assert.ok(f.c.view.expanded.has(watchEventId("e1")));
   f.resize(24); const lines = f.render();
   const body = lines.findIndex((line) => line.includes("wrapped"));
   assert.ok(body > 4);
   f.click(body); f.click(body + 1); // Same card, different wrapped row is not a pair.
-  assert.ok(f.c.view.expanded.has("e1"));
+  assert.ok(f.c.view.expanded.has(watchEventId("e1")));
   f.advance(401); f.click(body + 1); f.click(body + 1);
-  assert.equal(f.c.view.expanded.has("e1"), false);
-  assert.equal(f.c.view.selected, "e1");
+  assert.equal(f.c.view.expanded.has(watchEventId("e1")), false);
+  assert.equal(f.c.view.selected, watchEventId("e1"));
   f.resize(1); f.render(); f.click(4, { x: 0, screenX: 0 }); f.click(4, { x: 0, screenX: 0 });
   assert.equal(f.c.view.expanded.size, 0);
-  f.resize(2); f.render(); f.click(4, { x: 0, screenX: 0 }); f.click(4, { x: 0, screenX: 0 });
-  assert.ok(f.c.view.expanded.has("e0"));
+  f.resize(2); f.render(); f.click(5, { x: 0, screenX: 0 }); f.click(5, { x: 0, screenX: 0 });
+  assert.ok(f.c.view.expanded.has(watchEventId("e0")));
 });

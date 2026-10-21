@@ -3,6 +3,7 @@ import test from "node:test";
 import { InteractiveMode, ToolExecutionComponent, initTheme, type ExtensionAPI, type ExtensionCommandContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, TuiAltScreen, TuiMainScreen, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
 import { createWatchCommand } from "../src/watch-command.ts";
+import { watchEventId } from "../src/watch-activity-grouping.ts";
 import { WatchComponent } from "../src/watch-component.ts";
 import { watchText } from "../src/watch-view-model.ts";
 import { projectToolResult } from "../src/ui-timeline.ts";
@@ -328,8 +329,8 @@ test("actual fullscreen SGR press/release/click targets Watch-local rows; double
     for (const expanded of [true, false, true, false]) {
       const y = paint().findIndex((line) => line.includes("事件-1"));
       assert.ok(y >= 4);
-      click(y); assert.equal(c.view.expanded.has("r1"), !expanded);
-      click(y); assert.equal(c.view.expanded.has("r1"), expanded);
+      click(y); assert.equal(c.view.expanded.has(watchEventId("r1")), !expanded);
+      click(y); assert.equal(c.view.expanded.has(watchEventId("r1")), expanded);
       paint();
     }
     assert.ok(received.some((event) => event.type === "click" && event.clickCount === 2));
@@ -348,12 +349,12 @@ test("actual fullscreen SGR press/release/click targets Watch-local rows; double
     }] } });
     const titleRow = paint().findIndex((line) => watchText(line).startsWith(">+") || watchText(line).startsWith(" +"));
     click(titleRow); click(titleRow);
-    assert.ok(c.view.expanded.has("native-mouse"));
+    assert.ok(c.view.expanded.has(watchEventId("native-mouse")));
     const bodyRow = paint().findIndex((line) => line.includes("unique projected native body"));
     assert.ok(bodyRow > titleRow);
     click(bodyRow); click(bodyRow);
-    assert.equal(c.view.expanded.has("native-mouse"), false);
-    assert.equal(c.view.selected, "native-mouse");
+    assert.equal(c.view.expanded.has(watchEventId("native-mouse")), false);
+    assert.equal(c.view.selected, watchEventId("native-mouse"));
     assert.equal(c.view.live, false);
     assert.equal(client.facts().calls, 3); // Input remains entirely presentation-only.
     c.handleInput("q"); await pending;
@@ -383,7 +384,7 @@ test("real fullscreen Watch wheel scrolls only feed once; ID anchoring, updates,
     assert.equal(c.view.live, false);
     const delta = wheels.at(-1)!.wheelDelta!;
     c.render(80);
-    assert.equal(c.view.anchor?.id, `r${37 + delta}`); // exactly one scroll, no parent ScrollView
+    assert.equal(c.view.anchor?.id, watchEventId(`r${38 + delta}`)); // exactly one scroll, no parent ScrollView
     const anchor = { ...c.view.anchor! };
     f.tui.renderNow(true);
     f.terminal.emit("\x1b[<65;5;19M"); // footer
@@ -446,12 +447,12 @@ test("SCROLLED preserves event-local row through changed preceding content, resi
     result: projectToolResult({ content: [{ type: "text", text: Array.from({ length: 25 }, (_, i) => `output ${i}`).join("\n") }] }, false, "bash"), defaultDisplayMode: "compact" } as const;
   c.apply({ ...state, timeline: { ...state.timeline!, timeline: [block] } }); c.render(80);
   c.handleInput("\r"); c.render(80); c.handleInput("\x1b[6~"); c.render(80);
-  const anchor = { ...c.view.anchor! }; assert.equal(anchor.id, "anchor"); assert.ok(anchor.offset > 0);
-  const before = c.render(80).slice(4, -1);
+  const anchor = { ...c.view.anchor! }; assert.equal(anchor.id, watchEventId("anchor")); assert.ok(anchor.offset > 0);
+  const before = c.render(80).slice(5, -1);
   c.apply({ ...state, timeline: { ...state.timeline!, timeline: [...state.timeline!.timeline.slice(0, 40), block] } });
-  assert.deepEqual(c.render(80).slice(4, -1), before); assert.deepEqual(c.view.anchor, anchor);
+  assert.deepEqual(c.render(80).slice(5, -1), before); assert.deepEqual(c.view.anchor, anchor);
   c.render(60); assert.deepEqual(c.view.anchor, anchor);
   c.apply(state); c.render(80);
-  assert.equal(c.view.live, false); assert.equal(c.view.anchor!.id, "r0");
+  assert.equal(c.view.live, false); assert.equal(c.view.anchor!.id, watchEventId("r0"));
   c.stop();
 });
