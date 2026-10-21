@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { createWatchCommand } from "./watch-command.ts";
 
 import {
   composePindieExtension,
@@ -545,6 +546,7 @@ function registerComposedPindieExtension(
       now: () => new Date(continuityNow()),
     }));
   }
+  const watch = featureSelection.presentation ? createWatchCommand(pi) : null;
   if (featureSelection.presentation) {
     pi.registerCommand("efficiency", {
       description: "Show read-only runtime efficiency facts",
@@ -553,6 +555,7 @@ function registerComposedPindieExtension(
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    watch?.sessionStart(ctx);
     ++agentRunLifecycleGeneration;
     await quotaResume.restoreSession(ctx);
     await quotaFallback.restoreSession(ctx);
@@ -667,7 +670,8 @@ function registerComposedPindieExtension(
     pi.on("ui_prompt_end", () => options.remoteCompanion!.companion.setLocalUiPrompt(false));
   }
 
-  pi.on("session_shutdown", (event, ctx) => {
+  pi.on("session_shutdown", async (event, ctx) => {
+    const watchStopped = watch?.shutdown();
     ++agentRunLifecycleGeneration;
     cancelQuotaResume(ctx);
     releaseQuotaStatusObserver?.();
@@ -697,6 +701,7 @@ function registerComposedPindieExtension(
     core.resetRuntimeForSession(null);
     lastCheckpointCompactionId = null;
     presentation.setStatusContext(null);
+    await watchStopped;
   });
 
   pi.on("before_agent_start", async (event, ctx) => {

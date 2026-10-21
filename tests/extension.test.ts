@@ -602,6 +602,16 @@ test("Extension registration does not call Pi runtime action methods before runt
   assert.equal(api.commands.has("reasoning"), false);
 });
 
+test("/watch is wired only for Presentation and a native interactive Session", async () => {
+  for (const presentation of [false, true]) {
+    const harness = createHarness([["/repo", activeState()]], {}, { featureSelection: { presentation } });
+    assert.equal(harness.api.commands.has("watch"), false);
+    const ctx = { ...context("/repo"), hasUI: true, mode: "tui" };
+    await harness.api.handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+    assert.equal(harness.api.commands.has("watch"), presentation);
+  }
+});
+
 test("Work Memory registration is conditional on an injected ProjectMemorySink", () => {
   const withoutMemory = createHarness([["/repo", activeState()]]);
   assert.equal(withoutMemory.api.tools.has("pindie_memory_capture"), false);
@@ -652,6 +662,7 @@ test("Presentation can be disabled without removing Core settlement or reviving 
   assert.equal("reasoning" in harness.integration, false);
   assert.equal(harness.integration.runActivity, null);
   assert.equal(harness.api.commands.has("efficiency"), false);
+  assert.equal(harness.api.commands.has("watch"), false);
   assert.equal(harness.api.commands.has("reasoning"), false);
   assert.equal(harness.api.commands.has("experience"), false);
   assert.equal(harness.api.commands.has("strategies"), false);
