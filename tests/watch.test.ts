@@ -4,6 +4,7 @@ import { InteractiveMode, ToolExecutionComponent, initTheme, type ExtensionAPI, 
 import { Container, TuiAltScreen, TuiMainScreen, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
 import { createWatchCommand } from "../src/watch-command.ts";
 import { WatchComponent } from "../src/watch-component.ts";
+import { watchText } from "../src/watch-view-model.ts";
 import { projectToolResult } from "../src/ui-timeline.ts";
 import type { PindieControlMonitorOptions, PindieControlMonitorState } from "../src/control-monitor.ts";
 import type { MonitorSnapshot, PindieControlMonitorPort } from "../src/control-monitor-client.ts";
@@ -21,7 +22,7 @@ const state: PindieControlMonitorState = {
     type: "runtime", id: `r${i}`, category: "generic", title: `事件-${i}`, detail: "中文 👨‍👩‍👧‍👦 é", defaultDisplayMode: "preview",
   })) },
 };
-const theme = { fg: (_color: string, text: string) => text } as Theme;
+const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
 
 class FakeTerminal implements Terminal {
   writes: string[] = []; columns = 80; rows = 20; starts = 0; stops = 0;
@@ -345,7 +346,7 @@ test("actual fullscreen SGR press/release/click targets Watch-local rows; double
       input: { command: "echo projected" }, defaultDisplayMode: "compact",
       result: projectToolResult({ content: [{ type: "text", text: "unique projected native body" }] }, false, "bash"),
     }] } });
-    const titleRow = paint().findIndex((line) => line.startsWith(">+") || line.startsWith(" +"));
+    const titleRow = paint().findIndex((line) => watchText(line).startsWith(">+") || watchText(line).startsWith(" +"));
     click(titleRow); click(titleRow);
     assert.ok(c.view.expanded.has("native-mouse"));
     const bodyRow = paint().findIndex((line) => line.includes("unique projected native body"));

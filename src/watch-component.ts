@@ -3,6 +3,7 @@ import { Key, matchesKey, ScrollView, truncateToWidth, type Component, type TUI,
 import { boundedGraphemeText } from "./bounded-text.ts";
 import type { PindieControlMonitorState, PindieControlMonitorViewPort } from "./control-monitor.ts";
 import { formatBlock } from "./timeline-text.ts";
+import { watchEventTitle, watchPreviewTone } from "./watch-event-style.ts";
 import { watchNativeComponents } from "./watch-native-presentation.ts";
 import { WatchViewModel, watchText, type WatchRow } from "./watch-view-model.ts";
 
@@ -52,8 +53,8 @@ export class WatchComponent implements Component, PindieControlMonitorViewPort {
     for (const block of this.view.blocks) {
       const expanded = this.view.expanded.has(block.id);
       // Collapsed titles use the verified compact formatter, not native setExpanded(false).
-      const title = boundedGraphemeText(watchText(formatBlock(block, "compact")), Math.max(1, width - 2), 240, 1)[0]!;
-      const eventLines = [`${block.id === this.view.selected ? ">" : " "}${expanded ? "−" : "+"}${title}`];
+      const title = watchText(boundedGraphemeText(watchText(formatBlock(block, "compact")), Math.max(1, width - 2), 240, 1)[0]!);
+      const eventLines = [watchEventTitle(this.theme, block, title, expanded, block.id === this.view.selected)];
       if (expanded) {
         let cached = this.nativeCache.get(block.id);
         const version = JSON.stringify(block);
@@ -63,11 +64,12 @@ export class WatchComponent implements Component, PindieControlMonitorViewPort {
         }
         if (cached.components) {
           const native = cached.components.flatMap((component) => component.render(width));
-          eventLines.push("Native Pi · bounded projected text excerpt", ...native.slice(0, 160),
-            ...(native.length > 160 ? ["[Watch row cap · remaining excerpt omitted]"] : []));
+          eventLines.push(this.theme.fg("dim", "Native Pi · bounded projected text excerpt"), ...native.slice(0, 160),
+            ...(native.length > 160 ? [this.theme.fg("dim", "[Watch row cap · remaining excerpt omitted]")] : []));
         } else {
-          eventLines.push(`[${block.type === "work" ? "Fallback · " : ""}bounded preview · not complete logs]`,
-            ...boundedGraphemeText(formatBlock(block, "preview").split("\n").map(watchText).join("\n"), width, 1_600, 12));
+          eventLines.push(this.theme.fg("dim", `[${block.type === "work" ? "Fallback · " : ""}bounded preview · not complete logs]`),
+            ...boundedGraphemeText(formatBlock(block, "preview").split("\n").map(watchText).join("\n"), width, 1_600, 12)
+              .map((line) => this.theme.fg(watchPreviewTone(block), line)));
         }
       }
       for (let offset = 0; offset < eventLines.length; offset++) this.rowMap.push({ id: block.id, offset });
@@ -114,10 +116,16 @@ export class WatchComponent implements Component, PindieControlMonitorViewPort {
     if (this.mouseLayout?.key !== key) this.clearMouseGesture();
     this.mouseLayout = { width, height, key, rows: mouseRows };
     while (viewport.length < this.feedHeight) viewport.push("");
-    return [...top.map(watchText), ...viewport, legend].slice(0, height).map((line, index) => {
-      const fitted = truncateToWidth(line, width);
-      return index === 0 ? this.theme.fg("accent", fitted) : fitted;
+    const fresh = this.view.state.connection === "connected" && this.view.state.snapshot?.semantic.authority === "coherent";
+    const styledTop = top.map((line, index) => {
+      const fitted = truncateToWidth(watchText(line), width);
+      // Alerts are current/last-observed facts from the view model, not timeline failures.
+      const tone = index === 0 ? this.view.state.connection === "connected" ? "accent" : "warning"
+        : index <= alerts.length ? "warning" : index === alerts.length + 2 ? fresh ? "text" : "warning" : "dim";
+      return this.theme.fg(tone, fitted);
     });
+    return [...styledTop, ...viewport, this.theme.fg("dim", legend)].slice(0, height)
+      .map((line) => truncateToWidth(line, width));
   }
   private scrollBy(delta: number): void {
     this.invalidateMouseLayout();
