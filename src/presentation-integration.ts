@@ -196,7 +196,6 @@ export class PresentationIntegration {
         consumption: this.consumptionStatus(ctx),
         // Compatibility only: Pi owns explicit thinking configuration.
         reasoningMode: this.uiEnabled ? "manual" : null,
-        thinkingLevel: this.effectiveThinkingLevel(),
         activity: this.runActivity?.activity ?? null,
         state: snapshotPindieState(this.getState()),
         stateUnavailableReason: this.getStateUnavailableReason(),
@@ -209,16 +208,6 @@ export class PresentationIntegration {
       quotaResumeWaiting,
       projectRoot: this.getProjectRoot(),
     };
-  }
-
-  private effectiveThinkingLevel(): PindieStatusSnapshot["thinkingLevel"] {
-    if (!this.uiEnabled) return null;
-    try {
-      return this.pi.getThinkingLevel();
-    } catch {
-      // Registration and teardown may have no bound Pi runtime yet.
-      return null;
-    }
   }
 
   private consumptionStatus(

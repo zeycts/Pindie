@@ -57,17 +57,16 @@ test("SSA-S02 active unfinished Task renders lifecycle before pending verificati
   ]);
 });
 
-test("status reports native effective thinking before activity, not a policy mode", () => {
+test("status ignores legacy thinking fields and preserves activity and semantics", () => {
   assert.deepEqual(segments({ reasoningMode: "manual", thinkingLevel: "high", activity: "running" }), [
     { text: "task 2m 14s", tone: "dim" },
     { text: "$0.000", tone: "dim" },
-    { text: "thinking high", tone: "dim" },
     { text: "running", tone: "accent" },
     { text: "active", tone: "text" },
     { text: "verify 0/4", tone: "text" },
   ]);
   assert.equal(segments({ reasoningMode: "manual" }).some(({ text }) => text === "manual"), false);
-  assert.equal(segments({ thinkingLevel: "off" }).some(({ text }) => text === "thinking off"), true);
+  assert.deepEqual(segments({ thinkingLevel: "off" }), segments());
 });
 
 test("Run Cost and accent Activity follow the timer before verification and attention", () => {
@@ -406,13 +405,26 @@ test("Current Activity preserves right-aligned weekly usage", () => {
   assert.match(rendered, /wk 97% • ↻ 6d\+$/);
 });
 
-test("narrow-width rendering remains bounded with native thinking level", () => {
-  const layout = deriveStatusLayout({
-    ...snapshot({ reasoningMode: "manual", thinkingLevel: "low", activity: "editing" }),
-    consumption: { scope: "task", durationMs: 134_000, cost: 0.14 },
-  });
-  const rendered = renderStatusLayout({ fg: (_tone, text) => text }, layout, 18)!;
-  assert.match(rendered, /thinking low|verify|\$0.14/);
+test("legacy thinking levels never render or reserve space at wide or narrow widths", () => {
+  const theme = { fg: (_tone: string, text: string) => text };
+  const input = {
+    ...snapshot({ activity: "editing" }),
+    subscriptionUsage: { fetchedAt: now, windows: [{ usedPercent: 20, windowMinutes: 300 }] },
+  };
+  const baseline = deriveStatusLayout(input, now);
+  for (const thinkingLevel of ["off", "minimal", "low", "medium", "high", "xhigh"] as const) {
+    const layout = deriveStatusLayout({ ...input, reasoningMode: "manual", thinkingLevel }, now);
+    assert.deepEqual(layout, baseline);
+    for (const width of [undefined, ...Array.from({ length: 160 }, (_, index) => index + 1)]) {
+      const rendered = renderStatusLayout(theme, layout, width)!;
+      assert.equal(rendered, renderStatusLayout(theme, baseline, width));
+      assert.doesNotMatch(rendered, /thinking/);
+      if (width !== undefined) assert.ok(visibleWidth(rendered) <= width);
+    }
+  }
+  const wide = renderStatusLayout(theme, baseline, 160)!;
+  assert.match(wide, /task 2m 14s • \$0.000 • editing • active • verify 0\/4/);
+  assert.match(wide, /5h 80%$/);
 });
 
 test("ANSI-aware layout aligns right usage, degrades narrowly, and falls back without width", () => {

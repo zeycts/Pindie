@@ -48,6 +48,7 @@ export interface PindieStatusSnapshot {
   consumption: ConsumptionStatus | null;
   /** Legacy snapshot compatibility; no Pindie thinking policy or toggle. */
   reasoningMode?: "manual" | null;
+  /** Legacy input compatibility only; never rendered or used for layout. */
   thinkingLevel?: ReturnType<ExtensionAPI["getThinkingLevel"]> | null;
   activity?: RunActivity | null;
   state: PindieState | null;
@@ -142,10 +143,6 @@ export function deriveStatusSegments(
       text: formatRunCost(snapshot.consumption.cost),
       tone: "dim",
     });
-  }
-
-  if (snapshot.thinkingLevel) {
-    segments.push({ text: `thinking ${snapshot.thinkingLevel}`, tone: "dim" });
   }
 
   if (snapshot.activity) {

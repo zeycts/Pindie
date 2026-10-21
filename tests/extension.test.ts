@@ -836,7 +836,7 @@ test("configured registration returns only the narrow presentation reader", () =
   assert.equal(typeof integration.presentation.snapshot, "function");
   assert.equal("setQuotaResumeWaiting" in integration.presentation, false);
   assert.equal(integration.presentation.snapshot().projectRoot, null);
-  assert.equal(integration.presentation.snapshot().status.thinkingLevel, null);
+  assert.equal("thinkingLevel" in integration.presentation.snapshot().status, false);
 });
 
 test("registered Work Memory capture uses the runtime root, authoritative State, and Harness clock", async () => {
@@ -1275,7 +1275,6 @@ test("Remote-disabled baseline registers Core and quota without retired Trial ho
     "session_shutdown",
     "session_start",
     "session_tree",
-    "thinking_level_select",
     "tool_call",
     "tool_execution_end",
     "tool_execution_start",
@@ -2612,7 +2611,7 @@ test("E03-E05/E07 semantic, authority, stop, and queue facts suppress ineligible
   }
 });
 
-test("native thinking selection is observed without a Pindie controller or turn policy", async () => {
+test("native thinking selection needs no Pindie status subscription or turn policy", async () => {
   const harness = createHarness([["/repo", activeState()]]);
   assert.equal(harness.api.handlers.has("turn_end"), false);
   assert.equal(harness.api.commands.has("reasoning"), false);
@@ -2621,10 +2620,9 @@ test("native thinking selection is observed without a Pindie controller or turn 
   await beginAgentRun(harness);
   const originalState = structuredClone(harness.integration.runtime.state);
   harness.api.thinkingLevel = "low";
-  await harness.api.handler("thinking_level_select")(
-    { type: "thinking_level_select", level: "low", previousLevel: "medium" }, context("/repo"),
-  );
-  assert.equal(harness.integration.presentation.snapshot().status.thinkingLevel, "low");
+  assert.equal(harness.api.handlers.has("thinking_level_select"), false);
+  assert.equal(harness.api.getThinkingLevel(), "low");
+  assert.equal("thinkingLevel" in harness.integration.presentation.snapshot().status, false);
   assert.equal(harness.integration.presentation.snapshot().status.reasoningMode, "manual");
   assert.deepEqual(harness.api.appliedThinkingLevels, []);
   assert.deepEqual(harness.integration.runtime.state, originalState);
@@ -2637,7 +2635,8 @@ test("startup, reload, and new session starts preserve Pi's effective thinking l
     harness.api.thinkingLevel = "high";
     await startSession(harness, "/repo", reason);
     await beginAgentRun(harness);
-    assert.equal(harness.integration.presentation.snapshot().status.thinkingLevel, "high", reason);
+    assert.equal(harness.api.getThinkingLevel(), "high", reason);
+    assert.equal("thinkingLevel" in harness.integration.presentation.snapshot().status, false, reason);
     assert.deepEqual(harness.api.appliedThinkingLevels, [], reason);
   }
 });
@@ -4210,7 +4209,7 @@ test("Run Cost measures public session usage from the Run baseline and resets pe
     { type: "agent_settled" },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /task 0s • \$0.31 • thinking medium • active • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /task 0s • \$0.31 • active • verify 0\/1/);
   assert.deepEqual(harness.integration.runCost.snapshot(entries as any), {
     cost: 0.31,
     active: false,
@@ -4225,7 +4224,7 @@ test("Run Cost measures public session usage from the Run baseline and resets pe
     },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /task 0s • \$0.31 • thinking medium • thinking • active • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /task 0s • \$0.31 • thinking • active • verify 0\/1/);
 
   await harness.api.handler("session_shutdown")(
     { type: "session_shutdown", reason: "new" },
@@ -4259,7 +4258,7 @@ test("no-Task Run status uses Run time/cost and suppresses a completed Task's do
   );
 
   const status = statuses.at(-1)?.text ?? "";
-  assert.match(status, /^run 42s • \$0\.006 • thinking medium • reading$/);
+  assert.match(status, /^run 42s • \$0\.006 • reading$/);
   assert.doesNotMatch(status, /\bdone\b|✓|verify|\blast\b/);
   assert.equal(harness.integration.taskMetrics.currentRunBelongsToTask, false);
 });
@@ -4339,14 +4338,14 @@ test("Task refinement preserves metrics and completion output freezes cumulative
 
   assert.match(textOf(result), /Duration: 8s/);
   assert.match(textOf(result), /Cost: \$0\.14/);
-  assert.match(statuses.at(-1)?.text ?? "", /^task 8s • \$0\.14 • thinking medium • thinking • done • ✓ 1\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /^task 8s • \$0\.14 • thinking • done • ✓ 1\/1/);
   clock.now = 20_000;
   entries.push({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.5 } } } });
   await harness.api.handler("agent_settled")(
     { type: "agent_settled" },
     uiContext,
   );
-  assert.match(statuses.at(-1)?.text ?? "", /^task 8s • \$0\.14 • thinking medium • done • ✓ 1\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /^task 8s • \$0\.14 • done • ✓ 1\/1/);
 });
 
 test("shared Host Task metrics survive automatic replacement while Run trackers restart", async () => {
@@ -4616,7 +4615,7 @@ test("Current Activity refreshes status from public tool execution lifecycle and
     uiContext,
   );
   assert.equal(harness.integration.runActivity.activity, "thinking");
-  assert.match(statuses.at(-1)?.text ?? "", /\$0.000 • thinking medium • thinking • active • verify 0\/1/);
+  assert.match(statuses.at(-1)?.text ?? "", /\$0.000 • thinking • active • verify 0\/1/);
 
   await harness.api.handler("tool_execution_start")(
     toolExecution("tool_execution_start", "read-a", "read"),
@@ -4787,7 +4786,7 @@ test("unified Pindie status publishes active and final timing, then clears on sh
   );
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "task 0s • $0.000 • thinking medium • thinking • active • verify 0/1",
+    text: "task 0s • $0.000 • thinking • active • verify 0/1",
   });
 
   await harness.api.handler("agent_settled")(
@@ -4796,7 +4795,7 @@ test("unified Pindie status publishes active and final timing, then clears on sh
   );
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "task 0s • $0.000 • thinking medium • active • verify 0/1",
+    text: "task 0s • $0.000 • active • verify 0/1",
   });
 
   await harness.api.handler("session_shutdown")(
@@ -4836,7 +4835,7 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   });
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "task 0s • $0.000 • thinking medium • thinking • active • ✓ 1/1",
+    text: "task 0s • $0.000 • thinking • active • ✓ 1/1",
   });
 
   await harness.api.tool("pindie_gate_open").execute("gate", {
@@ -4845,7 +4844,7 @@ test("semantic State transitions refresh the one Pindie status entry", async () 
   });
   assert.deepEqual(statuses.at(-1), {
     id: "pindie-status",
-    text: "task 0s • $0.000 • thinking medium • thinking • ✓ 1/1 • ⚠ gate: approval",
+    text: "task 0s • $0.000 • thinking • ✓ 1/1 • ⚠ gate: approval",
   });
 
   await harness.api.handler("agent_settled")(
