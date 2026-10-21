@@ -4,6 +4,7 @@ import { InteractiveMode, initTheme, type ExtensionAPI, type ExtensionCommandCon
 import { Container, TuiMainScreen, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
 import { createWatchCommand } from "../src/watch-command.ts";
 import { WatchComponent } from "../src/watch-component.ts";
+import { projectToolResult } from "../src/ui-timeline.ts";
 import type { PindieControlMonitorOptions, PindieControlMonitorState } from "../src/control-monitor.ts";
 import type { MonitorSnapshot, PindieControlMonitorPort } from "../src/control-monitor-client.ts";
 
@@ -202,6 +203,27 @@ test("disconnected and Human Gate remain visible and escapable with no mutation 
   const text = c.render(80).join("\n");
   assert.match(text, /HUMAN GATE.*允许发布/); assert.match(text, /not local chat/);
   c.handleInput("\u001b"); await pending; assert.equal(aborted, true);
+});
+
+test("native cards inside actual Pi overlay preserve navigation, Gate, resize and local focus; unsupported data is explicit fallback", async () => {
+  const client = clientOptions(); const f = fixture(client.options); f.control.sessionStart(f.ctx);
+  const pending = f.commands.get("watch")!.handler("", f.ctx); await turn();
+  const c = f.tui.getFocusedComponent() as WatchComponent;
+  const command = { type: "work", kind: "command", id: "native", toolCallId: "native", toolName: "bash", lifecycle: "complete", title: "Command", input: { command: "echo remote" },
+    result: projectToolResult({ content: [{ type: "text", text: Array.from({ length: 25 }, (_, i) => `remote output ${i}`).join("\n") }] }, false, "bash"), defaultDisplayMode: "compact" } as const;
+  c.apply({ ...state, timeline: { ...state.timeline!, timeline: [command] } });
+  c.handleInput("G");
+  assert.match(c.render(80).join("\n"), /remote output 24/);
+  c.handleInput("\u001b[5~"); c.handleInput("\u001b[5~"); c.handleInput("\u001b[5~");
+  assert.match(c.render(80).join("\n"), /Native Pi.*bounded projected text/);
+  for (const width of [1, 2, 12, 80]) assert.ok(c.render(width).every((line) => visibleWidth(line) <= width));
+  c.apply({ ...state, timeline: { ...state.timeline!, timeline: [{ ...command, toolName: "edit" }] }, snapshot: { ...snapshot, semantic: { ...snapshot.semantic, humanGate: { kind: "approval", question: "Review?" } } } });
+  c.handleInput("G");
+  const fallback = c.render(100).join("\n");
+  assert.match(fallback, /Fallback/); assert.match(fallback, /HUMAN GATE.*Review/);
+  c.handleInput("q"); await pending;
+  assert.equal(f.tui.getFocusedComponent(), f.editor); assert.equal(f.draft(), "LOCAL draft 中文");
+  assert.equal(client.facts().closes, 1); assert.equal(f.terminal.starts, 0);
 });
 
 test("isolated fake-terminal smoke uses one native TUI listener and no alternate screen", async () => {

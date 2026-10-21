@@ -1,8 +1,9 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, ScrollView, truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import { Key, matchesKey, ScrollView, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { boundedGraphemeText } from "./bounded-text.ts";
 import type { PindieControlMonitorState, PindieControlMonitorViewPort } from "./control-monitor.ts";
 import { formatBlock } from "./timeline-text.ts";
+import { watchNativeComponents } from "./watch-native-presentation.ts";
 
 /** A Pi-owned overlay component: no terminal, input listener, Session or protocol ownership. */
 export class WatchComponent implements Component, PindieControlMonitorViewPort {
@@ -14,7 +15,9 @@ export class WatchComponent implements Component, PindieControlMonitorViewPort {
   private readonly rows: () => number;
   private readonly requestRender: () => void;
   private readonly exit: () => void;
-  constructor(theme: Theme, rows: () => number, requestRender: () => void, exit: () => void) {
+  private readonly tui?: TUI;
+  constructor(theme: Theme, rows: () => number, requestRender: () => void, exit: () => void, tui?: TUI) {
+    this.tui = tui;
     this.theme = theme;
     this.rows = rows;
     this.requestRender = requestRender;
@@ -34,7 +37,15 @@ export class WatchComponent implements Component, PindieControlMonitorViewPort {
   private timelineLines(width: number): string[] {
     const blocks = this.state.timeline?.timeline.slice(-50) ?? [];
     return blocks.length
-      ? blocks.flatMap((block) => boundedGraphemeText(formatBlock(block), width, 1_600, 12))
+      ? blocks.flatMap((block) => {
+        const components = this.tui ? watchNativeComponents(block, this.tui) : null;
+        if (components) {
+          const lines = components.flatMap((component) => component.render(width));
+          return ["Native Pi · bounded projected text excerpt", ...lines.slice(0, 160),
+            ...(lines.length > 160 ? ["[Watch row cap · remaining excerpt omitted]"] : [])];
+        }
+        return boundedGraphemeText(`${block.type === "work" ? "[Fallback · native display data unavailable/unsupported]\n" : ""}${formatBlock(block)}`, width, 1_600, 12);
+      })
       : boundedGraphemeText(this.state.message ?? "Waiting for remote Control…", width, 400, 4);
   }
   render(width: number): string[] {

@@ -1,5 +1,6 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { UiTimelineBlock } from "./ui-projection.ts";
+import { watchReadInput } from "./watch-presentation-data.ts";
 
 export type MonitorWaitReason = "changed" | "settled" | "human_gate" | "timeout" | "binding_changed";
 export interface MonitorSnapshot {
@@ -151,7 +152,10 @@ function resultProjection(value: unknown): Record<string, unknown> | null | unde
   if (value === null) return null;
   const result = record(value);
   if (!result || typeof result.isError !== "boolean" || !string(result.summary) || !plain(result.details)) return undefined;
-  return { isError: result.isError, summary: result.summary, details: result.details };
+  return { isError: result.isError, summary: result.summary, details: result.details,
+    ...(typeof result.textContent === "string" && result.textContent.length <= 4_000 && result.textContent === result.summary
+      ? { textContent: result.textContent } : {}),
+  };
 }
 function safeCheck(value: unknown): Record<string, unknown> | null {
   const check = record(value);
@@ -185,7 +189,7 @@ function decodeBlock(value: unknown): UiTimelineBlock | null {
       const items = b.items.map((candidate) => {
         const item = record(candidate), result = resultProjection(item?.result);
         if (!item || !string(item.toolCallId) || !string(item.toolName) || !string(item.label) || !lifecycle(item.lifecycle) || result === undefined) return null;
-        return { toolCallId: item.toolCallId, toolName: item.toolName, input: null, label: item.label, lifecycle: item.lifecycle, result };
+        return { toolCallId: item.toolCallId, toolName: item.toolName, input: item.toolName === "read" ? watchReadInput(item.input) : null, label: item.label, lifecycle: item.lifecycle, result };
       });
       if (items.some((item) => item === null)) return null;
       return { type: "work", ...base, kind: "observation", lifecycle: b.lifecycle, title: b.title, items } as UiTimelineBlock;

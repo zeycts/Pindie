@@ -45,12 +45,13 @@ test("pinned Streamable HTTP monitor adapter verifies 13-tool service and decode
   };
   let current: unknown = snapshot;
   let badTimeline = false;
+  let displayBlock: unknown = null;
   let toolError: Error | null = null;
   const fakeControl = {
     start: async () => {}, dispose: () => {}, observe: () => current,
     readTimeline: () => { if (toolError) throw toolError; return badTimeline ? { sessionId: 7, revision: "bad", hasMoreBefore: false, timeline: [] } : {
       sessionId: "session-1", revision: 4, hasMoreBefore: false,
-      timeline: [{ type: "runtime", id: "r1", category: "generic", title: "Observed", detail: "safe value", defaultDisplayMode: "preview" }],
+      timeline: [displayBlock ?? { type: "runtime", id: "r1", category: "generic", title: "Observed", detail: "safe value", defaultDisplayMode: "preview" }],
     }; },
     wait: async () => { if (toolError) throw toolError; return { reason: "changed", snapshot }; },
   } as unknown as PindieControlClient;
@@ -76,6 +77,22 @@ test("pinned Streamable HTTP monitor adapter verifies 13-tool service and decode
     const timeline = await monitor.readTimeline(50);
     assert.equal(timeline.timeline.length, 1);
     assert.equal(timeline.timeline[0]?.type, "runtime");
+    displayBlock = { type: "work", kind: "observation", id: "r", title: "Reading", lifecycle: "complete", defaultDisplayMode: "compact", items: [
+      { toolCallId: "r", toolName: "read", label: "Reading a", input: { path: "a", offset: 2, secret: "discard" }, lifecycle: "complete", result: { isError: false, summary: "safe", textContent: "safe", details: null } },
+    ] };
+    const read = (await monitor.readTimeline()).timeline[0]!;
+    assert.equal(read.type, "work");
+    if (read.type === "work" && read.kind === "observation") {
+      assert.deepEqual(read.items[0]!.input, { path: "a", offset: 2 });
+      assert.equal(read.items[0]!.result?.textContent, "safe");
+    } else assert.fail("Expected read projection");
+    (displayBlock as any).items[0].input = { path: "a", offset: -1 };
+    (displayBlock as any).items[0].result.textContent = "not the summary";
+    const invalid = (await monitor.readTimeline()).timeline[0]!;
+    if (invalid.type === "work" && invalid.kind === "observation") {
+      assert.equal(invalid.items[0]!.input, null);
+      assert.equal(invalid.items[0]!.result?.textContent, undefined);
+    } else assert.fail("Expected fallback data");
     const waitRequest = { lease: "lease-1", until: "meaningful_change" as const, afterRevision: 4, timeoutSeconds: 2 };
     assert.equal((await monitor.wait(waitRequest)).reason, "changed");
     toolError = new PindieControlError("stale_control_lease", "Observe again");

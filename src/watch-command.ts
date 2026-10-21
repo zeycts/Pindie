@@ -30,7 +30,7 @@ export function createWatchCommand(pi: ExtensionAPI, monitorOptions: PindieContr
         // Do not compete with another custom overlay. No global focus/input hooks.
         if (tui.hasOverlay()) throw new Error("Close the current Pi overlay before /watch.");
         done = () => finish();
-        component = new WatchComponent(theme, () => tui.terminal.rows, () => tui.requestRender(), interaction.close);
+        component = new WatchComponent(theme, () => tui.terminal.rows, () => tui.requestRender(), interaction.close, tui);
         monitor = new PindieControlMonitor(component, monitorOptions);
         return component;
       }, {
