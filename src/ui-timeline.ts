@@ -15,6 +15,9 @@ export interface UiToolResultProjection {
   readonly isError: boolean;
   readonly summary: string;
   readonly details: UiPlainValue | null;
+  /** Read/bash text-only excerpt, only when identical to the existing bounded summary.
+   * Never synthesized from details; absence requires presentation fallback. */
+  readonly textContent?: string;
 }
 
 export type UiWorkLifecycle = "running" | "complete" | "failed";
@@ -274,6 +277,11 @@ export function projectToolResult(
     isError,
     summary,
     details,
+    ...((toolName === "read" || toolName === "bash") && contentText.length > 0 &&
+      summary === (toolName === "bash"
+        ? boundedTail(contentText, MAX_COMMAND_OUTPUT_LENGTH, MAX_COMMAND_OUTPUT_LINES)
+        : boundedText(contentText))
+      ? { textContent: summary } : {}),
   };
 }
 
