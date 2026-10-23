@@ -67,7 +67,54 @@ Use ordinary text channels and public threads inside the private server. Do not 
 
 ## 3. Configuration and security
 
-Remote Companion is optional and uses environment configuration only:
+Remote Companion is optional. Its global startup preference is `discordRemote` in
+`~/.pindie/global/preferences.json` (the same document as `quotaFallback` and
+`quotaAutoResume`). Missing key/file defaults to **true** for compatibility; explicit
+`false`, invalid values or malformed documents disable Remote. An unreadable file
+also disables Remote with a best-effort warning, without blocking Control/local startup.
+Composition's explicit `globalBaseDir` storage root is honored.
+
+For users temporarily not using Discord, set **`discordRemote: false`** while
+preserving all other preference fields. In the native TUI, `/discord-remote` opens
+an on/off selector and saves this global preference atomically. Cancel writes
+nothing; saving preserves unrelated preferences. Unlike quota's Session-scoped
+selection, this startup-only setting never appends a Pi Session entry and has no
+per-Session override. The settings command remains available while Remote is off.
+
+For headless Control, edit only the `discordRemote` boolean in the same global
+preferences document (create an object if the file does not exist), for example:
+
+```json
+{
+  "quotaFallback": false,
+  "quotaAutoResume": true,
+  "discordRemote": false
+}
+```
+
+Do not replace an existing document with this example; retain its other fields.
+There is no new MCP configuration capability or second settings store.
+
+**Activation:** the saved value is read when a configured extension runtime is
+constructed. Saving does not disconnect or reconfigure the current Host. Restart
+Pindie/the Control service, or explicitly recreate the active Host at a legal safe
+boundary, to apply it. Native extension-runtime reconstruction also rereads it;
+merely observing, reconnecting Watch/MCP or reopening the already-active project
+does not. Service restart/deployment remains a separate human-authorized action.
+
+When false, composition constructs no Discord transport, companion or routing
+store: no login, Gateway reconnect, channel/thread creation or reconciliation,
+mirroring, presentation timers, remote input or routing writes run. It performs no
+cleanup and does not delete/edit existing Discord channels, threads, messages,
+routing files or Pi Sessions. Re-enabling uses the original routing/cursor and
+normal catch-up behavior. Control MCP, Watch, Session selection, Task and native
+local execution are independent of Discord and remain available.
+
+When true, existing startup availability rules remain unchanged: complete valid
+environment credentials are still required, and existing feature-selection
+controls (`PINDIE_REMOTE_ENABLED`/composition overrides) still apply. The saved
+false is a hard veto even over an explicit Remote enable. Secrets remain
+environment-only:
 
 ```text
 PINDIE_DISCORD_TOKEN

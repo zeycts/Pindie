@@ -47,6 +47,7 @@ Pi owns the active tool set; Pindie does not hide tools as Task state changes. *
 - Private loopback MCP Control: select/create a workspace project, send intent, manage Sessions and observe work; `control:watch` and native `/watch` are read-only observers.
 - Default-on, lazy Browser Reality tools with a Host-owned isolated Chrome/Chromium profile.
 - Codex subscription quota auto-resume (`/quota-resume`, default ON); opt-in same-Session paid DeepSeek backup (`/quota-fallback`, default OFF).
+- `/discord-remote` saves global startup preference `discordRemote` (default ON for compatibility). For headless Control, set `"discordRemote": false` in `~/.pindie/global/preferences.json`, preserving other fields, then apply on the next authorized Host restart/recreation. OFF runs no Discord work, leaves existing channels/messages/Sessions untouched, and does not disable MCP/Watch/Task. See [activation details](docs/remote-companion.md#3-configuration-and-security).
 - Optional Discord Remote Companion and Notion Work Memory; bundled development and Git Skills use Pi's native Skill runtime.
 
 ## Start and use
@@ -82,7 +83,7 @@ This monitor has no composer or runtime controls. Native `/watch` opens a read-o
 
 | Integration | Configuration | Details |
 | --- | --- | --- |
-| Discord | `PINDIE_DISCORD_TOKEN`, `PINDIE_DISCORD_USER_ID`, `PINDIE_DISCORD_GUILD_ID` | [Remote security, routing and input](docs/remote-companion.md#3-configuration-and-security) |
+| Discord | Global `discordRemote` (default ON), plus `PINDIE_DISCORD_TOKEN`, `PINDIE_DISCORD_USER_ID`, `PINDIE_DISCORD_GUILD_ID` | [Remote security, routing and input](docs/remote-companion.md#3-configuration-and-security) |
 | Notion Work Memory | `PINDIE_NOTION_TOKEN`, `PINDIE_WORK_MEMORY_DATA_SOURCE_ID` | [Capture semantics and permissions](docs/architecture.md#14-work-memory-v01--approved-architecture) |
 
 Each integration requires its complete configuration. Keep credentials out of Git. Neither integration owns semantic State or creates another Session.
