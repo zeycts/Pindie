@@ -1,6 +1,6 @@
 # Pindie Quota Fallback v0.1 — Architecture Contract
 
-Status: **Implemented through final Slice E.** The Host uses native Pi InteractiveMode as its only interactive shell; see the current Pi compatibility contract for the pinned runtime.
+Status: **Implemented through final Slice E.** The Host uses native Pi InteractiveMode as its only interactive shell; see the [Pi 1.4.0 compatibility audit](pi-1.4.0-compatibility.md) for the pinned runtime. References to 0.86.1 below are historical implementation observations, not current dependency requirements.
 
 Baseline: the implemented Quota Fallback and Quota Auto Resume behavior in `docs/behavior.md`.
 
@@ -91,7 +91,7 @@ Fallback must not create a second Session, Task, Agent Loop, provider registry, 
 
 ## 3. Fixed backup model
 
-Pi 0.86.1 already provides:
+The fixed native catalog identity used by Pindie is:
 
 ```text
 deepseek/deepseek-flash
@@ -252,13 +252,13 @@ Before fallback, capture the source Session thinking level.
 
 After switching to DeepSeek, reapply that level through Pi. Pi clamps it to what the target model supports.
 
-With Pi 0.86.1, DeepSeek V4.1 Flash currently supports:
+At the original Pi 0.86.1 implementation audit, DeepSeek V4.1 Flash supported:
 
 ```text
 off / low / high / max
 ```
 
-So `medium` currently clamps to `high`. That is Pi behavior, not Pindie policy.
+In that audit, `medium` clamped to `high`. This is historical Pi behavior, not a fixed Pindie mapping; current supported levels come from the installed Pi model metadata.
 
 When restoring Codex, reapply the captured source thinking level through Pi.
 
@@ -388,7 +388,7 @@ stop using failed backup
 
 If that cannot be established safely, ordinary stopped semantics apply.
 
-Do not treat ordinary Task failure, verification failure, tool failure, or model-chosen stop as a backup-provider failure. In pinned Pi 0.86.1, `Agent.runWithLifecycle()` turns provider/Run exceptions into terminal assistant error messages with the current model provider/id and emits message/turn/agent end events. `AgentSession._runAgentPrompt()` then emits `agent_settled` in its finally path after flushing pending messages. This feeds the existing detection path; no separate failure bus is needed.
+Do not treat ordinary Task failure, verification failure, tool failure, or model-chosen stop as a backup-provider failure. In the original Pi 0.86.1 implementation audit, `Agent.runWithLifecycle()` turns provider/Run exceptions into terminal assistant error messages with the current model provider/id and emits message/turn/agent end events. `AgentSession._runAgentPrompt()` then emits `agent_settled` in its finally path after flushing pending messages. This feeds the existing detection path; no separate failure bus is needed.
 
 ---
 
@@ -569,9 +569,9 @@ The architecture, behavior and agent guidance describe the implemented state.
 
 ---
 
-## 15. Post-TUI readiness result
+## 15. Historical post-TUI readiness result
 
-The 2026-09-23 pre-implementation review established:
+The 2026-09-23 pre-implementation review established the following at that time (not today's package pins or an outstanding readiness checklist):
 
 1. interactive model selection uses native Pi InteractiveMode / Pi model plumbing;
 2. `PiRuntimeAdapter` exposes active model identity, exact model availability, and direct active-Session model switching;
@@ -579,7 +579,7 @@ The 2026-09-23 pre-implementation review established:
 4. Pindie's PresentationIntegration remains the existing status/extension presentation layer under Pi TUI;
 5. existing Quota Auto Resume settlement and Host ownership remain compatible with ordered recovery arbitration;
 6. Long Task rollover remains Session replacement and therefore still terminates a Session-bound fallback lease;
-7. Pi remains pinned to 0.86.1, which exposes `deepseek/deepseek-flash`;
+7. Pi was then pinned to 0.86.1, which exposed `deepseek/deepseek-flash`;
 8. one fresh subscription-usage derivation can still feed both Fallback and Resume;
 9. Remote stopped classification now recognizes either committed fallback or Resume as a quota successor.
 

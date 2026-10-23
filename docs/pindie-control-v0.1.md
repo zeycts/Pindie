@@ -1,5 +1,7 @@
 # Pindie Control v0.1
 
+Status: **Implemented runtime/control safety foundation.** Read [Control v0.2](pindie-control-v0.2.md) first for current workspace startup, the 13-tool surface, Session selection and live observers. v0.2 supersedes the single-project scope and initial six-tool candidate below; lease validation, semantic authority and lifecycle safety here remain current. Architecture spikes and implementation sequence are retained as completed design history, not outstanding work.
+
 ## 1. Purpose
 
 Pindie Control v0.1 makes the existing Host-owned Pindie runtime safely controllable by an external client such as ChatGPT without exposing a general shell, filesystem API, tmux automation, or a second Agent/Task system.
@@ -294,7 +296,7 @@ Control captures the native Session object, manager, ID and file identity before
 
 Naming is one-shot and best effort. Pi updates its in-memory entry list before persistence and does not provide a transactional name write: a disk failure may leave a name visible only in memory, lost after restart. Control does not roll back, retry, leak native errors/paths or report an already-accepted prompt as failed because naming failed. A label is not a persistence guarantee.
 
-No inactive-history preview, historical Session file reads, mass backfill, extra model call, new tool or Session store is added. Pi 1.3.0 `open()` can repair/migrate files; native `list()` scans bodies and retains unbounded text internally. Neither is a safe bounded read-only historical-status API. Names, dates and initial-message previews must not be presented as a Session's latest Task/result.
+No inactive-history preview, historical Session file reads, mass backfill, extra model call, new tool or Session store is added. The native Session APIs audited during the 1.3.0 integration were not a bounded historical-status seam: `open()` can repair/migrate files, and `list()` scans bodies and retains unbounded text internally. Neither is a safe bounded read-only historical-status API. Names, dates and initial-message previews must not be presented as a Session's latest Task/result.
 
 ### 7.3 Respond to Human Gate
 
@@ -402,7 +404,7 @@ pindie_configure
   safe-idle model/thinking mutation
 ```
 
-This tool surface is approved as the current v0.1 candidate, not as an implementation constraint. Architecture spikes or subsequent dogfood may remove/merge a tool before MCP implementation.
+This was the initial v0.1 candidate. The implemented service retains these six tools and adds workspace, Session and observer operations; see [v0.2](pindie-control-v0.2.md) for the current 13-tool surface.
 
 ## 9. Explicit non-capabilities
 
@@ -446,7 +448,7 @@ Do not run both as independent lifecycle clients simultaneously because Pi's act
 
 The read-only monitor must use Control observation APIs, never bind native Session lifecycle callbacks.
 
-## 11. Single-project scope
+## 11. Single-project scope (historical v0.1 boundary)
 
 v0.1 binds one Control Host to one configured project root.
 
@@ -454,7 +456,7 @@ Do not add a project registry, background multi-project daemon, or parallel Host
 
 The first dogfood target is the Pindie repository itself.
 
-Multi-project control is considered only after a concrete workflow requires it.
+That workflow was subsequently demonstrated; [v0.2](pindie-control-v0.2.md) now provides workspace selection with zero or one active Host, not parallel Hosts.
 
 ## 12. MCP transport and security
 

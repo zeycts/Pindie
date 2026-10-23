@@ -239,10 +239,7 @@ The patch was retired in Pi 1.3.0 after native conformance tests confirmed the
 shared turn-start preflight described by [Pi PR #8262](https://github.com/earendil-works/pi/pull/8262).
 Current pristine Pi 1.4.0 still passes the idle custom-trigger preflight contract;
 see the [current compatibility audit](pi-1.4.0-compatibility.md). No downstream
-patch is installed. Pi's native
-`sendCustomMessage()` Promise still represents the full triggered run in
-0.84.4, so the Host starts it without awaiting that Promise and observes a
-later rejection fail-closed.
+patch is installed. The current native custom-trigger Promise represents the full triggered Run, as covered by `tests/pi-runtime.compatibility.test.ts`. The Host starts it without awaiting that Promise and observes a later rejection fail-closed.
 
 The Host already owns the active `AgentSessionRuntime`, so settlement, replacement, and the new active Session do not need to be mirrored back through another event platform.
 
@@ -355,7 +352,7 @@ but does not increase the pressure-driven count. Failed or aborted compactions
 do not create an epoch. The first successful compaction does not imply rollover.
 
 The Governor never calls `pindie_task_handoff`, triggers Session replacement, or
-triggers compaction. It only advises Luna to continue bounded work at elevated
+triggers compaction. It only advises the model to continue bounded work at elevated
 pressure, or to converge and use the existing semantic handoff affordance once a
 stable frontier exists at high pressure. Exact percentage thresholds and
 regrowth delta remain injectable implementation tuning, not architecture

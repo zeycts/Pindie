@@ -1,4 +1,8 @@
-# Native Watch v2 (Pi 1.3.0)
+# Native Watch v2 — Read-only Control Observer
+
+Status: implemented on pinned **Pi 1.4.0**. The `watch-mode-poc.md` filename is retained for existing references; this is the current Watch contract, not an unimplemented PoC. See [Pi 1.4.0 compatibility](pi-1.4.0-compatibility.md) for the native UI adaptation and automated/manual acceptance boundary.
+
+Run `/watch` in native Pi InteractiveMode to observe an already-running loopback Control service. The remote Control Project/Session can differ from the local interactive Session; the overlay never transfers ownership or accepts input for the observed Session.
 
 ## Result-first overview and conservative activity grouping
 
@@ -120,8 +124,8 @@ paint. Metadata is bounded to one row each, using Pi width-aware truncation:
 - Last recorded outcome (history), explicitly limited to the visible tail;
 - sticky Human Gate and connection/error notices above the feed.
 
-The current monitor contract provides `displayIdentity`, which can be a raw
-first prompt, not a verified title. Watch deliberately uses an eight-character
+The current monitor contract provides `displayIdentity`, which can be a native
+Session name or a first-prompt fallback, not a separately typed name field. Watch deliberately uses an eight-character
 Session ID fallback, never that prompt. No separately exposed native Session
 name exists in the current Control snapshot. A future Session title needs a
 distinguishable name field. The existing authoritative `taskGoal` may supply a
