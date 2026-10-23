@@ -8,7 +8,6 @@ import test from "node:test";
 import {
   parseCli,
   runOwnedSmoke,
-  scavengeStaleWorkspaces,
   smokeRoot,
 } from "../scripts/pi-smoke.ts";
 
@@ -118,10 +117,10 @@ test("EH06 keep-artifacts preserves only files after timeout cleanup", { skip: s
   await rm(result.workspace, { recursive: true, force: true });
 });
 
-test("EH07 concurrent invocation cleanup cannot remove a sibling workspace", { skip: skipWindows }, async (t) => {
+test("EH07 concurrent invocation cannot remove an active sibling even with old mtime", { skip: skipWindows }, async (t) => {
   const root = await fixture(t);
   const ready = join(root, "sibling-ready");
-  const siblingProgram = `require('node:fs').writeFileSync(process.env.READY_FILE, 'ready'); setTimeout(() => {}, 250);`;
+  const siblingProgram = `const fs = require('node:fs'); const old = new Date(Date.now() - 25 * 60 * 60 * 1000); fs.utimesSync(process.env.PINDIE_SMOKE_DIR, old, old); fs.writeFileSync(process.env.READY_FILE, 'ready'); setTimeout(() => {}, 1000);`;
   const siblingPromise = runOwnedSmoke({
     label: "sibling", command: process.execPath, args: ["-e", siblingProgram], baseTempDir: root,
     keepArtifacts: true, env: { READY_FILE: ready },
@@ -136,7 +135,7 @@ test("EH07 concurrent invocation cleanup cannot remove a sibling workspace", { s
   await rm(sibling.workspace, { recursive: true, force: true });
 });
 
-test("EH08-EH09 stale scavenging is age- and namespace-bound", { skip: skipWindows }, async (t) => {
+test("EH08-EH09 invocation retains old unknown workspaces and foreign artifacts", { skip: skipWindows }, async (t) => {
   const root = await fixture(t);
   const smoke = smokeRoot(root);
   const oldWorkspace = join(smoke, "old-ABC123");
@@ -151,9 +150,10 @@ test("EH08-EH09 stale scavenging is age- and namespace-bound", { skip: skipWindo
   const old = new Date(Date.now() - 25 * 60 * 60 * 1_000);
   await utimes(oldWorkspace, old, old);
 
-  await scavengeStaleWorkspaces({ baseTempDir: root, now: () => Date.now() });
+  const result = await runOwnedSmoke({ label: "no-scavenge", command: process.execPath, args: ["-e", ""], baseTempDir: root });
 
-  assert.equal(await exists(oldWorkspace), false);
+  assert.equal(await exists(result.workspace), false);
+  assert.equal(await exists(oldWorkspace), true);
   assert.equal(await exists(freshWorkspace), true);
   for (const foreign of [foreignFile, foreignDirectory, mcpDirectory, unrelated, linkedWorkspace]) assert.equal(await exists(foreign), true);
 });
@@ -168,7 +168,7 @@ test("namespace root symlink fails closed without touching its foreign target", 
   await writeFile(foreignChild, "foreign");
   await symlink(foreign, pindieRoot);
 
-  await assert.rejects(scavengeStaleWorkspaces({ baseTempDir: root }), /real directory/i);
+  await assert.rejects(runOwnedSmoke({ label: "symlink", command: process.execPath, baseTempDir: root }), /real directory/i);
   assert.equal(await exists(foreignChild), true);
 });
 
@@ -182,7 +182,7 @@ test("smoke root symlink fails closed without touching its foreign target", { sk
   await writeFile(foreignChild, "foreign");
   await symlink(foreign, smoke);
 
-  await assert.rejects(scavengeStaleWorkspaces({ baseTempDir: root }), /real directory/i);
+  await assert.rejects(runOwnedSmoke({ label: "symlink", command: process.execPath, baseTempDir: root }), /real directory/i);
   assert.equal(await exists(foreignChild), true);
 });
 

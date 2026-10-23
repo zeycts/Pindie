@@ -1,12 +1,11 @@
 import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { finished } from "node:stream/promises";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const TERMINATION_GRACE_MS = 1_000;
-const STALE_WORKSPACE_MS = 24 * 60 * 60 * 1_000;
 const OUTPUT_TAIL_BYTES = 32 * 1024;
 const SAFE_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
@@ -16,7 +15,6 @@ export interface OwnedSmokeOptions {
   args?: string[];
   timeoutMs?: number;
   baseTempDir?: string;
-  now?: () => number;
   keepArtifacts?: boolean;
   env?: NodeJS.ProcessEnv;
 }
@@ -84,32 +82,6 @@ async function ensureSmokeRoot(baseTempDir = tmpdir()): Promise<string> {
   return root;
 }
 
-export async function scavengeStaleWorkspaces(options: {
-  baseTempDir?: string;
-  now?: () => number;
-  staleAfterMs?: number;
-} = {}): Promise<void> {
-  assertPosix();
-  const root = await ensureSmokeRoot(options.baseTempDir);
-  const now = options.now ?? Date.now;
-  const staleAfterMs = options.staleAfterMs ?? STALE_WORKSPACE_MS;
-  const entries = await readdir(root, { withFileTypes: true });
-
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-    const workspace = join(root, entry.name);
-    let stat;
-    try {
-      stat = await lstat(workspace);
-    } catch (error) {
-      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") continue;
-      throw error;
-    }
-    if (!stat.isDirectory() || stat.isSymbolicLink() || now() - stat.mtimeMs <= staleAfterMs) continue;
-    await rm(workspace, { recursive: true, force: true });
-  }
-}
-
 async function terminateOwnedGroup(pid: number, exited: Promise<void>): Promise<void> {
   try {
     process.kill(-pid, "SIGTERM");
@@ -144,7 +116,8 @@ export async function runOwnedSmoke(options: OwnedSmokeOptions): Promise<OwnedSm
   }
 
   const baseTempDir = options.baseTempDir ?? tmpdir();
-  await scavengeStaleWorkspaces({ baseTempDir, now: options.now });
+  // Age and PID liveness cannot prove ownership (long runs, PID reuse, other Hosts).
+  // Never reclaim earlier workspaces here; only finally-clean the one we allocate.
   const root = await ensureSmokeRoot(baseTempDir);
   const workspace = await mkdtemp(join(root, `${options.label}-`));
   const keepArtifacts = options.keepArtifacts ?? process.env.PINDIE_KEEP_ARTIFACTS === "1";

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { RemoteCompanion, type RemoteSessionPresentation, type RemoteStatusFacts, type RemoteSurface } from "../src/remote-companion.ts";
 import type { HumanSignalDecision, HumanSignalKind } from "../src/human-signal.ts";
@@ -19,8 +19,22 @@ const activeStatus = (overrides: Partial<RemoteStatusFacts> = {}): RemoteStatusF
 function ctx(idle = true) { const stops: string[] = []; return { ctx: { isIdle: () => idle, abort: () => stops.push("stop") } as any, stops }; }
 async function fixture(t: test.TestContext) { const dir = await mkdtemp(join(tmpdir(), "pindie-remote-")); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
 function deferred() { let resolve!: () => void; const promise = new Promise<void>((done) => { resolve = done; }); return { promise, resolve }; }
-let routingSequence = 0;
-const isolatedRouting = () => new RemoteRoutingStore({ baseDir: join(tmpdir(), `pindie-remote-test-${process.pid}-${++routingSequence}`) });
+const isolatedRouting = async (t: test.TestContext) => new RemoteRoutingStore({ baseDir: await fixture(t) });
+
+test("isolated routing fixtures are distinct and removed after each test", async (t) => {
+  const paths: string[] = [];
+  for (const name of ["first", "second"]) {
+    await t.test(name, async (child) => {
+      const store = await isolatedRouting(child);
+      const path = store.path("/fixture-regression");
+      paths.push(dirname(path));
+      await store.save("/fixture-regression", { version: 1, guildId: "guild", channelId: "channel", sessions: {} });
+      await access(path);
+    });
+    await assert.rejects(access(paths.at(-1)!), { code: "ENOENT" });
+  }
+  assert.notEqual(paths[0], paths[1]);
+});
 const signal = (kind: HumanSignalKind, key: string, summary: string, detail: readonly string[] = []): HumanSignalDecision => ({
   kind, key, summary, detail, local: kind === "human-gate" || kind === "authority-unavailable" ? "hard" : kind === "settled-blocked" ? "soft" : "none", external: "attention",
 });
@@ -72,14 +86,14 @@ test("fully mirrored resume reconciles presentation without changing cursor or t
   assert.deepEqual(resumedSurface.sent, []);
 });
 
-test("catch-up and live projection are serialized in entry order", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() }); await remote.bind("/order", "guild", "session");
+test("catch-up and live projection are serialized in entry order", async (t) => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: await isolatedRouting(t) }); await remote.bind("/order", "guild", "session");
   await Promise.all([remote.catchUp([{ id: "one", message: { role: "user", content: "one" } }]), remote.project({ id: "two", message: { role: "assistant", content: "two" } })]);
   assert.deepEqual(surface.sent, ["YOU\none", "two"]);
 });
 
-test("Pi input provenance handles identical TUI and remote text without text matching", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() }); const busy = ctx(false);
+test("Pi input provenance handles identical TUI and remote text without text matching", async (t) => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: await isolatedRouting(t) }); const busy = ctx(false);
   await remote.bind("/project", "guild", "session"); await remote.catchUp([{ id: "seed", message: { role: "user", content: "seed" } }]);
   remote.observeInput("interactive");
   await remote.input("thread", "same", { isIdle: () => false, abort: () => undefined, sendUserMessage: () => remote.observeInput("extension", "steer") });
@@ -105,8 +119,8 @@ test("Discord-origin projection may be a successful no-op while its M1 cursor st
   assert.equal((await store.load("/discord-no-duplicate"))?.sessions.session.lastMirroredEntryId, "discord");
 });
 
-test("active controls use Pi native modes and historical threads cannot control", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() }); const active = ctx(false); const calls: unknown[] = [];
+test("active controls use Pi native modes and historical threads cannot control", async (t) => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: await isolatedRouting(t) }); const active = ctx(false); const calls: unknown[] = [];
   await remote.bind("/project", "guild", "session"); await remote.catchUp([{ id: "u", message: { role: "user", content: "start" } }]);
   assert.equal(await remote.input("old", "no", { isIdle: () => false, abort: () => undefined, sendUserMessage: () => undefined }), "historical");
   await remote.status(activeStatus({ activity: "editing", elapsedMs: 1_250 }));
@@ -179,14 +193,14 @@ test("long timeline messages split in content order", () => {
   assert.equal(parts.map((part) => part.text).join(""), text);
 });
 
-test("unrelated extension input is neutral rather than guessed as Remote", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() }); await remote.bind("/neutral", "guild", "session"); await remote.catchUp([{ id: "seed", message: { role: "user", content: "seed" } }]);
+test("unrelated extension input is neutral rather than guessed as Remote", async (t) => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: await isolatedRouting(t) }); await remote.bind("/neutral", "guild", "session"); await remote.catchUp([{ id: "seed", message: { role: "user", content: "seed" } }]);
   remote.observeInput("extension", "steer"); await remote.catchUp([{ id: "seed", message: { role: "user", content: "seed" } }, { id: "u", message: { role: "user", content: "same" } }]);
   assert.equal(surface.sent.at(-1), "YOU\nsame");
 });
 
-test("execution lifecycle retains start arguments until the matching end", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() }); await remote.bind("/execution", "guild", "session");
+test("execution lifecycle retains start arguments until the matching end", async (t) => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: await isolatedRouting(t) }); await remote.bind("/execution", "guild", "session");
   await remote.milestone("access", "ACCESS"); remote.recordToolStart("call", "bash", { command: "pnpm run check" }); remote.recordToolEnd("call", "bash"); await remote.flushExecution("end");
   assert.equal(surface.sent.at(-1), "EXECUTION\nbash ×1\nbash · pnpm run check ✓");
 });
@@ -215,16 +229,16 @@ test("historical status exposes only routing metadata while ordinary input stays
   assert.equal(surface.sent.at(-1), "This Session is read-only. Resume it from the local TUI first.");
 });
 
-test("idle remote input is a normal Pi user message", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() }); const calls: unknown[] = [];
+test("idle remote input is a normal Pi user message", async (t) => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: await isolatedRouting(t) }); const calls: unknown[] = [];
   await remote.bind("/idle", "guild", "session"); await remote.catchUp([{ id: "u", message: { role: "user", content: "start" } }]);
   const idlePi = { isIdle: () => true, abort: () => undefined, sendUserMessage: (_text: string, options?: { deliverAs?: "steer" | "followUp" }) => calls.push(options) };
   await remote.input("thread", "continue", idlePi); assert.deepEqual(calls, [undefined]);
   assert.equal(await remote.input("thread", "!stop", idlePi), "idle");
 });
 
-test("shutdown uses stable Session identity and cannot stop another active Session", async () => {
-  const remote = new RemoteCompanion(new Surface(), { routing: isolatedRouting() });
+test("shutdown uses stable Session identity and cannot stop another active Session", async (t) => {
+  const remote = new RemoteCompanion(new Surface(), { routing: await isolatedRouting(t) });
   await remote.bind("/shutdown", "guild", "A");
   assert.equal(remote.shutdown("A"), true);
   await remote.bind("/shutdown", "guild", "B");
@@ -234,8 +248,8 @@ test("shutdown uses stable Session identity and cannot stop another active Sessi
   assert.equal(remote.activeSessionId, null);
 });
 
-test("local UI rejects ordinary input but permits stop, and stale bindings are inert", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() }); const first = ctx(false); const second = ctx(true);
+test("local UI rejects ordinary input but permits stop, and stale bindings are inert", async (t) => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: await isolatedRouting(t) }); const first = ctx(false); const second = ctx(true);
   await remote.bind("/project", "guild", "one"); await remote.catchUp([{ id: "u", message: { role: "user", content: "one" } }]);
   remote.setLocalUiPrompt(true); assert.equal(await remote.input("thread", "no", { isIdle: () => false, abort: () => undefined, sendUserMessage: () => assert.fail("must not send") }), "local-ui");
   assert.equal(await remote.input("thread", "!status", { isIdle: () => false, abort: () => undefined, sendUserMessage: () => assert.fail("status must be read-only") }), "status");
@@ -245,16 +259,16 @@ test("local UI rejects ordinary input but permits stop, and stale bindings are i
   remote.setLocalUiPrompt(true); remote.shutdown("two"); await remote.bind("/project", "guild", "three"); assert.equal(remote.activeSessionId, "three");
 });
 
-test("blocked and unavailable milestones deduplicate by their runtime fingerprint", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() }); await remote.bind("/milestones", "guild", "session");
+test("blocked and unavailable milestones deduplicate by their runtime fingerprint", async (t) => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: await isolatedRouting(t) }); await remote.bind("/milestones", "guild", "session");
   await remote.milestone("blocked:one", "TASK BLOCKED\none", { attention: true }); await remote.milestone("blocked:one", "TASK BLOCKED\none", { attention: true }); await remote.milestone("authority:unavailable", "PINDIE AUTHORITY UNAVAILABLE"); await remote.milestone("authority:unavailable", "PINDIE AUTHORITY UNAVAILABLE");
   assert.deepEqual(surface.sent, ["TASK BLOCKED\none", "PINDIE AUTHORITY UNAVAILABLE"]);
   assert.equal(surface.events[0]?.attention, true);
   assert.equal(surface.events[1]?.attention, undefined);
 });
 
-test("Human Gate deduplication commits only after successful delivery", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() });
+test("Human Gate deduplication commits only after successful delivery", async (t) => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: await isolatedRouting(t) });
   await remote.bind("/gate", "guild", "session");
   const gate = signal("human-gate", "gate:Choose\0A\0B", "HUMAN GATE", ["Choose", "A · B"]);
   surface.fail = true;
@@ -300,8 +314,8 @@ test("session replacement stops an in-flight old binding before stale Session pr
   assert.deepEqual(presentedSessions, ["B"]);
 });
 
-test("classified completion is delivered once and status never decides attention", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() }); await remote.bind("/complete", "guild", "session", { status: activeStatus() });
+test("classified completion is delivered once and status never decides attention", async (t) => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: await isolatedRouting(t) }); await remote.bind("/complete", "guild", "session", { status: activeStatus() });
   await remote.status(activeStatus({ taskStatus: "done", verificationStatus: "passed" }));
   assert.deepEqual(surface.sent, []);
   const completed = signal("completed", "completed:7", "TASK COMPLETED");
@@ -310,8 +324,8 @@ test("classified completion is delivered once and status never decides attention
   assert.equal(surface.events[0]?.attention, true);
 });
 
-test("settled completion follows the final visible output and execution summary", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() });
+test("settled completion follows the final visible output and execution summary", async (t) => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: await isolatedRouting(t) });
   await remote.bind("/ordered-completion", "guild", "session", { status: activeStatus() });
   await remote.status(activeStatus({ taskStatus: "done", verificationStatus: "passed" }));
   await remote.catchUp([
@@ -331,8 +345,8 @@ test("settled completion follows the final visible output and execution summary"
   assert.equal(surface.events.slice(0, -1).some((event) => event.attention === true), false);
 });
 
-test("settlement Human Signal dedup allows the same blocker in a new generation", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() });
+test("settlement Human Signal dedup allows the same blocker in a new generation", async (t) => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: await isolatedRouting(t) });
   await remote.bind("/generation-dedup", "guild", "session");
   const first = signal("settled-blocked", "settled-blocked:7:[\"missing\"]", "TASK BLOCKED", ["missing"]);
   const second = signal("settled-blocked", "settled-blocked:8:[\"missing\"]", "TASK BLOCKED", ["missing"]);
@@ -341,8 +355,8 @@ test("settlement Human Signal dedup allows the same blocker in a new generation"
   assert.equal(surface.events.every((event) => event.attention === true), true);
 });
 
-test("ordinary milestones stay quiet while attention remains explicit", async () => {
-  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: isolatedRouting() }); await remote.bind("/quiet", "guild", "session");
+test("ordinary milestones stay quiet while attention remains explicit", async (t) => {
+  const surface = new Surface(); const remote = new RemoteCompanion(surface, { routing: await isolatedRouting(t) }); await remote.bind("/quiet", "guild", "session");
   await remote.milestone("verification:passed", "VERIFICATION · PASSED");
   assert.equal(surface.events[0]?.attention, undefined);
 });
