@@ -228,7 +228,7 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   try {
     releaseFallbackBridge = installQuotaFallbackReceiver({
       request: (plan) => quotaFallbackSupervisor?.request(plan) ?? false,
-      canUseBackup: (sessionId) => quotaFallbackSupervisor?.canUseBackup(sessionId) ?? false,
+      canUseBackup: (sessionId, config) => quotaFallbackSupervisor?.canUseBackup(sessionId, config) ?? false,
       cancel: (sessionId) => quotaFallbackSupervisor?.cancel(sessionId),
       observeModelSelect: (event) => quotaFallbackSupervisor?.observeModelSelection(event) ?? false,
       backupFailed: (sessionId) => quotaFallbackSupervisor?.handleBackupFailure(sessionId) ?? Promise.resolve(null),

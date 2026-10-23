@@ -479,23 +479,27 @@ On a confirmed terminal Codex subscription quota incident, the Extension derives
 one fresh `CodexQuotaRecoveryFacts` snapshot (the recovery time includes reset
 grace) and arbitrates **Fallback → Quota Auto Resume → stopped**. The Human
 opts into paid fallback with `/quota-fallback` (OFF by default). Fallback changes
-the same Session's backend to Pi's fixed `deepseek/deepseek-flash` and starts one
+the same Session's backend to the explicitly selected Pi backup (legacy/default
+`deepseek/deepseek-flash`) and starts one
 hidden continuation immediately; Resume keeps Codex and starts a fresh Run only
 after reset. A committed fallback never also schedules Resume. Neither changes
 the Task, transcript ownership, or Pindie semantic State.
 
 The Host owns a process-local `QuotaFallbackSupervisor` lease, switch/restore
 timer and model-mutation guard; Pi owns the model catalog, authentication,
-`setModel`, thinking-level clamping and Agent Loop. Source thinking is reapplied
-through Pi. Restore waits for safe idle and sends no new turn. External model
+`setModel`, thinking-level clamping and Agent Loop. The Session's enabled/model/thinking
+configuration is snapshotted per lease. Thinking defaults to source reapplied
+through Pi; an explicit fixed level must be supported by the selected model. Restore waits for safe idle and sends no new turn. External model
 selection or Session/branch replacement drops ownership; ordinary input does
-not. A terminal DeepSeek provider error can restore Codex and enter Resume using
+not. A terminal provider error matching the actual backup lease can restore Codex and enter Resume using
 the exact historical Codex quota anchor, without another usage refresh or a
 third provider. Pi materializes provider/Run exceptions as terminal
 assistant errors and emits `agent_settled` after draining pending messages, so
 no second failure bus is needed. Process exit loses the fallback lease; no
 source model is inferred on restart. Pi InteractiveMode already shows the actual
-active model; successful switch and restore remain quiet.
+active model; successful switch and restore remain quiet. [Settings Phase 2](settings-phase2-quota-fallback.md)
+defines authenticated candidate selection, compatible triple preferences and the small
+fallback-only multi-field menu; there is no automatic provider exploration/router.
 
 Quota Auto Resume crosses a subscription-availability boundary without changing
 semantic State or Session identity:

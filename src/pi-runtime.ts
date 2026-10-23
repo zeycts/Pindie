@@ -1,3 +1,4 @@
+import { availableFallbackModels, supportsFallbackConfig, type QuotaFallbackConfig } from "./quota-fallback-config.ts";
 import {
   SessionManager,
   type AgentSession,
@@ -289,6 +290,10 @@ export class PiRuntimeAdapter {
         ? undefined
         : async () => lifecycle.rebindSession!(),
     );
+  }
+
+  isFallbackConfigAvailable(config: QuotaFallbackConfig): boolean {
+    return supportsFallbackConfig(config, availableFallbackModels(this.activeSession.extensionRunner.getModelRegistry()));
   }
 
   getActiveSessionModelIdentity(): { provider: string; modelId: string } | null {

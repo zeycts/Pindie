@@ -476,7 +476,8 @@ test("Host fallback configuration preflight delegates to active Pi exact model a
     sessionId: "session-1",
     extensionRunner: { getModelRegistry: () => ({
       find: (provider: string, id: string) => provider === "deepseek" && id === "deepseek-flash" ? { provider, id } : undefined,
-      getAvailable: () => available ? [{ provider: "deepseek", id: "deepseek-flash" }] : [],
+      getAvailable: () => available ? [{ provider: "deepseek", id: "deepseek-flash", name: "Fixture Flash", input: ["text"] }] : [],
+      hasConfiguredAuth: () => available, getProviderAuthStatus: () => ({ configured: available }),
     }) },
   } as unknown as AgentSession;
   const host = await createPindieHost({

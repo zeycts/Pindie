@@ -7,17 +7,21 @@ import {
   type ExtensionContext,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { Container } from "@earendil-works/pi-tui";
+import { INVALID_FALLBACK_CONFIG, isAllowedFallbackModel, isFallbackThinking, DEFAULT_FALLBACK_CONFIG, availableFallbackModels, copyFallbackConfig, isRecord, parseFallbackConfig, supportsFallbackConfig, type FallbackModelChoice, type QuotaFallbackConfig } from "./quota-fallback-config.ts";
 import type { TUI } from "@earendil-works/pi-tui";
 import { SettingsMenu, type SettingsMenuTheme, type SettingsMenuKeybindings } from "./settings-menu.ts";
 import { QUOTA_RESUME_PREFERENCES_FILE_NAME } from "./quota-resume.ts";
 
 export const PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE = "pindie-quota-fallback-preference";
 export const QUOTA_FALLBACK_UNAVAILABLE_MESSAGE =
-  "DeepSeek Flash is not currently available in Pi. Configure DeepSeek provider authentication, then retry.";
+  "Selected backup model or Thinking is unavailable in Pi. Check provider authentication/model support; configuration was not changed.";
 
 export interface QuotaFallbackPreferenceStore {
   loadDefault(): Promise<boolean>;
   saveDefault(enabled: boolean): Promise<void>;
+  loadConfig?(): Promise<QuotaFallbackConfig>;
+  saveConfig?(config: QuotaFallbackConfig): Promise<void>;
 }
 
 export interface FileQuotaFallbackPreferenceStoreOptions {
@@ -26,9 +30,6 @@ export interface FileQuotaFallbackPreferenceStoreOptions {
   onBeforeRename?: () => Promise<void>;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -36,7 +37,7 @@ function isMissingFile(error: unknown): boolean {
   return isRecord(error) && error.code === "ENOENT";
 }
 
-/** One boolean in the existing global preferences document; never stores provider credentials. */
+/** Compatible fields in the shared preferences document; never stores credentials. */
 export class FileQuotaFallbackPreferenceStore implements QuotaFallbackPreferenceStore {
   private readonly baseDir: string;
   private readonly onBeforeRename: (() => Promise<void>) | undefined;
@@ -49,20 +50,31 @@ export class FileQuotaFallbackPreferenceStore implements QuotaFallbackPreference
   get storageBaseDir(): string { return this.baseDir; }
   preferencesPath(): string { return join(this.baseDir, QUOTA_RESUME_PREFERENCES_FILE_NAME); }
 
-  async loadDefault(): Promise<boolean> {
+  async loadDefault(): Promise<boolean> { return (await this.loadConfig()).enabled; }
+
+  async loadConfig(): Promise<QuotaFallbackConfig> {
     let contents: string;
     try { contents = await readFile(this.preferencesPath(), "utf8"); }
     catch (error) {
-      if (isMissingFile(error)) return false;
+      if (isMissingFile(error)) return copyFallbackConfig(DEFAULT_FALLBACK_CONFIG);
       throw new Error(`Could not read quota fallback preferences '${this.preferencesPath()}': ${errorMessage(error)}`);
     }
     try {
       const parsed: unknown = JSON.parse(contents);
-      return isRecord(parsed) && parsed.quotaFallback === true;
-    } catch { return false; }
+      return parseFallbackConfig(isRecord(parsed) ? {
+        enabled: parsed.quotaFallback === undefined ? false : parsed.quotaFallback, model: parsed.quotaFallbackModel, thinking: parsed.quotaFallbackThinking,
+      } : null);
+    } catch { return copyFallbackConfig(INVALID_FALLBACK_CONFIG); }
   }
 
-  async saveDefault(enabled: boolean): Promise<void> {
+  async saveDefault(enabled: boolean): Promise<void> { await this.savePreferences(enabled); }
+
+  async saveConfig(config: QuotaFallbackConfig): Promise<void> {
+    if (typeof config.enabled !== "boolean" || !isAllowedFallbackModel(config.model) || !isFallbackThinking(config.thinking)) throw new Error("Invalid quota fallback configuration");
+    await this.savePreferences(config.enabled, config);
+  }
+
+  private async savePreferences(enabled: boolean, config?: QuotaFallbackConfig): Promise<void> {
     const path = this.preferencesPath();
     let preferences: Record<string, unknown> = {};
     try {
@@ -76,6 +88,10 @@ export class FileQuotaFallbackPreferenceStore implements QuotaFallbackPreference
       if (!isMissingFile(error)) throw new Error(`Could not update quota fallback preferences '${path}': ${errorMessage(error)}`);
     }
     preferences.quotaFallback = enabled;
+    if (config) {
+      preferences.quotaFallbackModel = { ...config.model };
+      preferences.quotaFallbackThinking = config.thinking;
+    }
     const temporaryPath = join(this.baseDir, `.${QUOTA_RESUME_PREFERENCES_FILE_NAME}.${randomUUID()}.tmp`);
     try {
       await mkdir(this.baseDir, { recursive: true });
@@ -89,7 +105,16 @@ export class FileQuotaFallbackPreferenceStore implements QuotaFallbackPreference
   }
 }
 
-export interface QuotaFallbackPreferenceEntry { enabled: boolean; }
+export interface QuotaFallbackPreferenceEntry { enabled: boolean; model?: QuotaFallbackConfig["model"]; thinking?: QuotaFallbackConfig["thinking"]; }
+export function getBranchQuotaFallbackConfig(branch: readonly SessionEntry[], globalDefault: QuotaFallbackConfig): QuotaFallbackConfig {
+  let effective = copyFallbackConfig(globalDefault);
+  for (const entry of branch) {
+    if (entry.type !== "custom" || entry.customType !== PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE) continue;
+    if (!isRecord(entry.data) || typeof entry.data.enabled !== "boolean") continue;
+    effective = parseFallbackConfig(entry.data, globalDefault);
+  }
+  return effective;
+}
 export function isQuotaFallbackPreferenceEntry(
   entry: SessionEntry,
 ): entry is SessionEntry & { type: "custom"; customType: typeof PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE; data: QuotaFallbackPreferenceEntry } {
@@ -98,44 +123,89 @@ export function isQuotaFallbackPreferenceEntry(
 }
 
 export function getBranchQuotaFallbackPreference(branch: readonly SessionEntry[], globalDefault: boolean): boolean {
-  let effective = globalDefault;
-  for (const entry of branch) if (isQuotaFallbackPreferenceEntry(entry)) effective = entry.data.enabled;
-  return effective;
+  return getBranchQuotaFallbackConfig(branch, { ...DEFAULT_FALLBACK_CONFIG, enabled: globalDefault }).enabled;
 }
 
-export interface QuotaFallbackSelectorResult {
-  readonly kind: "session" | "default";
-  readonly enabled: boolean;
-}
-export class QuotaFallbackSelectorComponent extends SettingsMenu<boolean> {
+export interface QuotaFallbackConfigSelectorResult { readonly kind: "session" | "default"; readonly config: QuotaFallbackConfig; }
+
+/** Local draft + sub-selectors, all rendered by the same lightweight SettingsMenu. */
+export class QuotaFallbackConfigSelectorComponent extends Container {
+  private menu!: SettingsMenu<string>;
+  private draft: QuotaFallbackConfig;
+  private readonly tui: Pick<TUI, "requestRender">;
+  private readonly theme: SettingsMenuTheme;
+  private readonly keys: SettingsMenuKeybindings;
+  private readonly current: QuotaFallbackConfig;
+  private readonly defaults: QuotaFallbackConfig;
+  private readonly models: readonly FallbackModelChoice[];
+  private readonly selected: (result: QuotaFallbackConfigSelectorResult) => void;
+  private readonly cancelled: () => void;
+  private readonly modelNames: ReadonlyMap<string, string>;
   constructor(
-    tui: Pick<TUI, "requestRender">,
-    theme: SettingsMenuTheme,
-    keybindings: SettingsMenuKeybindings,
-    sessionEnabled: boolean,
-    globalDefault: boolean,
-    onSelect: (result: QuotaFallbackSelectorResult) => void,
-    onCancel: () => void,
+    tui: Pick<TUI, "requestRender">, theme: SettingsMenuTheme, keys: SettingsMenuKeybindings,
+    current: QuotaFallbackConfig, defaults: QuotaFallbackConfig, models: readonly FallbackModelChoice[],
+    selected: (result: QuotaFallbackConfigSelectorResult) => void, cancelled: () => void,
+    modelNames: ReadonlyMap<string, string> = new Map(),
   ) {
-    super(tui, theme, keybindings, {
-      title: "Quota Fallback",
-      description: "Paid DeepSeek Flash backup for future Codex quota events.",
-      status: sessionEnabled === globalDefault ? [] : [
-        `Session: ${sessionEnabled ? "on" : "off"} · Default: ${globalDefault ? "on" : "off"}`,
-      ],
-      choices: [{ value: true, label: "on" }, { value: false, label: "off" }],
-      currentValue: sessionEnabled,
-      defaultValue: globalDefault,
-      confirm: { hint: "Session", run: (enabled) => onSelect({ kind: "session", enabled }) },
-      save: { hint: "Save default + Session", run: (enabled) => onSelect({ kind: "default", enabled }) },
-      onCancel,
-    });
+    super(); this.tui = tui; this.theme = theme; this.keys = keys; this.current = current;
+    this.defaults = defaults; this.models = models; this.selected = selected; this.cancelled = cancelled; this.modelNames = modelNames;
+    this.draft = copyFallbackConfig(current); this.root();
+  }
+  handleInput(data: string): void { this.menu.handleInput(data); }
+  private name(config: QuotaFallbackConfig): string {
+    const identity = `${config.model.provider}/${config.model.modelId}`;
+    return this.models.find((m) => m.provider === config.model.provider && m.modelId === config.model.modelId)?.name ?? `${this.modelNames.get(identity) ?? identity} (unavailable)`;
+  }
+  private thinking(config: QuotaFallbackConfig): string { return config.thinking === "source" ? "Same as source" : config.thinking; }
+  private show(options: ConstructorParameters<typeof SettingsMenu<string>>[3]): void {
+    this.clear(); this.menu = new SettingsMenu(this.tui, this.theme, this.keys, options); this.addChild(this.menu); this.tui.requestRender();
+  }
+  private finish(kind: "session" | "default"): void { this.selected({ kind, config: copyFallbackConfig(this.draft) }); }
+  private root(): void {
+    this.show({ title: "Quota Fallback", description: "Paid backup for future Codex quota events. Edit fields, then Apply.",
+      status: [`Session: ${this.current.enabled ? "on" : "off"} · ${this.name(this.current)} · ${this.thinking(this.current)}`,
+        `Default: ${this.defaults.enabled ? "on" : "off"} · ${this.name(this.defaults)} · ${this.thinking(this.defaults)}`],
+      choices: [{ value: "enabled", label: `Enabled: ${this.draft.enabled ? "on" : "off"}` },
+        { value: "model", label: `Model: ${this.name(this.draft)}` }, { value: "thinking", label: `Thinking: ${this.thinking(this.draft)}` },
+        { value: "apply", label: "Apply to Session" }], currentValue: "", defaultValue: "",
+      confirm: { hint: "Edit / Apply", run: (field) => field === "apply" ? this.finish("session") : this.sub(field) },
+      save: { hint: "Save default + Session", run: () => this.finish("default") }, onCancel: this.cancelled });
+  }
+  private sub(field: string): void {
+    let choices: { value: string; label: string }[];
+    let currentValue: string; let defaultValue: string;
+    const identity = (c: QuotaFallbackConfig) => `${c.model.provider}/${c.model.modelId}`;
+    if (field === "enabled") {
+      choices = [{ value: "on", label: "on" }, { value: "off", label: "off" }];
+      currentValue = this.current.enabled ? "on" : "off"; defaultValue = this.defaults.enabled ? "on" : "off";
+    } else if (field === "model") {
+      choices = this.models.map((m) => ({ value: `${m.provider}/${m.modelId}`, label: `${m.name} (${m.provider}/${m.modelId}) · backup, may be paid` }));
+      currentValue = identity(this.current); defaultValue = identity(this.defaults);
+    } else {
+      const model = this.models.find((m) => `${m.provider}/${m.modelId}` === identity(this.draft));
+      choices = [{ value: "source", label: "Same as source" }, ...(model?.thinkingLevels ?? []).map((level) => ({ value: level, label: level }))];
+      currentValue = this.current.thinking; defaultValue = this.defaults.thinking;
+    }
+    if (!choices.length) choices = [{ value: "", label: "No authenticated allowed backup models available" }];
+    const choose = (value: string) => {
+      if (field === "enabled") this.draft = { ...this.draft, enabled: value === "on" };
+      else if (field === "model") {
+        const model = this.models.find((m) => `${m.provider}/${m.modelId}` === value);
+        if (model) this.draft = { ...this.draft, model: { provider: model.provider, modelId: model.modelId } };
+      } else this.draft = { ...this.draft, thinking: value as QuotaFallbackConfig["thinking"] };
+      this.root();
+    };
+    this.show({ title: `Quota Fallback · ${field}`, description: "Choose draft value; Apply on the main screen. Cancel returns without changing this field.", status: [], choices, maxVisibleChoices: 8,
+      currentValue, defaultValue, initialValue: field === "enabled" ? (this.draft.enabled ? "on" : "off") : field === "model" ? identity(this.draft) : this.draft.thinking,
+      confirm: { hint: "Choose", run: choose }, save: { hint: "Save default + Session", run: (value) => { choose(value); this.finish("default"); } }, onCancel: () => this.root() });
   }
 }
 
 export interface QuotaFallbackIntegration {
   readonly quotaFallbackEnabled: boolean;
   readonly quotaFallbackDefault: boolean;
+  readonly quotaFallbackConfig: QuotaFallbackConfig;
+  invalidateSession(): void;
   restoreSession(ctx: ExtensionContext): Promise<void>;
   restoreBranch(ctx: ExtensionContext): Promise<void>;
 }
@@ -143,55 +213,88 @@ export interface QuotaFallbackIntegration {
 export function registerQuotaFallbackIntegration(
   pi: ExtensionAPI,
   store: QuotaFallbackPreferenceStore,
-  options: { readonly canEnable: (sessionId: string) => boolean },
+  options: { readonly canEnable: (sessionId: string, config?: QuotaFallbackConfig) => boolean },
 ): QuotaFallbackIntegration {
   let globalDefault = false;
   let sessionEnabled = false;
+  let globalConfig = copyFallbackConfig(DEFAULT_FALLBACK_CONFIG);
+  let sessionConfig = copyFallbackConfig(DEFAULT_FALLBACK_CONFIG);
+  let revision = 0;
   const restore = async (ctx: ExtensionContext, reloadGlobal: boolean): Promise<void> => {
+    ++revision;
     if (reloadGlobal) {
-      try { globalDefault = await store.loadDefault(); }
+      try {
+        globalConfig = store.loadConfig ? await store.loadConfig() : { ...DEFAULT_FALLBACK_CONFIG, enabled: await store.loadDefault() };
+        globalDefault = globalConfig.enabled;
+      }
       catch (error) {
         globalDefault = false;
+        globalConfig = copyFallbackConfig(INVALID_FALLBACK_CONFIG);
         console.warn(`[Pindie] Quota fallback preferences unavailable: ${errorMessage(error)}`);
       }
     }
     if (typeof ctx.sessionManager?.getBranch !== "function") {
       sessionEnabled = false;
+      sessionConfig = copyFallbackConfig({ ...globalConfig, enabled: false });
       return;
     }
     try {
-      sessionEnabled = getBranchQuotaFallbackPreference(ctx.sessionManager.getBranch(), globalDefault);
+      sessionConfig = getBranchQuotaFallbackConfig(ctx.sessionManager.getBranch(), globalConfig);
+      sessionEnabled = sessionConfig.enabled;
     } catch (error) {
       sessionEnabled = false;
+      sessionConfig = copyFallbackConfig({ ...globalConfig, enabled: false });
       console.warn(`[Pindie] Quota fallback Session preference unavailable: ${errorMessage(error)}`);
     }
   };
 
   pi.registerCommand("quota-fallback", {
-    description: "Configure paid DeepSeek fallback after Codex quota exhaustion",
+    description: "Configure backup model and thinking after Codex quota exhaustion",
     handler: async (args, ctx) => {
       if (args.trim() !== "") { ctx.ui.notify("Usage: /quota-fallback", "warning"); return; }
       if (ctx.mode !== "tui") { ctx.ui.notify("The /quota-fallback command requires TUI mode.", "warning"); return; }
-      const selected = await ctx.ui.custom<QuotaFallbackSelectorResult | null>(
-        (tui, theme, keybindings, done) => new QuotaFallbackSelectorComponent(
-          tui, theme, keybindings, sessionEnabled, globalDefault, done, () => done(null),
+      const commandRevision = revision;
+      const sessionId = ctx.sessionManager.getSessionId();
+      const leafId = ctx.sessionManager.getLeafId();
+      let models: FallbackModelChoice[];
+      try { models = availableFallbackModels(ctx.modelRegistry); }
+      catch { ctx.ui.notify(QUOTA_FALLBACK_UNAVAILABLE_MESSAGE, "error"); return; }
+      const modelNames = new Map<string, string>();
+      for (const config of [sessionConfig, globalConfig]) {
+        try {
+          const model = ctx.modelRegistry.find(config.model.provider, config.model.modelId);
+          if (model) modelNames.set(`${config.model.provider}/${config.model.modelId}`, model.name);
+        } catch { /* Metadata failure cannot authorize a backup; keep the explicit unavailable identity. */ }
+      }
+      const selected = await ctx.ui.custom<QuotaFallbackConfigSelectorResult | null>(
+        (tui, theme, keybindings, done) => new QuotaFallbackConfigSelectorComponent(
+          tui, theme, keybindings, sessionConfig, globalConfig, models, done, () => done(null), modelNames,
         ),
       );
       if (selected === null || selected === undefined) return;
       try {
-        // Preflight before either global or Session mutation. OFF never needs auth.
-        if (selected.enabled) {
+        // Preflight before either write. Unchanged OFF never needs auth.
+        if (revision !== commandRevision || ctx.sessionManager.getSessionId() !== sessionId || ctx.sessionManager.getLeafId() !== leafId) throw new Error("Session/branch changed; reopen /quota-fallback.");
+        const config = copyFallbackConfig(selected.config);
+        const changedTarget = JSON.stringify(config.model) !== JSON.stringify(sessionConfig.model) || config.thinking !== sessionConfig.thinking;
+        if (config.enabled || changedTarget) {
           let available = false;
-          try { available = options.canEnable(ctx.sessionManager.getSessionId()); } catch { /* Fail closed. */ }
+          try { available = options.canEnable(sessionId, config) && supportsFallbackConfig(config, availableFallbackModels(ctx.modelRegistry)); } catch { /* Fail closed. */ }
           if (!available) {
             ctx.ui.notify(QUOTA_FALLBACK_UNAVAILABLE_MESSAGE, "error");
             return;
           }
         }
-        if (selected.kind === "default") await store.saveDefault(selected.enabled);
-        pi.appendEntry(PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE, { enabled: selected.enabled });
-        if (selected.kind === "default") globalDefault = selected.enabled;
-        sessionEnabled = selected.enabled;
+        if (selected.kind === "default") {
+          if (!store.saveConfig) throw new Error("Fallback configuration storage is unavailable");
+          await store.saveConfig(config);
+          globalConfig = config; globalDefault = config.enabled;
+        }
+        if (revision !== commandRevision || ctx.sessionManager.getSessionId() !== sessionId || ctx.sessionManager.getLeafId() !== leafId) throw new Error("Session/branch changed while saving; current Session was not modified.");
+        pi.appendEntry(PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE, config);
+        sessionConfig = config;
+        sessionEnabled = config.enabled;
+        ++revision;
         // Turning OFF controls future incidents, not an already committed fallback lease.
       } catch (error) {
         ctx.ui.notify(errorMessage(error), "error");
@@ -199,7 +302,9 @@ export function registerQuotaFallbackIntegration(
     },
   });
   return {
+    invalidateSession: () => { ++revision; },
     restoreSession: (ctx) => restore(ctx, true), restoreBranch: (ctx) => restore(ctx, false),
+    get quotaFallbackConfig() { return copyFallbackConfig(sessionConfig); },
     get quotaFallbackEnabled() { return sessionEnabled; },
     get quotaFallbackDefault() { return globalDefault; },
   };

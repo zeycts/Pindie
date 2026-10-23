@@ -1,8 +1,9 @@
+import type { QuotaFallbackConfig } from "./quota-fallback-config.ts";
 import type { QuotaFallbackPlan, FallbackModelSelection } from "./quota-fallback-supervisor.ts";
 
 export interface QuotaFallbackController {
   request(plan: QuotaFallbackPlan): Promise<boolean> | boolean;
-  canUseBackup(sessionId: string): boolean;
+  canUseBackup(sessionId: string, config?: QuotaFallbackConfig): boolean;
   cancel(sessionId: string): void;
   observeModelSelect(event: FallbackModelSelection): boolean;
   backupFailed(sessionId: string): Promise<QuotaFallbackPlan | null>;
@@ -34,7 +35,7 @@ export function getQuotaFallbackController(): QuotaFallbackController | null {
   };
   return {
     request: (plan) => current().request(plan),
-    canUseBackup: (sessionId) => current().canUseBackup(sessionId),
+    canUseBackup: (sessionId, config) => current().canUseBackup(sessionId, config),
     cancel: (sessionId) => current().cancel(sessionId),
     observeModelSelect: (event) => current().observeModelSelect(event),
     backupFailed: (sessionId) => current().backupFailed(sessionId),

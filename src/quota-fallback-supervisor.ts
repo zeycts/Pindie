@@ -1,11 +1,12 @@
+import { DEFAULT_FALLBACK_CONFIG, copyFallbackConfig, isAllowedFallbackModel, isFallbackThinking, type QuotaFallbackConfig, type FallbackModelIdentity } from "./quota-fallback-config.ts";
 import type { AgentSession, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { SessionLifecycleBoundary } from "./long-task-control.ts";
 import { PiRuntimeAdapter } from "./pi-runtime.ts";
 import { detectCodexQuotaIncident } from "./quota-resume-incident.ts";
 import { MAX_QUOTA_RESUME_WAIT_MS, type QuotaResumeScheduler } from "./quota-resume-supervisor.ts";
 
-export const QUOTA_FALLBACK_PROVIDER = "deepseek";
-export const QUOTA_FALLBACK_MODEL_ID = "deepseek-flash";
+export const QUOTA_FALLBACK_PROVIDER = DEFAULT_FALLBACK_CONFIG.model.provider;
+export const QUOTA_FALLBACK_MODEL_ID = DEFAULT_FALLBACK_CONFIG.model.modelId;
 export const PINDIE_QUOTA_FALLBACK_TYPE = "pindie-quota-fallback";
 export const PINDIE_QUOTA_FALLBACK_MESSAGE = `<PINDIE_QUOTA_FALLBACK>
 
@@ -27,6 +28,7 @@ export interface QuotaFallbackPlan {
   readonly modelId: string;
   readonly detectedAt: number;
   readonly restoreAt: number;
+  readonly backup?: QuotaFallbackConfig;
 }
 
 export interface QuotaFallbackSupervisorOptions {
@@ -43,12 +45,12 @@ export interface FallbackModelSelection {
 }
 
 /** Only the terminal backup assistant provider error is a backup failure. */
-export function detectQuotaFallbackBackupFailure(branch: readonly SessionEntry[]): boolean {
+export function detectQuotaFallbackBackupFailure(branch: readonly SessionEntry[], backup: FallbackModelIdentity = DEFAULT_FALLBACK_CONFIG.model): boolean {
   const latest = [...branch].reverse().find((entry) => entry.type === "message");
   if (latest?.type !== "message") return false;
   const message = latest.message;
-  return message.role === "assistant" && message.provider === QUOTA_FALLBACK_PROVIDER &&
-    message.model === QUOTA_FALLBACK_MODEL_ID && message.stopReason === "error" &&
+  return message.role === "assistant" && message.provider === backup.provider &&
+    message.model === backup.modelId && message.stopReason === "error" &&
     typeof message.errorMessage === "string";
 }
 
@@ -56,6 +58,7 @@ interface FallbackLease {
   readonly generation: number;
   readonly plan: QuotaFallbackPlan;
   readonly sourceThinkingLevel: AgentSession["thinkingLevel"];
+  readonly backup: QuotaFallbackConfig;
   readonly cancelTimer: () => void;
   readonly unsubscribe: () => void;
   restoreDue: boolean;
@@ -96,7 +99,7 @@ export class QuotaFallbackSupervisor {
     if (this.lease) {
       if (this.lease.plan.sessionId === plan?.sessionId && this.lease.plan.anchorEntryId === plan.anchorEntryId) {
         try {
-          if (this.matchesBackup(plan.sessionId)) return true;
+          if (this.matchesBackup(plan.sessionId, this.lease.backup)) return true;
         } catch (error) { this.report(`Quota fallback lease validation failed: ${errorMessage(error)}`); }
         this.clearLease();
       }
@@ -111,9 +114,13 @@ export class QuotaFallbackSupervisor {
       !Number.isFinite(plan.restoreAt) || plan.restoreAt <= now ||
       plan.restoreAt - now > MAX_QUOTA_RESUME_WAIT_MS) return false;
 
+    const requestedBackup = plan.backup === undefined ? { ...DEFAULT_FALLBACK_CONFIG, enabled: true } : plan.backup;
+    if (!requestedBackup || typeof requestedBackup.enabled !== "boolean" || !isAllowedFallbackModel(requestedBackup.model) || !isFallbackThinking(requestedBackup.thinking)) return false;
+    const backup = copyFallbackConfig(requestedBackup);
+    plan = Object.freeze({ ...plan, ...(plan.backup ? { backup } : {}) });
     let sourceThinkingLevel: AgentSession["thinkingLevel"];
     try {
-      if (!this.matchesSource(plan) || !this.runtime.isActiveSessionModelAvailable(QUOTA_FALLBACK_PROVIDER, QUOTA_FALLBACK_MODEL_ID)) return false;
+      if (!this.matchesSource(plan) || !backup.enabled || !this.canUseBackup(plan.sessionId, backup)) return false;
       sourceThinkingLevel = this.runtime.getActiveSessionThinkingLevel();
     } catch (error) {
       this.report(`Quota fallback validation failed: ${errorMessage(error)}`);
@@ -124,10 +131,10 @@ export class QuotaFallbackSupervisor {
     this.committingSessionId = plan.sessionId;
     const generation = ++this.generation;
     try {
-      await this.setOwnedModel(generation, plan.sessionId, QUOTA_FALLBACK_PROVIDER, QUOTA_FALLBACK_MODEL_ID);
-      if (!this.current(generation, plan.sessionId) || !this.matchesBackup(plan.sessionId)) throw new Error("Session or backup changed during fallback switch");
-      this.runtime.setActiveSessionThinkingLevel(sourceThinkingLevel);
-      if (!this.current(generation, plan.sessionId) || !this.matchesBackup(plan.sessionId)) throw new Error("Session or backup changed during thinking application");
+      await this.setOwnedModel(generation, plan.sessionId, backup.model.provider, backup.model.modelId);
+      if (!this.current(generation, plan.sessionId) || !this.matchesBackup(plan.sessionId, backup)) throw new Error("Session or backup changed during fallback switch");
+      this.runtime.setActiveSessionThinkingLevel(backup.thinking === "source" ? sourceThinkingLevel : backup.thinking);
+      if (!this.current(generation, plan.sessionId) || !this.matchesBackup(plan.sessionId, backup)) throw new Error("Session or backup changed during thinking application");
 
       // Install ownership before invoking Pi: native events can arrive synchronously.
       const unsubscribe = this.runtime.subscribeActiveSession(() => {
@@ -146,12 +153,12 @@ export class QuotaFallbackSupervisor {
         unsubscribe();
         throw error;
       }
-      if (!this.current(generation, plan.sessionId) || !this.matchesBackup(plan.sessionId)) {
+      if (!this.current(generation, plan.sessionId) || !this.matchesBackup(plan.sessionId, backup)) {
         cancelTimer();
         unsubscribe();
         throw new Error("Session or backup changed during lease installation");
       }
-      const lease: FallbackLease = { generation, plan, sourceThinkingLevel, cancelTimer, unsubscribe, restoreDue: false, restoring: false };
+      const lease: FallbackLease = { generation, plan, backup, sourceThinkingLevel, cancelTimer, unsubscribe, restoreDue: false, restoring: false };
       this.lease = lease;
       // Pi's returned Promise spans the entire Agent Run; only invocation is the commit boundary.
       const run = this.runtime.sendCustomMessage(
@@ -173,7 +180,7 @@ export class QuotaFallbackSupervisor {
       if (this.lease?.generation === generation) this.clearLease();
       // A failed setModel can itself leave Pi on the backup. Never roll back
       // after lifecycle/disposal has invalidated this transaction.
-      if (owned) await this.rollback(this.generation, plan, sourceThinkingLevel);
+      if (owned) await this.rollback(this.generation, plan, sourceThinkingLevel, backup);
       return false;
     } finally {
       this.committing = false;
@@ -182,10 +189,10 @@ export class QuotaFallbackSupervisor {
   }
 
   /** Configuration preflight: exact Pi model availability, independent of current source or idle state. */
-  canUseBackup(sessionId: string): boolean {
+  canUseBackup(sessionId: string, config: QuotaFallbackConfig = DEFAULT_FALLBACK_CONFIG): boolean {
     try {
-      return !this.disposed && this.runtime.activeSessionId === sessionId &&
-        this.runtime.isActiveSessionModelAvailable(QUOTA_FALLBACK_PROVIDER, QUOTA_FALLBACK_MODEL_ID);
+      return !this.disposed && this.runtime.activeSessionId === sessionId && isAllowedFallbackModel(config.model) && isFallbackThinking(config.thinking) &&
+        this.runtime.isFallbackConfigAvailable(config);
     } catch { return false; }
   }
 
@@ -207,8 +214,9 @@ export class QuotaFallbackSupervisor {
     const lease = this.lease;
     if (!lease || lease.plan.sessionId !== sessionId || lease.restoring || !this.current(lease.generation, sessionId)) return null;
     try {
+      if (!detectQuotaFallbackBackupFailure(this.runtime.getActiveSessionBranch(), lease.backup.model)) return null;
       const facts = this.runtime.getActiveSessionFacts();
-      if (facts.isStreaming || facts.isCompacting || facts.pendingMessageCount !== 0 || !this.matchesBackup(sessionId)) return null;
+      if (facts.isStreaming || facts.isCompacting || facts.pendingMessageCount !== 0 || !this.matchesBackup(sessionId, lease.backup)) return null;
       lease.restoring = true;
       await this.setOwnedModel(lease.generation, sessionId, lease.plan.provider, lease.plan.modelId);
       if (this.lease !== lease || !this.current(lease.generation, sessionId)) return null;
@@ -259,15 +267,15 @@ export class QuotaFallbackSupervisor {
     return !this.disposed && this.generation === generation && this.runtime.activeSessionId === sessionId;
   }
 
-  private matchesBackup(sessionId: string): boolean {
+  private matchesBackup(sessionId: string, backup: QuotaFallbackConfig): boolean {
     const facts = this.runtime.getActiveSessionFacts();
     const model = this.runtime.getActiveSessionModelIdentity();
-    return facts.sessionId === sessionId && model?.provider === QUOTA_FALLBACK_PROVIDER && model.modelId === QUOTA_FALLBACK_MODEL_ID;
+    return facts.sessionId === sessionId && model?.provider === backup.model.provider && model.modelId === backup.model.modelId;
   }
 
-  private async rollback(generation: number, plan: QuotaFallbackPlan, thinking: AgentSession["thinkingLevel"]): Promise<void> {
+  private async rollback(generation: number, plan: QuotaFallbackPlan, thinking: AgentSession["thinkingLevel"], backup: QuotaFallbackConfig): Promise<void> {
     try {
-      if (!this.current(generation, plan.sessionId) || !this.matchesBackup(plan.sessionId)) return;
+      if (!this.current(generation, plan.sessionId) || !this.matchesBackup(plan.sessionId, backup)) return;
       await this.setOwnedModel(generation, plan.sessionId, plan.provider, plan.modelId);
       if (this.current(generation, plan.sessionId)) this.runtime.setActiveSessionThinkingLevel(thinking);
     } catch (error) {
@@ -285,7 +293,7 @@ export class QuotaFallbackSupervisor {
     try {
       const facts = this.runtime.getActiveSessionFacts();
       const model = this.runtime.getActiveSessionModelIdentity();
-      if (facts.sessionId !== lease.plan.sessionId || model?.provider !== QUOTA_FALLBACK_PROVIDER || model.modelId !== QUOTA_FALLBACK_MODEL_ID) {
+      if (facts.sessionId !== lease.plan.sessionId || model?.provider !== lease.backup.model.provider || model.modelId !== lease.backup.model.modelId) {
         this.clearLease(); // Another model owner wins; never force the old source back.
         return;
       }

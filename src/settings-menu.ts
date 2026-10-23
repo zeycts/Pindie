@@ -16,6 +16,8 @@ export interface SettingsMenuOptions<Value> {
   currentValue: Value;
   defaultValue: Value;
   initialValue?: Value;
+  /** Optional bounded window for a dynamic model sub-selector; boolean menus are unchanged. */
+  maxVisibleChoices?: number;
   confirm: { hint: string; run: (value: Value) => void };
   save: { hint: string; run: (value: Value) => void };
   onCancel: () => void;
@@ -71,7 +73,12 @@ export class SettingsMenu<Value> extends Container {
     text(this.theme.bold(this.options.title), "accent");
     text(this.options.description);
     for (const line of this.options.status) text(line, "warning");
-    this.options.choices.forEach((choice, index) => {
+    const limit = Math.max(1, this.options.maxVisibleChoices ?? this.options.choices.length);
+    const start = Math.max(0, Math.min(this.selectedIndex - Math.floor(limit / 2), this.options.choices.length - limit));
+    const end = Math.min(this.options.choices.length, start + limit);
+    if (end - start < this.options.choices.length) text(`${start + 1}–${end} / ${this.options.choices.length}`);
+    this.options.choices.slice(start, end).forEach((choice, offset) => {
+      const index = start + offset;
       const selected = index === this.selectedIndex;
       const arrow = selected ? this.theme.fg("accent", "→ ") : "  ";
       const check = choice.value === this.options.currentValue ? this.theme.fg("accent", "✓ ") : "  ";

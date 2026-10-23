@@ -99,7 +99,6 @@ import {
   quotaResumePlanFromRecoveryFacts,
 } from "./quota-resume-incident.ts";
 import { getQuotaFallbackController } from "./quota-fallback-control.ts";
-import { detectQuotaFallbackBackupFailure } from "./quota-fallback-supervisor.ts";
 import {
   PINDIE_QUOTA_RESUME_TYPE,
 } from "./quota-resume-supervisor.ts";
@@ -314,8 +313,8 @@ function registerComposedPindieExtension(
     },
   });
   const quotaFallback = registerQuotaFallbackIntegration(pi, options.quotaFallbackPreferenceStore!, {
-    canEnable: (sessionId) => {
-      try { return fallbackController?.canUseBackup(sessionId) === true; }
+    canEnable: (sessionId, config) => {
+      try { return fallbackController?.canUseBackup(sessionId, config) === true; }
       catch { return false; } // Released Host and stale Session fail closed.
     },
   });
@@ -674,6 +673,7 @@ function registerComposedPindieExtension(
   }
 
   pi.on("session_shutdown", async (event, ctx) => {
+    quotaFallback.invalidateSession();
     const watchStopped = watch?.shutdown();
     ++agentRunLifecycleGeneration;
     cancelQuotaResume(ctx);
@@ -1256,6 +1256,7 @@ function registerComposedPindieExtension(
                   sessionId: facts.sessionId, anchorEntryId: facts.anchorEntryId,
                   provider: facts.provider, modelId: facts.modelId,
                   detectedAt: facts.detectedAt, restoreAt: facts.recoveryAt,
+                  backup: quotaFallback.quotaFallbackConfig,
                 })) return true; // Commit is final even if the new Run makes this settlement stale.
               } catch { /* Resume may still take over if planning remains current. */ }
             }
@@ -1264,7 +1265,8 @@ function registerComposedPindieExtension(
             try { return quotaResumePublisher({ type: "schedule", plan: quotaResumePlanFromRecoveryFacts(facts) }) === true; }
             catch { return false; }
           })().catch(() => false);
-        } else if (detectQuotaFallbackBackupFailure(branch) && fallbackController !== null && settlementSessionId !== null) {
+        } else if (fallbackController !== null && settlementSessionId !== null) {
+          // The Host checks the terminal error against its actual lease identity, not a stale context model.
           quotaSuccessorPromise = (async () => {
             if (!isCurrentSettlement()) return false;
             const plan = await fallbackController.backupFailed(settlementSessionId);
