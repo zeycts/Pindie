@@ -3,18 +3,17 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  DynamicBorder,
   type ExtensionAPI,
   type ExtensionContext,
-  type KeybindingsManager,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@earendil-works/pi-tui";
+import { SettingsMenu, type SettingsMenuTheme, type SettingsMenuKeybindings } from "./settings-menu.ts";
 import { QUOTA_RESUME_PREFERENCES_FILE_NAME } from "./quota-resume.ts";
 
 export const PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE = "pindie-quota-fallback-preference";
 export const QUOTA_FALLBACK_UNAVAILABLE_MESSAGE =
-  "DeepSeek V4.1 Flash is not currently available in Pi. Configure DeepSeek provider authentication, then retry.";
+  "DeepSeek Flash is not currently available in Pi. Configure DeepSeek provider authentication, then retry.";
 
 export interface QuotaFallbackPreferenceStore {
   loadDefault(): Promise<boolean>;
@@ -108,73 +107,30 @@ export interface QuotaFallbackSelectorResult {
   readonly kind: "session" | "default";
   readonly enabled: boolean;
 }
-interface SelectorTheme { fg(color: string, text: string): string; bold(text: string): string; }
-type SelectorKeybindings = Pick<KeybindingsManager, "matches" | "getKeys">;
-function displayKey(bindings: SelectorKeybindings, key: "tui.select.confirm" | "app.models.save" | "tui.select.cancel"): string {
-  return bindings.getKeys(key).map((binding) => binding.split("+").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("+")).join("/");
-}
-
-export class QuotaFallbackSelectorComponent extends Container {
-  private selectedIndex: number;
-  private readonly tui: Pick<TUI, "requestRender">;
-  private readonly theme: SelectorTheme;
-  private readonly keybindings: SelectorKeybindings;
-  private readonly sessionEnabled: boolean;
-  private readonly globalDefault: boolean;
-  private readonly onSelect: (result: QuotaFallbackSelectorResult) => void;
-  private readonly onCancel: () => void;
+export class QuotaFallbackSelectorComponent extends SettingsMenu<boolean> {
   constructor(
     tui: Pick<TUI, "requestRender">,
-    theme: SelectorTheme,
-    keybindings: SelectorKeybindings,
+    theme: SettingsMenuTheme,
+    keybindings: SettingsMenuKeybindings,
     sessionEnabled: boolean,
     globalDefault: boolean,
     onSelect: (result: QuotaFallbackSelectorResult) => void,
     onCancel: () => void,
   ) {
-    super();
-    this.tui = tui;
-    this.theme = theme;
-    this.keybindings = keybindings;
-    this.sessionEnabled = sessionEnabled;
-    this.globalDefault = globalDefault;
-    this.onSelect = onSelect;
-    this.onCancel = onCancel;
-    this.selectedIndex = sessionEnabled ? 0 : 1;
-    this.rebuild();
-  }
-  override invalidate(): void { super.invalidate(); this.rebuild(); }
-  handleInput(data: string): void {
-    if (this.keybindings.matches(data, "tui.select.up") || this.keybindings.matches(data, "tui.select.down")) {
-      this.selectedIndex = 1 - this.selectedIndex;
-      this.rebuild(); this.tui.requestRender();
-    } else if (this.keybindings.matches(data, "tui.select.confirm")) {
-      this.onSelect({ kind: "session", enabled: this.selectedIndex === 0 });
-    } else if (this.keybindings.matches(data, "app.models.save")) {
-      this.onSelect({ kind: "default", enabled: this.selectedIndex === 0 });
-    } else if (this.keybindings.matches(data, "tui.select.cancel")) this.onCancel();
-  }
-  private rebuild(): void {
-    this.clear();
-    this.addChild(new DynamicBorder((text: string) => this.theme.fg("border", text)));
-    this.addChild(new Spacer(1));
-    this.addChild(new Text(this.theme.fg("accent", this.theme.bold("Quota Fallback · DeepSeek V4.1 Flash")), 0, 0));
-    this.addChild(new Text(this.theme.fg("dim", "Pay-as-you-go backup after Codex quota exhaustion"), 0, 0));
-    this.addChild(new Spacer(1));
-    this.addChild(new Text(this.renderRow(true), 0, 0));
-    this.addChild(new Text(this.renderRow(false), 0, 0));
-    this.addChild(new Spacer(1));
-    this.addChild(new Text(this.theme.fg("dim", `${displayKey(this.keybindings, "tui.select.confirm")} to select · ${displayKey(this.keybindings, "app.models.save")} to set as default · ${displayKey(this.keybindings, "tui.select.cancel")} to cancel`), 0, 0));
-    this.addChild(new Spacer(1));
-    this.addChild(new DynamicBorder((text: string) => this.theme.fg("border", text)));
-  }
-  private renderRow(enabled: boolean): string {
-    const selected = (enabled ? 0 : 1) === this.selectedIndex;
-    const marker = this.globalDefault === enabled ? this.theme.fg("muted", " · default") : "";
-    const arrow = selected ? this.theme.fg("accent", "→ ") : "  ";
-    const check = this.sessionEnabled === enabled ? this.theme.fg("accent", "✓ ") : "  ";
-    const label = enabled ? "on" : "off";
-    return `${arrow}${check}${selected ? this.theme.fg("accent", label) : label}${marker}`;
+    super(tui, theme, keybindings, {
+      title: "Quota Fallback · DeepSeek Flash",
+      description: "Pay-as-you-go backup after Codex quota exhaustion",
+      status: [
+        `Current Session: ${sessionEnabled ? "on" : "off"} · saved default: ${globalDefault ? "on" : "off"}`,
+        "Future quota events only; active fallback unchanged. Uses source thinking via Pi.",
+      ],
+      choices: [{ value: true, label: "on" }, { value: false, label: "off" }],
+      currentValue: sessionEnabled,
+      defaultValue: globalDefault,
+      confirm: { hint: "to apply to current Session", run: (enabled) => onSelect({ kind: "session", enabled }) },
+      save: { hint: "to save global default + apply to current Session", run: (enabled) => onSelect({ kind: "default", enabled }) },
+      onCancel,
+    });
   }
 }
 

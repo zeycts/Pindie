@@ -79,11 +79,11 @@ test("selector renders paid fixed backup and markers; wraps and honors configure
     (result) => selected.push(result), () => { cancelled++; },
   );
   const initial = selector.render(100).join("\n");
-  assert.match(initial, /DeepSeek V4\.1 Flash/);
+  assert.match(initial, /DeepSeek Flash/);
   assert.match(initial, /Pay-as-you-go/);
   assert.match(initial, /→ ✓ on/);
   assert.match(initial, /off · default/);
-  assert.match(initial, /Ctrl\+X to set as default/);
+  assert.match(initial, /Ctrl\+X to save global default/);
   selector.handleInput("up");
   assert.match(selector.render(100).join("\n"), /→   off · default/);
   selector.handleInput("down");
@@ -115,7 +115,7 @@ function commandHarness(defaultValue = false, available = true) {
       return result;
     } },
   });
-  return { commands, appended, saved, preflights, notices, integration, ctx,
+  return { commands, appended, saved, preflights, notices, integration, ctx, store,
     setBranch: (value: SessionEntry[]) => { branch = value; },
     restoreSession: async () => integration.restoreSession(ctx(null) as any),
     restoreBranch: async () => integration.restoreBranch(ctx(null) as any),
@@ -178,6 +178,18 @@ test("cancel, args, non-TUI do not mutate; branch restore drops an absent Sessio
   assert.deepEqual(h.notices.map(({ message }) => message), ["Usage: /quota-fallback", "The /quota-fallback command requires TUI mode."]);
   h.setBranch([]); await h.restoreBranch();
   assert.equal(h.integration.quotaFallbackEnabled, false);
+});
+
+test("failed global save keeps fallback Session/default unchanged after ON preflight", async () => {
+  const h = commandHarness();
+  await h.restoreSession();
+  h.store.saveDefault = async () => { throw new Error("synthetic save failure"); };
+  await h.command("up,ctrl+x");
+  assert.deepEqual(h.preflights, ["session"]);
+  assert.deepEqual(h.appended, []);
+  assert.equal(h.integration.quotaFallbackEnabled, false);
+  assert.equal(h.integration.quotaFallbackDefault, false);
+  assert.match(h.notices.at(-1)!.message, /synthetic save failure/);
 });
 
 test("production composition shares existing global preferences path", () => {

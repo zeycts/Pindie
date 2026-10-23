@@ -6,6 +6,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+// Pinned native implementation: Pi exports the manager type, not its constructor.
+const { KeybindingsManager } = await import(new URL("./core/keybindings.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
+import type { SettingsMenu } from "../src/settings-menu.ts";
 import { composeConfiguredPindieExtension } from "../src/composition.ts";
 import { FileQuotaFallbackPreferenceStore } from "../src/quota-fallback.ts";
 import { FileQuotaResumePreferenceStore } from "../src/quota-resume.ts";
@@ -85,26 +88,49 @@ test("Discord Remote settings command saves only global preference, cancels safe
     registerDiscordRemotePreferenceCommand({ registerCommand(name, command) {
       assert.equal(name, "discord-remote"); handler = command.handler;
     } } as ExtensionAPI, store, true);
-    let selection: string | undefined = "off";
+    let input = ["\u001b[B", "\r"];
     const notices: string[] = [];
+    const screens: string[] = [];
+    const keybindings = new KeybindingsManager({ "app.models.save": ["ctrl+x", "alt+s"] });
     const ctx = { mode: "tui", ui: {
-      select: async (title: string, choices: string[]) => {
-        assert.match(title, /current Host on/); assert.deepEqual(choices, ["on", "off"]); return selection;
+      custom: async (factory: any) => {
+        let result: boolean | null | undefined;
+        const menu = factory({ requestRender() {} }, { fg: (_: string, text: string) => text, bold: (text: string) => text }, keybindings, (value: boolean | null) => { result = value; }) as SettingsMenu<boolean>;
+        screens.push(menu.render(180).join("\n"));
+        for (const key of input) menu.handleInput(key);
+        return result;
       }, notify: (message: string) => notices.push(message),
     } };
     await handler("", ctx);
     assert.equal(store.loadDefault(), false);
     assert.match(notices.at(-1)!, /Current Host unchanged; restart\/recreate/);
-    selection = undefined;
-    await handler("", ctx);
-    assert.equal(store.loadDefault(), false);
+    assert.match(screens[0]!, /Current Host: on · saved default: on/);
+    assert.match(screens[0]!, /Enter to save global default \(next Host\)/);
+    assert.match(screens[0]!, /Ctrl\+X\/Alt\+S to save global default/);
+    assert.doesNotMatch(screens[0]!, /apply to current Session/);
+    for (const cancel of ["\u001b", "\u0003"]) {
+      input = ["\u001b[A", cancel];
+      const before = await readFile(store.preferencesPath(), "utf8");
+      await handler("", ctx);
+      assert.equal(await readFile(store.preferencesPath(), "utf8"), before);
+    }
+    assert.match(screens[1]!, /Current Host: on · saved default: off/);
+    assert.match(screens[1]!, /  ✓ on/);
+    assert.match(screens[1]!, /→   off · default/);
     await handler("invalid", ctx);
     assert.match(notices.at(-1)!, /Usage/);
-    selection = "on";
+    input = ["\u001b[A", "\u0018"];
     await handler("", { ...ctx, mode: "print" });
     assert.equal(store.loadDefault(), false);
     await handler("", ctx);
     assert.equal(store.loadDefault(), true);
+    input = ["\u001b[B", "\u0013"]; // raw Ctrl+S is no longer bound
+    await handler("", ctx);
+    assert.equal(store.loadDefault(), true);
+    input = ["\u001b[B", "\u001bs"]; // second configured save binding
+    await handler("", ctx);
+    assert.equal(store.loadDefault(), false);
+    input = ["\r"];
     await writeFile(store.preferencesPath(), "broken");
     await handler("", ctx);
     assert.match(notices.at(-1)!, /Existing configuration was preserved/);

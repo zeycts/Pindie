@@ -317,7 +317,7 @@ credits are never automatically consumed.
 
 ### Quota Fallback
 
-`/quota-fallback` opts into the fixed pay-as-you-go DeepSeek V4.1 Flash backup
+`/quota-fallback` opts into the fixed pay-as-you-go DeepSeek Flash backup
 (`deepseek/deepseek-flash`); the default is **OFF**. Enter saves only the current
 Session's branch-local preference; the configured save binding (Ctrl+S by
 default) saves the Global default and appends the choice to the current Session.
@@ -348,6 +348,18 @@ lease. Human input, model selection, branch changes, and Session lifecycle
 changes cancel waiting; process exit loses it. At wake, Pi receives a hidden
 custom resume with `triggerTurn: true`, starting a fresh Agent Run in the same
 Session. The hidden message is runtime metadata, not user intent.
+
+### Settings menus (Phase 1)
+
+`/quota-fallback`, `/quota-resume` and `/discord-remote` share a presentation-only
+`SettingsMenu`: title/description, factual status, borders/theme colors, `→` cursor,
+`✓` current value and `· default` saved value. Help follows Pi's actual configured
+navigation, confirm, save and cancel bindings. Quota confirm applies to the current
+Session/branch; save persists the global default and applies to the current Session.
+Discord confirm **and** save persist only the global startup boolean, displaying
+current Host versus saved default and the next-Host activation boundary. Cancel
+writes nothing. No model/thinking picker, Project Memory switch, new preference
+store or hot activation is introduced. See [Remote startup semantics](remote-companion.md#3-configuration-and-security).
 
 ## 15. Global behavioral invariants
 

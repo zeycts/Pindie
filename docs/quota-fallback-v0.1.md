@@ -95,7 +95,7 @@ The fixed native catalog identity used by Pindie is:
 
 ```text
 deepseek/deepseek-flash
-= DeepSeek V4.1 Flash
+= DeepSeek Flash (version-neutral UI label)
 ```
 
 Pindie must use Pi's native model catalog and authentication path.
@@ -402,13 +402,22 @@ command: /quota-fallback
 backup:  deepseek/deepseek-flash
 ```
 
-The Pi InteractiveMode extension selector matches `/quota-resume`:
+The Pi InteractiveMode extension selector shares the lightweight, presentation-only
+`SettingsMenu` component with `/quota-resume` and `/discord-remote`. It receives
+choices, current/default values, status text and action callbacks; it does not read
+preferences or own activation. The Quota selectors retain their Session scope:
 
 ```text
 Enter   → current Session
 configured app.models.save (Ctrl+S by default) → Global default + current Session
 Esc     → cancel
 ```
+
+Navigation, confirm, save and cancel all use Pi's injected keybindings; help is
+generated from the actual bindings and menu-specific action labels. `→` marks the
+cursor, `✓` marks the current Session value, and `· default` marks the saved global
+value. Discord instead saves only a global next-Host preference on either confirm
+or save; it never pretends confirm applies a temporary Session override.
 
 Session preference entries (`pindie-quota-fallback-preference`, `{ enabled: boolean }`) follow current branch transcript truth. The Global default is `quotaFallback` in the shared `~/.pindie/global/preferences.json`, alongside `quotaAutoResume`; missing or invalid values fail closed to OFF. Saving preserves unrelated fields with atomic rename. ON performs an exact Pi model availability/auth preflight before either write; OFF needs no auth and does not cancel an active fallback lease. If auth disappears after enabling, the saved choice stays ON but a future fallback request fails closed to Resume.
 
