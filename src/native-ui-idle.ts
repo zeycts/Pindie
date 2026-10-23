@@ -10,12 +10,12 @@ const pendingMethods = [
 ] as const;
 const fields = [
   "isInitialized", "shutdownRequested", "pendingUserInputs", "activeSelectorToken",
-  "extensionSelector", "extensionInput", "extensionEditor", "editorContainer", "editor", "renderer",
+  "extensionDialogs", "editorContainer", "editor", "renderer",
 ] as const;
 
 /** Unknown versions/shapes or replaced instrumentation never authorize release. */
 export function observeNativeUiIdle(mode: unknown, version = VERSION): () => boolean {
-  if (version !== "1.3.0" || typeof mode !== "object" || mode === null) return () => false;
+  if (version !== "1.4.0" || typeof mode !== "object" || mode === null) return () => false;
   const target = mode as Record<string, unknown>;
   try {
     if (fields.some((key) => !Object.hasOwn(target, key)) ||
@@ -48,8 +48,8 @@ export function observeNativeUiIdle(mode: unknown, version = VERSION): () => boo
           [...installed].some(([key, value]) => target[key] !== value) ||
           target.isInitialized !== true || target.shutdownRequested !== false ||
           !Array.isArray(target.pendingUserInputs) || target.pendingUserInputs.length !== 0 ||
-          target.activeSelectorToken !== undefined || target.extensionSelector !== undefined ||
-          target.extensionInput !== undefined || target.extensionEditor !== undefined) return false;
+          target.activeSelectorToken !== undefined || !Array.isArray(target.extensionDialogs) ||
+          target.extensionDialogs.length !== 0) return false;
       const renderer = target.renderer as { hasOverlayEntries?: unknown } | undefined;
       const container = target.editorContainer as { children?: unknown } | undefined;
       // Synchronous native selectors/auth dialogs replace the composer. Custom

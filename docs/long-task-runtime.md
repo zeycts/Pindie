@@ -225,20 +225,21 @@ CommittedRolloverRequest
 
 The concrete wiring is a tiny process-local, non-durable, session-bound control bridge. It is not a generic event bus and carries no Task authority, planner state, or LLM logic.
 
-### Pi 0.84.4 compatibility boundary
+### Historical Pi 0.84.4 compatibility boundary
 
-The pinned Pi 0.84.4 runtime starts an idle `sendCustomMessage(...,
+The former pinned Pi 0.84.4 runtime starts an idle `sendCustomMessage(...,
 { triggerTurn: true })` by entering its agent loop directly. That native path
 does not run the `before_agent_start` preflight that Pindie uses to establish
-Run authority and the Run Baseline. Pindie therefore carries a small pnpm
+Run authority and the Run Baseline. Pindie therefore carried a small pnpm
 patch at the Pi runtime boundary that applies the existing preflight to this
 one custom-trigger path while preserving the custom runtime-message role.
 The patch does not copy Pi's Agent Loop or change Pindie semantic ownership.
 
-Remove the patch once the pinned Pi release includes the shared turn-start
-preflight described by [Pi PR #8262](https://github.com/earendil-works/pi/pull/8262),
-after conformance tests confirm that an idle custom runtime turn dispatches
-the normal Pindie `before_agent_start` path. Pi's native
+The patch was retired in Pi 1.3.0 after native conformance tests confirmed the
+shared turn-start preflight described by [Pi PR #8262](https://github.com/earendil-works/pi/pull/8262).
+Current pristine Pi 1.4.0 still passes the idle custom-trigger preflight contract;
+see the [current compatibility audit](pi-1.4.0-compatibility.md). No downstream
+patch is installed. Pi's native
 `sendCustomMessage()` Promise still represents the full triggered run in
 0.84.4, so the Host starts it without awaiting that Promise and observes a
 later rejection fail-closed.

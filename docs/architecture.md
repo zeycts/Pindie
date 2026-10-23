@@ -599,8 +599,8 @@ settled Session facts (no streaming, compaction, pending messages or bash), know
 State, no Human Gate/quota wait, and no pending UI interaction. Browser calls and
 ordinary agent starts refresh activity. Owned UI exposes its current overlay,
 queued-dialog and pending-picker facts. Native UI uses human-approved bounded
-per-instance Pi 1.3.0 instrumentation: pending UI promises include asynchronous
-custom factories before mounting; selector/editor/overlay facts cover mounted
+per-instance Pi 1.4.0 instrumentation: pending UI promises include asynchronous
+custom factories before mounting; dialog-stack/editor/overlay facts cover mounted
 native interactions. Unknown versions, changed shapes or replaced wrappers
 prevent automatic release. There are no prototype/global patches or new policy
 loop, and this observer grants no tool execution authority.
