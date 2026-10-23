@@ -8,9 +8,9 @@ function fixture() {
   // Session or model is started; only UI facts are supplied by the fixture.
   const mode = Object.assign(Object.create(InteractiveMode.prototype), {
     isInitialized: true, shutdownRequested: false, pendingUserInputs: [],
-    activeSelectorToken: undefined, extensionSelector: undefined, extensionInput: undefined,
-    extensionEditor: undefined, editor: {}, editorContainer: { children: [] as unknown[] },
-    renderer: { hasOverlayEntries: false },
+    activeSelectorToken: undefined, extensionDialogs: [],
+    editor: {}, editorContainer: { children: [] as unknown[] },
+    renderer: { hasOverlayEntries: false }, programStatus: { setBlocked: () => {} },
   });
   mode.editorContainer.children = [mode.editor];
   return mode;
@@ -20,6 +20,8 @@ test("native UI authority is pinned, instance-local, and fail closed on unknown 
   const mode = fixture();
   const original = mode.showExtensionCustom;
   assert.equal(observeNativeUiIdle(mode, "future")(), false);
+  assert.equal(mode.showExtensionCustom, original);
+  assert.equal(observeNativeUiIdle(mode, "1.3.0")(), false);
   assert.equal(mode.showExtensionCustom, original);
   assert.equal(observeNativeUiIdle({})(), false);
   assert.equal(observeNativeUiIdle(new Proxy({}, { getOwnPropertyDescriptor() { throw new Error("unknown shape"); } }))(), false);
@@ -37,9 +39,9 @@ test("native selectors, overlays, queued input, initialization and shutdown bloc
     (m: ReturnType<typeof fixture>) => { m.editorContainer.children = [{}]; },
     (m: ReturnType<typeof fixture>) => { m.pendingUserInputs.push("queued"); },
     (m: ReturnType<typeof fixture>) => { m.activeSelectorToken = Symbol(); },
-    (m: ReturnType<typeof fixture>) => { m.extensionSelector = {}; },
-    (m: ReturnType<typeof fixture>) => { m.extensionInput = {}; },
-    (m: ReturnType<typeof fixture>) => { m.extensionEditor = {}; },
+    (m: ReturnType<typeof fixture>) => { m.extensionDialogs = [{ component: {} }]; },
+    (m: ReturnType<typeof fixture>) => { m.extensionDialogs = {}; },
+    (m: ReturnType<typeof fixture>) => { m.extensionDialogs = null; },
     (m: ReturnType<typeof fixture>) => { m.isInitialized = false; },
     (m: ReturnType<typeof fixture>) => { m.shutdownRequested = true; },
     (m: ReturnType<typeof fixture>) => { m.renderer = {}; },
@@ -47,7 +49,7 @@ test("native selectors, overlays, queued input, initialization and shutdown bloc
     (m: ReturnType<typeof fixture>) => { m.editor = "unknown"; m.editorContainer.children = [m.editor]; },
     (m: ReturnType<typeof fixture>) => { m.editor = () => {}; m.editorContainer.children = [m.editor]; },
     (m: ReturnType<typeof fixture>) => { m.renderer = Object.assign(() => {}, { hasOverlayEntries: false }); },
-    (m: ReturnType<typeof fixture>) => { delete m.extensionInput; },
+    (m: ReturnType<typeof fixture>) => { delete m.extensionDialogs; },
     (m: ReturnType<typeof fixture>) => { Object.defineProperty(m.renderer, "hasOverlayEntries", { get() { throw new Error("unknown"); } }); },
   ]) {
     const mode = fixture();
@@ -98,6 +100,43 @@ test("actual pinned custom UI protects the pre-mount factory gap and mounted lif
   done();
   await waiting;
   assert.equal(idle(), true);
+});
+
+test("actual Pi 1.4 stacked custom dialogs restore the previous dialog and block release until both settle", async () => {
+  for (const closeTopFirst of [true, false]) {
+    const mode = fixture();
+    mode.editor = { getText: () => "draft", setText: () => {} };
+    mode.editorContainer = {
+      children: [mode.editor],
+      clear() { this.children = []; },
+      addChild(child: unknown) { this.children.push(child); },
+    };
+    mode.ui = { setFocus: () => {}, requestRender: () => {} };
+    const idle = observeNativeUiIdle(mode);
+    const components = [{}, {}];
+    const close: (() => void)[] = [];
+    const pending = components.map((component, i) => mode.showExtensionCustom(
+      (_ui: unknown, _theme: unknown, _keys: unknown, done: () => void) => {
+        close[i] = done;
+        return component;
+      },
+    ));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(mode.extensionDialogs.length, 2);
+    assert.equal(mode.editorContainer.children[0], components[1]);
+    assert.equal(idle(), false);
+    const first = closeTopFirst ? 1 : 0;
+    close[first]();
+    await pending[first];
+    assert.equal(mode.extensionDialogs.length, 1);
+    assert.equal(mode.editorContainer.children[0], components[1 - first]);
+    assert.equal(idle(), false);
+    close[1 - first]();
+    await pending[1 - first];
+    assert.equal(mode.extensionDialogs.length, 0);
+    assert.equal(mode.editorContainer.children[0], mode.editor);
+    assert.equal(idle(), true);
+  }
 });
 
 test("native UI rejection and synchronous exceptions preserve errors and release pending count", async () => {

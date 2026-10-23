@@ -448,6 +448,31 @@ test("Pi 1.3.0 resume preserves recorded active tools; explicit and +/- selectio
   } finally { await disposeHarness(harness); }
 });
 
+test("Pi 1.4.0 resume activates newly registered tools except defaultActive false, preserving recorded removals", async () => {
+  const harness = await createRealPiHarness(undefined, [compatibilityTool]);
+  try {
+    harness.faux.setResponses([fauxAssistantMessage("record initial tools")]);
+    await harness.session.prompt("record the initial active tool");
+    // Seed the persisted declaration being replayed, not just a live loadout edit:
+    // a run's rebuilt system head may omit a tool rather than record its removal.
+    harness.session.sessionManager.appendMessage({
+      role: "system", content: "recorded tool removal", timestamp: Date.now(),
+      toolsRemoved: [{ name: compatibilityTool.name }],
+    });
+    const { session } = await createAgentSession({
+      cwd: join(harness.root, "project"), agentDir: join(harness.root, "agent"),
+      modelRuntime: harness.session.modelRuntime, model: harness.faux.getModel(),
+      resourceLoader: harness.session.resourceLoader, sessionManager: harness.session.sessionManager,
+      customTools: [compatibilityTool,
+        { ...compatibilityTool, name: "new-active-tool" },
+        { ...compatibilityTool, name: "new-inactive-tool", defaultActive: false }],
+    });
+    try {
+      assert.deepEqual(session.getActiveToolNames(), ["new-active-tool"]);
+    } finally { session.dispose(); }
+  } finally { await disposeHarness(harness); }
+});
+
 test("Pi 1.3.0 custom prompt override and injected context survive a tool round trip", async () => {
   let preflights = 0;
   const contexts: { messages?: readonly unknown[] }[] = [];
