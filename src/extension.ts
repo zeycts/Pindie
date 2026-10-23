@@ -44,6 +44,7 @@ import { PINDIE_REMOTE_NOTICE_TYPE, renderPindieRemoteNotice } from "./remote-no
 import type { RemoteCompanion, RemotePi, RemoteStatusFacts } from "./remote-companion.ts";
 import { classifyHumanSignal } from "./human-signal.ts";
 import type { DiscordRemote } from "./discord-remote.ts";
+import { FileDiscordRemotePreferenceStore, registerDiscordRemotePreferenceCommand } from "./remote-preference.ts";
 import type { RemoteRoutingStore } from "./remote-routing.ts";
 import type { ProjectMemorySink } from "./project-memory.ts";
 import { resolveProjectRoot as defaultResolveProjectRoot } from "./project.ts";
@@ -1354,6 +1355,8 @@ export function registerConfiguredPindieExtension(
 ): PindieExtensionIntegration {
   const composition = composePindieExtension(options, { configureOptionalFeatures: true, env });
   for (const warning of composition.warnings) console.warn(warning);
+  registerDiscordRemotePreferenceCommand(pi,
+    new FileDiscordRemotePreferenceStore(composition.storageRoots.globalBaseDir), composition.featureSelection.remote);
   return registerComposedPindieExtension(
     pi,
     composition.extensionOptions,

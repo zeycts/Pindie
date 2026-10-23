@@ -19,7 +19,7 @@ Pindie does not add a second Agent Loop, workflow engine, persisted phase machin
 
 ### Stable composition boundary
 
-`composition.ts` owns startup selection, explicit storage roots/default dependencies and narrow wiring. Core never imports the composition root or optional Discord/Notion adapters. Disabled features contribute no tools, commands, hooks, prompts or hidden adapter loads. Remote, Work Memory, bundled Skills and Presentation keep independent selection.
+`composition.ts` owns startup selection, explicit storage roots/default dependencies and narrow wiring. Core never imports the composition root or optional Discord/Notion adapters. Disabled features contribute no runtime tools, hooks, prompts or hidden adapter loads. The configured shell may retain a startup-settings command (`/discord-remote`) so users can re-enable an absent feature; it does not activate the adapter or write Session entries. Remote, Work Memory, bundled Skills and Presentation keep independent selection.
 
 Core includes State/Task/Gate/Verification, Snapshot/capabilities, Gateway/mutation/evidence, Run identity/coherence, continuation and continuity. Native Pi, State safety, Handoff/Rollover and Host Task metrics are not optional. Disabling Presentation must not disable measurements, counters or completion summaries. Do not infer feature storage from a concrete StateStore type.
 

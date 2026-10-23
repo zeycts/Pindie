@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { discordRemoteConfig, type DiscordRemoteConfigResult } from "./remote-config.ts";
 import { NOTION_PROJECT_MEMORY_API_VERSION, notionProjectMemoryConfig, type NotionProjectMemoryConfigResult } from "./notion-project-memory-config.ts";
 import { RemoteRoutingStore } from "./remote-routing.ts";
+import { FileDiscordRemotePreferenceStore } from "./remote-preference.ts";
 import { FileStateStore, FileTaskContinuityStore } from "./store.ts";
 import type { PindieExtensionOptions } from "./extension.ts";
 import { FileQuotaResumePreferenceStore } from "./quota-resume.ts";
@@ -80,8 +81,17 @@ export function composePindieExtension(input: PindieExtensionOptions = {}, confi
   const env = config.env ?? process.env;
   const roots = resolvePindieStorageRoots(input.storageRoots);
   const configuredMemory = config.configureOptionalFeatures === true ? notionProjectMemoryConfig(env) : null;
-  const configuredRemote = config.configureOptionalFeatures === true ? discordRemoteConfig(env) : null;
-  const selection = resolvePindieFeatureSelection(input.featureSelection, {
+  let remoteAllowed = true;
+  const preferenceWarnings: string[] = [];
+  if (config.configureOptionalFeatures === true) {
+    try { remoteAllowed = new FileDiscordRemotePreferenceStore(roots.globalBaseDir).loadDefault(); }
+    catch {
+      remoteAllowed = false;
+      preferenceWarnings.push("Pindie Discord Remote is disabled: preferences could not be read.");
+    }
+  }
+  const configuredRemote = config.configureOptionalFeatures === true && remoteAllowed ? discordRemoteConfig(env) : null;
+  const selection = resolvePindieFeatureSelection(remoteAllowed ? input.featureSelection : { ...input.featureSelection, remote: false }, {
     remote: input.remoteCompanion !== undefined || configuredRemote?.enabled === true,
     workMemory: input.projectMemorySink !== undefined || configuredMemory?.enabled === true,
   }, env);
@@ -126,7 +136,7 @@ export function composePindieExtension(input: PindieExtensionOptions = {}, confi
     featureSelection: selection, storageRoots: roots,
   };
   return Object.freeze({ featureSelection: selection, storageRoots: roots, remoteRoutingStore: remoteRoutingStore ?? null,
-    extensionOptions, warnings: Object.freeze(configuredWarnings(configuredMemory, configuredRemote)) });
+    extensionOptions, warnings: Object.freeze([...preferenceWarnings, ...configuredWarnings(configuredMemory, configuredRemote)]) });
 }
 export function composeConfiguredPindieExtension(input: PindieExtensionOptions = {}, env: Record<string, string | undefined> = process.env): PindieComposition {
   return composePindieExtension(input, { configureOptionalFeatures: true, env });
