@@ -7,10 +7,9 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
-  KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
-import { Container, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@earendil-works/pi-tui";
+import { SettingsMenu, type SettingsMenuTheme, type SettingsMenuKeybindings } from "./settings-menu.ts";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 export const PINDIE_QUOTA_RESUME_PREFERENCE_TYPE = "pindie-quota-resume-preference";
@@ -149,108 +148,28 @@ export interface QuotaResumeSelectorResult {
   readonly enabled: boolean;
 }
 
-interface QuotaResumeTheme {
-  fg(color: string, text: string): string;
-  bold(text: string): string;
-}
-
-type QuotaResumeKeybindings = Pick<KeybindingsManager, "matches" | "getKeys">;
-
-function formatKeyPart(part: string): string {
-  return part.charAt(0).toUpperCase() + part.slice(1);
-}
-
-function formatKeys(keys: readonly string[]): string {
-  return keys.map((key) => key.split("+").map(formatKeyPart).join("+")).join("/");
-}
-
-function displayKey(keybindings: QuotaResumeKeybindings, key: "tui.select.confirm" | "app.models.save" | "tui.select.cancel"): string {
-  return formatKeys(keybindings.getKeys(key));
-}
-
-export class QuotaResumeSelectorComponent extends Container {
-  private selectedIndex: number;
-  private readonly tui: Pick<TUI, "requestRender">;
-  private readonly theme: QuotaResumeTheme;
-  private readonly keybindings: QuotaResumeKeybindings;
-  private readonly sessionEnabled: boolean;
-  private readonly globalDefault: boolean;
-  private readonly onSelect: (result: QuotaResumeSelectorResult) => void;
-  private readonly onCancel: () => void;
+export class QuotaResumeSelectorComponent extends SettingsMenu<boolean> {
 
   constructor(
     tui: Pick<TUI, "requestRender">,
-    theme: QuotaResumeTheme,
-    keybindings: QuotaResumeKeybindings,
+    theme: SettingsMenuTheme,
+    keybindings: SettingsMenuKeybindings,
     sessionEnabled: boolean,
     globalDefault: boolean,
     onSelect: (result: QuotaResumeSelectorResult) => void,
     onCancel: () => void,
   ) {
-    super();
-    this.tui = tui;
-    this.theme = theme;
-    this.keybindings = keybindings;
-    this.sessionEnabled = sessionEnabled;
-    this.globalDefault = globalDefault;
-    this.onSelect = onSelect;
-    this.onCancel = onCancel;
-    this.selectedIndex = sessionEnabled ? 0 : 1;
-    this.rebuild();
-  }
-
-  override invalidate(): void {
-    super.invalidate();
-    this.rebuild();
-  }
-
-  handleInput(data: string): void {
-    if (this.keybindings.matches(data, "tui.select.up")) {
-      this.selectedIndex = this.selectedIndex === 0 ? 1 : 0;
-      this.rebuild();
-      this.tui.requestRender();
-    } else if (this.keybindings.matches(data, "tui.select.down")) {
-      this.selectedIndex = this.selectedIndex === 1 ? 0 : 1;
-      this.rebuild();
-      this.tui.requestRender();
-    } else if (this.keybindings.matches(data, "tui.select.confirm")) {
-      this.onSelect({ kind: "session", enabled: this.selectedIndex === 0 });
-    } else if (this.keybindings.matches(data, "app.models.save")) {
-      this.onSelect({ kind: "default", enabled: this.selectedIndex === 0 });
-    } else if (this.keybindings.matches(data, "tui.select.cancel")) {
-      this.onCancel();
-    }
-  }
-
-  private rebuild(): void {
-    this.clear();
-    this.addChild(new DynamicBorder((text: string) => this.theme.fg("border", text)));
-    this.addChild(new Spacer(1));
-    this.addChild(new Text(this.theme.fg("accent", this.theme.bold("Auto Resume After Quota Reset")), 0, 0));
-    this.addChild(new Spacer(1));
-    this.addChild(new Text(this.renderRow(true), 0, 0));
-    this.addChild(new Text(this.renderRow(false), 0, 0));
-    this.addChild(new Spacer(1));
-    const confirm = displayKey(this.keybindings, "tui.select.confirm");
-    const save = displayKey(this.keybindings, "app.models.save");
-    const cancel = displayKey(this.keybindings, "tui.select.cancel");
-    this.addChild(new Text(
-      this.theme.fg("dim", `${confirm} to select · ${save} to set as default · ${cancel} to cancel`),
-      0,
-      0,
-    ));
-    this.addChild(new Spacer(1));
-    this.addChild(new DynamicBorder((text: string) => this.theme.fg("border", text)));
-  }
-
-  private renderRow(enabled: boolean): string {
-    const selected = (enabled ? 0 : 1) === this.selectedIndex;
-    const current = this.sessionEnabled === enabled;
-    const defaultMarker = this.globalDefault === enabled ? this.theme.fg("muted", " · default") : "";
-    const arrow = selected ? this.theme.fg("accent", "→ ") : "  ";
-    const check = current ? this.theme.fg("accent", "✓ ") : "  ";
-    const label = selected ? this.theme.fg("accent", enabled ? "on" : "off") : enabled ? "on" : "off";
-    return `${arrow}${check}${label}${defaultMarker}`;
+    super(tui, theme, keybindings, {
+      title: "Quota Resume",
+      description: "Auto Resume After Quota Reset · continue the same Session after confirmed Codex quota reset",
+      status: [`Current Session: ${sessionEnabled ? "on" : "off"} · saved default: ${globalDefault ? "on" : "off"}`],
+      choices: [{ value: true, label: "on" }, { value: false, label: "off" }],
+      currentValue: sessionEnabled,
+      defaultValue: globalDefault,
+      confirm: { hint: "to apply to current Session", run: (enabled) => onSelect({ kind: "session", enabled }) },
+      save: { hint: "to save global default + apply to current Session", run: (enabled) => onSelect({ kind: "default", enabled }) },
+      onCancel,
+    });
   }
 }
 

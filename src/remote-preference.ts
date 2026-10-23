@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SettingsMenu } from "./settings-menu.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -71,13 +72,26 @@ export function registerDiscordRemotePreferenceCommand(
       }
       try {
         const saved = store.loadDefault();
-        const selected = await ctx.ui.select(
-          `Discord Remote · current Host ${startupEnabled ? "on" : "off"} · saved ${saved ? "on" : "off"} · applies to next Host`,
-          ["on", "off"],
-        );
-        if (selected !== "on" && selected !== "off") return;
-        await store.saveDefault(selected === "on");
-        ctx.ui.notify(`Discord Remote default saved: ${selected}. Current Host unchanged; restart/recreate the Host to apply.`, "info");
+        const selected = await ctx.ui.custom<boolean | null>((tui, theme, keybindings, done) => new SettingsMenu(
+          tui, theme, keybindings, {
+            title: "Discord Remote",
+            description: "Global startup preference · applies to next Host, not the current Host",
+            status: [
+              `Current Host: ${startupEnabled ? "on" : "off"} · saved default: ${saved ? "on" : "off"}`,
+              "Saving does not start, stop or reconfigure Discord in this Host.",
+            ],
+            choices: [{ value: true, label: "on" }, { value: false, label: "off" }],
+            currentValue: startupEnabled,
+            defaultValue: saved,
+            initialValue: saved,
+            confirm: { hint: "to save global default (next Host)", run: done },
+            save: { hint: "to save global default (next Host)", run: done },
+            onCancel: () => done(null),
+          },
+        ));
+        if (selected === null || selected === undefined) return;
+        await store.saveDefault(selected);
+        ctx.ui.notify(`Discord Remote default saved: ${selected ? "on" : "off"}. Current Host unchanged; restart/recreate the Host to apply.`, "info");
       } catch {
         ctx.ui.notify("Could not update Discord Remote preferences. Existing configuration was preserved.", "error");
       }

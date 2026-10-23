@@ -76,8 +76,12 @@ Composition's explicit `globalBaseDir` storage root is honored.
 
 For users temporarily not using Discord, set **`discordRemote: false`** while
 preserving all other preference fields. In the native TUI, `/discord-remote` opens
-an on/off selector and saves this global preference atomically. Cancel writes
-nothing; saving preserves unrelated preferences. Unlike quota's Session-scoped
+the shared SettingsMenu on/off selector. Both the configured confirm binding
+(Enter by default) and `app.models.save` (Ctrl+S by default) save this global
+preference atomically; configured cancel (Esc/Ctrl+C by default) writes nothing.
+Saving preserves unrelated preferences. The status area distinguishes current
+Host enabled from saved default; `✓` marks the current Host, `· default` marks the
+saved value, and `→` starts on the saved value. Saving never reads Discord credentials. Unlike quota's Session-scoped
 selection, this startup-only setting never appends a Pi Session entry and has no
 per-Session override. The settings command remains available while Remote is off.
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 
 import {
   FileQuotaResumePreferenceStore,
@@ -243,7 +243,7 @@ test("quota selector honors configured app.models.save instead of raw Ctrl+S", (
     (result) => selected.push(result),
     () => undefined,
   );
-  assert.match(component.render(100).join("\n"), /Ctrl\+X to set as default/);
+  assert.match(component.render(100).join("\n"), /Ctrl\+X to save global default/);
   component.handleInput("ctrl+s");
   assert.deepEqual(selected, []);
   component.handleInput("ctrl+x");
@@ -317,6 +317,24 @@ test("session_start reloads Global before current branch and session_tree rederi
   branch = [];
   await integration.restoreBranch(context as any);
   assert.equal(integration.quotaAutoResumeEnabled, false);
+});
+
+test("failed global save keeps resume Session/default and runtime callback unchanged", async () => {
+  const pi = new TestPi();
+  const store = new TestStore(false);
+  let changed = 0;
+  const integration = registerQuotaResumeIntegration(pi as unknown as ExtensionAPI, store, {
+    onPreferenceChanged: () => { changed++; },
+  });
+  const ctx = commandContext([], (menu) => { menu.handleInput("up"); menu.handleInput("ctrl+x"); });
+  await integration.restoreSession(ctx as unknown as ExtensionContext);
+  store.saveDefault = async () => { throw new Error("synthetic save failure"); };
+  await pi.commands.get("quota-resume").handler("", ctx);
+  assert.deepEqual(pi.appendedEntries, []);
+  assert.equal(integration.quotaAutoResumeEnabled, false);
+  assert.equal(integration.quotaAutoResumeDefault, false);
+  assert.equal(changed, 0);
+  assert.match(ctx.notifications.at(-1)!.message, /synthetic save failure/);
 });
 
 test("composition creates the quota preference store under the existing global root", () => {
