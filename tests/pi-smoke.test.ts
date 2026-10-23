@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { access, mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -60,6 +60,31 @@ test("short-lived child captures both output streams before returning", { skip: 
   assert.match(result.stderrTail, /err/);
 });
 
+for (const replaceParent of [false, true]) {
+  test(`smoke cleanup refuses a ${replaceParent ? "redirected namespace" : "replaced workspace"}`, { skip: skipWindows }, async (t) => {
+    const root = await fixture(t);
+    const outside = join(root, "foreign");
+    await mkdir(outside);
+    const program = `const fs = require('node:fs'), path = require('node:path');
+      const workspace = process.env.PINDIE_SMOKE_DIR;
+      if (${replaceParent}) {
+        const parent = path.dirname(workspace);
+        fs.renameSync(parent, parent + '-original');
+        fs.mkdirSync(path.join(process.env.OUTSIDE, path.basename(workspace)));
+        fs.symlinkSync(process.env.OUTSIDE, parent);
+      } else {
+        fs.renameSync(workspace, workspace + '-original');
+        fs.symlinkSync(process.env.OUTSIDE, workspace);
+      }
+      fs.writeFileSync(path.join(process.env.OUTSIDE, 'keep'), 'foreign');`;
+    await assert.rejects(runOwnedSmoke({
+      label: "path-safety", command: process.execPath, args: ["-e", program], baseTempDir: root, env: { OUTSIDE: outside },
+    }), /cleanup refused/);
+    assert.equal(await readFile(join(outside, "keep"), "utf8"), "foreign");
+    if (replaceParent) assert.equal((await readdir(outside)).length, 2, "foreign matching workspace must not be removed");
+  });
+}
+
 test("EH03 non-zero child preserves its meaningful result and cleans workspace", { skip: skipWindows }, async (t) => {
   const root = await fixture(t);
   const result = await runOwnedSmoke({ label: "failure", command: process.execPath, args: ["-e", "process.exit(17)"], baseTempDir: root });
@@ -106,6 +131,28 @@ test("EH05 timeout kills the spawn-owned descendant group without touching this 
   assert.doesNotThrow(() => process.kill(process.pid, 0));
   assert.equal(await exists(result.workspace), false);
 });
+
+for (const stdio of ["inherit", "ignore"]) {
+  test(`exited smoke leader with ${stdio} descendant pipes retains live-owned scratch without hanging`, { skip: skipWindows }, async (t) => {
+    const root = await fixture(t);
+    const descendant = "setTimeout(() => require('node:fs').writeFileSync(require('node:path').join(process.env.PINDIE_SMOKE_DIR, 'descendant-finished'), 'safe'), 2000)";
+    const program = `const child = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: '${stdio}' }); child.unref();`;
+    const started = Date.now();
+    try {
+      await assert.rejects(runOwnedSmoke({
+        label: "exited-leader", command: process.execPath, args: ["-e", program], timeoutMs: 500, baseTempDir: root,
+      }), /[Ww]orkspace retained/);
+      assert.equal(Date.now() - started < 1900, true, "output deadline/group confirmation must remain bounded");
+    } finally {
+      // This test deliberately creates a finite background writer. Wait for it
+      // even if assertions fail, before the fixture's owned-root cleanup runs.
+      await new Promise((resolve) => setTimeout(resolve, 2300));
+    }
+    const [name] = await readdir(smokeRoot(root));
+    assert.ok(name);
+    assert.equal(await readFile(join(smokeRoot(root), name, "descendant-finished"), "utf8"), "safe");
+  });
+}
 
 test("EH06 keep-artifacts preserves only files after timeout cleanup", { skip: skipWindows }, async (t) => {
   const root = await fixture(t);
