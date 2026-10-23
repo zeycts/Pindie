@@ -68,12 +68,9 @@ export class SettingsMenu<Value> extends Container {
     const text = (value: string, color = "dim") => this.addChild(new Text(this.theme.fg(color, value), 0, 0));
     const border = () => this.addChild(new DynamicBorder((value: string) => this.theme.fg("border", value)));
     border();
-    this.addChild(new Spacer(1));
     text(this.theme.bold(this.options.title), "accent");
     text(this.options.description);
-    this.addChild(new Spacer(1));
-    for (const line of this.options.status) text(line);
-    this.addChild(new Spacer(1));
+    for (const line of this.options.status) text(line, "warning");
     this.options.choices.forEach((choice, index) => {
       const selected = index === this.selectedIndex;
       const arrow = selected ? this.theme.fg("accent", "→ ") : "  ";
@@ -87,14 +84,14 @@ export class SettingsMenu<Value> extends Container {
       const keys = this.keybindings.getKeys(action);
       return keys.length ? [`${keys.map((key) => key.split("+").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("+")).join("/")} ${label}`] : [];
     };
-    for (const line of [
-      ...hint("tui.select.up", "to move up"),
-      ...hint("tui.select.down", "to move down"),
+    // One horizontal help row; native Text wraps ANSI-aware at the render width.
+    const navigation = [hint("tui.select.up", ""), hint("tui.select.down", "")].flat().map((key) => key.trim());
+    text([
+      ...(navigation.length ? [`${navigation.join("/")} Move`] : []),
       ...hint("tui.select.confirm", this.options.confirm.hint),
       ...hint("app.models.save", this.options.save.hint),
-      ...hint("tui.select.cancel", "to cancel (no changes)"),
-    ]) text(line);
-    this.addChild(new Spacer(1));
+      ...hint("tui.select.cancel", "Cancel (no save)"),
+    ].join(" · "));
     border();
   }
 }

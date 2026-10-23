@@ -75,17 +75,16 @@ export function registerDiscordRemotePreferenceCommand(
         const selected = await ctx.ui.custom<boolean | null>((tui, theme, keybindings, done) => new SettingsMenu(
           tui, theme, keybindings, {
             title: "Discord Remote",
-            description: "Global startup preference · applies to next Host, not the current Host",
-            status: [
-              `Current Host: ${startupEnabled ? "on" : "off"} · saved default: ${saved ? "on" : "off"}`,
-              "Saving does not start, stop or reconfigure Discord in this Host.",
+            description: "Discord Remote access · saved changes apply to next Host.",
+            status: startupEnabled === saved ? [] : [
+              `Host: ${startupEnabled ? "on" : "off"} · Saved: ${saved ? "on" : "off"} · Restart required`,
             ],
             choices: [{ value: true, label: "on" }, { value: false, label: "off" }],
             currentValue: startupEnabled,
             defaultValue: saved,
             initialValue: saved,
-            confirm: { hint: "to save global default (next Host)", run: done },
-            save: { hint: "to save global default (next Host)", run: done },
+            confirm: { hint: "Save default (next Host)", run: done },
+            save: { hint: "Save default (next Host)", run: done },
             onCancel: () => done(null),
           },
         ));

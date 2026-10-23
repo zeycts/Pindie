@@ -4,6 +4,8 @@ import test from "node:test";
 const { KeybindingsManager } = await import(new URL("./core/keybindings.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { SettingsMenu } from "../src/settings-menu.ts";
+import { QuotaFallbackSelectorComponent } from "../src/quota-fallback.ts";
+import { QuotaResumeSelectorComponent } from "../src/quota-resume.ts";
 
 const theme = { fg: (_: string, text: string) => text, bold: (text: string) => text };
 
@@ -28,8 +30,8 @@ test("SettingsMenu separates cursor/current/default, wraps choices and uses real
   assert.match(initial, /→   Beta · default/);
   assert.match(initial, /Alt\+Enter to apply locally/);
   assert.match(initial, /Ctrl\+X\/Alt\+S to save globally/);
-  assert.match(initial, /Ctrl\+Q\/Alt\+C to cancel \(no changes\)/);
-  assert.match(initial, /Alt\+K to move up/);
+  assert.match(initial, /Ctrl\+Q\/Alt\+C Cancel \(no save\)/);
+  assert.match(initial, /Alt\+K\/Alt\+J Move/);
   for (const key of ["\r", "\u0013", "\u001b", "\u001b[B"]) menu.handleInput(key);
   assert.deepEqual(results, []); // no hardcoded Enter, Ctrl+S, Escape or arrows
   menu.handleInput("\u001bj");
@@ -43,9 +45,33 @@ test("SettingsMenu separates cursor/current/default, wraps choices and uses real
   menu.handleInput("\u001bc");
   assert.deepEqual(results, ["local:c", "global:c", "global:c", "cancel", "cancel"]);
   assert.equal(renders, 3);
-  for (const width of [16, 40, 100]) {
+  assert.equal(menu.render(200).length, 10); // borders, title, description, status, three choices, spacer, one help row
+  for (const width of [1, 2, 8, 16, 40, 80, 100, 200]) {
     menu.invalidate();
     for (const line of menu.render(width)) assert.ok(visibleWidth(line) <= width);
+  }
+});
+
+test("quota boolean menus stay compact and show only divergent Session/default status", () => {
+  for (const Component of [QuotaFallbackSelectorComponent, QuotaResumeSelectorComponent]) {
+    for (const current of [true, false]) for (const saved of [true, false]) {
+      const menu = new Component({ requestRender() {} }, theme, new KeybindingsManager(), current, saved, () => {}, () => {});
+      const lines = menu.render(200);
+      const screen = lines.join("\n");
+      assert.equal(lines.length, current === saved ? 8 : 9);
+      assert.equal(lines[1]!.trim(), Component === QuotaFallbackSelectorComponent ? "Quota Fallback" : "Quota Resume");
+      assert.match(screen, new RegExp(`✓ ${current ? "on" : "off"}`));
+      assert.match(screen, new RegExp(`${saved ? "on" : "off"} · default`));
+      if (current === saved) assert.doesNotMatch(screen, /Session:|Default:/);
+      else assert.match(screen, new RegExp(`Session: ${current ? "on" : "off"} · Default: ${saved ? "on" : "off"}`));
+      assert.match(screen, /Enter Session/);
+      assert.match(screen, /Save default \+ Session/);
+      assert.match(screen, /Escape\/Ctrl\+C Cancel \(no save\)/);
+      assert.doesNotMatch(screen, /V4\.1|source thinking|Current Session/);
+      for (const width of [1, 2, 8, 16, 40, 80, 120]) {
+        for (const line of menu.render(width)) assert.ok(visibleWidth(line) <= width, `width ${width}: ${line}`);
+      }
+    }
   }
 });
 

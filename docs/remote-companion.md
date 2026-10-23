@@ -79,10 +79,13 @@ preserving all other preference fields. In the native TUI, `/discord-remote` ope
 the shared SettingsMenu on/off selector. Both the configured confirm binding
 (Enter by default) and `app.models.save` (Ctrl+S by default) save this global
 preference atomically; configured cancel (Esc/Ctrl+C by default) writes nothing.
-Saving preserves unrelated preferences. The status area distinguishes current
-Host enabled from saved default; `✓` marks the current Host, `· default` marks the
-saved value, and `→` starts on the saved value. Saving never reads Discord credentials. Unlike quota's Session-scoped
-selection, this startup-only setting never appends a Pi Session entry and has no
+Saving preserves unrelated preferences. Only when current Host and saved default
+differ, a highlighted `Host: … · Saved: … · Restart required` row appears; otherwise
+the short description alone notes next-Host activation. `✓` always marks the current
+Host (even after saving without restarting), `· default` marks the saved value,
+and `→` starts on the saved value. Saving never reads Discord credentials.
+Unlike quota's Session-scoped selection, this startup-only setting never appends
+a Pi Session entry and has no
 per-Session override. The settings command remains available while Remote is off.
 
 For headless Control, edit only the `discordRemote` boolean in the same global
