@@ -8,7 +8,7 @@ Pindie is a personal AI agent for indie development built on Pi. Improvement use
 2. `docs/pindie-control-v0.2.md` for workspace/project selection and active-project Host replacement; preserve `docs/pindie-control-v0.1.md` runtime/control safety.
 3. `docs/quota-fallback-v0.1.md` for quota recovery and temporary backup switching.
 4. `docs/architecture.md` and `docs/behavior.md` for current ownership, composition, semantic truth and behavior.
-5. `docs/remote-companion.md` for Remote/Discord; `docs/long-task-runtime.md` for continuation/rollover; current Pi compatibility docs for native interactive UI.
+5. `docs/remote-companion.md` for Remote/Discord; `docs/long-task-runtime.md` for continuation/rollover; `docs/pi-1.4.0-compatibility.md` for the pinned native interactive UI (the 1.3.0 audit is historical).
 6. Source/tests as implemented runtime evidence.
 
 Report contradictions before widening scope. Do not retain obsolete behavior merely because an older test encoded it.
@@ -16,7 +16,7 @@ Report contradictions before widening scope. Do not retain obsolete behavior mer
 ## Ownership
 
 - **Pi:** model invocation, concrete tool execution, native Sessions/prompts/Skills, retries, compaction, follow-up delivery and the low-level LLM → Tool → Result loop.
-- **Pindie:** durable semantic State/invariants, deterministic Snapshot/capabilities, Tool Surface narrowing, authorization, factual verification provenance/freshness, Human Gates and owned presentation. Host owns active Session lifecycle/replacement; Pi implements the Session.
+- **Pindie:** durable semantic State/invariants, deterministic Snapshot/capabilities, execution authorization, factual verification provenance/freshness, Human Gates and owned presentation. Host owns active Session lifecycle/replacement; Pi implements the Session.
 - **Model:** intent interpretation, planning and semantic choices/verification judgment within legal capabilities.
 - **Human:** goals, taste, consequential judgment and required approval.
 - **Reality:** reconstructable facts.
@@ -26,13 +26,13 @@ Do not implement a second Agent Loop, generic workflow/planner/Task queue, persi
 ## Current invariants
 
 - `PindieState + SemanticRunFacts → SemanticSnapshot → Capabilities` is the semantic source of truth.
-- Tool Effects map concrete calls to required capabilities and project-mutation effects. Active tools are the captured Pi/user baseline filtered by current capabilities; never enable tools absent from that baseline.
+- Tool Effects map concrete calls to required capabilities and project-mutation effects. Pi owns the active Tool Surface; Pindie does not narrow, expand, capture or restore it as semantic State changes. Gateway authorization—not visibility—enforces current capabilities.
 - The Gateway re-authorizes consequential calls against fresh authority. Visibility is not authorization; stale/pre-generated calls cannot bypass it.
 - Reducers remain tool-agnostic; Pi tool names/runtime evidence refs do not enter persisted State semantics.
 - Persist only durable current-work meaning that cannot reliably be reconstructed. Capabilities, Run authority, presentation, evidence generations and continuation fuses are runtime-derived.
 - Verification facts come from actual tool results with runtime-only refs. The model owns pass/fail meaning and criterion coverage.
 - Runtime Context is a factual Snapshot-aligned Knowledge Surface, not a global lifecycle-policy prompt.
-- Continuation is a one-shot Pi-native follow-up with deterministic Snapshot eligibility; its probe asks only about latest actual user intent. Filter historical probes from future model context.
+- Continuation is a one-shot Pi-native follow-up with deterministic Snapshot eligibility; its probe asks only about latest actual user intent. Historical probes remain append-only until normal Pi compaction; Pindie does not filter or reorder them.
 - Pi InteractiveMode is the only local interactive shell; `control:watch` is a separate read-only Control observer, never a runtime owner.
 - Native Pi/TUI, Task/Verification/Gate, State authority, Session/Run, Attention, metrics/counters, Handoff/Rollover, Quota, Browser, Control, Remote, Work Memory and Skills retain their ownership and safety boundaries.
 - Remote is an external projection/control surface over the same native Session, never a second Session/conversation/message queue. Persist only external routing IDs/cursors.

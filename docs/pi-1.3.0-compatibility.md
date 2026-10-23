@@ -1,4 +1,6 @@
-# Pi 1.3.0 compatibility audit
+# Pi 1.3.0 compatibility audit (historical)
+
+Retained as patch-retirement and rollback provenance. Package versions, registry `latest`, TUI fallback, test counts and rollout limits below describe that audit, not current deployment. Pindie now pins Pi **1.4.0**; see the [current compatibility audit](pi-1.4.0-compatibility.md). In particular, the Host now defaults to fullscreen unless explicitly overridden. Historical commands are evidence, not instructions to downgrade a running installation.
 
 ## Scope and published packages
 

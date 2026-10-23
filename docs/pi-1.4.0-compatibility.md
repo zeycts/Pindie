@@ -1,8 +1,14 @@
 # Pi 1.4.0 compatibility audit and rollout boundary
 
-## Outcome and provenance
+## Current status and reading boundary
 
-Prepared against clean `main` at `dcbd142275a4bd956a70859efa88a0ca540f0ee5`, using branch `chore/pi-1.4.0-compat` in `/home/dev/projects/Pindie-pi140`. **Only that isolated installation is upgraded. Production remains on 1.3.0 pending review and a human-operated maintenance window.** No merge, production dependency install, service restart, Session switch, real-provider inference, user settings migration or user-data deletion was performed.
+Pindie pins Pi **1.4.0** in `package.json` and the lockfile. The upgrade merged in [PR #297](https://github.com/zeycts/Pindie/pull/297); subsequent maintenance [#299](https://github.com/zeycts/Pindie/pull/299) and [#300](https://github.com/zeycts/Pindie/pull/300) also merged. At this documentation audit, the production checkout is `c806f8db5944240a897e2e29a1df1ea15e8917f6` and the installed SDK reports 1.4.0; the completed deployment is user-confirmed. The earlier “production pending” boundary is no longer current.
+
+The sections below preserve the isolated compatibility audit and its original cutover/rollback proposal. They do **not** record the later production transaction, identify its effective rollback artifacts, or authorize rerunning it. Use separately retained operational records for recovery. No backup, recovery artifact, State or Session is modified by this documentation update. Terminal visual/live-provider acceptance is not established by automated tests or by the fact of deployment.
+
+## Original isolated audit outcome and provenance
+
+Prepared against clean `main` at `dcbd142275a4bd956a70859efa88a0ca540f0ee5`, using branch `chore/pi-1.4.0-compat` in `/home/dev/projects/Pindie-pi140`. **At that audit boundary**, only the isolated installation had been upgraded; production was still on 1.3.0 pending review and a human-operated maintenance window. No merge, production dependency install, service restart, Session switch, real-provider inference, user settings migration or user-data deletion was performed during that isolated audit.
 
 - Registry: `https://registry.npmjs.org/`, not a global/managed Pi installation. Pindie imports its project-local SDK. Three direct exact pins (`pi-ai`, `pi-coding-agent`, `pi-tui`) and all seven Pi-family packages resolve to **1.4.0**, with no downstream patch.
 - [Official v1.4.0 release](https://github.com/earendil-works/pi/releases/tag/v1.4.0): non-prerelease, published `2026-10-21T22:49:48Z`; npm `latest` was `1.4.0` at inspection.
@@ -42,7 +48,7 @@ No new release-noted breaking section or removed public lifecycle signature was 
 
 ## Backup and actual commands/results
 
-Private operational backup: `/home/dev/projects/pindie-pi140-backup-gZ8FPY` (mode 0700). It retains a complete pre-upgrade Git bundle, original three manifests, their SHA-256 checksums, base HEAD, service-start facts, release/registry metadata, seven tarballs/extracted packages, artifact-audit script, detached loader and check logs. `git bundle verify` passed. Original production checkout/dependency tree is itself untouched rollback material. User State/Sessions/preferences/routing/credentials were not read or copied; no migration requires their restoration. Before a later production window, stop all writers and take a separate authorized consistent backup of the effective configured storage roots if desired—do not restore old semantic State just to roll back code.
+Private operational backup: `/home/dev/projects/pindie-pi140-backup-gZ8FPY` (mode 0700). It retains a complete pre-upgrade Git bundle, original three manifests, their SHA-256 checksums, base HEAD, service-start facts, release/registry metadata, seven tarballs/extracted packages, artifact-audit script, detached loader and check logs. `git bundle verify` passed. At the isolated audit boundary, the original production checkout/dependency tree was untouched rollback material. This statement is historical; do not infer that today's checkout is a pre-upgrade backup. User State/Sessions/preferences/routing/credentials were not read or copied; no migration requires their restoration. Before a later production window, stop all writers and take a separate authorized consistent backup of the effective configured storage roots if desired—do not restore old semantic State just to roll back code.
 
 Actual command families (log files are in the private directory above):
 
@@ -94,7 +100,9 @@ git diff --check              # pass
 
 `tests/pi-1.3-control.test.ts` and the 1.3.0-labelled historical native contracts retain their names; the executed dependency is 1.4.0, including the detached run. No tests/skips/globs were removed to get green. Tests use temporary storage/faux providers; the owned smoke reruns native Control and MCP transport regressions, not a live production/provider/browser claim. Documentation-only edits after the implementation check use targeted link/whitespace validation rather than another identical full run.
 
-## Human-only production cutover (NOT executed)
+## Historical cutover proposal (not the executed deployment record)
+
+**Do not replay this as a current runbook.** The commands and process IDs below are the original pre-deployment proposal, retained intact for audit/rollback context. Its `main` branch, `$rollout` layout and rollback-branch assumptions must not be applied to later transactions without independent verification.
 
 The Control service runs from `/home/dev/projects/Pindie` via `/bin/bash -lc` → NVM Node 24 → `pnpm control:mcp` → `node --experimental-strip-types src/control-mcp-process.ts`. At inspection its MainPID was `2752492` and Node child `2752854`, `NRestarts=0`; tunnel MainPID `2617948`, also active. Two local native TUI processes were present. Replacing live dependencies can mix old and lazily imported new modules. **Do not run the following from an agent call hosted by that Control service.** Finish this interaction, close native TUIs normally after their work settles, and use a separate SSH/local shell. Do not restart the tunnel.
 
@@ -155,4 +163,4 @@ systemctl --user is-active pindie-control.service pindie-tunnel.service
 # Observe/reopen project with a fresh lease; do not restore stale State or Session files.
 ```
 
-The rollback intentionally leaves production on the named rollback branch for diagnosis, with upgraded `main` retained. No force checkout, remote history rewrite, storage migration, destructive cleanup or automatic merge is authorized by these instructions. Live provider/OAuth, terminal visuals and production acceptance remain unperformed until this maintenance window.
+The rollback intentionally leaves production on the named rollback branch for diagnosis, with upgraded `main` retained. No force checkout, remote history rewrite, storage migration, destructive cleanup or automatic merge is authorized by these instructions. At the original audit boundary, live provider/OAuth, terminal visuals and production acceptance had not been performed. Later deployment does not by itself establish those individual acceptance checks.

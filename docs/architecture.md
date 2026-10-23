@@ -2,7 +2,7 @@
 
 ## 1. Purpose and ownership
 
-Pindie is a personal Agent Operating System for indie development. Pi is its current low-level execution runtime, not the owner of Pindie's process or active-session lifecycle. Pindie Host owns that lifecycle; the existing semantic integration remains extension-hosted without changing existing semantic behavior.
+Pindie is a personal AI agent for indie development, built on Pi. Pi is its current low-level execution runtime, not the owner of Pindie's process or active-session lifecycle. Pindie Host owns that lifecycle; the existing semantic integration remains extension-hosted without changing existing semantic behavior.
 
 ```text
 Human  → goals, taste, consequential judgment, approval
@@ -25,36 +25,21 @@ Core includes State/Task/Gate/Verification, Snapshot/capabilities, Gateway/mutat
 
 Use per-consumer immutable facts and narrow ports, not a giant CapabilityContext or plugin/workflow registry. Remote uses existing Pi/status/input ports; Memory uses project root/read-only State/time/sink. Bindings distinguish project, Session and Run generation. Readonly types alone are not isolation; copy/freeze where required.
 
-Startup declarations keep tool definition, required capability, mutation effect and telemetry together; they cannot mint capabilities, override Core names or bypass the one Gateway. Preserve conservative unknown-tool effects and captured-baseline-only narrowing. Keep fixed start/authorization/settlement call points, no priority/event-phase engine. Refresh/freeze authoritative facts before continuity/rollover publication, then clear Run bookkeeping and expose read-only final projections. Optional observer failure cannot alter authority. Emitted-import, poisoned-injection and composition tests protect this boundary.
+Startup declarations keep tool definition, required capability, mutation effect and telemetry together; they cannot mint capabilities, override Core names or bypass the one Gateway. Preserve conservative unknown-tool effects and Pi's active Tool Surface; startup declarations do not grant execution authority. Keep fixed start/authorization/settlement call points, no priority/event-phase engine. Refresh/freeze authoritative facts before continuity/rollover publication, then clear Run bookkeeping and expose read-only final projections. Optional observer failure cannot alter authority. Emitted-import, poisoned-injection and composition tests protect this boundary.
 
 ## 2. Semantic center
 
-```text
-Reality
-  ↓
-Persistent State + runtime-only Run Facts
-  ↓
-Semantic Snapshot
-  ↓
-Capabilities
-  ├─────────────────────────┐
-  ↓                         ↓
-Knowledge              Authorization
-Surface                     │
-  ↓                         │
- LLM ← Pi tool baseline      │
-  ↓                         │
-semantic choice             │
-  └──────────┬──────────────┘
-             ↓
-      Execution Gateway
-                          ↓
-                       Reducer
-                          ↓
-                         Pi
-                          ↓
-                       Reality
+```mermaid
+flowchart TD
+    State["PindieState + SemanticRunFacts"] --> Snapshot["Semantic Snapshot"]
+    Snapshot -->|derive| Capabilities["Capabilities"]
+    Snapshot -->|project facts| Context["Run Baseline + causal updates"]
+    Context -->|inform| Model["Model chooses from Pi's active tools"]
+    Model -->|concrete call + classified effect| Gateway["Execution Gateway"]
+    Capabilities -->|fresh authorization| Gateway
 ```
+
+After authorization, Pi executes the concrete tool. Task/Verification/Gate adapters dispatch semantic events through Runtime and Reducer, with save-before-publish; ordinary file/shell tools do not pass through the Reducer. Actual results feed runtime evidence and Project Mutation Freshness. The two execution paths are illustrated in the [README](../README.md#architecture).
 
 The semantic source of truth is deliberately small:
 
@@ -144,7 +129,7 @@ unavailable/stale authority → observation only
 idle                       → observation + task.start
 done before Run            → observation + task.start
 done during Run            → observation only
-blocked                   → no project.mutate, no task.complete
+blocked                   → project.mutate for recovery, no task.complete
 same-Run-opened Gate      → observation only
 task.complete             → only when completionReady
 ```
@@ -312,7 +297,7 @@ Historical continuation probes remain in session/model history. Pindie does not 
 
 ## 11. Runtime-only presentation and external projection
 
-Native Pi `InteractiveMode` is the only local interactive shell. Pindie owns Host lifetime and extension presentation, not a second interactive UI. `pnpm control:watch` remains a separate read-only observer over the existing Control service; its timeline formatter (`timeline-text.ts`) and bounded grapheme renderer (`bounded-text.ts`) do not own Session lifecycle or mutation authority. With Presentation enabled, native `/watch` provides a bounded Pi-owned read-only overlay over that same monitor state machine; Esc/q closes only the observer and restores local editor focus. Remote Control Project/Session identity is explicitly separate from the local Pi Session. See [Watch Mode PoC](watch-mode-poc.md) for pinned API constraints and remaining gaps.
+Native Pi `InteractiveMode` is the only local interactive shell. Pindie owns Host lifetime and extension presentation, not a second interactive UI. `pnpm control:watch` remains a separate read-only observer over the existing Control service; its timeline formatter (`timeline-text.ts`) and bounded grapheme renderer (`bounded-text.ts`) do not own Session lifecycle or mutation authority. With Presentation enabled, native `/watch` provides a bounded Pi-owned read-only overlay over that same monitor state machine; Esc/q closes only the observer and restores local editor focus. Remote Control Project/Session identity is explicitly separate from the local Pi Session. See the [Native Watch contract](watch-mode-poc.md) (legacy filename) for pinned API constraints and remaining acceptance gaps.
 
 Activity, Run Timer, Run Cost, status presentation, and subscription usage observation are runtime-only systems, not semantic State. Pindie does not automatically select thinking levels or provide an auto/manual toggle. Pi owns explicit model and thinking configuration; its native model/thinking display and `/efficiency` report the effective thinking level. Pindie's own status strip does not duplicate or reserve space for that level. Control's safe-idle fixed thinking mutations and opt-in quota fallback's source thinking capture/restore remain supported.
 
@@ -406,7 +391,7 @@ replace with a fresh session
 shutdown / dispose
 ```
 
-Exact names should follow the implementation that best fits Pi 0.84.4. The abstraction must not invent speculative multi-backend features, generic orchestration APIs, provider abstractions, or a universal Agent interface.
+The implemented adapter uses the pinned Pi public SDK; see the [Pi 1.4.0 compatibility audit](pi-1.4.0-compatibility.md). The abstraction must not invent speculative multi-backend features, generic orchestration APIs, provider abstractions, or a universal Agent interface.
 
 Pi's public `createAgentSessionRuntime()` / `AgentSessionRuntime` is the natural implementation boundary because it already owns active-session replacement and recreates cwd-bound runtime state. Pi's public `InteractiveMode` takes that runtime and handles TUI rebinding around session replacement, so Pindie can reuse the existing interactive product rather than rewrite it.
 
@@ -506,7 +491,7 @@ through Pi. Restore waits for safe idle and sends no new turn. External model
 selection or Session/branch replacement drops ownership; ordinary input does
 not. A terminal DeepSeek provider error can restore Codex and enter Resume using
 the exact historical Codex quota anchor, without another usage refresh or a
-third provider. Pi 0.86.1 materializes provider/Run exceptions as terminal
+third provider. Pi materializes provider/Run exceptions as terminal
 assistant errors and emits `agent_settled` after draining pending messages, so
 no second failure bus is needed. Process exit loses the fallback lease; no
 source model is inferred on restart. Pi InteractiveMode already shows the actual
@@ -531,7 +516,7 @@ or durable Session semantic state. Pi owns the resumed Agent Run. Human input,
 model or branch changes, and Session lifecycle boundaries cancel the pending
 lease; process exit loses it. Reset credits are never automatically consumed.
 
-The three continuation mechanisms have distinct boundaries:
+The four continuation mechanisms have distinct boundaries:
 
 - **Continuation Probe:** normal stop → semantic follow-up inside Pi's current
   lifecycle.
@@ -825,7 +810,8 @@ src/semantics.ts               → memory.capture
 src/execution-semantics.ts     → memory.capture / mutation none
 src/run-integration.ts        → independent Core counters; capture is separate
 src/context.ts                 → compact capture policy
-src/extension.ts               → optional configuration + wiring
+src/composition.ts             → optional configuration + adapter construction
+src/extension.ts               → lifecycle wiring
 package.json                   → Notion client dependency
 focused tests                  → domain/adapter/gateway/tool contracts
 ```

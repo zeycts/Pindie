@@ -1,206 +1,131 @@
 # Pindie
 
-> Pindie is a personal AI agent for indie development, built on Pi.
+> A personal AI agent for indie development, built on [Pi](https://pi.dev).
 
-Pindie carries one development task from intent to verified completion while keeping consequential human judgment explicit. Pindie Host owns the process and active Pi runtime lifecycle; Pi remains the low-level Agent Harness and Pindie adds a small semantic operating layer above it.
-
-## Ownership
-
-```text
-Human       → goals, taste, consequential judgment, approval
-Model       → interpretation, planning, semantic choice, verification meaning/coverage
-Pindie Host → process lifecycle, active AgentSessionRuntime ownership/replacement
-Pindie      → durable semantic State, legality, capability, factual evidence/freshness
-Pi          → active AgentSession implementation, LLM execution, tools, Skills, low-level Agent Loop
-```
-
-> Eliminate meaningless choices, preserve meaningful choices.
+Pindie carries one durable development Task from intent to verified completion, with explicit success criteria and human approval boundaries. Pindie Host owns the process and active Session lifecycle; Pi supplies model invocation, concrete tools, native Skills, compaction and the low-level Agent Loop. Pindie adds semantic State, execution authorization and factual verification provenance—not a second agent harness.
 
 ## Architecture
 
-```text
-Reality
-  ↓
-Persistent State + Run Facts
-  ↓
-Semantic Snapshot
-  ↓
-Capabilities
-  ├─ Knowledge Surface → LLM ← Pi tool baseline
-  └─ Execution Authorization ─────┐
-                   LLM choice ─────┤
-                                  ↓
-                         Execution Gateway
-          ↓
-       Reducer
-          ↓
-          Pi
-          ↓
-       Reality
+Two paths share the same semantic authority:
+
+```mermaid
+flowchart TD
+    State["Durable PindieState + runtime Run Facts"] --> Snapshot["Semantic Snapshot"]
+    Snapshot -->|derive| Capabilities["Capabilities"]
+    Snapshot -->|project facts| Context["Run Baseline + causal updates"]
+    Context -->|inform| Model["Model chooses actions"]
+    Model -->|concrete tool call| Gateway["Execution Gateway"]
+    Capabilities -->|fresh authorization| Gateway
 ```
 
-The current semantic layer is deliberately small. Pindie does not add a second Agent Loop, workflow engine, task queue, planner framework, or separate Skill runtime.
-
-Development improvement uses models, Harness, native Skills/workflows, tests and human review.
-
-## What Pindie adds
-
-- one durable current Task with explicit success criteria, open loops, verification, and Human Gate;
-- pure `SemanticRunFacts → SemanticSnapshot → Capabilities` derivation;
-- capability-driven execution authorization for the current Pi/user tool baseline (tool visibility alone is not authorization);
-- an execution Gateway that re-authorizes consequential calls against fresh authority;
-- factual Snapshot-aligned Runtime Context instead of a global lifecycle-policy prompt;
-- Project Mutation Freshness for keeping verification current with project Reality;
-- Harness-owned verification evidence provenance/freshness while the model owns semantic pass/fail and criterion coverage;
-- a one-shot continuation probe that asks only whether latest actual user intent still calls for consequential execution;
-- runtime-only activity, timer, cost, status presentation, and `/efficiency` reporting Pi's effective thinking level;
-- process-local Codex subscription quota auto-resume, default-on via `/quota-resume`, and opt-in same-Session DeepSeek backup via `/quota-fallback` (default OFF);
-- a bundled `git-workflow` Skill implemented through Pi's native Skill runtime.
-
-Model-facing Pindie semantic tools are narrow affordances:
-
-```text
-pindie_task_start
-pindie_task_replace
-pindie_task_refine
-pindie_task_progress
-pindie_task_handoff (when Host rollover is enabled)
-pindie_verification_record
-pindie_task_complete
-pindie_gate_open
-pindie_gate_resolve
-pindie_git_observe
-pindie_memory_capture (when Work Memory is configured)
+```mermaid
+flowchart TD
+    Gateway["Authorized tool call"] --> Kind{"Tool effect"}
+    Kind -->|Task / Verification / Gate| Semantic["Semantic adapter + Runtime"]
+    Semantic -->|semantic event| Reducer["Reducer: State invariants"]
+    Reducer -->|Runtime saves before publishing| State["Durable PindieState"]
+    Kind -->|project / observation tool| Pi["Pi executes concrete tool"]
+    Pi -->|actual result| Facts["Reality + runtime evidence / freshness"]
 ```
 
-## Documentation
+Pi owns the active tool set; Pindie does not hide tools as Task state changes. **Visibility is not authorization:** the Gateway rechecks consequential calls against current authority. Only semantic events go through the Reducer; ordinary file/shell tools do not. Actual results supply evidence, while the model judges what that evidence proves. See [Architecture](docs/architecture.md) for lifecycle and composition details.
 
-- [Architecture](docs/architecture.md) and [behavior](docs/behavior.md) — Core/Host/Pi ownership, composition, Browser Reality and Work Memory.
-- [Control](docs/pindie-control-v0.2.md) / [runtime safety](docs/pindie-control-v0.1.md) — workspace selection, MCP and active Host control.
-- [Long Task runtime](docs/long-task-runtime.md), [Quota Fallback](docs/quota-fallback-v0.1.md), [Remote Companion](docs/remote-companion.md).
-- [Pi compatibility](docs/pi-1.3.0-compatibility.md).
-- [Development execution](skills/development-execution/SKILL.md) and [Git workflow](skills/git-workflow/SKILL.md) — native Skills, not a second runtime.
-- [Agent instructions](AGENTS.md).
+| Owner | Responsibility |
+| --- | --- |
+| Human | Goals, taste, consequential judgment and approval |
+| Model | Interpretation, planning, semantic choices and verification coverage |
+| Pindie Host | Process and active Pi runtime lifecycle/replacement |
+| Pindie semantic layer | Durable current-work State, capabilities, Gateway and evidence freshness |
+| Pi | Session implementation, model/tool execution, Skills, retries, compaction and native interactive UI |
 
-## Development
+## Main features
 
-Requires Node.js 22.19+.
+- One current Task, explicit criteria, blockers/questions, verification and Human Gates.
+- Verification grounded in actual tool results; project mutation invalidates stale checks.
+- Bounded continuation and safe Session rollover for long Tasks, without a Task queue or second Agent Loop.
+- Native Pi interactive shell, runtime activity/time/cost reporting and `/efficiency`.
+- Private loopback MCP Control: select/create a workspace project, send intent, manage Sessions and observe work; `control:watch` and native `/watch` are read-only observers.
+- Default-on, lazy Browser Reality tools with a Host-owned isolated Chrome/Chromium profile.
+- Codex subscription quota auto-resume (`/quota-resume`, default ON); opt-in same-Session paid DeepSeek backup (`/quota-fallback`, default OFF).
+- Optional Discord Remote Companion and Notion Work Memory; bundled development and Git Skills use Pi's native Skill runtime.
+
+## Start and use
+
+Requires **Node.js 22.19+** and **pnpm 11.22.0** (pinned in `package.json`). Run from this checkout; Pindie imports its project-local **Pi 1.4.0** SDK, not a global Pi installation.
 
 ```bash
-pnpm install
-pnpm run typecheck
-pnpm test
-pnpm run check
-```
-
-Launch the Pindie Host with native Pi `InteractiveMode`, the only local interactive shell, using the pinned Pi version:
-
-```bash
+pnpm install --frozen-lockfile
 pnpm pindie
 ```
 
-To observe an already-running Control service without creating another Host or Session:
+Configure a provider through Pi's native `/login` or provider credentials, then describe the work in ordinary language. The model uses Pindie's Task/verification/Gate tools when appropriate; you do not need to issue a Task command manually. Native Pi owns model/thinking controls. Pindie defaults to fullscreen unless an explicit Host option or Pi `tuiMode` setting overrides it; set `"tuiMode": "regular"` in Pi settings to retain terminal-owned scrollback.
+
+### Private MCP Control and observers
+
+Start a separate workspace service **instead of another interactive owner of the same Session**:
+
+```bash
+PINDIE_WORKSPACE_ROOT=/path/to/workspace pnpm control:mcp
+```
+
+The workspace must exist. Startup selects no project: list direct-child projects and explicitly open or create one through Control. The service offers 13 `pindie_*` tools at `http://127.0.0.1:8765/mcp`; `PINDIE_CONTROL_PORT` overrides the port. It binds loopback only and validates Host/Origin headers. Point OpenAI Secure MCP Tunnel at this URL with `--mcp-server-url`, not `--mcp-command`. Project switching does not require restarting the endpoint or tunnel.
+
+To observe that already-running service:
 
 ```bash
 pnpm control:watch
 ```
 
-This monitor is read-only: timeline, status and Human Gate notices with local scrolling/exit only. Respond through Pindie Control; it has no composer or runtime controls.
+This monitor has no composer or runtime controls. Native `/watch` opens a read-only overlay observing the same Control service, **not** the local interactive Session. Respond to observed Human Gates through Control. See [Control workspace/usage](docs/pindie-control-v0.2.md) and [Watch interactions and limits](docs/watch-mode-poc.md).
 
-The legacy direct-extension path remains available as a temporary diagnostic fallback:
+### Optional integrations
 
-```bash
-pi -e ./src/extension.ts
-```
+| Integration | Configuration | Details |
+| --- | --- | --- |
+| Discord | `PINDIE_DISCORD_TOKEN`, `PINDIE_DISCORD_USER_ID`, `PINDIE_DISCORD_GUILD_ID` | [Remote security, routing and input](docs/remote-companion.md#3-configuration-and-security) |
+| Notion Work Memory | `PINDIE_NOTION_TOKEN`, `PINDIE_WORK_MEMORY_DATA_SOURCE_ID` | [Capture semantics and permissions](docs/architecture.md#14-work-memory-v01--approved-architecture) |
 
-The package scripts are package-manager agnostic; pnpm is the recommended package manager for Pindie.
-
-For private local MCP control, start the workspace service without an active Host:
-
-```bash
-PINDIE_WORKSPACE_ROOT=/home/dev/projects pnpm control:mcp
-```
-
-For an existing single-project user systemd service, set the workspace root instead of the old project root (the Tunnel URL does not change):
-
-```text
-PINDIE_PROJECT_ROOT=/home/dev/projects/Pindie
-→
-PINDIE_WORKSPACE_ROOT=/home/dev/projects
-```
-
-It serves 13 `pindie_*` tools (10 project-scoped Control tools for observation, input, human response, safe stopping, session management, configuration, timeline, and waiting; plus three workspace tools for listing, opening, and creating projects) over Streamable HTTP at `http://127.0.0.1:8765/mcp` (override the port with `PINDIE_CONTROL_PORT`). List direct-child projects and explicitly open one before using project-scoped tools. Point OpenAI Secure MCP Tunnel at that local URL using `--mcp-server-url`, not `--mcp-command`; restarting the tunnel does not stop the Host. Only explicit project switching or process shutdown disposes the active Host. The service binds loopback only and validates Host/Origin headers; it does not open a public listener.
-
-Optional Work Memory uses Notion when both environment variables are configured:
-
-```text
-PINDIE_NOTION_TOKEN
-PINDIE_WORK_MEMORY_DATA_SOURCE_ID
-```
-
-Both must be configured to enable Work Memory.
+Each integration requires its complete configuration. Keep credentials out of Git. Neither integration owns semantic State or creates another Session.
 
 ### Browser Reality
 
-Browser Reality is default-on and headless by default on WSL and native Linux.
-Startup registers selected official Chrome DevTools MCP declarations as
-`browser_*` Pi tools without launching Chrome or a bridge. The first browser
-action lazily starts a dedicated browser/profile, reused across Host Sessions:
+Browser tools register at startup without launching Chrome or the DevTools bridge. The first browser action lazily starts a dedicated headless browser/profile, reused across Host Sessions. On native Linux, install Chrome/Chromium (`google-chrome-stable`, `google-chrome`, `chromium`, or `chromium-browser` on `PATH`). On WSL, mirrored networking and Windows Chrome at `C:\Program Files\Google\Chrome\Application\chrome.exe` are required.
 
 ```bash
-pnpm pindie
-```
-
-For rare debugging that requires a visible dedicated Chrome, use the headful
-override:
-
-```bash
+# Visible dedicated Chrome for debugging:
 PINDIE_BROWSER_HEADLESS=false pnpm pindie
-```
-
-Explicitly opt out when Browser Reality is not wanted:
-
-```bash
+# Disable Browser Reality:
 PINDIE_BROWSER_ENABLED=false pnpm pindie
 ```
 
-On WSL, this path requires mirrored networking and uses dedicated Windows Chrome
-at `C:\Program Files\Google\Chrome\Application\chrome.exe`, with an isolated
-runtime profile under `%LOCALAPPDATA%\Pindie\Dev Browser`. On native Linux, a
-supported Chrome/Chromium executable must be installed; Pindie resolves
-`google-chrome-stable`, `google-chrome`, `chromium`, then `chromium-browser` from
-`PATH`, and stores isolated runtime profiles under
-`$XDG_CACHE_HOME/pindie/dev-browser` (or `~/.cache/pindie/dev-browser`). In both
-cases the DevTools endpoint is loopback-only, normal shutdown stops only that
-Host's browser, and owned runtime profiles are removed. Optional advanced
-overrides are:
+Advanced overrides: `PINDIE_BROWSER_EXECUTABLE`, `PINDIE_BROWSER_URL` (HTTP loopback with explicit port; refuses an already-running endpoint), and `PINDIE_BROWSER_PROFILE_DIR` (developer-managed, never automatically deleted).
 
-```text
-PINDIE_BROWSER_HEADLESS
-PINDIE_BROWSER_URL
-PINDIE_BROWSER_EXECUTABLE
-PINDIE_BROWSER_PROFILE_DIR
+`browser_status` reads resource phase without startup; `browser_release` discards owned browser state when no browser calls are in flight. A subsequent action starts fresh. Automatic idle release requires 15 minutes of inactivity and known settled Session/UI authority with no queued work, Human Gate or quota wait.
+
+Normal shutdown awaits owned cleanup; crash/SIGKILL cannot guarantee it. Unconfirmed termination retains the profile and blocks replacement. No startup janitor adopts/kills old browsers or deletes old profiles. See [Browser lifecycle and platform safety](docs/architecture.md#browser-reality-v02) before any manual cleanup.
+
+## Documentation
+
+| Read for | Current contract |
+| --- | --- |
+| Ownership, semantic derivation, composition, Browser and Work Memory | [Architecture](docs/architecture.md) |
+| Task, verification, authorization and continuation behavior | [Behavior](docs/behavior.md) |
+| Workspace selection, Sessions, MCP tools and observers | [Control v0.2](docs/pindie-control-v0.2.md), with [v0.1 runtime safety](docs/pindie-control-v0.1.md) |
+| Context lifetime and safe Session rollover | [Long Task Runtime](docs/long-task-runtime.md) |
+| Quota recovery and paid-backup authorization | [Quota Fallback](docs/quota-fallback-v0.1.md) |
+| Discord projection/control | [Remote Companion](docs/remote-companion.md) |
+| Native read-only Watch overlay | [Watch contract](docs/watch-mode-poc.md) (legacy filename) |
+| Pinned SDK compatibility and historical rollout boundaries | [Pi 1.4.0 audit](docs/pi-1.4.0-compatibility.md) |
+| Contributor procedure | [Agent instructions](AGENTS.md), [Development execution](skills/development-execution/SKILL.md), [Git workflow](skills/git-workflow/SKILL.md) |
+
+[Pi 1.3.0 audit](docs/pi-1.3.0-compatibility.md) is historical patch-retirement/rollback evidence, not the current runtime guide. Versioned Control and quota contracts remain authoritative within their stated boundaries; completed implementation slices are not pending feature plans.
+
+## Development checks
+
+```bash
+pnpm run typecheck
+pnpm test
+pnpm run check
 ```
 
-`PINDIE_BROWSER_EXECUTABLE` explicitly overrides host executable discovery.
-`PINDIE_BROWSER_URL` must remain an HTTP loopback URL with an explicit port.
-When explicitly set, Pindie conservatively refuses an endpoint that is already
-running rather than attaching to an unknown browser. An explicit
-`PINDIE_BROWSER_PROFILE_DIR` remains developer-managed and is not removed on
-shutdown. `browser_status` inspects resource phase without startup;
-`browser_release` explicitly discards browser state when no browser calls are
-in flight. The next action starts fresh. After 15 minutes without activity,
-automatic release requires a settled Session, no queued work, Human Gate,
-quota wait, or pending UI interaction. Unknown authority prevents release.
-
-Browser Reality is runtime-only: disabling it leaves normal Pindie startup and
-semantic State unchanged. Startup/bridge failures do not disable ordinary work.
-Graceful exits await Host cleanup; emergency terminal failure, crash, SIGKILL,
-or machine loss cannot guarantee it. Unconfirmed cleanup retains the profile
-and blocks automatic replacement. On Windows, a real Job handle is retained in
-the browser root; losing that handle/name is **not** evidence that descendants
-exited. Release requires an exact zero-active Job acknowledgment, otherwise the
-profile is retained (even if the browser may already have exited).
-No startup janitor kills old browsers or deletes old profiles; inspect and stop
-only resources you can independently identify before manually removing stale profiles. See
-[Browser lifecycle details](docs/architecture.md#browser-reality-v02).
+`check` runs typechecking and the full test suite. [CI](.github/workflows/ci.yml) runs the same check on pull requests. For bounded subprocess diagnostics, `pnpm smoke -- <label> [--timeout-ms <ms>] -- <command> [args...]` uses the owned scratch/lifetime wrapper in [`scripts/pi-smoke.ts`](scripts/pi-smoke.ts); it is not a production acceptance test.

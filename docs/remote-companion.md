@@ -400,16 +400,17 @@ These may be considered only after dogfood demonstrates a concrete need.
 
 ## 18. Implementation boundaries
 
-The first implementation should remain small and transport-independent:
+The implemented integration remains transport-independent:
 
 ```text
 remote-routing.ts    → external routing metadata + Project/Session mapping
 session-mirror.ts    → Pi Session → readable timeline projection
 remote-companion.ts  → active-session ownership, input semantics, status/milestones
-extension.ts         → composition/lifecycle wiring
+composition.ts       → optional configuration and adapter construction
+extension.ts         → lifecycle wiring
 ```
 
-A later Discord adapter may add one transport file such as `discord-remote.ts`.
+`discord-remote.ts` implements the Discord surface; `discord-gateway.ts` supplies the Gateway transport. These adapters do not own Task or Session truth.
 
 Use one narrow `RemoteSurface` seam for deterministic tests. It may ensure project/session Discord objects, send timeline events, update anchor/header messages, rename a thread, and report stale external objects. It must not evolve into a generic protocol/adapter framework.
 
