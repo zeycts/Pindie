@@ -5,7 +5,7 @@ import fsp from "node:fs/promises";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
-import { TuiMainScreen, truncateToWidth, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
+import { getCapabilities, setCapabilities, TuiMainScreen, truncateToWidth, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
 import { projectToolResult, type UiToolWorkBlock } from "../src/ui-timeline.ts";
 import { watchNativeComponents } from "../src/watch-native-presentation.ts";
 import { watchReadInput } from "../src/watch-presentation-data.ts";
@@ -20,7 +20,13 @@ function bash(text = "one\ntwo"): UiToolWorkBlock {
 }
 const plain = (lines: string[]) => lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
 
-test("actual exported ToolExecutionComponent read/bash expanded render snapshots; no filesystem/process access", (t) => {
+// Exercise capability changes in both directions without depending on SSH/terminal env.
+// Keep OSC 8 intact: assert the exact URL, visible label and closing boundary, not
+// a generic ANSI-stripped snapshot that could hide a broken or unsafe renderer.
+for (const [index, hyperlinks] of [false, true, false].entries()) {
+test(`actual exported ToolExecutionComponent read/bash expanded render snapshots; no filesystem/process access (${index}: hyperlinks=${hyperlinks})`, (t) => {
+  const capabilities = getCapabilities();
+  setCapabilities({ ...capabilities, hyperlinks });
   initTheme("dark", false);
   const accessed: string[] = [];
   const deny = (name: string) => () => { accessed.push(name); throw new Error(`Forbidden: ${name}`); };
@@ -38,15 +44,18 @@ test("actual exported ToolExecutionComponent read/bash expanded render snapshots
     ] } as const;
     const r = watchNativeComponents(read, tui)!;
     assert.ok(r[0] instanceof ToolExecutionComponent);
-    assert.deepEqual(plain(r[0]!.render(60)), ["", "", " read remote-only-no-such-file.txt:2-4", "", " alpha", " beta", ""]);
+    const path = "remote-only-no-such-file.txt";
+    const label = hyperlinks ? `\x1b]8;;file:///${path}\x1b\\${path}\x1b]8;;\x1b\\` : path;
+    assert.deepEqual(plain(r[0]!.render(60)), ["", "", ` read ${label}:2-4`, "", " alpha", " beta", ""]);
     assert.equal(renderRequests, 0); // no self-scheduling render loop or remote elapsed clock
     for (const component of [...b, ...r]) {
       component.invalidate();
       for (const width of [1, 2, 12, 80]) assert.ok(component.render(width).every((line) => visibleWidth(truncateToWidth(line, width)) <= width));
     }
     assert.deepEqual(accessed, []);
-  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); setCapabilities(capabilities); }
 });
+}
 
 test("only provenance-marked bounded content reaches native results; summaries, details, secrets and invalid args fall back", () => {
   initTheme("dark", false);
