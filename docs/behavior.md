@@ -349,13 +349,21 @@ changes cancel waiting; process exit loses it. At wake, Pi receives a hidden
 custom resume with `triggerTurn: true`, starting a fresh Agent Run in the same
 Session. The hidden message is runtime metadata, not user intent.
 
-### Settings menus (Phase 1)
+### Settings menus (Phase 1.1)
 
 `/quota-fallback`, `/quota-resume` and `/discord-remote` share a presentation-only
-`SettingsMenu`: title/description, factual status, borders/theme colors, `→` cursor,
-`✓` current value and `· default` saved value. Help follows Pi's actual configured
-navigation, confirm, save and cancel bindings. Quota confirm applies to the current
-Session/branch; save persists the global default and applies to the current Session.
+`SettingsMenu`: a standalone title, one-sentence description, two on/off rows,
+then one horizontal help row (safely wrapped on narrow terminals), with themed
+borders. `→` is the cursor, `✓` marks the currently effective Session/Host value,
+and `· default` marks the persisted global default. Matching current/default values
+need no extra status row; quota divergence adds `Session: … · Default: …`, while
+Discord divergence adds `Host: … · Saved: … · Restart required`. The Discord
+description always notes next-Host activation. Fallback names the fixed paid
+DeepSeek Flash backup without a model version or model picker.
+Help follows Pi's injected navigation, confirm, save and cancel bindings, including
+multiple bindings and remapping; unbound actions show no invented shortcut.
+Quota confirm applies to the current Session/branch; save persists the global
+default and applies to the current Session.
 Discord confirm **and** save persist only the global startup boolean, displaying
 current Host versus saved default and the next-Host activation boundary. Cancel
 writes nothing. No model/thinking picker, Project Memory switch, new preference

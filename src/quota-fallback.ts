@@ -118,17 +118,16 @@ export class QuotaFallbackSelectorComponent extends SettingsMenu<boolean> {
     onCancel: () => void,
   ) {
     super(tui, theme, keybindings, {
-      title: "Quota Fallback · DeepSeek Flash",
-      description: "Pay-as-you-go backup after Codex quota exhaustion",
-      status: [
-        `Current Session: ${sessionEnabled ? "on" : "off"} · saved default: ${globalDefault ? "on" : "off"}`,
-        "Future quota events only; active fallback unchanged. Uses source thinking via Pi.",
+      title: "Quota Fallback",
+      description: "Paid DeepSeek Flash backup for future Codex quota events.",
+      status: sessionEnabled === globalDefault ? [] : [
+        `Session: ${sessionEnabled ? "on" : "off"} · Default: ${globalDefault ? "on" : "off"}`,
       ],
       choices: [{ value: true, label: "on" }, { value: false, label: "off" }],
       currentValue: sessionEnabled,
       defaultValue: globalDefault,
-      confirm: { hint: "to apply to current Session", run: (enabled) => onSelect({ kind: "session", enabled }) },
-      save: { hint: "to save global default + apply to current Session", run: (enabled) => onSelect({ kind: "default", enabled }) },
+      confirm: { hint: "Session", run: (enabled) => onSelect({ kind: "session", enabled }) },
+      save: { hint: "Save default + Session", run: (enabled) => onSelect({ kind: "default", enabled }) },
       onCancel,
     });
   }

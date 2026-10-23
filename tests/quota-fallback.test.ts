@@ -80,10 +80,10 @@ test("selector renders paid fixed backup and markers; wraps and honors configure
   );
   const initial = selector.render(100).join("\n");
   assert.match(initial, /DeepSeek Flash/);
-  assert.match(initial, /Pay-as-you-go/);
+  assert.match(initial, /Paid/);
   assert.match(initial, /→ ✓ on/);
   assert.match(initial, /off · default/);
-  assert.match(initial, /Ctrl\+X to save global default/);
+  assert.match(initial, /Ctrl\+X Save default \+ Session/);
   selector.handleInput("up");
   assert.match(selector.render(100).join("\n"), /→   off · default/);
   selector.handleInput("down");

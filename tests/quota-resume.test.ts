@@ -243,7 +243,7 @@ test("quota selector honors configured app.models.save instead of raw Ctrl+S", (
     (result) => selected.push(result),
     () => undefined,
   );
-  assert.match(component.render(100).join("\n"), /Ctrl\+X to save global default/);
+  assert.match(component.render(100).join("\n"), /Ctrl\+X Save default \+ Session/);
   component.handleInput("ctrl+s");
   assert.deepEqual(selected, []);
   component.handleInput("ctrl+x");

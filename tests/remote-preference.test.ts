@@ -104,9 +104,11 @@ test("Discord Remote settings command saves only global preference, cancels safe
     await handler("", ctx);
     assert.equal(store.loadDefault(), false);
     assert.match(notices.at(-1)!, /Current Host unchanged; restart\/recreate/);
-    assert.match(screens[0]!, /Current Host: on · saved default: on/);
-    assert.match(screens[0]!, /Enter to save global default \(next Host\)/);
-    assert.match(screens[0]!, /Ctrl\+X\/Alt\+S to save global default/);
+    assert.doesNotMatch(screens[0]!, /Host:|Saved:|Restart required/);
+    assert.match(screens[0]!, /→ ✓ on · default/);
+    assert.match(screens[0]!, /next Host/);
+    assert.match(screens[0]!, /Enter Save default \(next Host\)/);
+    assert.match(screens[0]!, /Ctrl\+X\/Alt\+S Save default/);
     assert.doesNotMatch(screens[0]!, /apply to current Session/);
     for (const cancel of ["\u001b", "\u0003"]) {
       input = ["\u001b[A", cancel];
@@ -114,7 +116,7 @@ test("Discord Remote settings command saves only global preference, cancels safe
       await handler("", ctx);
       assert.equal(await readFile(store.preferencesPath(), "utf8"), before);
     }
-    assert.match(screens[1]!, /Current Host: on · saved default: off/);
+    assert.match(screens[1]!, /Host: on · Saved: off · Restart required/);
     assert.match(screens[1]!, /  ✓ on/);
     assert.match(screens[1]!, /→   off · default/);
     await handler("invalid", ctx);
@@ -136,6 +138,34 @@ test("Discord Remote settings command saves only global preference, cancels safe
     assert.match(notices.at(-1)!, /Existing configuration was preserved/);
     assert.equal(await readFile(store.preferencesPath(), "utf8"), "broken");
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Discord menu renders all Host/saved combinations without hot activation or width overflow", async () => {
+  const { visibleWidth } = await import("@earendil-works/pi-tui");
+  for (const host of [true, false]) for (const saved of [true, false]) {
+    const store = new FileDiscordRemotePreferenceStore("unused-render-only");
+    store.loadDefault = () => saved;
+    store.saveDefault = async () => { assert.fail("render/cancel must not save"); };
+    let handler!: (args: string, ctx: any) => Promise<void>;
+    registerDiscordRemotePreferenceCommand({ registerCommand(_name, command) { handler = command.handler; } } as ExtensionAPI, store, host);
+    await handler("", { mode: "tui", ui: {
+      custom: async (factory: any) => {
+        const menu = factory({ requestRender() {} }, { fg: (_: string, text: string) => text, bold: (text: string) => text }, new KeybindingsManager({ "app.models.save": [] }), () => {}) as SettingsMenu<boolean>;
+        const lines = menu.render(200);
+        const screen = lines.join("\n");
+        assert.equal(lines.length, host === saved ? 8 : 9);
+        assert.match(screen, new RegExp(`✓ ${host ? "on" : "off"}`));
+        assert.match(screen, new RegExp(`→ .*${saved ? "on" : "off"} · default`));
+        if (host === saved) assert.doesNotMatch(screen, /Host:|Saved:|Restart required/);
+        else assert.match(screen, new RegExp(`Host: ${host ? "on" : "off"} · Saved: ${saved ? "on" : "off"} · Restart required`));
+        assert.doesNotMatch(screen, /Ctrl\+S/);
+        for (const width of [1, 2, 8, 16, 40, 80, 120]) {
+          for (const line of menu.render(width)) assert.ok(visibleWidth(line) <= width);
+        }
+        return null;
+      }, notify() {},
+    } });
+  }
 });
 
 test("saved OFF does not load Discord adapters or transports", async () => {
