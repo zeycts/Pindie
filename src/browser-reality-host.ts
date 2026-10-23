@@ -2,7 +2,7 @@ import { execFile as execFileCallback, spawn, type ChildProcess } from "node:chi
 import { randomUUID } from "node:crypto";
 import { windowsBrowserJobLaunch, windowsBrowserJobStop } from "./browser-windows-job.ts";
 import { constants as fsConstants } from "node:fs";
-import { access, mkdir, readFile, rm } from "node:fs/promises";
+import { access, lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { homedir, release as osRelease } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { createServer } from "node:net";
@@ -243,6 +243,7 @@ export function createLinuxBrowserRealityHost(
   const signalProcess = dependencies.kill ?? process.kill;
   const read = dependencies.readFile ?? readFile;
   const owned = new WeakMap<LaunchedBrowser, { started: string; stopped: boolean }>();
+  const profiles = new Map<string, { dev: number; ino: number; parent: string }>();
   const stat = async (pid: number) => {
     try { return parseLinuxProcessStat(await read(`/proc/${pid}/stat`, "utf8")); }
     catch (error) {
@@ -264,9 +265,25 @@ export function createLinuxBrowserRealityHost(
       });
     },
     async allocateProfileDirectory(runtimeId) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(runtimeId)) {
+        throw new Error("Invalid browser profile runtime identity.");
+      }
       const cacheRoot = env.XDG_CACHE_HOME?.trim() || join(homeDirectory, ".cache");
-      const profileDirectory = join(cacheRoot, "pindie", "dev-browser", runtimeId);
-      await makeDirectory(profileDirectory, { recursive: true });
+      // The configured cache root is trusted; never follow links in our namespace.
+      await makeDirectory(cacheRoot, { recursive: true });
+      let parent = await realpath(cacheRoot);
+      for (const name of ["pindie", "dev-browser"]) {
+        parent = join(parent, name);
+        try { await makeDirectory(parent, { mode: 0o700 }); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+        const entry = await lstat(parent);
+        if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("Browser profile namespace must be a real directory.");
+      }
+      const profileDirectory = join(parent, runtimeId);
+      // Exclusive creation: an existing directory is not ours, even with the same ID.
+      await makeDirectory(profileDirectory, { mode: 0o700 });
+      const entry = await lstat(profileDirectory);
+      profiles.set(profileDirectory, { dev: entry.dev, ino: entry.ino, parent });
       return profileDirectory;
     },
     async launch(config) {
@@ -336,7 +353,21 @@ export function createLinuxBrowserRealityHost(
       if (!await wait(forceKillWaitMs)) throw new Error(`Chrome process group ${browser.pid} did not stop after SIGKILL.`);
     },
     async cleanupProfile(profileDirectory) {
+      const owner = profiles.get(profileDirectory);
+      if (!owner) throw new Error("Refused to clean a browser profile not allocated by this Host.");
+      if (await realpath(owner.parent) !== owner.parent) throw new Error("Browser profile namespace changed; cleanup refused.");
+      let entry;
+      try { entry = await lstat(profileDirectory); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        profiles.delete(profileDirectory);
+        return;
+      }
+      if (!entry.isDirectory() || entry.isSymbolicLink() || entry.dev !== owner.dev || entry.ino !== owner.ino) {
+        throw new Error("Browser profile identity changed; cleanup refused.");
+      }
       await removeDirectory(profileDirectory, { recursive: true, force: true });
+      profiles.delete(profileDirectory);
     },
   };
 }

@@ -1,5 +1,5 @@
 import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
-import { lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { finished } from "node:stream/promises";
@@ -82,6 +82,16 @@ async function ensureSmokeRoot(baseTempDir = tmpdir()): Promise<string> {
   return root;
 }
 
+async function confirmGroupGone(pid: number): Promise<void> {
+  const deadline = Date.now() + TERMINATION_GRACE_MS;
+  do {
+    try { process.kill(-pid, 0); }
+    catch (error) { if (isGone(error)) return; throw error; }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  } while (Date.now() < deadline);
+  throw new Error("Smoke process group termination is unconfirmed.");
+}
+
 async function terminateOwnedGroup(pid: number, exited: Promise<void>): Promise<void> {
   try {
     process.kill(-pid, "SIGTERM");
@@ -118,11 +128,13 @@ export async function runOwnedSmoke(options: OwnedSmokeOptions): Promise<OwnedSm
   const baseTempDir = options.baseTempDir ?? tmpdir();
   // Age and PID liveness cannot prove ownership (long runs, PID reuse, other Hosts).
   // Never reclaim earlier workspaces here; only finally-clean the one we allocate.
-  const root = await ensureSmokeRoot(baseTempDir);
+  const root = await realpath(await ensureSmokeRoot(baseTempDir));
   const workspace = await mkdtemp(join(root, `${options.label}-`));
+  const workspaceIdentity = await lstat(workspace);
   const keepArtifacts = options.keepArtifacts ?? process.env.PINDIE_KEEP_ARTIFACTS === "1";
 
   let result: OwnedSmokeResult | undefined;
+  let cleanupAllowed = true;
   try {
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
@@ -149,7 +161,9 @@ export async function runOwnedSmoke(options: OwnedSmokeOptions): Promise<OwnedSm
       timeoutHandle = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
     });
     const outcome = await Promise.race([
-      settled.then((value) => ({ kind: "exit" as const, value })),
+      // Descendants may inherit pipes after the direct child exits. Keep the
+      // deadline armed until both streams finish, not merely until child exit.
+      settled.then(async (value) => { await outputSettled; return { kind: "exit" as const, value }; }),
       timeout,
     ]);
     clearTimeout(timeoutHandle!);
@@ -157,7 +171,22 @@ export async function runOwnedSmoke(options: OwnedSmokeOptions): Promise<OwnedSm
     let final;
     let timedOut;
     if (outcome.kind === "timeout") {
-      if (child.pid !== undefined) await terminateOwnedGroup(child.pid, exited);
+      if (child.pid !== undefined) {
+        cleanupAllowed = false;
+        // A reaped leader no longer anchors signal authority. Do not signal a
+        // potentially reused PGID just because inherited pipes are still open.
+        if (child.exitCode !== null || child.signalCode !== null) {
+          child.stdout?.destroy(); child.stderr?.destroy();
+          throw new Error(`Smoke output deadline exceeded after child exit; workspace retained at ${workspace}`);
+        }
+        try {
+          await terminateOwnedGroup(child.pid, exited);
+          await confirmGroupGone(child.pid);
+        } catch (error) {
+          child.stdout?.destroy(); child.stderr?.destroy();
+          throw new Error(`${String(error)} Workspace retained at ${workspace}`);
+        }
+      }
       final = await settled;
       timedOut = true;
     } else {
@@ -165,15 +194,41 @@ export async function runOwnedSmoke(options: OwnedSmokeOptions): Promise<OwnedSm
       timedOut = false;
     }
     if (final.error) throw final.error;
-    const streamResults = await outputSettled;
+    // Even a normally exited command can leave background processes using its
+    // workspace. Absence, not direct-child exit, authorizes recursive removal.
+    if (child.pid !== undefined) {
+      cleanupAllowed = false;
+      try { await confirmGroupGone(child.pid); }
+      catch (error) { throw new Error(`${String(error)} Workspace retained at ${workspace}`); }
+    }
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const streamResults = await Promise.race([
+      outputSettled,
+      new Promise<never>((_resolve, reject) => {
+        drainTimer = setTimeout(() => {
+          child.stdout?.destroy(); child.stderr?.destroy();
+          reject(new Error(`Smoke output drain is unconfirmed; workspace retained at ${workspace}`));
+        }, TERMINATION_GRACE_MS);
+      }),
+    ]).finally(() => clearTimeout(drainTimer));
+    cleanupAllowed = true;
     const streamFailure = streamResults.find((streamResult) => streamResult.status === "rejected");
     if (streamFailure) throw streamFailure.reason;
     result = { workspace, retainedWorkspace: null, exitCode: final.exitCode, signal: final.signal, timedOut, stdoutTail: stdout.toString(), stderrTail: stderr.toString() };
   } finally {
-    if (keepArtifacts && result) {
+    if (!cleanupAllowed) {
+      // Unknown live users of this invocation's scratch: retain, never scavenge.
+    } else if (keepArtifacts && result) {
       result.retainedWorkspace = workspace;
     } else {
-      await rm(workspace, { recursive: true, force: true });
+      if (await realpath(root) !== root) throw new Error(`Smoke namespace changed; cleanup refused at ${workspace}`);
+      let entry;
+      try { entry = await lstat(workspace); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      if (entry && (!entry.isDirectory() || entry.isSymbolicLink() || entry.dev !== workspaceIdentity.dev || entry.ino !== workspaceIdentity.ino)) {
+        throw new Error(`Smoke workspace identity changed; cleanup refused at ${workspace}`);
+      }
+      if (entry) await rm(workspace, { recursive: true, force: true });
     }
   }
   return result!;

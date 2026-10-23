@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -38,8 +38,9 @@ test("Linux allocates a dynamic loopback port", async () => {
   assert.equal(port > 0 && port <= 65_535, true);
 });
 
-test("Linux creates unique cache profiles and removes owned profiles", async () => {
+test("Linux creates unique cache profiles and removes owned profiles", async (t) => {
   const home = await mkdtemp(join(tmpdir(), "pindie-browser-home-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
   const host = createLinuxBrowserRealityHost({ env: {}, homeDirectory: home });
   const first = await host.allocateProfileDirectory("runtime-a");
   const second = await host.allocateProfileDirectory("runtime-b");
@@ -51,7 +52,64 @@ test("Linux creates unique cache profiles and removes owned profiles", async () 
   await host.cleanupProfile(first);
   await assert.rejects(stat(first), { code: "ENOENT" });
   await host.cleanupProfile(second);
-  await host.cleanupProfile(home);
+  await assert.rejects(host.cleanupProfile(home), /not allocated by this Host/);
+});
+
+async function profileFixture(t: test.TestContext) {
+  const home = await mkdtemp(join(tmpdir(), "pindie-browser-profile-safety-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  return { home, host: createLinuxBrowserRealityHost({ env: {}, homeDirectory: home }) };
+}
+
+test("Linux profile allocation rejects traversal, collisions and another Host's ownership", async (t) => {
+  const { home, host } = await profileFixture(t);
+  await assert.rejects(host.allocateProfileDirectory("../escape"), /Invalid/);
+  const profile = await host.allocateProfileDirectory("runtime");
+  await writeFile(join(profile, "keep"), "owned");
+  await assert.rejects(host.allocateProfileDirectory("runtime"), { code: "EEXIST" });
+  const other = createLinuxBrowserRealityHost({ env: {}, homeDirectory: home });
+  await assert.rejects(other.cleanupProfile(profile), /not allocated by this Host/);
+  assert.equal(await readFile(join(profile, "keep"), "utf8"), "owned");
+  await host.cleanupProfile(profile);
+});
+
+test("Linux profile allocation refuses symlink namespaces without touching their targets", async (t) => {
+  const { home, host } = await profileFixture(t);
+  const outside = join(home, "outside");
+  await mkdir(outside);
+  await mkdir(join(home, ".cache"));
+  await symlink(outside, join(home, ".cache", "pindie"));
+  await assert.rejects(host.allocateProfileDirectory("runtime"), /real directory/);
+  await assert.rejects(stat(join(outside, "dev-browser")), { code: "ENOENT" });
+});
+
+test("Linux profile cleanup refuses replaced profiles and redirected parents", async (t) => {
+  const { host } = await profileFixture(t);
+  const profile = await host.allocateProfileDirectory("runtime");
+  await rename(profile, `${profile}-original`);
+  await mkdir(profile);
+  await writeFile(join(profile, "keep"), "replacement");
+  await assert.rejects(host.cleanupProfile(profile), /identity changed/);
+  await rm(profile, { recursive: true });
+  await symlink(`${profile}-original`, profile);
+  await assert.rejects(host.cleanupProfile(profile), /identity changed/);
+  await rm(profile);
+  await rename(`${profile}-original`, profile);
+  const parent = join(profile, "..");
+  await rename(parent, `${parent}-original`);
+  await symlink(`${parent}-original`, parent);
+  await assert.rejects(host.cleanupProfile(profile), /namespace changed/);
+});
+
+test("Linux profile cleanup unlinks nested symlinks, never their external contents", async (t) => {
+  const { home, host } = await profileFixture(t);
+  const profile = await host.allocateProfileDirectory("runtime");
+  const outside = join(home, "outside");
+  await mkdir(outside);
+  await writeFile(join(outside, "keep"), "external");
+  await symlink(outside, join(profile, "link"));
+  await host.cleanupProfile(profile);
+  assert.equal(await readFile(join(outside, "keep"), "utf8"), "external");
 });
 
 test("Linux executable resolution prefers an explicit override", async () => {
