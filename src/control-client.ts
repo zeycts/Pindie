@@ -325,6 +325,22 @@ export class PindieControlClient {
     });
   }
 
+  /** Lease-free observation, independent of snapshot refresh/revision and write authority. */
+  readEfficiency() {
+    this.requireActiveBinding();
+    const efficiency = this.runtime.getActiveSessionEfficiency();
+    let duration: { scope: "run_current_or_latest" | "task"; durationMs: number } | null = null;
+    try {
+      const consumption = this.presentation.current()?.snapshot().status.consumption;
+      if (consumption && Number.isFinite(consumption.durationMs) && consumption.durationMs >= 0) {
+        duration = { scope: consumption.scope === "task" ? "task" : "run_current_or_latest", durationMs: consumption.durationMs };
+      }
+    } catch { /* Optional presentation telemetry must not invalidate native usage. */ }
+    return { ...efficiency, duration,
+      durationSource: "Existing Presentation consumption from Core RunTimer / Host TaskMetricsTracker; active Run time, not Task wall time. Process-local; resets on restart/manual Session replacement. Only the available scope is returned; null if unavailable.",
+    };
+  }
+
   /** Availability means membership in Pi's current registry snapshot, not provider health. */
   listModels() {
     this.requireActiveBinding();

@@ -67,11 +67,12 @@ export function verifyMonitorToolSurface(tools: readonly MonitorAdvertisedTool[]
     const schema = tool?.inputSchema;
     const properties = record(schema?.properties);
     const required = Array.isArray(schema?.required) ? schema.required : [];
-    // The monitor still sends {}; accept only the known optional discovery view,
+    // The monitor still sends {}; accept only exact known optional read-only views,
     // without broadening this observer's port or accepting arbitrary additions.
     const hasModelView = name === "pindie_observe" && properties !== null && Object.hasOwn(properties, "view");
     const propertyNames = Object.keys(properties ?? {}).filter((key) => !hasModelView || key !== "view");
-    if (hasModelView && !validEnumSchema(properties!.view, ["snapshot", "models"])) fail();
+    if (hasModelView && !validEnumSchema(properties!.view, ["snapshot", "models"]) &&
+      !validEnumSchema(properties!.view, ["snapshot", "models", "efficiency"])) fail();
     if (!tool || annotations?.readOnlyHint !== true || annotations.destructiveHint !== false || annotations.openWorldHint !== false ||
       !properties || propertyNames.sort().join("\\0") !== [...surface.properties].sort().join("\\0") ||
       required.slice().sort().join("\\0") !== [...surface.required].sort().join("\\0") || schema?.additionalProperties !== false ||

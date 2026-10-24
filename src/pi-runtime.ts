@@ -1,3 +1,4 @@
+import { projectControlEfficiency } from "./control-efficiency.ts";
 import { availableFallbackModels, supportsFallbackConfig, type QuotaFallbackConfig } from "./quota-fallback-config.ts";
 import {
   SessionManager,
@@ -202,6 +203,17 @@ export class PiRuntimeAdapter {
         entry.type !== "custom_message" && !(entry.type === "message" && entry.message.role === "system"))) return;
       session.setSessionName(name);
     };
+  }
+
+  /** Only already-loaded active Session data; no model runtime/credential operations. */
+  getActiveSessionEfficiency() {
+    const session = this.activeSession;
+    return projectControlEfficiency({
+      sessionId: session.sessionId,
+      entries: session.sessionManager.getEntries(),
+      branch: session.sessionManager.getBranch(),
+      context: session.getContextUsage(),
+    });
   }
 
   getContextUsage(): ContextUsage | undefined {

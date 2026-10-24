@@ -34,15 +34,20 @@ test("required read-only tool surface fails closed for missing/incompatible anno
   assert.throws(() => verifyMonitorToolSurface(incompatible), /Incompatible Pindie Control service/);
 });
 
-test("monitor accepts old observation or the exact optional model view, rejecting required or unknown additions", () => {
+test("monitor accepts old observation or exact optional read-only views, rejecting required or unknown additions", () => {
   const extended = structuredClone(surfaces);
   extended[0]!.inputSchema.properties = { view: { type: "string", enum: ["snapshot", "models"] } };
+  verifyMonitorToolSurface(extended);
+  extended[0]!.inputSchema.properties = { view: { type: "string", enum: ["snapshot", "models", "efficiency"] } };
   verifyMonitorToolSurface(extended);
   extended[0]!.inputSchema.required = ["view"];
   assert.throws(() => verifyMonitorToolSurface(extended), /Incompatible/);
   extended[0]!.inputSchema.required = [];
   for (const properties of [
     { view: { type: "string", enum: ["snapshot", "execute"] } },
+    { view: { type: "string", enum: ["snapshot", "models", "efficiency", "execute"] } },
+    { view: { type: "string", enum: ["snapshot", "efficiency"] } },
+    { view: { type: "string", enum: ["snapshot", "models", "efficiency"] }, execute: {} },
     { view: { type: "string", enum: ["snapshot", "models"] }, execute: {} },
   ]) {
     extended[0]!.inputSchema.properties = properties;
