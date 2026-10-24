@@ -24,9 +24,11 @@ import { createNativeInteractiveRuntime } from "./native-interactive-runtime.ts"
 import { observeNativeUiIdle } from "./native-ui-idle.ts";
 import { canReleaseBrowserIdle } from "./browser-idle-authority.ts";
 import { createBrowserRealityManager, type BrowserRealityManager } from "./browser-reality-manager.ts";
-import { registerConfiguredPindieExtension } from "./extension.ts";
+import { registerPindieComposition } from "./extension.ts";
 import type { PindiePresentationReader } from "./presentation-integration.ts";
 import {
+  composePindieExtension,
+  type PindieCompositionConfig,
   resolvePindieFeatureSelection,
   type PindieFeatureSelectionOverrides,
   type PindieStorageRootOverrides,
@@ -122,6 +124,7 @@ export function createPindieRuntimeFactory(
   compositionOptions: {
     readonly featureSelection?: PindieFeatureSelectionOverrides;
     readonly storageRoots?: PindieStorageRootOverrides;
+    readonly env?: Record<string, string | undefined>;
     readonly browserExtensionFactory?: (pi: ExtensionAPI) => void;
     readonly onPresentationReaderChange?: (reader: PindiePresentationReader | null) => void;
   } = {},
@@ -130,9 +133,10 @@ export function createPindieRuntimeFactory(
   const createSession = dependencies.createAgentSessionFromServices ?? createAgentSessionFromServices;
   const resources = getPindieResourcePaths();
   const featureSelection = resolvePindieFeatureSelection(
-    compositionOptions.featureSelection,
+    compositionOptions.featureSelection, {}, compositionOptions.env,
   );
 
+  let workMemoryStartup: PindieCompositionConfig["workMemoryStartup"];
   return async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
     // Replacement construction is fail-closed: the outgoing reader is no
     // longer current before any new Session-bound runtime work begins.
@@ -148,11 +152,14 @@ export function createPindieRuntimeFactory(
         extensionFactories: [{
           name: "pindie",
           factory: (pi) => {
-            const integration = registerConfiguredPindieExtension(pi, {
+            const composition = composePindieExtension({
               taskMetrics,
               featureSelection: compositionOptions.featureSelection,
               storageRoots: compositionOptions.storageRoots,
-            });
+            }, { configureOptionalFeatures: true, env: compositionOptions.env, workMemoryStartup });
+            workMemoryStartup ??= Object.freeze({ enabled: composition.featureSelection.workMemory,
+              sink: composition.extensionOptions.projectMemorySink, workMemoryConfiguration: composition.workMemoryConfiguration });
+            const integration = registerPindieComposition(pi, composition);
             pendingPresentationReader = integration.presentation;
             return integration;
           },
@@ -279,7 +286,8 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
       });
     }
     nativeRuntime = await createRuntime(createPindieRuntimeFactory(dependencies, taskMetrics, {
-      featureSelection,
+      featureSelection: options.featureSelection,
+      env,
       storageRoots: options.storageRoots,
       ...(browserReality
         ? {

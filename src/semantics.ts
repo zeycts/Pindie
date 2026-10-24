@@ -23,7 +23,7 @@ export type GateRunRelation =
   | "existed_before_run"
   | "opened_during_run";
 
-export type SemanticRunFacts =
+export type SemanticRunFacts = { readonly memoryCaptureAvailable?: boolean } & (
   | {
       readonly stateAvailable: false;
     }
@@ -37,9 +37,10 @@ export type SemanticRunFacts =
       readonly taskRelation: TaskRunRelation;
       readonly completionRelation: CompletionRunRelation;
       readonly gateRelation: GateRunRelation;
-    };
+    });
 
 interface AvailableSemanticSnapshot {
+  readonly memoryCaptureAvailable?: boolean;
   readonly taskStatus: TaskStatus;
   readonly verificationStatus: VerificationStatus | "none";
   readonly hasBlockers: boolean;
@@ -221,6 +222,7 @@ export function deriveSemanticSnapshot(
     snapshot: {
       authority: "coherent",
       ...availableSnapshot,
+      memoryCaptureAvailable: facts.memoryCaptureAvailable === true,
       taskRelation: facts.taskRelation,
       completionRelation: facts.completionRelation,
       gateRelation: facts.gateRelation,
@@ -244,7 +246,7 @@ export function deriveCapabilities(
     return capabilities;
   }
 
-  capabilities.add("memory.capture");
+  if (snapshot.memoryCaptureAvailable === true) capabilities.add("memory.capture");
 
   switch (snapshot.taskStatus) {
     case "idle":

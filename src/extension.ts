@@ -44,6 +44,8 @@ import { PINDIE_REMOTE_NOTICE_TYPE, renderPindieRemoteNotice } from "./remote-no
 import type { RemoteCompanion, RemotePi, RemoteStatusFacts } from "./remote-companion.ts";
 import { classifyHumanSignal } from "./human-signal.ts";
 import type { DiscordRemote } from "./discord-remote.ts";
+import { FileWorkMemoryPreferenceStore, registerWorkMemoryPreferenceCommand } from "./work-memory-preference.ts";
+import type { PindieComposition } from "./composition.ts";
 import { FileDiscordRemotePreferenceStore, registerDiscordRemotePreferenceCommand } from "./remote-preference.ts";
 import type { RemoteRoutingStore } from "./remote-routing.ts";
 import type { ProjectMemorySink } from "./project-memory.ts";
@@ -251,6 +253,7 @@ function registerComposedPindieExtension(
   const continuityNow = options.now ?? Date.now;
   const core = createCoreIntegration({
     store: stateStore,
+    memoryCaptureAvailable: options.projectMemorySink !== undefined,
     continuityStore,
     committedRolloverPublisher,
     taskHandoffEnabled,
@@ -1356,8 +1359,15 @@ export function registerConfiguredPindieExtension(
   options: PindieExtensionOptions = {},
   env: Record<string, string | undefined> = process.env,
 ): PindieExtensionIntegration {
-  const composition = composePindieExtension(options, { configureOptionalFeatures: true, env });
+  return registerPindieComposition(pi, composePindieExtension(options, { configureOptionalFeatures: true, env }));
+}
+
+/** Reuse the Host's startup assembly across native Session replacements. */
+export function registerPindieComposition(pi: ExtensionAPI, composition: PindieComposition): PindieExtensionIntegration {
   for (const warning of composition.warnings) console.warn(warning);
+  registerWorkMemoryPreferenceCommand(pi,
+    new FileWorkMemoryPreferenceStore(composition.storageRoots.globalBaseDir), composition.featureSelection.workMemory,
+    composition.workMemoryConfiguration);
   registerDiscordRemotePreferenceCommand(pi,
     new FileDiscordRemotePreferenceStore(composition.storageRoots.globalBaseDir), composition.featureSelection.remote);
   return registerComposedPindieExtension(

@@ -164,3 +164,40 @@ systemctl --user is-active pindie-control.service pindie-tunnel.service
 ```
 
 The rollback intentionally leaves production on the named rollback branch for diagnosis, with upgraded `main` retained. No force checkout, remote history rewrite, storage migration, destructive cleanup or automatic merge is authorized by these instructions. At the original audit boundary, live provider/OAuth, terminal visuals and production acceptance had not been performed. Later deployment does not by itself establish those individual acceptance checks.
+
+## Work Memory settings isolated visual fixture
+
+`scripts/work-memory-preview.ts --fixtures` constructs the real pinned Pi 1.4.0
+InteractiveMode and Pindie settings command, not a screenshot renderer. It requires
+an isolated launcher, creates a fresh run directory for each invocation and keeps
+its own prefs/auth/Session/State/routing roots. The configured variant uses only a
+**fake sink** to simulate configured availability; it has no Notion token. The
+unconfigured variant has neither credentials nor sink. Network sockets, fetch,
+real adapter imports and model inference are blocked. Ordinary text input is
+consumed with a fixture notice. No production settings or occupied tmux panes are used.
+
+For this feature's retained worktree/preview, run in a **new idle terminal or tmux
+window**, not one of the three production panes:
+
+```bash
+bash /tmp/pindie-work-memory-preview/launch.sh --fixtures
+# Alternatively: missing Notion configuration
+bash /tmp/pindie-work-memory-preview/launch.sh --fixtures --unconfigured
+```
+
+Then enter `/work-memory`. The configured fixture deliberately shows Host on / Saved
+off divergence; test Enter, Ctrl+S, Esc, narrow resize and current/default markers.
+Reopen the menu to confirm saved intent changes while the Host checkmark does not.
+Use `/quit` to exit. Each launch starts a fresh fixture; inspect
+`/tmp/pindie-work-memory-preview/last-run.txt` for its isolated run path.
+The launcher uses `env -i`, temporary HOME/XDG/PI_AGENT_DIR/**PI_CODING_AGENT_DIR**
+(the SDK's actual agent-directory environment variable), and never copies real auth.
+
+The same launcher with `--fixtures --smoke` uses real InteractiveMode with an inert
+Terminal and sends Ctrl+S through Pi's actual input handler. It checks registration,
+native menu mounting, global write, unchanged Host assembly and unchanged Session
+entries; `--unconfigured` covers the missing-config state. The regression suite
+runs both variants in disposable isolated directories. This is non-interactive
+smoke evidence, **not human visual acceptance**. Retain the development worktree and
+preview for acceptance; independent PR review, merge and deployment remain separate,
+not-yet-authorized steps.

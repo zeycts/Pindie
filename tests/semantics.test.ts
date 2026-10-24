@@ -13,7 +13,6 @@ import { EMPTY_STATE, type PindieState, type PindieTask } from "../src/state.ts"
 const AUTHORITY_BASE_CAPABILITIES: PindieCapability[] = ["observe.project", "observe.git"];
 const COHERENT_BASE: PindieCapability[] = [
   ...AUTHORITY_BASE_CAPABILITIES,
-  "memory.capture",
 ];
 const ACTIVE_BASE: PindieCapability[] = [
   ...COHERENT_BASE,
