@@ -140,36 +140,49 @@ export class QuotaFallbackConfigSelectorComponent extends Container {
   private readonly models: readonly FallbackModelChoice[];
   private readonly selected: (result: QuotaFallbackConfigSelectorResult) => void;
   private readonly cancelled: () => void;
-  private readonly modelNames: ReadonlyMap<string, string>;
   constructor(
     tui: Pick<TUI, "requestRender">, theme: SettingsMenuTheme, keys: SettingsMenuKeybindings,
     current: QuotaFallbackConfig, defaults: QuotaFallbackConfig, models: readonly FallbackModelChoice[],
     selected: (result: QuotaFallbackConfigSelectorResult) => void, cancelled: () => void,
-    modelNames: ReadonlyMap<string, string> = new Map(),
   ) {
     super(); this.tui = tui; this.theme = theme; this.keys = keys; this.current = current;
-    this.defaults = defaults; this.models = models; this.selected = selected; this.cancelled = cancelled; this.modelNames = modelNames;
+    this.defaults = defaults; this.models = models; this.selected = selected; this.cancelled = cancelled;
     this.draft = copyFallbackConfig(current); this.root();
   }
   handleInput(data: string): void { this.menu.handleInput(data); }
   private name(config: QuotaFallbackConfig): string {
     const identity = `${config.model.provider}/${config.model.modelId}`;
-    return this.models.find((m) => m.provider === config.model.provider && m.modelId === config.model.modelId)?.name ?? `${this.modelNames.get(identity) ?? identity} (unavailable)`;
+    return this.models.some((m) => m.provider === config.model.provider && m.modelId === config.model.modelId) ? identity : `${identity} (unavailable)`;
   }
-  private thinking(config: QuotaFallbackConfig): string { return config.thinking === "source" ? "Same as source" : config.thinking; }
+  private thinking(config: QuotaFallbackConfig): string { return config.thinking === "source" ? "Follow source" : config.thinking; }
   private show(options: ConstructorParameters<typeof SettingsMenu<string>>[3]): void {
     this.clear(); this.menu = new SettingsMenu(this.tui, this.theme, this.keys, options); this.addChild(this.menu); this.tui.requestRender();
   }
-  private finish(kind: "session" | "default"): void { this.selected({ kind, config: copyFallbackConfig(this.draft) }); }
+  private finish(kind: "session" | "default"): void {
+    const changedTarget = JSON.stringify(this.draft.model) !== JSON.stringify(this.current.model) || this.draft.thinking !== this.current.thinking;
+    // Presentation preflight only; the command still rechecks fresh Pi authority before either write.
+    if ((this.draft.enabled || changedTarget) && !supportsFallbackConfig(this.draft, this.models)) { this.root(); return; }
+    this.selected({ kind, config: copyFallbackConfig(this.draft) });
+  }
   private root(): void {
-    this.show({ title: "Quota Fallback", description: "Paid backup for future Codex quota events. Edit fields, then Apply.",
-      status: [`Session: ${this.current.enabled ? "on" : "off"} · ${this.name(this.current)} · ${this.thinking(this.current)}`,
-        `Default: ${this.defaults.enabled ? "on" : "off"} · ${this.name(this.defaults)} · ${this.thinking(this.defaults)}`],
-      choices: [{ value: "enabled", label: `Enabled: ${this.draft.enabled ? "on" : "off"}` },
-        { value: "model", label: `Model: ${this.name(this.draft)}` }, { value: "thinking", label: `Thinking: ${this.thinking(this.draft)}` },
+    const summary = (config: QuotaFallbackConfig) => `${config.enabled ? "on" : "off"} · ${this.name(config)} · ${this.thinking(config)}`;
+    const modified = (field: "enabled" | "model" | "thinking") =>
+      (field === "model" ? this.name(this.draft) !== this.name(this.current) : this.draft[field] !== this.current[field]) ? " · modified" : "";
+    const same = summary(this.current) === summary(this.defaults);
+    const status: ConstructorParameters<typeof SettingsMenu<string>>[3]["status"][number][] = [
+      { text: `${same ? "Current/Saved" : "Current"}: ${summary(this.current)}`, color: "dim" },
+    ];
+    if (!same) status.push({ text: `Saved default differs: ${summary(this.defaults)}`, color: "warning" });
+    const modelAvailable = this.models.some((m) => m.provider === this.draft.model.provider && m.modelId === this.draft.model.modelId);
+    if (!modelAvailable) status.push({ text: "Backup unavailable; check Pi model/auth before applying changes.", color: "warning" });
+    else if (!supportsFallbackConfig(this.draft, this.models)) status.push({ text: "Thinking incompatible with backup; choose Thinking again before Apply/Save.", color: "warning" });
+    this.show({ title: "Quota Fallback", description: "Paid backup for Codex quota. Save all = default + Session; Back discards draft.",
+      status,
+      choices: [{ value: "enabled", label: `Enabled: ${this.draft.enabled ? "on" : "off"}${modified("enabled")}` },
+        { value: "model", label: `Model: ${this.name(this.draft)}${modified("model")}` }, { value: "thinking", label: `Thinking: ${this.thinking(this.draft)}${modified("thinking")}` },
         { value: "apply", label: "Apply to Session" }], currentValue: "", defaultValue: "",
-      confirm: { hint: "Edit / Apply", run: (field) => field === "apply" ? this.finish("session") : this.sub(field) },
-      save: { hint: "Save default + Session", run: () => this.finish("default") }, onCancel: this.cancelled });
+      confirm: { hint: "Edit/Apply", run: (field) => field === "apply" ? this.finish("session") : this.sub(field) },
+      save: { hint: "Save all", run: () => this.finish("default") }, onCancel: this.cancelled });
   }
   private sub(field: string): void {
     let choices: { value: string; label: string }[];
@@ -179,11 +192,11 @@ export class QuotaFallbackConfigSelectorComponent extends Container {
       choices = [{ value: "on", label: "on" }, { value: "off", label: "off" }];
       currentValue = this.current.enabled ? "on" : "off"; defaultValue = this.defaults.enabled ? "on" : "off";
     } else if (field === "model") {
-      choices = this.models.map((m) => ({ value: `${m.provider}/${m.modelId}`, label: `${m.name} (${m.provider}/${m.modelId}) · backup, may be paid` }));
+      choices = this.models.map((m) => ({ value: `${m.provider}/${m.modelId}`, label: `${m.provider}/${m.modelId}` }));
       currentValue = identity(this.current); defaultValue = identity(this.defaults);
     } else {
       const model = this.models.find((m) => `${m.provider}/${m.modelId}` === identity(this.draft));
-      choices = [{ value: "source", label: "Same as source" }, ...(model?.thinkingLevels ?? []).map((level) => ({ value: level, label: level }))];
+      choices = [{ value: "source", label: "Follow source" }, ...(model?.thinkingLevels ?? []).map((level) => ({ value: level, label: level }))];
       currentValue = this.current.thinking; defaultValue = this.defaults.thinking;
     }
     if (!choices.length) choices = [{ value: "", label: "No authenticated allowed backup models available" }];
@@ -195,9 +208,12 @@ export class QuotaFallbackConfigSelectorComponent extends Container {
       } else this.draft = { ...this.draft, thinking: value as QuotaFallbackConfig["thinking"] };
       this.root();
     };
-    this.show({ title: `Quota Fallback · ${field}`, description: "Choose draft value; Apply on the main screen. Cancel returns without changing this field.", status: [], choices, maxVisibleChoices: 8,
+    const description = field === "model" ? "Choose backup for draft; Back keeps model." : field === "enabled" ?
+      "Enable future fallback in draft; Back keeps value." : "Uses source Thinking; Pi may adjust for backup model.";
+    this.show({ title: `Quota Fallback · ${field}`, description: `${description} Save all = default + Session.`,
+      status: [], choices, maxVisibleChoices: 8,
       currentValue, defaultValue, initialValue: field === "enabled" ? (this.draft.enabled ? "on" : "off") : field === "model" ? identity(this.draft) : this.draft.thinking,
-      confirm: { hint: "Choose", run: choose }, save: { hint: "Save default + Session", run: (value) => { choose(value); this.finish("default"); } }, onCancel: () => this.root() });
+      confirm: { hint: "Choose", run: choose }, save: { hint: "Save all", run: (value) => { choose(value); this.finish("default"); } }, onCancel: () => this.root() });
   }
 }
 
@@ -259,16 +275,9 @@ export function registerQuotaFallbackIntegration(
       let models: FallbackModelChoice[];
       try { models = availableFallbackModels(ctx.modelRegistry); }
       catch { ctx.ui.notify(QUOTA_FALLBACK_UNAVAILABLE_MESSAGE, "error"); return; }
-      const modelNames = new Map<string, string>();
-      for (const config of [sessionConfig, globalConfig]) {
-        try {
-          const model = ctx.modelRegistry.find(config.model.provider, config.model.modelId);
-          if (model) modelNames.set(`${config.model.provider}/${config.model.modelId}`, model.name);
-        } catch { /* Metadata failure cannot authorize a backup; keep the explicit unavailable identity. */ }
-      }
       const selected = await ctx.ui.custom<QuotaFallbackConfigSelectorResult | null>(
         (tui, theme, keybindings, done) => new QuotaFallbackConfigSelectorComponent(
-          tui, theme, keybindings, sessionConfig, globalConfig, models, done, () => done(null), modelNames,
+          tui, theme, keybindings, sessionConfig, globalConfig, models, done, () => done(null),
         ),
       );
       if (selected === null || selected === undefined) return;

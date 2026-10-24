@@ -31,9 +31,9 @@ test("SettingsMenu separates cursor/current/default, wraps choices and uses real
   assert.match(initial, /→   Beta · default/);
   assert.match(initial, /Alt\+Enter to apply locally/);
   assert.match(initial, /Ctrl\+X\/Alt\+S to save globally/);
-  assert.match(initial, /Ctrl\+Q\/Alt\+C Cancel \(no save\)/);
+  assert.match(initial, /Ctrl\+Q\/Alt\+C Back/);
   assert.match(initial, /Alt\+K\/Alt\+J Move/);
-  for (const key of ["\r", "\u0013", "\u001b", "\u001b[B"]) menu.handleInput(key);
+  for (const key of ["\r", "\u0013", "\u001b", "\u0003", "\u001b[B"]) menu.handleInput(key);
   assert.deepEqual(results, []); // no hardcoded Enter, Ctrl+S, Escape or arrows
   menu.handleInput("\u001bj");
   menu.handleInput("\u001bj"); // wrap to Alpha
@@ -70,8 +70,8 @@ test("quota menus preserve boolean styling and wrap fallback fields without widt
       if (fallback || current === saved) assert.doesNotMatch(screen, /Session:|Default:/);
       else assert.match(screen, new RegExp(`Session: ${current ? "on" : "off"} · Default: ${saved ? "on" : "off"}`));
       assert.match(screen, fallback ? /Enter Choose/ : /Enter Session/);
-      assert.match(screen, /Save default \+ Session/);
-      assert.match(screen, /Escape\/Ctrl\+C Cancel \(no save\)/);
+      assert.match(screen, fallback ? /Save all/ : /Ctrl\+S Save/);
+      assert.match(screen, /Esc\/Ctrl\+C Back/);
       assert.doesNotMatch(screen, /V4\.1|source thinking|Current Session/);
       for (const width of [1, 2, 8, 16, 40, 80, 120]) {
         for (const line of menu.render(width)) assert.ok(visibleWidth(line) <= width, `width ${width}: ${line}`);
@@ -96,6 +96,16 @@ test("SettingsMenu optionally windows long model lists while preserving cursor/c
   menu.handleInput("\u001b[A"); menu.handleInput("\r");
   assert.deepEqual(results, [99]);
   assert.match(menu.render(150).join("\n"), /→   Fixture 99/);
+});
+
+test("SettingsMenu footer omits all unbound actions, including cancel and navigation", () => {
+  const menu = new SettingsMenu({ requestRender() {} }, theme, new KeybindingsManager({
+    "tui.select.up": [], "tui.select.down": [], "tui.select.confirm": [], "tui.select.cancel": [], "app.models.save": [],
+  }), { title: "Field", description: "Description", status: [], choices: [{ value: 1, label: "one" }], currentValue: 1, defaultValue: 1,
+    confirm: { hint: "Choose", run: () => assert.fail() }, save: { hint: "Save", run: () => assert.fail() }, onCancel: () => assert.fail(),
+  });
+  assert.doesNotMatch(menu.render(200).join("\n"), /↑|↓|Move|Enter|Choose|Ctrl|Save|Esc|Back/);
+  for (const key of ["\r", "\u0013", "\u001b", "\u0003", "\u001b[A", "\u001b[B"]) menu.handleInput(key);
 });
 
 test("SettingsMenu rebuilds theme colors and hides unbound actions without invented shortcuts", () => {

@@ -83,8 +83,8 @@ export function registerDiscordRemotePreferenceCommand(
             currentValue: startupEnabled,
             defaultValue: saved,
             initialValue: saved,
-            confirm: { hint: "Save default (next Host)", run: done },
-            save: { hint: "Save default (next Host)", run: done },
+            confirm: { hint: "Save", run: done },
+            save: { hint: "Save", run: done },
             onCancel: () => done(null),
           },
         ));

@@ -161,7 +161,7 @@ export class QuotaResumeSelectorComponent extends SettingsMenu<boolean> {
   ) {
     super(tui, theme, keybindings, {
       title: "Quota Resume",
-      description: "Auto-resume this Session after Codex quota resets.",
+      description: "Auto-resume after Codex quota resets. Save = default + Session.",
       status: sessionEnabled === globalDefault ? [] : [
         `Session: ${sessionEnabled ? "on" : "off"} · Default: ${globalDefault ? "on" : "off"}`,
       ],
@@ -169,7 +169,7 @@ export class QuotaResumeSelectorComponent extends SettingsMenu<boolean> {
       currentValue: sessionEnabled,
       defaultValue: globalDefault,
       confirm: { hint: "Session", run: (enabled) => onSelect({ kind: "session", enabled }) },
-      save: { hint: "Save default + Session", run: (enabled) => onSelect({ kind: "default", enabled }) },
+      save: { hint: "Save", run: (enabled) => onSelect({ kind: "default", enabled }) },
       onCancel,
     });
   }
