@@ -52,7 +52,7 @@ OFF preserves the last selected model/thinking and does not cancel an active lea
 
 - `source` = **Same as source**. Capture source thinking, switch backup, reapply source thinking through Pi; Pi may clamp it. Legacy preferences never silently become Medium.
 - Fixed `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, **`max`** map one-to-one to Pi's public values. Only metadata-supported values are offered/accepted; there is no Pindie provider-specific alias map or silent fixed-level clamp policy.
-- Source restore always reapplies the captured **source** thinking, not the configured backup value.
+- Fixed thinking also requires Pi's actual post-switch effective level to exactly match the selected value; mismatch fails before lease/continuation and rolls back only while ownership/generation guards still hold. Source mode may still clamp, and source restore always reapplies the captured **source** thinking, not the configured backup value.
 
 ## Small UI, no settings framework
 

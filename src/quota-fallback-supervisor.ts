@@ -133,8 +133,11 @@ export class QuotaFallbackSupervisor {
     try {
       await this.setOwnedModel(generation, plan.sessionId, backup.model.provider, backup.model.modelId);
       if (!this.current(generation, plan.sessionId) || !this.matchesBackup(plan.sessionId, backup)) throw new Error("Session or backup changed during fallback switch");
-      this.runtime.setActiveSessionThinkingLevel(backup.thinking === "source" ? sourceThinkingLevel : backup.thinking);
+      const effectiveThinking = this.runtime.setActiveSessionThinkingLevel(backup.thinking === "source" ? sourceThinkingLevel : backup.thinking);
       if (!this.current(generation, plan.sessionId) || !this.matchesBackup(plan.sessionId, backup)) throw new Error("Session or backup changed during thinking application");
+      if (backup.thinking !== "source" && effectiveThinking !== backup.thinking) {
+        throw new Error(`Backup thinking did not match the selected level: expected ${backup.thinking}, received ${effectiveThinking}`);
+      }
 
       // Install ownership before invoking Pi: native events can arrive synchronously.
       const unsubscribe = this.runtime.subscribeActiveSession(() => {
