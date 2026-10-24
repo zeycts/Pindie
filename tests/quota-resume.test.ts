@@ -118,7 +118,7 @@ function commandContext(
         return result;
       },
     },
-    sessionManager: { getBranch: () => branch },
+    sessionManager: { getBranch: () => branch, getSessionId: () => "session", getLeafId: () => "leaf" },
   };
 }
 
@@ -335,6 +335,67 @@ test("failed global save keeps resume Session/default and runtime callback uncha
   assert.equal(integration.quotaAutoResumeDefault, false);
   assert.equal(changed, 0);
   assert.match(ctx.notifications.at(-1)!.message, /synthetic save failure/);
+});
+
+test("quota resume rejects stale Session, branch leaf and lifecycle dialogs before either write", async () => {
+  for (const boundary of ["session", "leaf", "restoreSession", "restoreBranch", "shutdown", "priorCommand"] as const) {
+    for (const key of ["enter", "ctrl+x"]) {
+      const pi = new TestPi();
+      const store = new TestStore(false);
+      let changed = 0;
+      const integration = registerQuotaResumeIntegration(pi as unknown as ExtensionAPI, store, {
+        onPreferenceChanged: () => { changed++; },
+      });
+      let sessionId = "session", leafId = "leaf";
+      const ctx = commandContext([], () => undefined);
+      ctx.sessionManager.getSessionId = () => sessionId;
+      ctx.sessionManager.getLeafId = () => leafId;
+      await integration.restoreSession(ctx as any);
+      ctx.ui.custom = async () => {
+        if (boundary === "session") sessionId = "replacement";
+        if (boundary === "leaf") leafId = "other";
+        if (boundary === "restoreSession") await integration.restoreSession(ctx as any);
+        if (boundary === "restoreBranch") await integration.restoreBranch(ctx as any);
+        if (boundary === "shutdown") integration.invalidateSession();
+        if (boundary === "priorCommand") {
+          await pi.commands.get("quota-resume").handler("", commandContext([], (menu) => menu.handleInput("enter")));
+          pi.appendedEntries.length = 0; changed = 0;
+        }
+        return { kind: key === "enter" ? "session" : "default", enabled: true };
+      };
+      await pi.commands.get("quota-resume").handler("", ctx);
+      assert.deepEqual(store.saved, [], `${boundary}/${key}`);
+      assert.deepEqual(pi.appendedEntries, [], `${boundary}/${key}`);
+      assert.equal(integration.quotaAutoResumeEnabled, false);
+      assert.equal(changed, 0);
+      assert.match(ctx.notifications.at(-1)?.message ?? "", /Session\/branch changed/);
+    }
+  }
+});
+
+test("quota resume successful asynchronous global save stands but stale Session append/callback is rejected", async () => {
+  for (const boundary of ["session", "leaf", "shutdown"] as const) {
+    const pi = new TestPi(), store = new TestStore(false);
+    let changed = 0;
+    const integration = registerQuotaResumeIntegration(pi as unknown as ExtensionAPI, store, {
+      onPreferenceChanged: () => { changed++; },
+    });
+    const ctx = commandContext([], (menu) => { menu.handleInput("up"); menu.handleInput("ctrl+x"); });
+    await integration.restoreSession(ctx as any);
+    store.saveDefault = async (enabled) => {
+      store.saved.push(enabled); store.value = enabled;
+      if (boundary === "session") ctx.sessionManager.getSessionId = () => "replacement";
+      if (boundary === "leaf") ctx.sessionManager.getLeafId = () => "other";
+      if (boundary === "shutdown") integration.invalidateSession();
+    };
+    await pi.commands.get("quota-resume").handler("", ctx);
+    assert.deepEqual(store.saved, [true]);
+    assert.equal(integration.quotaAutoResumeDefault, true);
+    assert.equal(integration.quotaAutoResumeEnabled, false);
+    assert.deepEqual(pi.appendedEntries, []);
+    assert.equal(changed, 0);
+    assert.match(ctx.notifications.at(-1)?.message ?? "", /changed while saving/);
+  }
 });
 
 test("composition creates the quota preference store under the existing global root", () => {

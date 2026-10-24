@@ -178,6 +178,7 @@ export class QuotaResumeSelectorComponent extends SettingsMenu<boolean> {
 export interface QuotaResumeIntegration {
   readonly quotaAutoResumeEnabled: boolean;
   readonly quotaAutoResumeDefault: boolean;
+  invalidateSession(): void;
   restoreSession(ctx: ExtensionContext): Promise<void>;
   restoreBranch(ctx: ExtensionContext): Promise<void>;
 }
@@ -193,8 +194,10 @@ export function registerQuotaResumeIntegration(
 ): QuotaResumeIntegration {
   let globalDefault = true;
   let sessionEnabled = true;
+  let revision = 0;
 
   const restore = async (ctx: ExtensionContext, reloadGlobal: boolean): Promise<void> => {
+    ++revision;
     if (reloadGlobal) {
       try {
         globalDefault = await store.loadDefault();
@@ -227,6 +230,9 @@ export function registerQuotaResumeIntegration(
         return;
       }
 
+      const commandRevision = revision;
+      const sessionId = ctx.sessionManager.getSessionId();
+      const leafId = ctx.sessionManager.getLeafId();
       const selected = await ctx.ui.custom<QuotaResumeSelectorResult | null>(
         (tui, theme, keybindings, done) => new QuotaResumeSelectorComponent(
           tui,
@@ -241,15 +247,18 @@ export function registerQuotaResumeIntegration(
       if (selected === null || selected === undefined) return;
 
       try {
+        const isCurrent = () => revision === commandRevision &&
+          ctx.sessionManager.getSessionId() === sessionId && ctx.sessionManager.getLeafId() === leafId;
+        if (!isCurrent()) throw new Error("Session/branch changed; reopen /quota-resume.");
         if (selected.kind === "default") {
           await store.saveDefault(selected.enabled);
-          pi.appendEntry(PINDIE_QUOTA_RESUME_PREFERENCE_TYPE, { enabled: selected.enabled });
+          // A completed global save stands even if its originating Session changed.
           globalDefault = selected.enabled;
-          sessionEnabled = selected.enabled;
-        } else {
-          pi.appendEntry(PINDIE_QUOTA_RESUME_PREFERENCE_TYPE, { enabled: selected.enabled });
-          sessionEnabled = selected.enabled;
         }
+        if (!isCurrent()) throw new Error("Session/branch changed while saving; current Session was not modified.");
+        pi.appendEntry(PINDIE_QUOTA_RESUME_PREFERENCE_TYPE, { enabled: selected.enabled });
+        sessionEnabled = selected.enabled;
+        ++revision;
         options.onPreferenceChanged?.(sessionEnabled, ctx);
       } catch (error) {
         ctx.ui.notify(errorMessage(error), "error");
@@ -258,6 +267,7 @@ export function registerQuotaResumeIntegration(
   });
 
   return {
+    invalidateSession: () => { ++revision; },
     restoreSession: (ctx: ExtensionContext): Promise<void> => restore(ctx, true),
     restoreBranch: (ctx: ExtensionContext): Promise<void> => restore(ctx, false),
     get quotaAutoResumeEnabled(): boolean {
