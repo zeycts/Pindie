@@ -325,6 +325,12 @@ export class PindieControlClient {
     });
   }
 
+  /** Availability means membership in Pi's current registry snapshot, not provider health. */
+  listModels() {
+    this.requireActiveBinding();
+    return { source: "pi_available_registry_snapshot" as const, models: this.runtime.getAvailableModelCatalog() };
+  }
+
   async input(request: {
     readonly lease: string;
     readonly text: string;

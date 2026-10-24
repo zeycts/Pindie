@@ -191,8 +191,10 @@ test("MCP orchestration metadata preserves the old API and communicates per-tool
     const input = schemas.find(({ name }) => name === "pindie_input")!.inputSchema;
     assert.deepEqual(input.properties.sessionName, { type: "string", minLength: 1, maxLength: 512 });
     assert.deepEqual(input.required, ["lease", "text"]);
-    // Keep the frozen old wire fixture: this one optional field is the ONLY
-    // schema change. Every old field/constraint/annotation remains identical.
+    const observe = schemas.find(({ name }) => name === "pindie_observe")!.inputSchema;
+    assert.deepEqual(observe.properties.view, { type: "string", enum: ["snapshot", "models"] });
+    // Only additive optional fields differ from the frozen old wire fixture.
+    delete observe.properties.view;
     delete input.properties.sessionName;
     assert.deepEqual(schemas, baseline);
 
@@ -353,7 +355,16 @@ test("loopback boots without Host or TUI; disconnect keeps Host; shutdown dispos
     try {
       const connect = async () => { const peer = new Client({ name: "tunnel", version: "1" }); await peer.connect(new StreamableHTTPClientTransport(url)); return peer; };
       const first = await connect();
-      assert.equal((await first.listTools()).tools.length, 13);
+      const { tools } = await first.listTools();
+      assert.equal(tools.length, 13);
+      const input = tools.find(({ name }) => name === "pindie_input")!.inputSchema;
+      assert.deepEqual(Object.keys(input.properties ?? {}), ["lease", "text", "timing", "sessionName"]);
+      assert.deepEqual(input.required, ["lease", "text"]);
+      assert.equal(input.additionalProperties, false);
+      assert.deepEqual(withoutDescriptions(input.properties?.sessionName), { type: "string", minLength: 1, maxLength: 512 });
+      const noModels = await first.callTool({ name: "pindie_observe", arguments: { view: "models" } });
+      assert.equal(noModels.isError, true);
+      assert.equal(noModels.structuredContent?.code, "no_active_project");
       assert.equal((await first.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.state, "no_active_project");
       assert.equal(created, 0);
       await first.callTool({ name: "pindie_open_project", arguments: { project: "Pindie" } });

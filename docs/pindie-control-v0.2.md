@@ -4,6 +4,15 @@ Status: **Implemented through Slice D2.** This is the current workspace, Session
 
 Current service: `PINDIE_WORKSPACE_ROOT`, zero or one active Host, explicit project selection, **13 MCP tools**. Counts of 8/9/11 below record completed slices, not alternate current surfaces. See [README startup](../README.md#private-mcp-control-and-observers), [Session selection](#19-slice-c--session-discovery--switch), [timeline/wait](#20-slice-d--live-work-observation) and [local monitor](#206-slice-d2--local-read-only-monitor).
 
+### Optional model registry view
+
+`pindie_observe` accepts optional `view: "snapshot" | "models"` (default
+`"snapshot"`). The models view is project-scoped, read-only and lease-free;
+without an active project it returns `no_active_project`. It returns the current
+Pi available-registry snapshot through the Control client/runtime adapter, not a
+provider probe or model-selection policy. Ordinary observation and the 13 tools'
+annotations remain unchanged. See [phase-1 details and strict-dispatch blocker](control-operator-phase1.md).
+
 ## 1. Why v0.2 exists
 
 Pindie Control v0.1 successfully proved the end-to-end control path:

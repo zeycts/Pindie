@@ -34,6 +34,22 @@ test("required read-only tool surface fails closed for missing/incompatible anno
   assert.throws(() => verifyMonitorToolSurface(incompatible), /Incompatible Pindie Control service/);
 });
 
+test("monitor accepts old observation or the exact optional model view, rejecting required or unknown additions", () => {
+  const extended = structuredClone(surfaces);
+  extended[0]!.inputSchema.properties = { view: { type: "string", enum: ["snapshot", "models"] } };
+  verifyMonitorToolSurface(extended);
+  extended[0]!.inputSchema.required = ["view"];
+  assert.throws(() => verifyMonitorToolSurface(extended), /Incompatible/);
+  extended[0]!.inputSchema.required = [];
+  for (const properties of [
+    { view: { type: "string", enum: ["snapshot", "execute"] } },
+    { view: { type: "string", enum: ["snapshot", "models"] }, execute: {} },
+  ]) {
+    extended[0]!.inputSchema.properties = properties;
+    assert.throws(() => verifyMonitorToolSurface(extended), /Incompatible/);
+  }
+});
+
 test("pinned Streamable HTTP monitor adapter verifies 13-tool service and decodes only the read-only projection", async () => {
   const root = await mkdtemp(join(tmpdir(), "pindie-monitor-client-"));
   const project = join(root, "Modeloom"); await mkdir(project);
