@@ -1,6 +1,8 @@
 # Pindie Quota Fallback v0.1 — Architecture Contract
 
-Status: **Implemented through final Slice E.** The Host uses native Pi InteractiveMode as its only interactive shell; see the [Pi 1.4.0 compatibility audit](pi-1.4.0-compatibility.md) for the pinned runtime. References to 0.86.1 below are historical implementation observations, not current dependency requirements.
+Status: **Implemented through final Slice E; extended by approved [Settings Phase 2](settings-phase2-quota-fallback.md).** Phase 2 supersedes this document's fixed-backup/source-only/two-row UI restrictions only: backup identity and thinking are user-configurable from Pi's authenticated available text-chat models (excluding Codex and virtual routers). DeepSeek Flash + source remains the legacy/default target. The remaining quota/lease/ownership safety contract below still applies. Fixed-backup wording in the original v0.1 sections records that original scope.
+
+Original v0.1 status: **Implemented through final Slice E.** The Host uses native Pi InteractiveMode as its only interactive shell; see the [Pi 1.4.0 compatibility audit](pi-1.4.0-compatibility.md) for the pinned runtime. References to 0.86.1 below are historical implementation observations, not current dependency requirements.
 
 Baseline: the implemented Quota Fallback and Quota Auto Resume behavior in `docs/behavior.md`.
 

@@ -317,17 +317,24 @@ credits are never automatically consumed.
 
 ### Quota Fallback
 
-`/quota-fallback` opts into the fixed pay-as-you-go DeepSeek Flash backup
-(`deepseek/deepseek-flash`); the default is **OFF**. Enter saves only the current
-Session's branch-local preference; the configured save binding (Ctrl+S by
-default) saves the Global default and appends the choice to the current Session.
-Turning ON requires Pi to find the exact model with provider authentication
-before either preference changes. Turning OFF requires no auth and does not
-interrupt an already committed fallback. API keys remain Pi-owned.
+`/quota-fallback` configures Enabled, Model and Thinking; the default is **OFF**
+with `deepseek/deepseek-flash` and **Same as source**. Model choices come from Pi's
+explicitly authenticated available text-chat models, excluding `openai-codex` and
+virtual routers. Names and supported thinking levels come from actual metadata;
+candidates may be paid. No automatic provider substitution occurs.
+Enter edits a field; **Apply to Session** commits the complete branch-local triple.
+The configured save binding (Ctrl+S by default) saves the Global triple and applies
+it to the current Session. Esc discards the draft. ON or target edits require exact
+model/auth/thinking preflight before either preference changes. Unchanged OFF
+needs no auth, retains the target/thinking and does not interrupt a committed lease.
+Legacy `{enabled}` entries inherit legal global/default model/thinking; malformed
+configuration fails closed. API keys remain Pi-owned. See [Phase 2 mapping and
+precedence](settings-phase2-quota-fallback.md).
 
 When authorized and available, fallback changes the current Session model and
-starts one hidden continuation immediately. Pi clamps the preserved thinking
-level for the backup. Ordinary input continues on DeepSeek without cancelling
+starts one hidden continuation immediately. Pi clamps source thinking when that
+mode is selected; fixed thinking must be supported by the target. The lease captures
+its own backup identity/thinking snapshot. Ordinary input continues on the backup without cancelling
 the lease; explicit model selection takes ownership and prevents automatic
 restore. Branch changes and Session replacement cancel the lease. Reaching the
 quota recovery time (reset plus grace) never interrupts active work: the Host
@@ -349,25 +356,26 @@ changes cancel waiting; process exit loses it. At wake, Pi receives a hidden
 custom resume with `triggerTurn: true`, starting a fresh Agent Run in the same
 Session. The hidden message is runtime metadata, not user intent.
 
-### Settings menus (Phase 1.1)
+### Settings menus (Phase 1.1 + fallback Phase 2)
 
 `/quota-fallback`, `/quota-resume` and `/discord-remote` share a presentation-only
-`SettingsMenu`: a standalone title, one-sentence description, two on/off rows,
+`SettingsMenu`: a standalone title, one-sentence description, choice rows,
 then one horizontal help row (safely wrapped on narrow terminals), with themed
 borders. `→` is the cursor, `✓` marks the currently effective Session/Host value,
 and `· default` marks the persisted global default. Matching current/default values
-need no extra status row; quota divergence adds `Session: … · Default: …`, while
+need no extra status row in the unchanged boolean menus; Resume divergence adds `Session: … · Default: …`, while
 Discord divergence adds `Host: … · Saved: … · Restart required`. The Discord
-description always notes next-Host activation. Fallback names the fixed paid
-DeepSeek Flash backup without a model version or model picker.
+description always notes next-Host activation. Fallback's main view shows the complete
+Session/default triples, with Enabled/Model/Thinking sub-selectors and an Apply row;
+model lists are dynamically windowed and names come from Pi metadata.
 Help follows Pi's injected navigation, confirm, save and cancel bindings, including
 multiple bindings and remapping; unbound actions show no invented shortcut.
 Quota confirm applies to the current Session/branch; save persists the global
 default and applies to the current Session.
 Discord confirm **and** save persist only the global startup boolean, displaying
 current Host versus saved default and the next-Host activation boundary. Cancel
-writes nothing. No model/thinking picker, Project Memory switch, new preference
-store or hot activation is introduced. See [Remote startup semantics](remote-companion.md#3-configuration-and-security).
+writes nothing. The fallback-only model/thinking fields introduce no global settings
+framework, Project Memory switch, new preference store or hot activation. See [Remote startup semantics](remote-companion.md#3-configuration-and-security).
 
 ## 15. Global behavioral invariants
 

@@ -1847,7 +1847,8 @@ test("quota preference arbitration shares one forced refresh, orders fallback be
 
 test("Extension settlement drives installed real fallback supervisor: commit, unavailable, rollback, and backup failure", async () => {
   const now = 1_700_000_000_000;
-  for (const mode of ["commit", "unavailable", "rollback", "backup-failure"] as const) {
+  for (const mode of ["commit", "unavailable", "rollback", "backup-failure", "configured-reset"] as const) {
+    const backupId = mode === "configured-reset" ? "deepseek-v4-pro" : "deepseek-flash";
     const branch = [{ type: "message", id: "quota", message: {
       role: "assistant", content: [], provider: "openai-codex", model: "gpt-5-codex",
       stopReason: "error", errorMessage: "The usage limit has been reached", timestamp: now,
@@ -1868,7 +1869,8 @@ test("Extension settlement drives installed real fallback supervisor: commit, un
         find: (provider: string, id: string) => ({ provider, id }),
         getAvailable: () => mode === "unavailable"
           ? [{ provider: "openai-codex", id: "gpt-5-codex" }]
-          : [{ provider: "openai-codex", id: "gpt-5-codex" }, { provider: "deepseek", id: "deepseek-flash" }],
+          : [{ provider: "openai-codex", id: "gpt-5-codex", input: ["text"] }, { provider: "deepseek", id: backupId, name: "Fixture Metadata Backup", input: ["text"], reasoning: true }],
+        hasConfiguredAuth: () => mode !== "unavailable", getProviderAuthStatus: () => ({ configured: mode !== "unavailable" }),
       }) },
       async setModel(target: { provider: string; id: string }) { switches.push(`${target.provider}/${target.id}`); model = target; },
       subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
@@ -1901,7 +1903,8 @@ test("Extension settlement drives installed real fallback supervisor: commit, un
       const ctx = withBranch(context("/repo", branch), branch);
       const h = createHarness([["/repo", activeState()]], {}, {
         now: () => now,
-        quotaFallbackPreferenceStore: { loadDefault: async () => true, saveDefault: async () => undefined },
+        quotaFallbackPreferenceStore: { loadDefault: async () => true, saveDefault: async () => undefined,
+          loadConfig: async () => ({ enabled: true, model: { provider: "deepseek", modelId: backupId }, thinking: mode === "configured-reset" ? "high" : "source" }) },
         quotaResumePreferenceStore: { loadDefault: async () => true, saveDefault: async () => undefined },
         subscriptionUsageProvider: { fetchUsage: async () => ({ fetchedAt: now, windows: [
           { usedPercent: 100, windowMinutes: 300, resetsAt: now + 60_000 },
@@ -1912,8 +1915,8 @@ test("Extension settlement drives installed real fallback supervisor: commit, un
       await h.api.handler("before_agent_start")({ type: "before_agent_start", prompt: "Continue", systemPrompt: "", systemPromptOptions: {} }, ctx);
       await h.api.handler("agent_settled")({ type: "agent_settled" }, ctx);
       await waitFor(() => sends.length > 0 || resumePlans.length > 0);
-      if (mode === "commit" || mode === "backup-failure") {
-        assert.deepEqual(switches, ["deepseek/deepseek-flash"], mode);
+      if (mode === "commit" || mode === "backup-failure" || mode === "configured-reset") {
+        assert.deepEqual(switches, [`deepseek/${backupId}`], mode);
         assert.equal((sends[0] as { message: { customType: string } }).message.customType, PINDIE_QUOTA_FALLBACK_TYPE);
         assert.equal(resumePlans.length, 0, mode);
         assert.equal(listeners.size, 1, mode);
@@ -1922,6 +1925,13 @@ test("Extension settlement drives installed real fallback supervisor: commit, un
         assert.deepEqual(switches, mode === "rollback" ? ["deepseek/deepseek-flash", "openai-codex/gpt-5-codex"] : [], mode);
         assert.equal(listeners.size, 0, mode);
         assert.equal(timers.every((timer) => timer.cancelled), true, mode);
+      }
+      if (mode === "configured-reset") {
+        assert.equal(thinking, "high");
+        timers[0]!.callback(); await nextTurn();
+        assert.deepEqual(switches, ["deepseek/deepseek-v4-pro", "openai-codex/gpt-5-codex"]);
+        assert.equal(thinking, "medium"); assert.equal(sends.length, 1); assert.equal(resumePlans.length, 0);
+        assert.equal(listeners.size, 0); assert.equal(timers[0]!.cancelled, true);
       }
       if (mode === "backup-failure") {
         branch.push({ type: "message", id: "backup", message: {
@@ -1949,10 +1959,13 @@ test("Extension restores branch-local fallback opt-in and disabling future fallb
     let branch: SessionEntry[] = [{ type: "custom", id: "on", customType: PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE, data: { enabled: true } } as SessionEntry];
     let selection = false;
     const ctx = { ...context("/repo", branch), mode: "tui", sessionManager: {
-      getEntries: () => branch, getBranch: () => branch, getSessionId: () => "remote-session", getSessionName: () => undefined,
+      getEntries: () => branch, getBranch: () => branch, getSessionId: () => "remote-session", getLeafId: () => "leaf", getSessionName: () => undefined,
+    }, modelRegistry: {
+      getAvailable: () => [{ provider: "deepseek", id: "deepseek-flash", name: "Fixture Flash", input: ["text"], reasoning: true }],
+      hasConfiguredAuth: () => true, getProviderAuthStatus: () => ({ configured: true }),
     }, ui: {
       notify: () => undefined,
-      custom: async (_factory: unknown) => ({ kind: "session", enabled: selection }),
+      custom: async (_factory: unknown) => ({ kind: "session", config: { enabled: selection, model: { provider: "deepseek", modelId: "deepseek-flash" }, thinking: "source" } }),
     } };
     const h = createHarness([["/repo", activeState()]], {}, {
       quotaFallbackPreferenceStore: { loadDefault: async () => false, saveDefault: async () => undefined },
@@ -1962,7 +1975,7 @@ test("Extension restores branch-local fallback opt-in and disabling future fallb
     await h.api.commands.get("quota-fallback").handler("", ctx);
     assert.equal(h.integration.quotaFallbackEnabled, false);
     assert.deepEqual(calls, []); // OFF neither preflights nor cancels the committed lease.
-    assert.deepEqual(h.api.appendedEntries.at(-1), { customType: PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE, data: { enabled: false } });
+    assert.deepEqual(h.api.appendedEntries.at(-1), { customType: PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE, data: { enabled: false, model: { provider: "deepseek", modelId: "deepseek-flash" }, thinking: "source" } });
     selection = true;
     await h.api.commands.get("quota-fallback").handler("", ctx);
     assert.deepEqual(calls, ["preflight"]);

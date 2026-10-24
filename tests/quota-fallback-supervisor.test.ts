@@ -6,6 +6,7 @@ import {
   PINDIE_QUOTA_FALLBACK_MESSAGE, PINDIE_QUOTA_FALLBACK_TYPE,
   QuotaFallbackSupervisor, detectQuotaFallbackBackupFailure, type QuotaFallbackPlan,
 } from "../src/quota-fallback-supervisor.ts";
+import type { QuotaFallbackConfig } from "../src/quota-fallback-config.ts";
 import { MAX_QUOTA_RESUME_WAIT_MS } from "../src/quota-resume-supervisor.ts";
 
 const NOW = 1_700_000_000_000;
@@ -24,6 +25,8 @@ function harness() {
   let model = { provider: "openai-codex", id: "model-A" };
   let thinking: AgentSession["thinkingLevel"] = "medium";
   let effective: AgentSession["thinkingLevel"] = "high";
+  let fixtureEffective: AgentSession["thinkingLevel"] | undefined;
+  let onFixtureThinking: (() => void) | undefined;
   let streaming = false, compacting = false, pending = 0;
   let available = true;
   let failThinking = false, failSchedule = false, failSend = false;
@@ -39,13 +42,16 @@ function harness() {
     setThinkingLevel(level: AgentSession["thinkingLevel"]) {
       levels.push(level);
       if (failThinking) { failThinking = false; throw new Error("thinking failed"); }
-      thinking = model.provider === "deepseek" ? effective : level;
+      thinking = model.provider === "deepseek" ? effective : model.provider === "fixture-paid" ? fixtureEffective ?? level : level;
+      if (model.provider === "fixture-paid") onFixtureThinking?.();
     },
     get isStreaming() { return streaming; }, get isCompacting() { return compacting; }, get pendingMessageCount() { return pending; },
     sessionManager: { getBranch: () => branch },
     extensionRunner: { getModelRegistry: () => ({
-      find: (provider: string, id: string) => ["openai-codex/model-A", "deepseek/deepseek-flash"].includes(`${provider}/${id}`) ? { provider, id } : undefined,
-      getAvailable: () => available ? [{ provider: "openai-codex", id: "model-A" }, { provider: "deepseek", id: "deepseek-flash" }] : [{ provider: "openai-codex", id: "model-A" }],
+      find: (provider: string, id: string) => ["openai-codex/model-A", "deepseek/deepseek-flash", "fixture-paid/fixture-backup"].includes(`${provider}/${id}`) ? { provider, id } : undefined,
+      getAvailable: () => available ? [{ provider: "openai-codex", id: "model-A", input: ["text"] }, { provider: "deepseek", id: "deepseek-flash", name: "Fixture Flash", input: ["text"], reasoning: true }, { provider: "fixture-paid", id: "fixture-backup", name: "Synthetic Backup", input: ["text"], reasoning: true }] : [{ provider: "openai-codex", id: "model-A", input: ["text"] }],
+      hasConfiguredAuth: () => available,
+      getProviderAuthStatus: () => ({ configured: available }),
     }) },
     async setModel(target: { provider: string; id: string }) { await switchWait; switches.push(`${target.provider}/${target.id}`); model = target; },
     subscribe(callback: () => void) { listeners.add(callback); return () => { listeners.delete(callback); }; },
@@ -62,6 +68,9 @@ function harness() {
     logger: (message) => logs.push(message),
   });
   return { supervisor, switches, levels, sends, timers, logs, listeners,
+    get model() { return model; }, get thinking() { return thinking; },
+    setFixtureEffective: (value: AgentSession["thinkingLevel"]) => { fixtureEffective = value; },
+    onFixtureThinking: (callback: () => void) => { onFixtureThinking = callback; },
     setBranch: (value: SessionEntry[]) => { branch = value; },
     setSession: (value: string) => { sessionId = value; },
     setModel: (provider: string, id: string) => { model = { provider, id }; },
@@ -87,6 +96,65 @@ test("valid same-Session commit delegates thinking clamp to Pi and does not awai
   assert.equal(h.listeners.size, 1);
   assert.equal(await h.supervisor.request(plan()), true);
   assert.equal(h.sends.length, 1);
+});
+
+test("fixed thinking silently clamped by Pi fails before lease/continuation and rolls back source model/thinking", async () => {
+  const backup: QuotaFallbackConfig = { enabled: true, model: { provider: "fixture-paid", modelId: "fixture-backup" }, thinking: "high" };
+  for (const clamped of ["low", "off"] as const) {
+    const h = harness(); h.setFixtureEffective(clamped);
+    assert.equal(await h.supervisor.request(plan({ backup })), false, clamped);
+    assert.deepEqual(h.switches, ["fixture-paid/fixture-backup", "openai-codex/model-A"]);
+    assert.deepEqual(h.levels, ["high", "medium"]);
+    assert.deepEqual(h.model, { provider: "openai-codex", id: "model-A" });
+    assert.equal(h.thinking, "medium");
+    assert.deepEqual(h.sends, []); assert.deepEqual(h.timers, []); assert.equal(h.listeners.size, 0);
+    assert.match(h.logs.join(" "), new RegExp(`expected high, received ${clamped}`));
+    h.setFixtureEffective("high");
+    assert.equal(await h.supervisor.request(plan({ backup })), true); // failed request left no lease/commit fuse
+    h.supervisor.dispose();
+  }
+});
+
+test("fixed thinking exact match commits while source mode continues to accept Pi clamping", async () => {
+  for (const selected of ["high", "source"] as const) {
+    for (const effective of selected === "source" ? ["low", "off"] as const : ["high"] as const) {
+      const h = harness(); h.setFixtureEffective(effective);
+      const backup: QuotaFallbackConfig = { enabled: true, model: { provider: "fixture-paid", modelId: "fixture-backup" }, thinking: selected };
+      assert.equal(await h.supervisor.request(plan({ backup })), true);
+      assert.equal(h.thinking, effective);
+      assert.deepEqual(h.levels, [selected === "source" ? "medium" : "high"]);
+      assert.equal(h.sends.length, 1); assert.equal(h.timers.length, 1); assert.equal(h.listeners.size, 1);
+      h.timers[0]!.callback(); await flush();
+      assert.deepEqual(h.model, { provider: "openai-codex", id: "model-A" }); assert.equal(h.thinking, "medium");
+      assert.equal(h.sends.length, 1); assert.equal(h.listeners.size, 0);
+    }
+  }
+});
+
+test("fixed thinking mismatch after an async switch never rolls back over Session/human ownership changes", async () => {
+  const backup: QuotaFallbackConfig = { enabled: true, model: { provider: "fixture-paid", modelId: "fixture-backup" }, thinking: "high" };
+  for (const boundary of ["session", "human"] as const) {
+    const h = harness(); h.setFixtureEffective("low");
+    let release!: () => void;
+    h.waitSwitch(new Promise<void>((resolve) => { release = resolve; }));
+    const pending = h.supervisor.request(plan({ backup }));
+    await flush();
+    // Native thinking application can emit synchronous events after the awaited model switch.
+    h.onFixtureThinking(() => {
+      if (boundary === "session") {
+        h.supervisor.observeSessionLifecycle({ sessionId: "session", reason: "new" });
+        h.setSession("replacement");
+      } else {
+        h.supervisor.observeModelSelection({ sessionId: "session", provider: "other", modelId: "user-owned", source: "set" });
+      }
+      h.setModel("other", "user-owned");
+    });
+    release(); assert.equal(await pending, false);
+    assert.deepEqual(h.model, { provider: "other", id: "user-owned" });
+    assert.deepEqual(h.switches, ["fixture-paid/fixture-backup"]);
+    assert.deepEqual(h.levels, ["high"]); // neither source model nor source thinking is imposed on the new owner
+    assert.deepEqual(h.sends, []); assert.deepEqual(h.timers, []); assert.equal(h.listeners.size, 0);
+  }
 });
 
 test("configuration preflight uses exact Pi availability for the current Session without quota or idle requirements", () => {
@@ -223,6 +291,65 @@ test("terminal backup provider error restores source and returns plan for Resume
   assert.deepEqual(h.switches, ["deepseek/deepseek-flash", "openai-codex/model-A"]);
   assert.equal(h.sends.length, 1);
   assert.equal(h.listeners.size, 0);
+});
+
+test("configured cross-provider identity/thinking is snapshotted; reset restores source and source thinking without duplicate Run", async () => {
+  const h = harness();
+  const backup = { enabled: true, model: { provider: "fixture-paid", modelId: "fixture-backup" }, thinking: "high" } satisfies QuotaFallbackConfig;
+  const p = plan({ backup });
+  let release!: () => void;
+  h.waitSwitch(new Promise<void>((resolve) => { release = resolve; }));
+  const pending = h.supervisor.request(p);
+  backup.model.modelId = "different-menu-choice"; // configuration changes during await must not retarget lease
+  backup.thinking = "off" as "high";
+  release(); assert.equal(await pending, true);
+  assert.deepEqual(h.switches, ["fixture-paid/fixture-backup"]);
+  assert.deepEqual(h.levels, ["high"]);
+  h.setBusy(true); h.timers[0]!.callback(); await flush(); assert.equal(h.switches.length, 1);
+  h.setBusy(); h.event(); await flush();
+  assert.deepEqual(h.switches, ["fixture-paid/fixture-backup", "openai-codex/model-A"]);
+  assert.deepEqual(h.levels, ["high", "medium"]);
+  assert.equal(h.sends.length, 1); assert.equal(h.listeners.size, 0); assert.equal(h.timers[0]!.cancelled, true);
+});
+
+test("configured unavailable/Codex/unsupported backup fails closed, while provider failure matches only actual lease", async () => {
+  for (const backup of [
+    { enabled: true, model: { provider: "openai-codex", modelId: "model-A" }, thinking: "source" },
+    { enabled: true, model: { provider: "fixture-paid", modelId: "absent" }, thinking: "source" },
+    { enabled: true, model: { provider: "fixture-paid", modelId: "fixture-backup" }, thinking: "xhigh" },
+    { enabled: false, model: { provider: "fixture-paid", modelId: "fixture-backup" }, thinking: "source" },
+  ] satisfies QuotaFallbackConfig[]) {
+    const h = harness(); assert.equal(await h.supervisor.request(plan({ backup })), false);
+    assert.deepEqual([h.switches, h.sends, h.timers], [[], [], []]);
+  }
+  const h = harness();
+  const backup: QuotaFallbackConfig = { enabled: true, model: { provider: "fixture-paid", modelId: "fixture-backup" }, thinking: "high" };
+  assert.equal(await h.supervisor.request(plan({ backup })), true);
+  assert.equal(await h.supervisor.handleBackupFailure("session"), null); // original Codex error is not backup failure
+  const error = { ...quota("backup"), message: { ...quota().message, provider: "fixture-paid", model: "fixture-backup" } } as SessionEntry;
+  h.setBranch([quota(), error]);
+  assert.equal(detectQuotaFallbackBackupFailure([error]), false); // default identity is not a wildcard
+  assert.equal(detectQuotaFallbackBackupFailure([error], backup.model), true);
+  assert.deepEqual((await h.supervisor.handleBackupFailure("session"))?.backup, backup);
+  assert.deepEqual(h.switches, ["fixture-paid/fixture-backup", "openai-codex/model-A"]);
+  assert.deepEqual(h.levels, ["high", "medium"]); assert.equal(h.sends.length, 1);
+  assert.equal(await h.supervisor.handleBackupFailure("session"), null);
+});
+
+test("configured backup compensation and Session/human ownership invalidation preserve user-owned model", async () => {
+  const backup: QuotaFallbackConfig = { enabled: true, model: { provider: "fixture-paid", modelId: "fixture-backup" }, thinking: "high" };
+  const failed = harness(); failed.failSend();
+  assert.equal(await failed.supervisor.request(plan({ backup })), false);
+  assert.deepEqual(failed.switches, ["fixture-paid/fixture-backup", "openai-codex/model-A"]);
+  assert.deepEqual(failed.levels, ["high", "medium"]);
+  for (const boundary of ["session", "human"] as const) {
+    const h = harness(); await h.supervisor.request(plan({ backup }));
+    if (boundary === "session") { h.supervisor.observeSessionLifecycle({ sessionId: "session", reason: "new" }); h.setSession("replacement"); }
+    else { h.supervisor.observeModelSelection({ sessionId: "session", provider: "fixture-paid", modelId: "fixture-backup", source: "cycle" }); }
+    h.timers[0]!.callback(); await flush();
+    assert.deepEqual(h.switches, ["fixture-paid/fixture-backup"]);
+    assert.equal(h.sends.length, 1); assert.equal(h.listeners.size, 0);
+  }
 });
 
 test("model change, lifecycle and disposal drop lease without stale callbacks restoring", async () => {

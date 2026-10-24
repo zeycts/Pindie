@@ -4,7 +4,8 @@ import test from "node:test";
 const { KeybindingsManager } = await import(new URL("./core/keybindings.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { SettingsMenu } from "../src/settings-menu.ts";
-import { QuotaFallbackSelectorComponent } from "../src/quota-fallback.ts";
+import { DEFAULT_FALLBACK_CONFIG } from "../src/quota-fallback-config.ts";
+import { QuotaFallbackConfigSelectorComponent } from "../src/quota-fallback.ts";
 import { QuotaResumeSelectorComponent } from "../src/quota-resume.ts";
 
 const theme = { fg: (_: string, text: string) => text, bold: (text: string) => text };
@@ -52,19 +53,23 @@ test("SettingsMenu separates cursor/current/default, wraps choices and uses real
   }
 });
 
-test("quota boolean menus stay compact and show only divergent Session/default status", () => {
-  for (const Component of [QuotaFallbackSelectorComponent, QuotaResumeSelectorComponent]) {
+test("quota menus preserve boolean styling and wrap fallback fields without width overflow", () => {
+  for (const Component of [QuotaFallbackConfigSelectorComponent, QuotaResumeSelectorComponent]) {
     for (const current of [true, false]) for (const saved of [true, false]) {
-      const menu = new Component({ requestRender() {} }, theme, new KeybindingsManager(), current, saved, () => {}, () => {});
+      const fallback = Component === QuotaFallbackConfigSelectorComponent;
+      const menu = fallback ? new QuotaFallbackConfigSelectorComponent({ requestRender() {} }, theme, new KeybindingsManager(),
+        { ...DEFAULT_FALLBACK_CONFIG, enabled: current }, { ...DEFAULT_FALLBACK_CONFIG, enabled: saved }, [], () => {}, () => {}) :
+        new QuotaResumeSelectorComponent({ requestRender() {} }, theme, new KeybindingsManager(), current, saved, () => {}, () => {});
+      if (fallback) menu.handleInput("\r"); // Enabled sub-selector uses identical shared presentation.
       const lines = menu.render(200);
       const screen = lines.join("\n");
-      assert.equal(lines.length, current === saved ? 8 : 9);
-      assert.equal(lines[1]!.trim(), Component === QuotaFallbackSelectorComponent ? "Quota Fallback" : "Quota Resume");
+      assert.equal(lines.length, fallback || current === saved ? 8 : 9);
+      assert.equal(lines[1]!.trim(), fallback ? "Quota Fallback · enabled" : "Quota Resume");
       assert.match(screen, new RegExp(`✓ ${current ? "on" : "off"}`));
       assert.match(screen, new RegExp(`${saved ? "on" : "off"} · default`));
-      if (current === saved) assert.doesNotMatch(screen, /Session:|Default:/);
+      if (fallback || current === saved) assert.doesNotMatch(screen, /Session:|Default:/);
       else assert.match(screen, new RegExp(`Session: ${current ? "on" : "off"} · Default: ${saved ? "on" : "off"}`));
-      assert.match(screen, /Enter Session/);
+      assert.match(screen, fallback ? /Enter Choose/ : /Enter Session/);
       assert.match(screen, /Save default \+ Session/);
       assert.match(screen, /Escape\/Ctrl\+C Cancel \(no save\)/);
       assert.doesNotMatch(screen, /V4\.1|source thinking|Current Session/);
@@ -73,6 +78,24 @@ test("quota boolean menus stay compact and show only divergent Session/default s
       }
     }
   }
+});
+
+test("SettingsMenu optionally windows long model lists while preserving cursor/current/default and wrap", () => {
+  const results: number[] = [];
+  const menu = new SettingsMenu({ requestRender() {} }, theme, new KeybindingsManager(), {
+    title: "Models", description: "Dynamic choices", status: [],
+    choices: Array.from({ length: 100 }, (_, value) => ({ value, label: `Fixture ${value}` })),
+    currentValue: 50, defaultValue: 51, maxVisibleChoices: 8,
+    confirm: { hint: "Choose", run: (v) => results.push(v) }, save: { hint: "Save", run() {} }, onCancel() {},
+  });
+  assert.match(menu.render(150).join("\n"), /→ ✓ Fixture 50/);
+  assert.match(menu.render(150).join("\n"), /Fixture 51 · default/);
+  assert.equal(menu.render(150).filter((line) => /Fixture/.test(line)).length, 8);
+  for (let i = 0; i < 50; i++) menu.handleInput("\u001b[B");
+  assert.match(menu.render(150).join("\n"), /→   Fixture 0/);
+  menu.handleInput("\u001b[A"); menu.handleInput("\r");
+  assert.deepEqual(results, [99]);
+  assert.match(menu.render(150).join("\n"), /→   Fixture 99/);
 });
 
 test("SettingsMenu rebuilds theme colors and hides unbound actions without invented shortcuts", () => {
