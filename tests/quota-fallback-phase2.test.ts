@@ -93,13 +93,13 @@ test("Phase2 draft subselectors choose cross-provider/model/thinking explicitly;
   const menu = new QuotaFallbackConfigSelectorComponent({ requestRender() {} }, theme, keys, defaults, defaults, models, (r) => results.push(r), () => { cancels++; });
   const down = "\u001bj", enter = "\u001b\r";
   menu.handleInput(down); menu.handleInput(enter); // Model
-  assert.match(menu.render(150).join("\n"), /Catalog Flash.*default/);
-  assert.match(menu.render(150).join("\n"), /backup, may be paid/);
+  assert.match(menu.render(150).join("\n"), /deepseek\/deepseek-flash.*default/);
+  assert.doesNotMatch(menu.render(150).join("\n"), /Catalog Flash|backup, may be paid/);
   menu.handleInput(down); menu.handleInput(enter); // choose fixture provider, draft only
   menu.handleInput(down); menu.handleInput(down); menu.handleInput(enter); // Thinking
   menu.handleInput(down); menu.handleInput(down); menu.handleInput(enter); // high
   assert.deepEqual(results, []);
-  assert.match(menu.render(150).join("\n"), /Model: Fixture Chat/);
+  assert.match(menu.render(150).join("\n"), /Model: fixture-paid\/fixture-chat · modified/);
   assert.match(menu.render(150).join("\n"), /Thinking: high/);
   for (const width of [1, 2, 8, 16, 40, 80, 150]) {
     menu.invalidate(); for (const line of menu.render(width)) assert.ok(visibleWidth(line) <= width);
@@ -148,6 +148,41 @@ test("Phase2 command Enter/Save stores full triple; OFF/on reuse; session/branch
   assert.deepEqual(h.integration.quotaFallbackConfig, { ...defaults, enabled: true });
   h.setSession("s2"); h.setBranch([]); await h.restore();
   assert.deepEqual(h.integration.quotaFallbackConfig, { ...config, enabled: false });
+});
+
+test("Phase2.1 invalid fixed pairing cannot save a default even when OFF; fresh command guard remains authoritative", async () => {
+  const h = commandHarness(); await h.restore();
+  for (const enabled of [false, true]) await h.run({ ...config, enabled, thinking: "medium" }, "default");
+  assert.deepEqual(h.saved, []); assert.deepEqual(h.appended, []);
+  assert.equal(h.notices.length, 2);
+  assert.deepEqual(h.integration.quotaFallbackConfig, defaults);
+});
+
+test("Phase2.1 real selector draft and Back never write preference bytes or Session entries", async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), "pindie-phase2-1-cancel-"));
+  try {
+    const store = new FileQuotaFallbackPreferenceStore({ baseDir }); await store.saveConfig(defaults);
+    const bytes = await readFile(store.preferencesPath(), "utf8");
+    let command: any; const appended: unknown[] = [];
+    const pi = { registerCommand: (_: string, c: unknown) => { command = c; }, appendEntry: (...args: unknown[]) => appended.push(args) } as unknown as ExtensionAPI;
+    const registry = { getAvailable: () => models.map((m) => ({ provider: m.provider, id: m.modelId, name: m.name, input: ["text"], reasoning: true })), hasConfiguredAuth: () => true, getProviderAuthStatus: () => ({ configured: true }) };
+    const ctx: any = { mode: "tui", modelRegistry: registry, sessionManager: { getSessionId: () => "isolated", getLeafId: () => "leaf", getBranch: () => [] }, ui: {
+      notify: () => assert.fail("Cancel must not notify"), custom: async (factory: any) => {
+        let result: unknown;
+        const menu = factory({ requestRender() {} }, theme, new KeybindingsManager(), (value: unknown) => { result = value; });
+        menu.handleInput("\r"); menu.handleInput("\u001b[B"); menu.handleInput("\r"); // Enabled draft ON
+        assert.match(menu.render(200).join("\n"), /Enabled: on · modified/);
+        menu.handleInput("\u001b[B"); menu.handleInput("\r"); // Model subselector
+        menu.handleInput("\u001b[B"); menu.handleInput("\u001b"); // Back without choosing
+        menu.handleInput("\u0003"); // discard whole draft
+        assert.equal(result, null); return result;
+      },
+    } };
+    const integration = registerQuotaFallbackIntegration(pi, store, { canEnable: () => assert.fail("Cancel must not preflight") });
+    await integration.restoreSession(ctx); await command.handler("", ctx);
+    assert.equal(await readFile(store.preferencesPath(), "utf8"), bytes);
+    assert.deepEqual(appended, []); assert.deepEqual(integration.quotaFallbackConfig, defaults);
+  } finally { await rm(baseDir, { recursive: true, force: true }); }
 });
 
 test("Phase2 save error and session/branch replacement during open menu never apply stale draft", async () => {

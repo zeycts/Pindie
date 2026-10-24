@@ -6,7 +6,7 @@ import test from "node:test";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
   FileQuotaFallbackPreferenceStore, PINDIE_QUOTA_FALLBACK_PREFERENCE_TYPE,
-  QUOTA_FALLBACK_UNAVAILABLE_MESSAGE, QuotaFallbackConfigSelectorComponent,
+  QuotaFallbackConfigSelectorComponent,
   getBranchQuotaFallbackPreference, registerQuotaFallbackIntegration,
 } from "../src/quota-fallback.ts";
 import { DEFAULT_FALLBACK_CONFIG, type QuotaFallbackConfig } from "../src/quota-fallback-config.ts";
@@ -73,7 +73,7 @@ test("branch transcript's latest valid fallback entry wins over global; other en
   assert.equal(getBranchQuotaFallbackPreference([entry({ enabled: true }), entry({ enabled: "no" }), entry({ enabled: false }), entry({ enabled: true }, "other")], false), false);
 });
 
-test("selector renders metadata backup and markers; wraps and honors configured save key", () => {
+test("selector renders stable backup identity and markers; wraps and honors configured save key", () => {
   const selected: unknown[] = []; let cancelled = 0; let renders = 0;
   const selector = new QuotaFallbackConfigSelectorComponent(
     { requestRender: () => { renders++; } }, theme, bindings(), config(true), config(false),
@@ -81,9 +81,10 @@ test("selector renders metadata backup and markers; wraps and honors configured 
     (result) => selected.push(result), () => { cancelled++; },
   );
   const initial = selector.render(100).join("\n");
-  assert.match(initial, /Metadata Flash/); assert.match(initial, /Paid/);
-  assert.match(initial, /Thinking: Same as source/);
-  assert.match(initial, /Ctrl\+X Save default \+ Session/);
+  assert.match(initial, /deepseek\/deepseek-flash/); assert.match(initial, /Paid/);
+  assert.doesNotMatch(initial, /Metadata Flash/);
+  assert.match(initial, /Thinking: Follow source/);
+  assert.match(initial, /Ctrl\+X Save all/);
   selector.handleInput("enter"); // Enabled sub-selector
   assert.match(selector.render(100).join("\n"), /→ ✓ on/);
   assert.match(selector.render(100).join("\n"), /off · default/);
@@ -166,10 +167,10 @@ test("saving Global ON also appends current Session ON over a historical OFF ent
 test("ON unavailable rejects Session and Global mutations; OFF succeeds without auth", async () => {
   const on = commandHarness(true, false); await on.restoreSession();
   await on.command("enter"); await on.command("ctrl+x");
-  assert.deepEqual(on.preflights, ["session", "session"]);
+  assert.deepEqual(on.preflights, []); // selector warns and stays open before command submission
   assert.deepEqual([on.saved, on.appended], [[], []]);
   assert.equal(on.integration.quotaFallbackEnabled, true); // saved preference survives later auth loss
-  assert.deepEqual(on.notices.map((notice) => notice.message), [QUOTA_FALLBACK_UNAVAILABLE_MESSAGE, QUOTA_FALLBACK_UNAVAILABLE_MESSAGE]);
+  assert.deepEqual(on.notices, []); // inline unavailable warning, no duplicated toast
   const off = commandHarness(false, false); await off.restoreSession();
   await off.command("enter"); await off.command("ctrl+x");
   assert.deepEqual(off.preflights, []);

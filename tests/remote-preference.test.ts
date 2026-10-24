@@ -107,8 +107,8 @@ test("Discord Remote settings command saves only global preference, cancels safe
     assert.doesNotMatch(screens[0]!, /Host:|Saved:|Restart required/);
     assert.match(screens[0]!, /→ ✓ on · default/);
     assert.match(screens[0]!, /next Host/);
-    assert.match(screens[0]!, /Enter Save default \(next Host\)/);
-    assert.match(screens[0]!, /Ctrl\+X\/Alt\+S Save default/);
+    assert.match(screens[0]!, /Enter Save/);
+    assert.match(screens[0]!, /Ctrl\+X\/Alt\+S Save/);
     assert.doesNotMatch(screens[0]!, /apply to current Session/);
     for (const cancel of ["\u001b", "\u0003"]) {
       input = ["\u001b[A", cancel];

@@ -11,7 +11,7 @@ export type SettingsMenuKeybindings = Pick<KeybindingsManager, "matches" | "getK
 export interface SettingsMenuOptions<Value> {
   title: string;
   description: string;
-  status: readonly string[];
+  status: readonly (string | { text: string; color: "dim" | "warning" })[];
   choices: readonly { value: Value; label: string }[];
   currentValue: Value;
   defaultValue: Value;
@@ -21,6 +21,14 @@ export interface SettingsMenuOptions<Value> {
   confirm: { hint: string; run: (value: Value) => void };
   save: { hint: string; run: (value: Value) => void };
   onCancel: () => void;
+}
+
+/** Abbreviate only actual bindings; never invent a default shortcut. */
+function formatSettingsKey(key: string): string {
+  if (key === "up") return "↑";
+  if (key === "down") return "↓";
+  if (key === "escape") return "Esc";
+  return key.split("+").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("+");
 }
 
 export class SettingsMenu<Value> extends Container {
@@ -72,7 +80,7 @@ export class SettingsMenu<Value> extends Container {
     border();
     text(this.theme.bold(this.options.title), "accent");
     text(this.options.description);
-    for (const line of this.options.status) text(line, "warning");
+    for (const line of this.options.status) text(typeof line === "string" ? line : line.text, typeof line === "string" ? "warning" : line.color);
     const limit = Math.max(1, this.options.maxVisibleChoices ?? this.options.choices.length);
     const start = Math.max(0, Math.min(this.selectedIndex - Math.floor(limit / 2), this.options.choices.length - limit));
     const end = Math.min(this.options.choices.length, start + limit);
@@ -89,15 +97,15 @@ export class SettingsMenu<Value> extends Container {
     this.addChild(new Spacer(1));
     const hint = (action: Parameters<SettingsMenuKeybindings["getKeys"]>[0], label: string): string[] => {
       const keys = this.keybindings.getKeys(action);
-      return keys.length ? [`${keys.map((key) => key.split("+").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("+")).join("/")} ${label}`] : [];
+      return keys.length ? [`${keys.map(formatSettingsKey).join("/")} ${label}`] : [];
     };
     // One horizontal help row; native Text wraps ANSI-aware at the render width.
     const navigation = [hint("tui.select.up", ""), hint("tui.select.down", "")].flat().map((key) => key.trim());
     text([
-      ...(navigation.length ? [`${navigation.join("/")} Move`] : []),
+      ...(navigation.length ? [`${navigation.join(navigation[0] === "↑" && navigation[1] === "↓" ? "" : "/")} Move`] : []),
       ...hint("tui.select.confirm", this.options.confirm.hint),
       ...hint("app.models.save", this.options.save.hint),
-      ...hint("tui.select.cancel", "Cancel (no save)"),
+      ...hint("tui.select.cancel", "Back"),
     ].join(" · "));
     border();
   }
