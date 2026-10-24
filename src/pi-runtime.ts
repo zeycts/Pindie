@@ -301,6 +301,22 @@ export class PiRuntimeAdapter {
     return model ? { provider: model.provider, modelId: model.id } : null;
   }
 
+  /** Read only Pi's cached registry snapshot: no refresh, auth resolution or provider request. */
+  getAvailableModelCatalog() {
+    return this.activeSession.extensionRunner.getModelRegistry().getAvailable()
+      .map((model) => ({
+        provider: model.provider,
+        modelId: model.id,
+        name: model.name,
+        reasoning: model.reasoning,
+        input: [...model.input],
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+      }))
+      .sort((a, b) => a.provider < b.provider ? -1 : a.provider > b.provider ? 1
+        : a.modelId < b.modelId ? -1 : a.modelId > b.modelId ? 1 : 0);
+  }
+
   /** Check exact model availability in Pi's registry, independent of picker scope. */
   isActiveSessionModelAvailable(provider: string, modelId: string): boolean {
     const registry = this.activeSession.extensionRunner.getModelRegistry();
