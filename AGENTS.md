@@ -54,4 +54,6 @@ Preserve user data, including State/continuity, preferences, routing, credential
 5. Run targeted tests, then `pnpm run check` at the final implementation boundary. For docs-only follow-ups, document actual targeted/link validation and prior full results; exact-head CI may provide fresh full-suite evidence without duplicating a completed equivalent local run.
 6. Inspect actual diff and `git diff --check`; use native development/git-workflow Skills. Commit focused changes, push and open a reviewable Draft PR. Do not merge without explicit approval.
 
+For native UI changes, use an independent development branch/worktree → isolated native Pi TUI preview → human visual acceptance → independent PR review → separately authorized merge/deployment. Keep the accepted preview available through review; automated rendering or CI does not replace human visual acceptance. Preview preferences, auth, Sessions and optional integrations must be isolated from production; never drive an occupied production TUI to obtain acceptance.
+
 Architecture changes should follow explicit goals, concrete failures or verified runtime incompatibilities—not invented future milestones.

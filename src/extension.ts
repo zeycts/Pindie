@@ -673,6 +673,7 @@ function registerComposedPindieExtension(
   }
 
   pi.on("session_shutdown", async (event, ctx) => {
+    quotaResume.invalidateSession();
     quotaFallback.invalidateSession();
     const watchStopped = watch?.shutdown();
     ++agentRunLifecycleGeneration;

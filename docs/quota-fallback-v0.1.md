@@ -421,7 +421,7 @@ cursor, `✓` marks the current Session value, and `· default` marks the saved 
 value. Discord instead saves only a global next-Host preference on either confirm
 or save; it never pretends confirm applies a temporary Session override.
 
-Session preference entries (`pindie-quota-fallback-preference`, `{ enabled: boolean }`) follow current branch transcript truth. The Global default is `quotaFallback` in the shared `~/.pindie/global/preferences.json`, alongside `quotaAutoResume`; missing or invalid values fail closed to OFF. Saving preserves unrelated fields with atomic rename. ON performs an exact Pi model availability/auth preflight before either write; OFF needs no auth and does not cancel an active fallback lease. If auth disappears after enabling, the saved choice stays ON but a future fallback request fails closed to Resume.
+Session preference entries (`pindie-quota-fallback-preference`) follow current branch transcript truth. Phase 2 writes the full `{ enabled, model, thinking }` triple; legacy `{ enabled: boolean }` entries inherit the legal global model/thinking, not an abandoned branch entry. The Global default is `quotaFallback` in the shared `~/.pindie/global/preferences.json`, alongside `quotaAutoResume`; missing or invalid values fail closed to OFF. Saving preserves unrelated fields with atomic rename. ON performs an exact Pi model availability/auth preflight before either write. Disabling an unchanged target needs no auth; editing model/thinking even while OFF still requires a valid available pairing. OFF does not cancel an active fallback lease. If auth disappears after enabling, the saved choice stays ON but a future fallback request fails closed to Resume.
 
 API keys remain Pi/provider-owned secrets and must never be copied into:
 
@@ -434,7 +434,7 @@ API keys remain Pi/provider-owned secrets and must never be copied into:
 
 ### Production Pi TUI boundary
 
-Production uses Pi InteractiveMode and its public extension UI/model APIs. `/quota-fallback` is a two-row on/off selector; there is no parallel Pindie model picker.
+Production uses Pi InteractiveMode and its public extension UI/model APIs. The original v0.1 two-row on/off selector is superseded by the [Settings Phase 2/2.1](settings-phase2-quota-fallback.md) draft menu (Enabled / Model / Thinking / Apply). Its backup selector does not replace Pi's active-model picker.
 
 Pi's existing active-model indicator provides ambient visibility when the Session switches to DeepSeek. v0.1 adds no dedicated fallback footer, status line, toast, or Discord success message. Successful switch and source restore remain quiet.
 
