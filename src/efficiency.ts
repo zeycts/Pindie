@@ -118,6 +118,26 @@ export function deriveEfficiencySnapshot(input: {
   };
 }
 
+/** Strict Control projection: missing/invalid counters are unknown, never invented zeros. */
+export function deriveControlTokenUsage(entries: readonly SessionEntry[]) {
+  const keys = ["input", "output", "cacheRead", "cacheWrite"] as const;
+  const totals: Record<typeof keys[number], number | null> = { ...EMPTY_USAGE };
+  let records = 0;
+  for (const entry of entries) {
+    const value = entry.type === "usage" ? entry.usage : entryUsage(entry);
+    if (value === undefined && !(entry.type === "message" && entry.message.role === "assistant")) continue;
+    records++;
+    const usage = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+    for (const key of keys) {
+      const count = usage[key];
+      const sum = totals[key] === null || typeof count !== "number" || !Number.isFinite(count) || count < 0
+        ? null : totals[key]! + count;
+      totals[key] = sum !== null && Number.isFinite(sum) ? sum : null;
+    }
+  }
+  return records === 0 ? null : totals;
+}
+
 function formatContext(contextUsage: ContextUsage | undefined): string {
   if (!contextUsage) return "Context: unavailable";
   if (contextUsage.tokens === null || contextUsage.percent === null) {

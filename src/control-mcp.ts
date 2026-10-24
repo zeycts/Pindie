@@ -31,13 +31,15 @@ export function createPindieControlMcpServer(workspace: PindieControlWorkspace):
   const consequential = { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
 
   server.registerTool("pindie_observe", {
-    description: "Read the current workspace/active-project snapshot, or no_active_project. Check project, Session identity, runtime, durable Task, verification and Human Gate before acting; includes the current lease/revision. Session conversation is not the durable Task; latestAssistant alone is not verified completion. Optional view=models reads the active project's current Pi available-model registry snapshot, not a live provider/quota probe; no configuration or defaults change.",
+    description: "Read the current workspace/active-project snapshot, or no_active_project. Check project, Session identity, runtime, durable Task, verification and Human Gate before acting; includes the current lease/revision. Session conversation is not the durable Task; latestAssistant alone is not verified completion. Optional view=models reads the active project's current Pi available-model registry snapshot, not a live provider/quota probe; no configuration or defaults change. Optional view=efficiency reads only active Session recorded tokens, native context estimate and available process-local duration; not billed cost, quota or savings.",
     inputSchema: z.strictObject({
-      view: z.enum(["snapshot", "models"]).optional().describe("Default snapshot preserves ordinary observation. models requires an active project and returns registry-available provider/modelId and catalog metadata only; not verified credentials, reachability, quota, price or supported thinking levels. Do not use configure as a discovery probe."),
+      view: z.enum(["snapshot", "models", "efficiency"]).optional().describe("Default snapshot preserves ordinary observation. models returns current registry metadata, not provider/credential/quota verification. efficiency returns numeric active-Session telemetry with sources, units and limitations, no content or provider calls. Both require an active project; neither configures or dispatches work."),
     }), annotations: read,
   }, async (args) => invoke(() => args.view === "models"
     ? workspace.withClient((client) => client.listModels())
-    : workspace.observe()));
+    : args.view === "efficiency"
+      ? workspace.withClient((client) => client.readEfficiency())
+      : workspace.observe()));
   server.registerTool("pindie_input", {
     description: "Dispatch user-authorized work or guidance to the active project's current Session. Reuse it for related work; avoid mixing unrelated context. Idle uses prompt; busy defaults to steer, or followUp for after_current_run. Delivery is dispatched, not verified completion. Ordinary input cannot answer a Human Gate. Optional sessionName is best-effort display metadata only for the first accepted idle prompt in a fresh unnamed Session; Pi prompt accepted != Pindie Task accepted. Existing names/history and busy steer/followUp are never renamed; inspect snapshot.session.displayIdentity for the effective identity.",
     inputSchema: z.strictObject({

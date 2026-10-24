@@ -192,7 +192,7 @@ test("MCP orchestration metadata preserves the old API and communicates per-tool
     assert.deepEqual(input.properties.sessionName, { type: "string", minLength: 1, maxLength: 512 });
     assert.deepEqual(input.required, ["lease", "text"]);
     const observe = schemas.find(({ name }) => name === "pindie_observe")!.inputSchema;
-    assert.deepEqual(observe.properties.view, { type: "string", enum: ["snapshot", "models"] });
+    assert.deepEqual(observe.properties.view, { type: "string", enum: ["snapshot", "models", "efficiency"] });
     // Only additive optional fields differ from the frozen old wire fixture.
     delete observe.properties.view;
     delete input.properties.sessionName;

@@ -6,12 +6,26 @@ Current service: `PINDIE_WORKSPACE_ROOT`, zero or one active Host, explicit proj
 
 ### Optional model registry view
 
-`pindie_observe` accepts optional `view: "snapshot" | "models"` (default
+`pindie_observe` accepts optional `view: "snapshot" | "models" | "efficiency"` (default
 `"snapshot"`). The models view is project-scoped, read-only and lease-free;
 without an active project it returns `no_active_project`. It returns the current
 Pi available-registry snapshot through the Control client/runtime adapter, not a
 provider probe or model-selection policy. Ordinary observation and the 13 tools'
 annotations remain unchanged. See [phase-1 details and strict-dispatch blocker](control-operator-phase1.md).
+
+### Optional efficiency view
+
+`pindie_observe({view: "efficiency"})` is project-scoped, lease-free and
+on-demand. It reads only the already-loaded active Pi Session's recorded usage,
+native context estimate and available existing process-local Run/Task active
+duration. It returns numeric allowlisted fields with sources, units, read time
+and limitations, never Session content/paths or credentials. Missing values are
+null; cost is null because native model-equivalent estimates are not verified
+billing. It performs no provider/credential/quota refresh, historical Session
+scan, new subscription or background sampling. Snapshot defaults and the 13-tool
+surface remain unchanged. Watch accepts only the exact known optional view
+schemas and still sends `{}`; it adds no efficiency panel or control capability.
+See [Phase 3 baseline and comparison guide](control-efficiency-phase3.md).
 
 ## 1. Why v0.2 exists
 
