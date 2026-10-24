@@ -25,8 +25,10 @@ export class RunIntegration {
   private agentRunSettlementInProgress = false;
   private readonly counters = new RunCounters();
 
-  constructor(runtime: PindieRuntime) {
+  private readonly memoryCaptureAvailable: boolean;
+  constructor(runtime: PindieRuntime, memoryCaptureAvailable = false) {
     this.runtime = runtime;
+    this.memoryCaptureAvailable = memoryCaptureAvailable;
   }
 
   get stateUnavailableReason(): string | null {
@@ -40,11 +42,11 @@ export class RunIntegration {
   }
 
   get semanticRunFacts(): SemanticRunFacts {
-    return deriveSemanticRunFacts(
+    return { ...deriveSemanticRunFacts(
       this.agentRunFactsContext,
       this.authoritativeState,
       this.runtime.externalStateEpoch,
-    );
+    ), memoryCaptureAvailable: this.memoryCaptureAvailable };
   }
 
   get agentRunIsStale(): boolean {

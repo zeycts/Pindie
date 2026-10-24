@@ -72,6 +72,7 @@ export interface CorePromptContribution {
 }
 
 export interface CoreIntegrationOptions {
+  readonly memoryCaptureAvailable?: boolean;
   readonly store: PindieStateStore;
   readonly continuityStore: TaskContinuityStore;
   readonly committedRolloverPublisher?: CommittedRolloverPublisher | null;
@@ -209,7 +210,7 @@ export class CoreIntegration {
 
   constructor(options: CoreIntegrationOptions) {
     this.runtime = new PindieRuntime(options.store);
-    this.run = new RunIntegration(this.runtime);
+    this.run = new RunIntegration(this.runtime, options.memoryCaptureAvailable === true);
     this.execution = new ExecutionIntegration({
       captureProjectFingerprint: options.captureProjectFingerprint,
     });

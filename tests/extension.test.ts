@@ -861,6 +861,7 @@ test("registered Work Memory capture uses the runtime root, authoritative State,
   await startSession(harness, "/repo");
   const before = await harnessBeforeAgentStart(harness, "/repo");
   assert.equal((before.systemPrompt.match(/<PINDIE_WORK_MEMORY_CONTRACT>/g) ?? []).length, 1);
+  assert.equal(harness.integration.core.authorizeTool("pindie_memory_capture").decision?.allowed, true);
 
   const input = {
     type: "decision",
@@ -890,6 +891,9 @@ test("Work Memory policy is absent when no sink is configured", async () => {
   const before = await harnessBeforeAgentStart(harness, "/repo");
   assert.doesNotMatch(before.systemPrompt, /<PINDIE_WORK_MEMORY_CONTRACT>/);
   assert.doesNotMatch(before.systemPrompt, /Task completion is not itself a Milestone/);
+  const authorization = harness.integration.core.authorizeTool("pindie_memory_capture");
+  assert.equal(authorization.capabilities.has("memory.capture"), false);
+  assert.equal(authorization.decision?.allowed, false);
 });
 
 test("Slice F selected features keep one registration set and rebuild Core authority across reload and shutdown", async () => {

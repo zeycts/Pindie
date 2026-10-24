@@ -358,7 +358,7 @@ Session. The hidden message is runtime metadata, not user intent.
 
 ### Settings menus (Phase 1.1 + fallback Phase 2)
 
-`/quota-fallback`, `/quota-resume` and `/discord-remote` share a presentation-only
+`/quota-fallback`, `/quota-resume`, `/discord-remote` and `/work-memory` share a presentation-only
 `SettingsMenu`: a standalone title, one-sentence description, choice rows,
 then one horizontal help row (safely wrapped on narrow terminals), with themed
 borders. `→` is the cursor, `✓` marks the currently effective Session/Host value,
@@ -372,10 +372,16 @@ Help follows Pi's injected navigation, confirm, save and cancel bindings, includ
 multiple bindings and remapping; unbound actions show no invented shortcut.
 Quota confirm applies to the current Session/branch; save persists the global
 default and applies to the current Session.
-Discord confirm **and** save persist only the global startup boolean, displaying
-current Host versus saved default and the next-Host activation boundary. Cancel
+Discord and Work Memory confirm **and** save persist only their global startup boolean, displaying
+current Host versus saved default and the next-Host activation boundary. Work Memory
+uses title `Work Memory (Notion)` and description `Capture durable project knowledge in Notion`;
+missing checked configuration shows `Notion not configured`, and disabled/uninspected
+configuration is honestly marked unchecked. Saving ON is intent, not immediate availability. Cancel
 writes nothing. The fallback-only model/thinking fields introduce no global settings
-framework, Project Memory switch, new preference store or hot activation. See [Remote startup semantics](remote-companion.md#3-configuration-and-security).
+framework or hot activation. Work Memory's separate startup-only boolean has no
+Session override and preserves legacy selection when absent. See
+[Work Memory startup semantics](architecture.md#global-startup-switch) and
+[Remote startup semantics](remote-companion.md#3-configuration-and-security).
 
 ## 15. Global behavioral invariants
 

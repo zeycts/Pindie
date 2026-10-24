@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { discordRemoteConfig, type DiscordRemoteConfigResult } from "./remote-config.ts";
 import { NOTION_PROJECT_MEMORY_API_VERSION, notionProjectMemoryConfig, type NotionProjectMemoryConfigResult } from "./notion-project-memory-config.ts";
 import { RemoteRoutingStore } from "./remote-routing.ts";
+import { FileWorkMemoryPreferenceStore } from "./work-memory-preference.ts";
 import { FileDiscordRemotePreferenceStore } from "./remote-preference.ts";
 import { FileStateStore, FileTaskContinuityStore } from "./store.ts";
 import type { PindieExtensionOptions } from "./extension.ts";
@@ -33,6 +34,11 @@ export interface PindieStorageRoots {
 export type PindieStorageRootOverrides = Partial<PindieStorageRoots>;
 export interface PindieCompositionConfig {
   readonly configureOptionalFeatures?: boolean;
+  /** Host-local immutable Work Memory assembly; Remote retains its own startup semantics. */
+  readonly workMemoryStartup?: Pick<PindieComposition, "workMemoryConfiguration"> & {
+    readonly enabled: boolean;
+    readonly sink: PindieExtensionOptions["projectMemorySink"];
+  };
   readonly env?: Record<string, string | undefined>;
 }
 export interface PindieComposition {
@@ -41,6 +47,7 @@ export interface PindieComposition {
   readonly remoteRoutingStore: RemoteRoutingStore | null;
   readonly extensionOptions: PindieExtensionOptions;
   readonly warnings: readonly string[];
+  readonly workMemoryConfiguration: "configured" | "unconfigured" | "unchecked";
 }
 export const DEFAULT_PINDIE_FEATURE_SELECTION: PindieFeatureSelection = Object.freeze({
   remote: false, workMemory: false, bundledSkills: true, presentation: true,
@@ -61,7 +68,8 @@ export function resolvePindieFeatureSelection(
   const workMemoryAvailable = availability.workMemory === true;
   return Object.freeze({
     remote: (overrides.remote ?? configuredFlag(env, "PINDIE_REMOTE_ENABLED") ?? remoteAvailable) && remoteAvailable,
-    workMemory: (overrides.workMemory ?? configuredFlag(env, "PINDIE_WORK_MEMORY_ENABLED") ?? workMemoryAvailable) && workMemoryAvailable,
+    workMemory: configuredFlag(env, "PINDIE_WORK_MEMORY_ENABLED") !== false &&
+      (overrides.workMemory ?? configuredFlag(env, "PINDIE_WORK_MEMORY_ENABLED") ?? workMemoryAvailable) && workMemoryAvailable,
     bundledSkills: overrides.bundledSkills ?? configuredFlag(env, "PINDIE_BUNDLED_SKILLS_ENABLED") ?? true,
     presentation: overrides.presentation ?? configuredFlag(env, "PINDIE_PRESENTATION_ENABLED") ?? true,
   });
@@ -80,9 +88,17 @@ function configuredWarnings(memory: NotionProjectMemoryConfigResult | null, remo
 export function composePindieExtension(input: PindieExtensionOptions = {}, config: PindieCompositionConfig = {}): PindieComposition {
   const env = config.env ?? process.env;
   const roots = resolvePindieStorageRoots(input.storageRoots);
-  const configuredMemory = config.configureOptionalFeatures === true ? notionProjectMemoryConfig(env) : null;
-  let remoteAllowed = true;
   const preferenceWarnings: string[] = [];
+  let memoryAllowed = true;
+  try { memoryAllowed = config.workMemoryStartup === undefined && new FileWorkMemoryPreferenceStore(roots.globalBaseDir).loadDefault() !== false; }
+  catch {
+    memoryAllowed = false;
+    preferenceWarnings.push("Pindie Work Memory is disabled: preferences could not be read or are invalid.");
+  }
+  // A persisted/env veto precedes credential getters, injected sinks and optional imports.
+  memoryAllowed = memoryAllowed && configuredFlag(env, "PINDIE_WORK_MEMORY_ENABLED") !== false && input.featureSelection?.workMemory !== false;
+  const configuredMemory = config.configureOptionalFeatures === true && memoryAllowed ? notionProjectMemoryConfig(env) : null;
+  let remoteAllowed = true;
   if (config.configureOptionalFeatures === true) {
     try { remoteAllowed = new FileDiscordRemotePreferenceStore(roots.globalBaseDir).loadDefault(); }
     catch {
@@ -91,11 +107,12 @@ export function composePindieExtension(input: PindieExtensionOptions = {}, confi
     }
   }
   const configuredRemote = config.configureOptionalFeatures === true && remoteAllowed ? discordRemoteConfig(env) : null;
-  const selection = resolvePindieFeatureSelection(remoteAllowed ? input.featureSelection : { ...input.featureSelection, remote: false }, {
+  const resolved = resolvePindieFeatureSelection(remoteAllowed ? input.featureSelection : { ...input.featureSelection, remote: false }, {
     remote: input.remoteCompanion !== undefined || configuredRemote?.enabled === true,
-    workMemory: input.projectMemorySink !== undefined || configuredMemory?.enabled === true,
+    workMemory: memoryAllowed && (input.projectMemorySink !== undefined || configuredMemory?.enabled === true),
   }, env);
-  let projectMemorySink = selection.workMemory ? input.projectMemorySink : undefined;
+  const selection = Object.freeze({ ...resolved, workMemory: config.workMemoryStartup?.enabled ?? resolved.workMemory });
+  let projectMemorySink = config.workMemoryStartup?.sink ?? (selection.workMemory ? input.projectMemorySink : undefined);
   if (selection.workMemory && projectMemorySink === undefined && configuredMemory?.enabled === true) {
     const { Client } = require("@notionhq/client") as NotionSdkModule;
     const { NotionProjectMemorySink } = require("./notion-project-memory.ts") as NotionProjectMemoryModule;
@@ -136,7 +153,10 @@ export function composePindieExtension(input: PindieExtensionOptions = {}, confi
     featureSelection: selection, storageRoots: roots,
   };
   return Object.freeze({ featureSelection: selection, storageRoots: roots, remoteRoutingStore: remoteRoutingStore ?? null,
-    extensionOptions, warnings: Object.freeze([...preferenceWarnings, ...configuredWarnings(configuredMemory, configuredRemote)]) });
+    extensionOptions, workMemoryConfiguration: config.workMemoryStartup?.workMemoryConfiguration ??
+      (configuredMemory?.enabled === true || projectMemorySink !== undefined
+        ? "configured" : configuredMemory === null ? "unchecked" : "unconfigured"),
+    warnings: Object.freeze([...preferenceWarnings, ...configuredWarnings(configuredMemory, configuredRemote)]) });
 }
 export function composeConfiguredPindieExtension(input: PindieExtensionOptions = {}, env: Record<string, string | undefined> = process.env): PindieComposition {
   return composePindieExtension(input, { configureOptionalFeatures: true, env });

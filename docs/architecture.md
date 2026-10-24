@@ -19,7 +19,7 @@ Pindie does not add a second Agent Loop, workflow engine, persisted phase machin
 
 ### Stable composition boundary
 
-`composition.ts` owns startup selection, explicit storage roots/default dependencies and narrow wiring. Core never imports the composition root or optional Discord/Notion adapters. Disabled features contribute no runtime tools, hooks, prompts or hidden adapter loads. The configured shell may retain a startup-settings command (`/discord-remote`) so users can re-enable an absent feature; it does not activate the adapter or write Session entries. Remote, Work Memory, bundled Skills and Presentation keep independent selection.
+`composition.ts` owns startup selection, explicit storage roots/default dependencies and narrow wiring. Core never imports the composition root or optional Discord/Notion adapters. Disabled features contribute no runtime tools, hooks, prompts or hidden adapter loads. The configured shell may retain a startup-settings command (`/discord-remote`, `/work-memory`) so users can re-enable an absent feature; it does not activate the adapter or write Session entries. Remote, Work Memory, bundled Skills and Presentation keep independent selection.
 
 Core includes State/Task/Gate/Verification, Snapshot/capabilities, Gateway/mutation/evidence, Run identity/coherence, continuation and continuity. Native Pi, State safety, Handoff/Rollover and Host Task metrics are not optional. Disabling Presentation must not disable measurements, counters or completion summaries. Do not infer feature storage from a concrete StateStore type.
 
@@ -726,7 +726,7 @@ v0.1 adds a semantic capability:
 memory.capture
 ```
 
-It is legal whenever project authority is coherent, independent of Task status. It is never persisted in `PindieState`.
+It is legal only when Work Memory is assembled and project authority is coherent, independent of Task status. Startup assembly supplies the runtime-only `memoryCaptureAvailable` fact through Run Facts and Snapshot; absent/disabled Work Memory grants no ghost capture capability. It is never persisted in `PindieState`.
 
 The concrete Tool Effect is:
 
@@ -757,6 +757,45 @@ PINDIE_WORK_MEMORY_DATA_SOURCE_ID
 ```
 
 The Notion integration should be scoped only to the Work Memory database with minimum read/insert/update permissions. Secrets never enter the repository or `PindieState`.
+
+#### Global startup switch
+
+`/work-memory` uses the shared SettingsMenu: **Work Memory (Notion)**,
+**Capture durable project knowledge in Notion**, and `on`/`off`. Pi's injected
+confirm (Enter) and save (Ctrl+S) bindings both save only the global
+`workMemory: boolean` in `~/.pindie/global/preferences.json`; cancel (Esc)
+writes nothing. Remapped/unbound keys follow Pi. There is no Session override,
+Session entry, memory database, migration or change to existing Notion data.
+Headless users configure that boolean directly, preserving the rest of the file.
+
+Startup precedence (also for injected sinks and feature-selection test seams):
+
+1. Unreadable/malformed preferences or an invalid `workMemory` field fail closed.
+   Missing file/key preserves legacy behavior, rather than becoming a new ON/OFF default.
+2. Explicit persisted `false` or `PINDIE_WORK_MEMORY_ENABLED=false` is a hard veto.
+   An override or injected sink cannot bypass it.
+3. Otherwise existing feature override → env enable flag → available sink/complete
+   credentials selection remains. Persisted `true` is enable intent, not an
+   availability grant; override `false` and missing credentials still disable it.
+
+Composition checks the preference/env gate before Notion credential getters,
+SDK/adapter imports, Client/sink construction, capture-tool registration or prompt
+injection. When disabled it does not inspect credentials merely to decorate UI:
+configuration is reported as unchecked. When checked but incomplete, the menu
+shows **Notion not configured**; saving ON never claims the current Host is usable.
+The missing-key selection defaults to the Host's legacy-effective value without
+writing configuration. The checkmark always denotes current Host assembly; the
+saved default/cursor denotes saved intent. Divergence shows
+`Host: … · Saved: … · Restart required`.
+
+Saving uses exclusive temporary-file creation and atomic rename, retains quota,
+Discord and every unknown field, and refuses to overwrite malformed/invalid or
+unreadable documents. Failures preserve the original document. Saving never
+starts/stops an adapter. The Host retains its Work Memory assembly across native
+Session replacement; the next constructed Host applies new preferences. Discord
+keeps its existing independent startup semantics. Direct configured-extension
+construction (without a Pindie Host) is itself a new assembly boundary. Restart,
+Host recreation and deployment require separate human authority.
 
 ### Create, update, duplicate, and supersede behavior
 
