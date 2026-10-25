@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { createWatchCommand } from "./watch-command.ts";
+import { registerDirectPiSearch } from "./web-search.ts";
 
 import {
   composePindieExtension,
@@ -1378,5 +1379,6 @@ export function registerPindieComposition(pi: ExtensionAPI, composition: PindieC
 }
 
 export default function pindieExtension(pi: ExtensionAPI): void {
+  registerDirectPiSearch(pi);
   registerConfiguredPindieExtension(pi);
 }

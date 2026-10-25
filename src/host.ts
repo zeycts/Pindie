@@ -25,6 +25,7 @@ import { observeNativeUiIdle } from "./native-ui-idle.ts";
 import { canReleaseBrowserIdle } from "./browser-idle-authority.ts";
 import { createBrowserRealityManager, type BrowserRealityManager } from "./browser-reality-manager.ts";
 import { registerPindieComposition } from "./extension.ts";
+import { registerBundledSearch } from "./web-search.ts";
 import type { PindiePresentationReader } from "./presentation-integration.ts";
 import {
   composePindieExtension,
@@ -163,6 +164,10 @@ export function createPindieRuntimeFactory(
             pendingPresentationReader = integration.presentation;
             return integration;
           },
+        }, {
+          name: "pindie-web-search",
+          replaceable: true,
+          factory: registerBundledSearch,
         }, ...(compositionOptions.browserExtensionFactory
           ? [{
               name: "pindie-browser-reality",

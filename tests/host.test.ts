@@ -140,7 +140,9 @@ test("runtime factory passes project cwd and package resources to Pi services", 
     [paths.skillsPath],
   );
   const extensionFactories = servicesOptions?.resourceLoaderOptions?.extensionFactories;
-  assert.equal(extensionFactories?.length, 1);
+  assert.equal(extensionFactories?.length, 2);
+  assert.equal(extensionFactories?.[1]?.name, "pindie-web-search");
+  assert.equal(extensionFactories?.[1]?.replaceable, true);
   assert.equal(
     typeof (extensionFactories?.[0] as { factory?: unknown } | undefined)?.factory,
     "function",
@@ -178,9 +180,10 @@ test("runtime factory adds Browser Reality only when an enabled Host supplies it
   const extensionFactories = servicesOptions?.resourceLoaderOptions?.extensionFactories;
   assert.deepEqual(extensionFactories?.map((entry) => entry.name), [
     "pindie",
+    "pindie-web-search",
     "pindie-browser-reality",
   ]);
-  assert.equal(extensionFactories?.[1]?.factory, browserFactory);
+  assert.equal(extensionFactories?.[2]?.factory, browserFactory);
 });
 
 test("runtime factory omits Pindie-added Skills when the startup selection disables them", async () => {
