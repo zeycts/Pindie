@@ -59,6 +59,8 @@ pnpm install --frozen-lockfile
 pnpm pindie
 ```
 
+Pindie includes provider-native `web_search` (including Codex) and Gemini/Ollama `url_context` from an attributed MIT upstream source snapshot—no separate search plugin install is required. Existing search extensions retain priority. See [bundled web search](docs/web-search.md) for provider coverage, coexistence and isolated verification.
+
 Configure a provider through Pi's native `/login` or provider credentials, then describe the work in ordinary language. The model uses Pindie's Task/verification/Gate tools when appropriate; you do not need to issue a Task command manually. Native Pi owns model/thinking controls. Pindie defaults to fullscreen unless an explicit Host option or Pi `tuiMode` setting overrides it; set `"tuiMode": "regular"` in Pi settings to retain terminal-owned scrollback.
 
 ### Private MCP Control and observers

@@ -161,6 +161,13 @@ mutation ambiguous → compare project Reality before/after execution
 
 Denied calls create no mutation observation. Failed ambiguous tools are still observed afterward because partial mutation may have occurred.
 
+Bundled provider-native search is a composition adapter, not semantic Core:
+Host supplies a replaceable Pi extension factory; the direct Pi configured entry
+fills absent tool names at startup. The attributed provider source is delivered
+in the checkout, without a user-level Pi package requirement. Existing search
+effects remain observation-only. See [bundled web search](web-search.md) for
+loading, collision handling, licensing, provider evidence and migration limits.
+
 ## 6. Model Tool Surface and Gateway
 
 Model-facing Pindie semantic tools are narrow capability-shaped adapters:
