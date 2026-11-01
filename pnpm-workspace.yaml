@@ -1,3 +1,6 @@
+# Pi 1.4.0 pins this HTTP dispatcher. Same-major security backport; keep Pi fixed.
+overrides:
+  '@earendil-works/pi-coding-agent@1.4.0>undici': 8.12.2
 allowBuilds:
   '@google/genai': true
   protobufjs: true

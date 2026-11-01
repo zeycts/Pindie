@@ -9,6 +9,9 @@ import { PindieControlWorkspace, type PindieControlWorkspaceOptions, resolveCont
 
 export { resolveControlWorkspaceRoot };
 
+// Allow substantial user prompts while bounding pre-tool JSON-RPC validation.
+export const CONTROL_MAX_REQUEST_BODY_SIZE = 1024 * 1024;
+
 export interface ControlMcpProcessOptions extends PindieControlWorkspaceOptions {
   readonly port?: number;
 }
@@ -22,8 +25,10 @@ export async function startControlMcpProcess(options: ControlMcpProcessOptions):
   let server: Server | undefined;
   let handler: ReturnType<typeof createMcpHandler> | undefined;
   try {
-    handler = createMcpHandler(() => createPindieControlMcpServer(workspace));
-    const nodeHandler = toNodeHandler(handler);
+    handler = createMcpHandler(() => createPindieControlMcpServer(workspace), {
+      maxRequestBodySize: CONTROL_MAX_REQUEST_BODY_SIZE,
+    });
+    const nodeHandler = toNodeHandler(handler, { maxRequestBodySize: CONTROL_MAX_REQUEST_BODY_SIZE });
     const validateHost = localhostHostValidation();
     const validateOrigin = localhostOriginValidation();
     server = createServer((req, res) => {
