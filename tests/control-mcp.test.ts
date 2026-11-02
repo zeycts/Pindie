@@ -333,6 +333,45 @@ test("MCP delegates six scoped operations after open; stale lease remains struct
   } finally { await wire.close(); await workspace.close(); await cleanup(); }
 });
 
+test("fresh HTTP server factory supports overlapping wait/list/call and repeated connections", { timeout: 15_000 }, async () => {
+  const { root, cleanup } = await fixture();
+  let release!: () => void, entered!: () => void;
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  const waiting = new Promise<void>((resolve) => { entered = resolve; });
+  const snapshot = safe("live");
+  const handle = await startControlMcpProcess({ workspaceRoot: root, port: 0,
+    createHost: async () => ({ dispose: async () => {} }) as PindieHost,
+    createClient: () => asClient({ start: async () => {}, dispose: () => {}, observe: () => snapshot,
+      wait: async () => { entered(); await barrier; return { reason: "timeout", snapshot }; } }),
+  });
+  const url = new URL(`http://127.0.0.1:${handle.port}/mcp`);
+  const peers: Client[] = [];
+  try {
+    const first = new Client({ name: "overlap-first", version: "1" }); peers.push(first);
+    await first.connect(new StreamableHTTPClientTransport(url));
+    assert.equal((await first.callTool({ name: "pindie_open_project", arguments: { project: "Pindie" } })).isError, undefined);
+    const pending = first.callTool({ name: "pindie_wait", arguments: { lease: "live", until: "settled", timeoutSeconds: 10 } });
+    await waiting;
+    // Hold a real HTTP tools/call response open while other requests initialize/list/call.
+    // A factory that reuses one McpServer fails here after the upstream 2.1.1 change.
+    for (let i = 0; i < 3; i++) {
+      const peer = new Client({ name: `overlap-${i}`, version: "1" }); peers.push(peer);
+      await peer.connect(new StreamableHTTPClientTransport(url));
+      assert.equal((await peer.listTools()).tools.length, 13);
+      assert.equal((await peer.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.activeProject, "Pindie");
+      await peer.close();
+    }
+    assert.equal((await first.listTools()).tools.length, 13);
+    release();
+    assert.equal((await pending).structuredContent?.reason, "timeout");
+    assert.equal((await first.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.activeProject, "Pindie");
+  } finally {
+    release();
+    await Promise.all(peers.map((peer) => peer.close()));
+    await handle.close(); await handle.close(); await cleanup();
+  }
+});
+
 test("loopback boots without Host or TUI; disconnect keeps Host; shutdown disposes once", async () => {
   const { root, cleanup } = await fixture();
   const oldTui = process.env.PINDIE_TUI;
