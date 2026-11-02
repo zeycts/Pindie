@@ -1,6 +1,15 @@
 # Pi 1.4.0 pins this HTTP dispatcher. Same-major security backport; keep Pi fixed.
 overrides:
   '@earendil-works/pi-coding-agent@1.4.0>undici': 8.12.2
+  # Security backports in the retained optional MCP 1.x dependency graph.
+  # Match only the reviewed vulnerable resolutions, not future package majors.
+  '@modelcontextprotocol/sdk@1.30.0': 1.32.0
+  'hono@4.13.8': 4.13.11
+  '@hono/node-server@2.1.1': 2.1.3
+  'body-parser@2.3.0': 2.4.0
+  'fast-uri@3.1.8': 3.1.9
+  'ip-address@10.7.2': 10.7.4
+  'qs@6.16.0': 6.16.1
 allowBuilds:
   '@google/genai': true
   protobufjs: true
