@@ -4,6 +4,10 @@ import * as z from "zod/v4";
 import { PindieControlError } from "./control-client.ts";
 import { PindieWorkspaceError, type PindieControlWorkspace } from "./control-workspace.ts";
 
+// Current tools use at most eight object members, including nested model identity.
+// Bound traversal before schema validation, including unknown nested input.
+export const CONTROL_MAX_TOOL_INPUT_ELEMENTS = 64;
+
 const lease = z.string().min(1).describe("Current Control lease from observe or the latest result; Session/project replacement, rebind or Host restart invalidates it. Observe again after stale_control_lease.");
 const text = z.string().min(1);
 const noArgs = z.strictObject({});
@@ -25,7 +29,9 @@ async function invoke(action: () => Promise<unknown> | unknown) {
 }
 
 export function createPindieControlMcpServer(workspace: PindieControlWorkspace): McpServer {
-  const server = new McpServer({ name: "pindie-control", version: "0.1.0" });
+  const server = new McpServer({ name: "pindie-control", version: "0.1.0" }, {
+    maxToolInputElements: CONTROL_MAX_TOOL_INPUT_ELEMENTS,
+  });
   const read = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
   const write = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
   const consequential = { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
