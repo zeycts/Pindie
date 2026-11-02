@@ -1,6 +1,67 @@
 # Retained dependency security follow-up — 2026-11-02
 
-## Evidence and scope
+## Adapter follow-up after PR #313 (PR #314 candidate)
+
+The deployed PR #313 baseline is clean `main` at
+`2faa4a98ee289229de2b6487b2425d3ab67d73f4`: its unfiltered prod+dev audit has
+**two Moderate** findings (adapter node-server 1.19.17 and minimatch 10.2.6),
+not the 16 findings at the earlier PR #312 baseline described below.
+
+A new upstream-supported path removes the adapter finding without forcing a
+major outside its declared range:
+
+| Package | PR #313 baseline → candidate | Exact compatibility boundary |
+| --- | --- | --- |
+| `@modelcontextprotocol/node` | 2.1.0 → 2.1.2 | Node >=20; Hono dependency ^4.11.4; server peer ^2.4.0; node-server dependency **^1.19.9 \|\| ^2.1.3**. |
+| `@modelcontextprotocol/server` | 2.3.0 → 2.4.0 | Node >=20; Zod ^4.2.0; exact core dependency 2.4.0. |
+| `@modelcontextprotocol/core` (server path) | 2.3.0 → 2.4.0 | Required transitively. Client 2.3.0 and its core **2.3.0 remain unchanged**; public HTTP/in-memory interoperability is tested. |
+| `@hono/node-server` (both paths) | adapter 1.19.17 / SDK 2.1.3 → 2.1.5 | Node >=20; Hono peer ^4 \|\| ^5.0.0-0. SDK 1.32.0 declares **^1.19.9 \|\| ^2.0.5**, also accepting 2.1.5. Two exact-parent overrides select the reviewed patched release in both paths. |
+
+Registry metadata was checked directly; node 2.1.2/server+core 2.4.0 were published
+2026-10-23 and node-server 2.1.5 on 2026-10-13. The existing release-age policy
+accepts them without new exclusions. No other package versions change. Node
+24.22.2, pnpm 11.22.0, Pi 1.4.0 (including exact internal minimatch 10.2.6),
+MCP client 2.3.0, browser-use 0.1.15, SDK 1.32.0 and Hono 4.13.11 are retained.
+
+Upstream release/changelog review:
+- [node 2.1.1](https://github.com/modelcontextprotocol/typescript-sdk/releases/tag/%40modelcontextprotocol%2Fnode%402.1.1)
+  requires a fresh server/transport per stateless request. Pindie's existing
+  `createMcpHandler(() => createPindieControlMcpServer(workspace))` already builds
+  a fresh server; the workspace remains the one shared runtime owner. A new
+  regression holds a real HTTP wait response open while other clients repeatedly
+  initialize/list/call; reusing one server would fail this overlap case.
+- [node 2.1.2](https://github.com/modelcontextprotocol/typescript-sdk/releases/tag/%40modelcontextprotocol%2Fnode%402.1.2)
+  widens the node-server range; Hono became a regular dependency in 2.1.1.
+- [server 2.4.0](https://github.com/modelcontextprotocol/typescript-sdk/releases/tag/%40modelcontextprotocol%2Fserver%402.4.0)
+  adds opt-in Skills/event features, fixes modern transport revision binding,
+  output-schema refs and `Allow: POST`. Pindie enables no new features and uses
+  no `x-mcp-header` number annotations or affected schema IDs. Existing 64-element
+  tool-input and 1-MiB HTTP-body limits remain enforced and tested.
+- [node-server 2.1.3](https://github.com/honojs/node-server/releases/tag/v2.1.3)
+  fixes GHSA-rmxm-3fg6-px4f; 2.1.4 widens the Hono peer to include 5 prereleases;
+  [2.1.5](https://github.com/honojs/node-server/releases/tag/v2.1.5) fixes HTTP/2
+  abort signals and restricts static serving to GET/HEAD. Pindie's `toNodeHandler`
+  HTTP path has no static route; encoded static paths still return 404. No
+  source/application behavior or Host/Origin/path checks change.
+
+Candidate validation: frozen install; 86 focused security/Control lifecycle tests
+pass (zero skipped), including repeated/overlapping HTTP initialize/list/call,
+project open, disconnect/reconnect, idempotent shutdown, Host/Origin rejection,
+encoded-path 404s, oversized fixed/chunked bodies, nested-input limits and browser
+SDK stdio initialize/list/call. Version regressions resolve node-server from both
+actual consumers, asserting 2.1.5; server/client core paths are separately pinned.
+The fresh **unfiltered** `pnpm audit --json` returns **one Moderate only**, exit 1:
+minimatch GHSA-g3hv-75wg-m249; no High/Critical/Low. Pi uses optimizationLevel 1
+(default) and only `nocase`, not the vulnerable >=2 mode. Retain this real finding
+and usage mitigation, not a Pi override or audit suppression. See the validation
+result here for the full check: `pnpm run check` exited 0, **1,238 passed, 0 failed,
+0 skipped**, duration 182069.071933 ms (typecheck then the unchanged full test glob).
+Exact focused/full/audit output is retained in
+`~/.local/state/pindie-maintenance/pr314-investigation-20261102/`.
+CI/review and production acceptance remain separate evidence boundaries, not
+inferred from this candidate audit.
+
+## PR #313 historical evidence and scope
 
 Production was clean `main` at PR #312's squash
 `a836dec21af691ce4be80c7640d4d4c0f55470c2`. Its authorized temporary worktree/local
@@ -17,13 +78,13 @@ references). Selected versions/engines/dependencies/integrities were also checke
 against `https://registry.npmjs.org/{package}/{version}`. Raw audit and official
 GHSA responses are retained outside the repository as maintenance evidence.
 
-The follow-up lockfile audit returns **2 moderate rows, no high/critical/low**,
+The PR #313 lockfile audit returned **2 moderate rows, no high/critical/low**,
 exit 1: node-server 1.19.17 and minimatch 10.2.6. Thus 14 advisory rows are removed;
 one removed row previously covered both node-server majors and remains for 1.x.
 Do not call this audit-clean or treat missing current sinks as universal safety.
 No advisory filters, ignores, suppressions or test exclusions were added.
 
-## Smallest compatible repair
+## PR #313 smallest compatible repair (historical)
 
 Only these seven package records change; all other resolved package versions,
 manifest dependencies, Node 24.22.2, pnpm 11.22.0, Pi 1.4.0, browser-use 0.1.15,
@@ -120,7 +181,9 @@ npm's `moderate` spelling (GitHub uses `medium`).
 | 15 | qs 6.16.0 → 6.16.1; E | [6pq8-jhm2-2vcw](https://github.com/advisories/GHSA-6pq8-jhm2-2vcw); CVE-2026-110816; moderate | >=6.16.1; comma stringify of hostile objects with non-callable own toString. Parsing is not this sink; no such serializer configured. | **FIX_NOW**. Not fixed by #312. |
 | 16 | minimatch 10.2.6 retained; M | [g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249); CVE-2026-118764; moderate | >=11.0.1 only; optimizationLevel >=2 amplification. M proves default 1/no override. | **MITIGATED_BY_USAGE**. Not fixed by #312. Retain Pi pin rather than unvalidated 10→11 override. |
 
-The two retained rows are real affected installed versions, not false positives.
+At PR #313 the two retained rows were real affected installed versions, not false
+positives. The adapter follow-up above removes the node-server row through a
+newly supported dependency range; minimatch remains affected and usage-mitigated.
 Reassess before adding static routes, changing minimatch options or enabling
 custom extensions. Registry/GHSA provenance is not an independent source-code or
 supply-chain audit. The browser SDK upgrade's real stdio test uses synthetic
@@ -133,7 +196,9 @@ Read the authoritative existing project State and the implemented
 `src/tools/task.ts` rather than introducing another Task layer:
 
 - State stores **one current Task**, not a queue or nested checkpoints. The
-  unfinished remediation Task is the correct durable owner of this work.
+  then-unfinished remediation Task was the correct durable owner of PR #313.
+  That Task and its later scoped cleanup are complete; the adapter follow-up has
+  a new durable Task and does not reopen completed work.
 - `task.start` is legal only with no Task or a Task completed before the Run.
   The reducer also rejects start while a Task is unfinished. Therefore the earlier
   tiny package/HEAD command proved ordinary tool execution, **not** start/complete
@@ -167,4 +232,13 @@ PR #312 evidence/rollback and preserve zero-writer/frozen-install/automatic
 rollback requirements. The old hard-coded PR #312 worker is **not** authorization
 or a generic deployer for a new SHA. Never restart Control/Host from their active
 Run or restart Tunnel to make checks green. Record actual results; do not infer
-post-deploy success from CI. New worktree cleanup is not part of this follow-up.
+post-deploy success from CI. For the adapter follow-up, the user authorizes merge
+only after passing CI and independent exact-diff review, then a new uniquely
+named PR314 finite worker/state directory (not reuse of old hard-coded workers).
+Require prefetch/parent/tree/reviewed-SHA validation before stopping services,
+zero writers, local-only fast-forward, frozen install, focused **and full** checks,
+fresh one-Moderate audit, package pins, 13-tool Control discovery/project open and
+unchanged Tunnel PID 15895. Preserve rollback and automatic recovery evidence.
+Independent read-only acceptance must occur in a new Session before scoped
+cleanup of only PR314's worktree/local branch/fired timer; keep remote refs,
+Sessions and all maintenance logs. No deployment or cleanup is claimed here.

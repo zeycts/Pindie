@@ -14,6 +14,8 @@ const browserRequire = createRequire(require.resolve("@amaster.ai/pi-browser-use
 const sdkRequire = createRequire(browserRequire.resolve("@modelcontextprotocol/sdk/client/index.js"));
 const nodeRequire = createRequire(require.resolve("@modelcontextprotocol/node"));
 const piRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+const serverRequire = createRequire(require.resolve("@modelcontextprotocol/server"));
+const clientRequire = createRequire(require.resolve("@modelcontextprotocol/client"));
 
 function packageVersion(name: string, from = require, entry = name): string {
   let directory = dirname(from.resolve(entry));
@@ -32,21 +34,24 @@ const expressRequire = createRequire(sdkRequire.resolve("express"));
 const ajvRequire = createRequire(sdkRequire.resolve("ajv"));
 const limiterRequire = createRequire(sdkRequire.resolve("express-rate-limit"));
 
-test("selected retained graph is patched; Pi and direct MCP pins remain unchanged", () => {
+test("selected retained graph and both node-server paths are patched; Pi and client pins remain unchanged", () => {
   assert.equal(packageVersion("@modelcontextprotocol/sdk", browserRequire, "@modelcontextprotocol/sdk/client/index.js"), "1.32.0");
   assert.equal(packageVersion("hono", nodeRequire), "4.13.11");
   assert.equal(packageVersion("hono", sdkRequire), "4.13.11");
-  assert.equal(packageVersion("@hono/node-server", sdkRequire), "2.1.3");
+  assert.equal(packageVersion("@hono/node-server", sdkRequire), "2.1.5");
   assert.equal(packageVersion("body-parser", expressRequire), "2.4.0");
   assert.equal(packageVersion("fast-uri", ajvRequire), "3.1.9");
   assert.equal(packageVersion("ip-address", limiterRequire), "10.7.4");
   assert.equal(packageVersion("qs", expressRequire), "6.16.1");
-  assert.equal(packageVersion("@modelcontextprotocol/node"), "2.1.0");
+  assert.equal(packageVersion("@modelcontextprotocol/node"), "2.1.2");
   assert.equal(packageVersion("@modelcontextprotocol/client"), "2.3.0");
-  assert.equal(packageVersion("@modelcontextprotocol/server"), "2.3.0");
+  assert.equal(packageVersion("@modelcontextprotocol/server"), "2.4.0");
+  assert.equal(packageVersion("@modelcontextprotocol/core", serverRequire), "2.4.0");
+  assert.equal(packageVersion("@modelcontextprotocol/core", clientRequire), "2.3.0");
   assert.equal(packageVersion("@earendil-works/pi-coding-agent", piRequire, "./index.js"), "1.4.0");
-  // Deliberately retained: do not force major upgrades to hide audit findings.
-  assert.equal(packageVersion("@hono/node-server", nodeRequire), "1.19.17");
+  // Adapter 2.1.2 explicitly permits patched 2.x; no forced major outside its range.
+  assert.equal(packageVersion("@hono/node-server", nodeRequire), "2.1.5");
+  // Deliberately retained: do not override Pi's exact internal minimatch pin.
   assert.equal(packageVersion("minimatch", piRequire), "10.2.6");
 });
 
@@ -91,7 +96,7 @@ test("patched URI and IP primitives retain ordinary operation under bounded host
   assert.match(child.stdout, /patched-primitives-PASS/);
 });
 
-test("retained node adapter exposes no static-file route, including encoded paths", async () => {
+test("patched node adapter exposes no static-file route, including encoded paths", async () => {
   const root = await mkdtemp(join(tmpdir(), "pindie-no-static-security-"));
   const handle = await startControlMcpProcess({ workspaceRoot: root, port: 0 });
   try {
