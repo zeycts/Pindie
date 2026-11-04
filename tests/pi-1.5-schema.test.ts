@@ -62,6 +62,19 @@ test("Pi 1.5 validates every Pindie tool JSON Schema, including TypeBox enums an
   }
 });
 
+test("TypeBox rejects invalid strings in all four Type.Unsafe-wrapped enums", () => {
+  for (const [name, input] of [
+    ["pindie_gate_open", { ...valid.pindie_gate_open, kind: "other" }],
+    ["pindie_git_observe", { ...valid.pindie_git_observe, action: "other" }],
+    ["pindie_memory_capture", { ...valid.pindie_memory_capture, type: "other" }],
+    ["pindie_verification_record", { check: { ...valid.pindie_verification_record!.check as object, status: "other" } }],
+  ] as const) {
+    const tool = tools.find((tool) => tool.name === name)!;
+    assert.equal(Value.Check(tool.parameters, valid[name]!), true, `${name}: valid control`);
+    assert.equal(Value.Check(tool.parameters, input), false, `${name}: invalid enum string`);
+  }
+});
+
 test("Pi 1.5 enforces enum, object, collection and scalar bounds before execution", () => {
   for (const [name, args] of [
     ["pindie_gate_open", { kind: "other", question: "?" }],

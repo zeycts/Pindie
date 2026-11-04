@@ -22,6 +22,7 @@ test("Pi 1.5 Host runtime summaries resolve synthetic stored OAuth without expli
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096,
   };
   const requests: SimpleStreamOptions[] = [];
+  const contexts: string[] = [];
   modelRuntime.registerProvider(model.provider, {
     name: "Synthetic OAuth Only", baseUrl: model.baseUrl, api: model.api, apiKey: "UNUSED_SYNTHETIC_ENV_KEY",
     oauth: {
@@ -30,8 +31,9 @@ test("Pi 1.5 Host runtime summaries resolve synthetic stored OAuth without expli
       refreshToken: async (credential) => credential, getApiKey: (credential) => credential.access,
     },
     models: [model],
-    streamSimple: (requestModel, _context, options) => {
+    streamSimple: (requestModel, context, options) => {
       requests.push(options ?? {});
+      contexts.push(JSON.stringify(context));
       const stream = createAssistantMessageEventStream();
       stream.end({ ...fauxAssistantMessage("synthetic summary text"), api: requestModel.api, provider: requestModel.provider, model: requestModel.id });
       return stream;
@@ -57,20 +59,33 @@ test("Pi 1.5 Host runtime summaries resolve synthetic stored OAuth without expli
       if (operation !== "bug-report") await runtime.newSession();
       const session = runtime.session;
       assert.equal(session.model?.id, model.id, "explicit settings survive upstream default-model change");
-      const manager = session.sessionManager;
-      const targetId = manager.appendMessage({ role: "user", content: "first branch", timestamp: Date.now() });
-      manager.appendMessage({ ...fauxAssistantMessage("first reply ".repeat(500)), api: model.api, provider: model.provider, model: model.id });
-      manager.appendMessage({ role: "user", content: "abandoned work", timestamp: Date.now() });
-      manager.appendMessage({ ...fauxAssistantMessage("abandoned reply ".repeat(500)), api: model.api, provider: model.provider, model: model.id });
+      const bugReportSeed = "Bug-report fixture: investigate the missing transcript exchange.";
+      let targetId: string | undefined;
+      if (operation === "bug-report") {
+        await session.prompt(bugReportSeed);
+        assert.ok(session.messages.some((message) => message.role === "user"));
+        assert.ok(session.messages.some((message) => message.role === "assistant"));
+      } else {
+        const manager = session.sessionManager;
+        targetId = manager.appendMessage({ role: "user", content: "first branch", timestamp: Date.now() });
+        manager.appendMessage({ ...fauxAssistantMessage("first reply ".repeat(500)), api: model.api, provider: model.provider, model: model.id });
+        manager.appendMessage({ role: "user", content: "abandoned work", timestamp: Date.now() });
+        manager.appendMessage({ ...fauxAssistantMessage("abandoned reply ".repeat(500)), api: model.api, provider: model.provider, model: model.id });
+      }
       requests.length = 0;
       authOverrides.length = 0;
+      contexts.length = 0;
       const summary = operation === "bug-report"
         ? await session.summarizeForBugReport({ signal: new AbortController().signal })
         : operation === "compaction"
           ? (await session.compact()).summary
-          : (await session.navigateTree(targetId, { summarize: true })).summaryEntry?.summary;
+          : (await session.navigateTree(targetId!, { summarize: true })).summaryEntry?.summary;
       assert.match(summary ?? "", /synthetic summary text/, operation);
       assert.ok(requests.length > 0, operation);
+      if (operation === "bug-report") {
+        assert.equal(contexts.length, 1, "capture only the bug-report summary request, not the seed prompt");
+        assert.ok(contexts[0]!.includes(bugReportSeed), "summary request must include the real transcript seed");
+      }
       assert.ok(requests.every((request) => request.apiKey === "synthetic-oauth-access"), operation);
       assert.ok(authOverrides.length > 0, "normal runtime auth preparation must still run");
       assert.ok(authOverrides.every((apiKey) => apiKey === undefined), `${operation}: never pass stored OAuth back as an explicit API key`);
