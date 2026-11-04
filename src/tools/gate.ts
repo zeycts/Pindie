@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -9,9 +9,10 @@ import type { PindieState } from "../state.ts";
 
 const GateOpenParameters = Type.Object(
   {
-    kind: StringEnum(["decision", "approval", "input"] as const, {
+    // Native Node imports lack Pi's loader-specific TypeBox enum view.
+    kind: Type.Unsafe<"decision" | "approval" | "input">(StringEnum(["decision", "approval", "input"] as const, {
       description: "Kind of consequential human input required.",
-    }),
+    })),
     question: Type.String({ description: "Question presented to the human." }),
     options: Type.Optional(Type.Array(Type.String(), {
       description: "Explicit answer options, when useful.",

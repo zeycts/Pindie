@@ -103,7 +103,7 @@ test("both Undici lines survive excessive content encodings; pinned Pi dispatche
   const piRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
   const require = createRequire(import.meta.url);
   assert.equal(require("undici/package.json").version, "6.29.1");
-  assert.equal(piRequire("undici/package.json").version, "8.12.2");
+  assert.equal(piRequire("undici/package.json").version, "8.12.3");
   const script = `
     import assert from 'node:assert/strict';
     import { createServer } from 'node:net';

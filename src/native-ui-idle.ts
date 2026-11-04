@@ -15,7 +15,7 @@ const fields = [
 
 /** Unknown versions/shapes or replaced instrumentation never authorize release. */
 export function observeNativeUiIdle(mode: unknown, version = VERSION): () => boolean {
-  if (version !== "1.4.0" || typeof mode !== "object" || mode === null) return () => false;
+  if ((version !== "1.4.0" && version !== "1.5.0") || typeof mode !== "object" || mode === null) return () => false;
   const target = mode as Record<string, unknown>;
   try {
     if (fields.some((key) => !Object.hasOwn(target, key)) ||

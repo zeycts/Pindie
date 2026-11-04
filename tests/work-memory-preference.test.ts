@@ -175,14 +175,14 @@ test("real Host uses supplied env on both paths and freezes Work Memory (not Dis
   });
 });
 
-test("real isolated Pi 1.4.0 native preview smoke saves via Ctrl+S without Session or Host mutation", async () => {
+test("real isolated pinned Pi native preview smoke saves via Ctrl+S without Session or Host mutation", async () => {
   for (const unconfigured of [false, true]) await temporary(async (root) => {
     const env = { PATH: process.env.PATH, HOME: join(root, "home"), PI_CODING_AGENT_DIR: join(root, "agent"),
       PI_AGENT_DIR: join(root, "agent"), PINDIE_PREVIEW_ROOT: root,
       XDG_CONFIG_HOME: join(root, "config"), XDG_CACHE_HOME: join(root, "cache"), XDG_DATA_HOME: join(root, "data"), XDG_STATE_HOME: join(root, "state"), TERM: "xterm-256color" };
     const result = await promisify(execFile)(process.execPath, ["--experimental-strip-types",
       new URL("../scripts/work-memory-preview.ts", import.meta.url).pathname, "--fixtures", "--smoke", ...(unconfigured ? ["--unconfigured"] : [])], { env });
-    assert.match(result.stdout, /PASS Pi 1.4.0: \/work-memory registered, native custom dialog, Ctrl\+S global-only save, Host unchanged/);
+    assert.match(result.stdout, /PASS Pi 1\.5\.0: \/work-memory registered, native custom dialog, Ctrl\+S global-only save, Host unchanged/);
   });
 });
 

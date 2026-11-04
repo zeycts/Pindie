@@ -202,7 +202,7 @@ test("Phase2 save error and session/branch replacement during open menu never ap
   assert.match(duringSave.notices.at(-1)!, /changed while saving/);
 });
 
-test("Pi 1.4.0 real catalog/registry/session APIs: metadata levels, auth snapshot, exact model/thinking transcript without network or paid inference", async () => {
+test("Pinned Pi real catalog/registry/session APIs: metadata levels, auth snapshot, exact model/thinking transcript without network or paid inference", async () => {
   const root = await mkdtemp(join(tmpdir(), "pindie-phase2-native-"));
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   const originalFetch = globalThis.fetch;

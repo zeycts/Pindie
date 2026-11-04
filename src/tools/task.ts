@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -107,10 +107,11 @@ const VerificationCheckSchema = Type.Object(
       minLength: 1,
       description: "Unique name of this verification check.",
     }),
-    status: StringEnum(["passed", "failed"] as const, {
+    // Native Node imports lack Pi's loader-specific TypeBox enum view.
+    status: Type.Unsafe<"passed" | "failed">(StringEnum(["passed", "failed"] as const, {
       description:
         "Semantic judgment of whether the cited factual evidence passes or fails this verification check.",
-    }),
+    })),
     covers: Type.Array(Type.String(), {
       description:
         "Success criterion IDs from the current Task Contract, for example ['c1', 'c2']; use criterion IDs, not descriptions.",

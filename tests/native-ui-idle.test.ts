@@ -19,8 +19,12 @@ function fixture() {
 test("native UI authority is pinned, instance-local, and fail closed on unknown shapes", () => {
   const mode = fixture();
   const original = mode.showExtensionCustom;
-  assert.equal(observeNativeUiIdle(mode, "future")(), false);
-  assert.equal(mode.showExtensionCustom, original);
+  for (const version of ["future", "1.5.1", "1.6.0", "2.0.0", "1.5.0-beta.1"]) {
+    assert.equal(observeNativeUiIdle(mode, version)(), false);
+    assert.equal(mode.showExtensionCustom, original);
+  }
+  assert.equal(observeNativeUiIdle(fixture(), "1.4.0")(), true);
+  assert.equal(observeNativeUiIdle(fixture(), "1.5.0")(), true);
   assert.equal(observeNativeUiIdle(mode, "1.3.0")(), false);
   assert.equal(mode.showExtensionCustom, original);
   assert.equal(observeNativeUiIdle({})(), false);
@@ -102,7 +106,7 @@ test("actual pinned custom UI protects the pre-mount factory gap and mounted lif
   assert.equal(idle(), true);
 });
 
-test("actual Pi 1.4 stacked custom dialogs restore the previous dialog and block release until both settle", async () => {
+test("actual pinned Pi stacked custom dialogs restore the previous dialog and block release until both settle", async () => {
   for (const closeTopFirst of [true, false]) {
     const mode = fixture();
     mode.editor = { getText: () => "draft", setText: () => {} };

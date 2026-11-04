@@ -1,6 +1,6 @@
-# Pi 1.4.0 pins this HTTP dispatcher. Same-major security backport; keep Pi fixed.
+# Pi 1.5.0 pins undici 8.12.3, superseding our 1.4.0-only 8.12.2 backport.
+# Keep the unrelated retained-graph security overrides below.
 overrides:
-  '@earendil-works/pi-coding-agent@1.4.0>undici': 8.12.2
   # Security backports in the retained optional MCP 1.x dependency graph.
   # Match only the reviewed vulnerable resolutions, not future package majors.
   '@modelcontextprotocol/sdk@1.30.0': 1.32.0
@@ -16,14 +16,15 @@ allowBuilds:
   '@google/genai': true
   protobufjs: true
 minimumReleaseAgeExclude:
-  - '@earendil-works/pi-agent-core@1.4.0'
-  - '@earendil-works/pi-ai@1.4.0'
-  - '@earendil-works/pi-codemode@1.4.0'
-  - '@earendil-works/pi-coding-agent@1.4.0'
-  - '@earendil-works/pi-mcp@1.4.0'
-  - '@earendil-works/pi-tui@1.4.0'
+  - '@earendil-works/pi-agent-core@1.5.0'
+  - '@earendil-works/pi-ai@1.5.0'
+  - '@earendil-works/pi-codemode@1.5.0'
+  - '@earendil-works/pi-coding-agent@1.5.0'
+  - '@earendil-works/pi-mcp@1.5.0'
+  - '@earendil-works/pi-tui@1.5.0'
   - '@modelcontextprotocol/core@2.1.0'
   - '@modelcontextprotocol/server@2.1.0'
   - '@modelcontextprotocol/client@2.1.0'
   - '@modelcontextprotocol/node@2.1.0'
-  - '@earendil-works/pi-telemetry@1.4.0'
+  - '@earendil-works/pi-telemetry@1.5.0'
+  - '@earendil-works/pi-schema@1.5.0'

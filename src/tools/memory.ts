@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -27,9 +27,10 @@ const MEMORY_TYPES: readonly ProjectMemoryType[] = [
 
 const MemoryCaptureParameters = Type.Object(
   {
-    type: StringEnum(MEMORY_TYPES, {
+    // Native Node imports lack Pi's loader-specific TypeBox enum view.
+    type: Type.Unsafe<ProjectMemoryType>(StringEnum(MEMORY_TYPES, {
       description: "Semantic category of the durable Work Memory state.",
-    }),
+    })),
     memory: Type.String({
       minLength: 1,
       description: "Durable conclusion or state, not an activity log.",

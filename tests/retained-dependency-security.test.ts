@@ -34,7 +34,7 @@ const expressRequire = createRequire(sdkRequire.resolve("express"));
 const ajvRequire = createRequire(sdkRequire.resolve("ajv"));
 const limiterRequire = createRequire(sdkRequire.resolve("express-rate-limit"));
 
-test("selected retained graph and both node-server paths are patched; Pi and client pins remain unchanged", () => {
+test("selected retained graph and both node-server paths are patched alongside Pi 1.5", () => {
   assert.equal(packageVersion("@modelcontextprotocol/sdk", browserRequire, "@modelcontextprotocol/sdk/client/index.js"), "1.32.0");
   assert.equal(packageVersion("hono", nodeRequire), "4.13.11");
   assert.equal(packageVersion("hono", sdkRequire), "4.13.11");
@@ -48,11 +48,11 @@ test("selected retained graph and both node-server paths are patched; Pi and cli
   assert.equal(packageVersion("@modelcontextprotocol/server"), "2.4.0");
   assert.equal(packageVersion("@modelcontextprotocol/core", serverRequire), "2.4.0");
   assert.equal(packageVersion("@modelcontextprotocol/core", clientRequire), "2.3.0");
-  assert.equal(packageVersion("@earendil-works/pi-coding-agent", piRequire, "./index.js"), "1.4.0");
+  assert.equal(packageVersion("@earendil-works/pi-coding-agent", piRequire, "./index.js"), "1.5.0");
   // Adapter 2.1.2 explicitly permits patched 2.x; no forced major outside its range.
   assert.equal(packageVersion("@hono/node-server", nodeRequire), "2.1.5");
-  // Deliberately retained: do not override Pi's exact internal minimatch pin.
-  assert.equal(packageVersion("minimatch", piRequire), "10.2.6");
+  // Upstream's amplified-glob security fix; no override of its exact pin.
+  assert.equal(packageVersion("minimatch", piRequire), "11.0.3");
 });
 
 test("patched browser SDK preserves real credential-free stdio initialize/list/call", async () => {

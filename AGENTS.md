@@ -8,7 +8,7 @@ Pindie is a personal AI agent for indie development built on Pi. Improvement use
 2. `docs/pindie-control-v0.2.md` for workspace/project selection and active-project Host replacement; preserve `docs/pindie-control-v0.1.md` runtime/control safety.
 3. `docs/quota-fallback-v0.1.md` for quota recovery and temporary backup switching.
 4. `docs/architecture.md` and `docs/behavior.md` for current ownership, composition, semantic truth and behavior.
-5. `docs/remote-companion.md` for Remote/Discord; `docs/long-task-runtime.md` for continuation/rollover; `docs/pi-1.4.0-compatibility.md` for the pinned native interactive UI (the 1.3.0 audit is historical).
+5. `docs/remote-companion.md` for Remote/Discord; `docs/long-task-runtime.md` for continuation/rollover; `docs/pi-1.5.0-compatibility.md` for the pinned native interactive UI (the 1.4.0 and 1.3.0 audits are historical).
 6. Source/tests as implemented runtime evidence.
 
 Report contradictions before widening scope. Do not retain obsolete behavior merely because an older test encoded it.
