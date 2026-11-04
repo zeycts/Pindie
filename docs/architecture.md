@@ -398,7 +398,7 @@ replace with a fresh session
 shutdown / dispose
 ```
 
-The implemented adapter uses the pinned Pi public SDK; see the [Pi 1.4.0 compatibility audit](pi-1.4.0-compatibility.md). The abstraction must not invent speculative multi-backend features, generic orchestration APIs, provider abstractions, or a universal Agent interface.
+The implemented adapter uses the pinned Pi public SDK; see the [Pi 1.5.0 compatibility audit](pi-1.5.0-compatibility.md). The abstraction must not invent speculative multi-backend features, generic orchestration APIs, provider abstractions, or a universal Agent interface.
 
 Pi's public `createAgentSessionRuntime()` / `AgentSessionRuntime` is the natural implementation boundary because it already owns active-session replacement and recreates cwd-bound runtime state. Pi's public `InteractiveMode` takes that runtime and handles TUI rebinding around session replacement, so Pindie can reuse the existing interactive product rather than rewrite it.
 
@@ -594,8 +594,8 @@ A runtime-only 15-minute inactivity timer may release resources only with known
 settled Session facts (no streaming, compaction, pending messages or bash), known
 State, no Human Gate/quota wait, and no pending UI interaction. Browser calls and
 ordinary agent starts refresh activity. Owned UI exposes its current overlay,
-queued-dialog and pending-picker facts. Native UI uses human-approved bounded
-per-instance Pi 1.4.0 instrumentation: pending UI promises include asynchronous
+queued-dialog and pending-picker facts. Native UI uses bounded
+per-instance Pi 1.4.0/1.5.0 instrumentation (see the compatibility audit): pending UI promises include asynchronous
 custom factories before mounting; dialog-stack/editor/overlay facts cover mounted
 native interactions. Unknown versions, changed shapes or replaced wrappers
 prevent automatic release. There are no prototype/global patches or new policy

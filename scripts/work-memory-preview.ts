@@ -1,4 +1,4 @@
-/** Isolated Pi 1.4.0 visual fixture. No real credentials, inference or external persistence. */
+/** Isolated Pi 1.5.0 visual fixture. No real credentials, inference or external persistence. */
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -12,7 +12,7 @@ import { registerPindieComposition } from "../src/extension.ts";
 import { FileWorkMemoryPreferenceStore } from "../src/work-memory-preference.ts";
 
 assert.ok(process.argv.includes("--fixtures"), "Use --fixtures; this is not a production launcher.");
-assert.equal(VERSION, "1.4.0");
+assert.equal(VERSION, "1.5.0");
 const base = resolve(process.env.PINDIE_PREVIEW_ROOT ?? "/tmp/pindie-work-memory-preview");
 assert.equal(resolve(process.env.HOME ?? ""), join(base, "home"), "Launch via isolated launch.sh");
 assert.equal(resolve(process.env.PI_CODING_AGENT_DIR ?? ""), join(base, "agent"));

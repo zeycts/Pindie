@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -17,9 +17,10 @@ export const GIT_OBSERVE_MAX_OUTPUT_BYTES = 64 * 1024;
 export const GIT_OBSERVE_MAX_OUTPUT_LINES = 400;
 
 const PindieGitObserveParameters = Type.Object({
-  action: StringEnum(GIT_OBSERVE_ACTIONS, {
+  // Native Node imports lack Pi's loader-specific TypeBox enum view.
+  action: Type.Unsafe<GitObserveAction>(StringEnum(GIT_OBSERVE_ACTIONS, {
     description: "Fixed read-only Git observation: status, branch, root, diff, diff_cached, diff_check, log, or remote.",
-  }),
+  })),
   paths: Type.Optional(Type.Array(Type.String(), { maxItems: 50, description: "Positional paths for diff actions only." })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50, description: "Log entry limit for log only (default 10)." })),
 }, { additionalProperties: false });

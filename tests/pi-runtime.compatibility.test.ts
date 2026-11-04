@@ -112,6 +112,43 @@ function providerSystemPrompt(context: { messages?: readonly unknown[] } | undef
   return getSystemMessageText(systemMessage as SystemMessage);
 }
 
+test("Pi 1.5 SDK summaries leave stored OAuth resolution to ModelRuntime", async () => {
+  const harness = await createRealPiHarness();
+  const { session, faux } = harness;
+  try {
+    faux.setResponses([fauxAssistantMessage("history")]);
+    await session.prompt("Synthetic history for summary auth regression.");
+    // Synthetic sentinel only: never open a real auth store or call a provider.
+    let preResolved = 0;
+    const originalGetAuth = session.modelRuntime.getAuth.bind(session.modelRuntime);
+    session.modelRuntime.getAuth = async (model, options) => {
+      preResolved++;
+      return originalGetAuth(model, options);
+    };
+    const requests: Parameters<ModelRuntime["streamSimple"]>[2][] = [];
+    const original = session.modelRuntime.streamSimple.bind(session.modelRuntime);
+    session.modelRuntime.streamSimple = (model, context, options) => {
+      requests.push(options);
+      return original(model, context, options);
+    };
+    faux.setResponses([fauxAssistantMessage("synthetic bug summary")]);
+    assert.match(await session.summarizeForBugReport({ signal: new AbortController().signal }), /synthetic bug summary/);
+    assert.equal(preResolved, 1, "only ModelRuntime's ordinary request preparation resolves auth");
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.apiKey, undefined);
+    assert.equal(requests[0]?.headers, undefined);
+  } finally { await disposeHarness(harness); }
+});
+
+test("Pi 1.5 reordering an unchanged active tool set preserves native declaration order", async () => {
+  const harness = await createRealPiHarness(undefined, [compatibilityTool, { ...compatibilityTool, name: "second-tool" }]);
+  try {
+    const original = harness.session.getActiveToolNames();
+    harness.session.setActiveToolsByName([...original].reverse());
+    assert.deepEqual(harness.session.getActiveToolNames(), original);
+  } finally { await disposeHarness(harness); }
+});
+
 test("Pi 1.3.0 SDK defaults do not load new CLI extensions", async () => {
   const harness = await createRealPiHarness(undefined, [compatibilityTool]);
   try {
