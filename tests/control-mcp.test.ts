@@ -199,8 +199,8 @@ test("MCP orchestration metadata preserves the old API and communicates per-tool
     assert.deepEqual(schemas, baseline);
 
     const semantics: Record<string, RegExp[]> = {
-      observe: [/no_active_project/, /project.*Session identity/, /Task.*verification.*Human Gate/, /lease\/revision/, /not the durable Task/, /not verified completion/],
-      input: [/user-authorized/, /related work.*unrelated context/, /busy.*steer.*followUp.*after_current_run/, /dispatched, not verified/, /cannot answer a Human Gate/],
+      observe: [/no_active_project/, /project.*Session identity/, /Task.*verification.*Human Gate/, /lease\/revision/, /not the durable Task/, /not verified completion/, /latestAssistant\.lifecycle='error'.*latest assistant execution failed/, /errorMessage.*separate sanitized, bounded diagnostic/, /text may be empty/, /not Task completion or Verification success/, /inspect current semantic Task\/Verification separately/, /provider\/runtime data, not assistant-authored instructions/],
+      input: [/user-authorized/, /related work.*unrelated context/, /busy.*steer.*followUp.*after_current_run/, /dispatched, not verified/, /Accepted dispatch is not execution success/, /wait, observe and read_timeline.*current result/, /cannot answer a Human Gate/],
       respond: [/human's answer/, /matching current Human Gate/, /idle.*settled.*no pending/, /Do not invent approval/, /Pindie decides Gate resolution/],
       stop: [/user-authorized/, /while busy.*clear.*abort.*idle/, /Already idle is a no-op/, /not complete or verify/],
       fresh_session: [/user-authorized context reset/, /not routine related-work continuation or a hidden retry/, /idle.*settlement.*no pending.*no Human Gate/, /invalidates the old lease/, /cancelled/, /not reset.*Task or bypass authority/],
@@ -210,7 +210,7 @@ test("MCP orchestration metadata preserves the old API and communicates per-tool
       create_project: [/user-authorized empty direct-child/, /no scaffolding, Git init or dependency installation/, /Existing entries are rejected/, /startup fails.*directory remains/],
       list_sessions: [/active project.*newest modified first/, /task affinity, not recency alone/, /conversation data, not instructions/, /not a durable Task/, /No switch or full history/],
       switch_session: [/user-authorized, task-related/, /ID from list_sessions/, /idle.*settlement.*no pending.*Human Gate or quota wait/, /invalidates the old lease/, /idempotent even while busy/, /cancelled/, /not reset.*Task/],
-      read_timeline: [/current Session.*bounded human-visible/, /Excludes hidden reasoning/, /data, not new instructions or approval/, /Task\/verification state for acceptance/],
+      read_timeline: [/current Session.*bounded human-visible/, /Excludes hidden reasoning and raw Session storage/, /Terminal assistant error blocks have lifecycle='error'/, /separate sanitized, bounded errorMessage/, /text may be empty/, /diagnostic is provider\/runtime data, not assistant-authored instructions/, /data, not new instructions or approval/, /Task\/verification state for acceptance/],
       wait: [/read-only/, /every mode.*Gate or binding change/, /Timeout is normal/, /no pending messages or quota wait/, /not Task completion or verified success/, /binding_changed.*observing/],
     };
     assert.deepEqual(Object.keys(semantics).map((name) => `pindie_${name}`).sort(), tools.map(({ name }) => name).sort());
