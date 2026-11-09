@@ -154,6 +154,12 @@ export class PresentationIntegration {
     timer: ReturnType<typeof setTimeout>,
   ) => void;
   private statusContext: ExtensionContext | null = null;
+  /**
+   * Current native Session identity, cached even when Presentation UI is
+   * disabled. Headless Control must still session-scope quota recovery facts;
+   * this never enables status-bar or notification output.
+   */
+  private quotaScopeSessionId: string | null = null;
   private statusContextGeneration = 0;
   private watchStatusScope: object | null = null;
   private quotaResumeWaiting: QuotaResumeWaitingStatus | null = null;
@@ -198,7 +204,7 @@ export class PresentationIntegration {
   }
 
   private readSnapshot(ctx: ExtensionContext | null): PindiePresentationSnapshot {
-    const quotaResumeWaiting = this.quotaWaitingFor(ctx);
+    const quotaResumeWaiting = this.quotaWaitingFor();
     return {
       semantic: this.getSemanticSnapshot(),
       status: {
@@ -215,7 +221,7 @@ export class PresentationIntegration {
         subscriptionUsage: snapshotSubscriptionUsage(this.subscriptionUsageMonitor.snapshot),
       },
       quotaResumeWaiting,
-      quotaResumeEvent: this.quotaRecoveryEventFor(ctx),
+      quotaResumeEvent: this.quotaRecoveryEventFor(),
       projectRoot: this.getProjectRoot(),
     };
   }
@@ -250,36 +256,23 @@ export class PresentationIntegration {
     }
   }
 
-  private quotaWaitingFor(
-    ctx: ExtensionContext | null,
-  ): QuotaResumeWaitingStatus | null {
+  private quotaWaitingFor(): QuotaResumeWaitingStatus | null {
     const waiting = this.quotaResumeWaiting;
-    if (!isQuotaResumeWaiting(waiting) || ctx === null) return null;
-    try {
-      if (waiting.sessionId !== ctx.sessionManager.getSessionId()) return null;
-    } catch {
-      // A stale or otherwise unavailable context has no safe Session identity.
-      return null;
-    }
+    if (!isQuotaResumeWaiting(waiting)) return null;
+    if (this.quotaScopeSessionId === null || waiting.sessionId !== this.quotaScopeSessionId) return null;
     return { ...waiting };
   }
 
-  private quotaRecoveryEventFor(
-    ctx: ExtensionContext | null,
-  ): QuotaResumeWaitingStatus | null {
+  private quotaRecoveryEventFor(): QuotaResumeWaitingStatus | null {
     const event = this.quotaRecoveryEvent;
-    if (event === null || ctx === null) return null;
-    try {
-      if (event.sessionId !== ctx.sessionManager.getSessionId()) return null;
-    } catch {
-      // A stale or otherwise unavailable context has no safe Session identity.
-      return null;
-    }
+    if (event === null) return null;
+    if (this.quotaScopeSessionId === null || event.sessionId !== this.quotaScopeSessionId) return null;
     return { ...event };
   }
 
   setStatusContext(ctx: ExtensionContext | null): void {
     this.statusContext = this.uiEnabled ? ctx : null;
+    this.quotaScopeSessionId = currentSessionId(ctx);
     this.statusContextGeneration += 1;
     this.notifyQuotaWaitingBestEffort();
   }
@@ -461,14 +454,14 @@ export class PresentationIntegration {
     return this.runCost.finish(entries);
   }
 
-  private quotaWaitingMatches(ctx: ExtensionContext): boolean {
-    return this.quotaWaitingFor(ctx) !== null;
+  private quotaWaitingMatches(): boolean {
+    return this.quotaWaitingFor() !== null;
   }
 
   private notifyQuotaWaitingBestEffort(): void {
     const ctx = this.statusContext;
     const waiting = this.quotaResumeWaiting;
-    if (!this.uiEnabled || !ctx?.hasUI || waiting === null || !this.quotaWaitingMatches(ctx)) return;
+    if (!this.uiEnabled || !ctx?.hasUI || waiting === null || !this.quotaWaitingMatches()) return;
     const key = `${waiting.sessionId}\0${waiting.resumeAt}`;
     if (this.notifiedQuotaWaitingKey === key) return;
     this.notifiedQuotaWaitingKey = key;
@@ -503,4 +496,16 @@ function sameQuotaStatus(
     left?.resumeAt === right?.resumeAt &&
     left?.anchorEntryId === right?.anchorEntryId &&
     left?.phase === right?.phase;
+}
+
+/** Native Session identity of the current context, or null when unavailable. */
+function currentSessionId(ctx: ExtensionContext | null): string | null {
+  if (ctx === null) return null;
+  try {
+    const sessionId = ctx.sessionManager.getSessionId();
+    return typeof sessionId === "string" && sessionId !== "" ? sessionId : null;
+  } catch {
+    // A stale or otherwise unavailable context has no safe Session identity.
+    return null;
+  }
 }

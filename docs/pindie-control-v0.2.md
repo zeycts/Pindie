@@ -1467,6 +1467,11 @@ whole lifecycle through the same control channel:
 | `invalidated` | Session, model or anchor evidence changed at wake time |
 | `wake_failed` | the hidden message threw or its promise rejected |
 
+These lifecycle facts are session-scoped Presentation data, not UI: they stay
+readable when Presentation output is disabled (the headless Control path) while
+still producing no status-bar or notification output, and they are dropped when
+the current native Session context is cleared.
+
 Terminal phases release protection, leaving the dispatch factually `error` (never
 `complete`) so settlement waits can finish. A late send rejection may only
 publish `wake_failed` while its own wake generation still owns the lease, so it

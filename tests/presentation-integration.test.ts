@@ -385,6 +385,39 @@ test("presentation-disabled waiting produces no status or notification", () => {
   assert.deepEqual(ui.notifications, []);
 });
 
+test("headless Presentation still session-scopes quota facts for Control without UI output", () => {
+  const presentation = createPresentation({ uiEnabled: false });
+  const ui = uiContext("session");
+  presentation.setStatusContext(ui.ctx);
+  const waiting = { sessionId: "session", resumeAt: 123, anchorEntryId: "entry-anchor", phase: "waiting" as const };
+  presentation.setQuotaResumeWaiting(waiting);
+  presentation.setQuotaResumeEvent(waiting);
+  let snapshot = presentation.snapshot();
+  // Headless Control needs these facts; no status bar or notification may appear.
+  assert.deepEqual(snapshot.quotaResumeWaiting, waiting);
+  assert.deepEqual(snapshot.quotaResumeEvent, waiting);
+  assert.equal(snapshot.status.quotaResumeWaiting, true);
+  assert.deepEqual(ui.statuses, []);
+  assert.deepEqual(ui.notifications, []);
+
+  // Terminal abandonment and the wake gap remain visible; other Sessions do not leak.
+  presentation.setQuotaResumeWaiting(null);
+  presentation.setQuotaResumeEvent({ ...waiting, phase: "cancelled" });
+  snapshot = presentation.snapshot();
+  assert.equal(snapshot.quotaResumeWaiting, null);
+  assert.deepEqual(snapshot.quotaResumeEvent, { ...waiting, phase: "cancelled" });
+  presentation.setQuotaResumeEvent({ ...waiting, sessionId: "other", phase: "wake_failed" });
+  assert.equal(presentation.snapshot().quotaResumeEvent, null);
+
+  // Losing the native context clears the cached Session scope.
+  presentation.setStatusContext(null);
+  presentation.setQuotaResumeEvent(waiting);
+  assert.equal(presentation.snapshot().quotaResumeEvent, null);
+  assert.equal(presentation.snapshot().quotaResumeWaiting, null);
+  assert.deepEqual(ui.statuses, []);
+  assert.deepEqual(ui.notifications, []);
+});
+
 test("snapshot without a current status context does not leak a quota lease", () => {
   const presentation = createPresentation();
   presentation.setQuotaResumeWaiting({ sessionId: "stale-session", resumeAt: 123 });

@@ -5,6 +5,8 @@ import type {
   AgentSession,
   AgentSessionEvent,
   AgentSessionRuntime,
+  ExtensionAPI,
+  ExtensionContext,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 
@@ -13,7 +15,14 @@ import {
   PindieControlError,
 } from "../src/control-client.ts";
 import { PiRuntimeAdapter } from "../src/pi-runtime.ts";
-import type { PindiePresentationSnapshot } from "../src/presentation-integration.ts";
+import {
+  PresentationIntegration,
+  type PindiePresentationSnapshot,
+} from "../src/presentation-integration.ts";
+import { RunCostTracker } from "../src/run-cost.ts";
+import { RunTimer } from "../src/run-timer.ts";
+import { SubscriptionUsageMonitor } from "../src/subscription-usage.ts";
+import { TaskMetricsTracker } from "../src/task-metrics.ts";
 import { deriveSemanticSnapshot, type SemanticRunFacts } from "../src/semantics.ts";
 import type { HumanGate, PindieState } from "../src/state.ts";
 
@@ -319,6 +328,41 @@ function presentationFor(
     quotaResumeEvent: options.quotaResumeEvent ?? quotaResumeWaiting,
     projectRoot: "/repo/Pindie",
   };
+}
+
+/** Real Presentation with UI output disabled: the actual headless Control path. */
+function createHeadlessPresentation(): PresentationIntegration {
+  const state = activeState();
+  const task = state.task;
+  const semantic = deriveSemanticSnapshot(state, {
+    stateAvailable: true,
+    runCoherent: true,
+    taskRelation: task === null ? "none" : "preexisting_untouched",
+    completionRelation: task?.completed ? "completed_before_run" : "not_completed",
+    gateRelation: task?.humanGate ? "existed_before_run" : "none",
+  });
+  assert.equal(semantic.ok, true);
+  const pi = { getThinkingLevel: () => "medium", setThinkingLevel: () => undefined } as unknown as ExtensionAPI;
+  return new PresentationIntegration(pi, {
+    getSemanticSnapshot: () => semantic,
+    getState: () => state,
+    getProjectRoot: () => "/repo/Pindie",
+    getAuthoritativeState: () => state,
+    getStateUnavailableReason: () => null,
+    getRunStale: () => false,
+    subscriptionUsageMonitor: new SubscriptionUsageMonitor({ fetchUsage: async () => null }),
+    runTimer: new RunTimer(),
+    runCost: new RunCostTracker(),
+    taskMetrics: new TaskMetricsTracker(),
+    uiEnabled: false,
+  });
+}
+
+function headlessContext(sessionId: string): ExtensionContext {
+  return {
+    hasUI: false,
+    sessionManager: { getSessionId: () => sessionId, getEntries: () => [] },
+  } as unknown as ExtensionContext;
 }
 
 /** Waiting phase suppresses settlement gating as well as exposing the event. */
@@ -2490,6 +2534,77 @@ test("a resume message observed before agent_start still continues the failed Ru
     const resumed = latestDispatch(control.observe());
     assert.deepEqual(resumed.runIds, ["early-resume-session:run:1", "early-resume-session:run:2"]);
     assert.equal(resumed.state, "running");
+  } finally { control.dispose(); }
+});
+
+test("headless Control observes quota-wait cancellation through Presentation", async () => {
+  const session = fakeSession("headless-quota-session", []);
+  const presentation = createHeadlessPresentation();
+  presentation.setStatusContext(headlessContext("headless-quota-session"));
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentation.snapshot() }),
+  });
+  await control.start();
+  try {
+    // A fails independently, then B fails on the real quota incident.
+    await control.input({ lease: control.observe().lease, text: "Auth-bound work" });
+    session.start();
+    failRun(session, "entry-auth", "401 invalid api key");
+    await control.input({ lease: control.observe().lease, text: "Quota-bound work" });
+    session.start();
+    failRun(session, "entry-quota", "429 quota exceeded");
+
+    const waiting = quotaStatus("headless-quota-session", "entry-quota");
+    presentation.setQuotaResumeEvent(waiting);
+    presentation.setQuotaResumeWaiting(waiting);
+    assert.deepEqual(presentation.snapshot().quotaResumeEvent, waiting);
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["error", "waiting"]);
+    assert.equal((await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 })).reason, "timeout");
+
+    // Disabling Auto Resume reaches headless Control: protection is released.
+    const cancelled = quotaStatus("headless-quota-session", "entry-quota", "cancelled");
+    presentation.setQuotaResumeWaiting(null);
+    presentation.setQuotaResumeEvent(cancelled);
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["error", "error"]);
+    assert.equal((await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 })).reason, "settled");
+  } finally { control.dispose(); }
+});
+
+test("headless Control continues only the anchored incident on resume", async () => {
+  const session = fakeSession("headless-resume-session", []);
+  const presentation = createHeadlessPresentation();
+  presentation.setStatusContext(headlessContext("headless-resume-session"));
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentation.snapshot() }),
+  });
+  await control.start();
+  try {
+    await control.input({ lease: control.observe().lease, text: "Auth-bound work" });
+    session.start();
+    failRun(session, "entry-auth", "401 invalid api key");
+    await control.input({ lease: control.observe().lease, text: "Quota-bound work" });
+    session.start();
+    failRun(session, "entry-quota", "429 quota exceeded");
+
+    const waiting = quotaStatus("headless-resume-session", "entry-quota");
+    presentation.setQuotaResumeEvent(waiting);
+    presentation.setQuotaResumeWaiting(waiting);
+    const wakeStarted = quotaStatus("headless-resume-session", "entry-quota", "wake_started");
+    presentation.setQuotaResumeWaiting(null);
+    presentation.setQuotaResumeEvent(wakeStarted);
+    session.start();
+    session.emit(resumeMessage("entry-quota"));
+    let dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches[0]?.runIds, ["headless-resume-session:run:1"]);
+    assert.equal(dispatches[0]?.state, "error");
+    assert.deepEqual(dispatches[1]?.runIds, ["headless-resume-session:run:2", "headless-resume-session:run:3"]);
+
+    emitAssistant(session, "Recovered.");
+    session.persistAssistant("entry-quota-ok", { role: "assistant", content: [], stopReason: "stop" });
+    session.settle();
+    dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches.map(({ state }) => state), ["error", "complete"]);
+    assert.equal((await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 })).reason, "settled");
   } finally { control.dispose(); }
 });
 
