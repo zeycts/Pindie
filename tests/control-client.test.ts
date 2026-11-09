@@ -506,6 +506,7 @@ test("Control does not present a failed completion as a successful report", asyn
     session.emit({ type: "entry_appended", entry: errorReply } as AgentSessionEvent);
     assert.deepEqual(control.observe().latestAssistant, {
       entryId: "error-reply", text: "Completion failed.", lifecycle: "error", source: "assistant",
+      errorMessage: "Assistant request failed (no diagnostic available).",
     });
   } finally {
     control.dispose();
@@ -1587,6 +1588,25 @@ test("Control wait handles immediate, event-driven, interrupted, timeout and rep
     await native.replace(fakeSession("wait-replacement", []));
     assert.equal((await changedBinding).reason, "binding_changed");
     assert.equal(control.observe().session.id, "wait-replacement");
+  } finally { control.dispose(); }
+});
+
+test("empty terminal errors wake meaningful_change with sanitized diagnostics", async () => {
+  const session = fakeSession("error-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const before = control.observe();
+    const waiting = control.wait({ lease: before.lease, until: "meaningful_change", afterRevision: before.revision, timeoutSeconds: 2 });
+    session.emit({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "401 auth failed token=secret-value" } } as unknown as AgentSessionEvent);
+    assert.equal((await waiting).reason, "changed");
+    const after = control.observe();
+    assert.ok(after.revision > before.revision);
+    assert.deepEqual(after.latestAssistant, { entryId: "live:error-session:assistant:1", text: "", lifecycle: "error", source: "assistant", errorMessage: "401 auth failed token=[REDACTED]" });
+    assert.deepEqual(after.semantic, before.semantic);
+    assert.ok(!JSON.stringify(control.readTimeline()).includes("secret-value"));
   } finally { control.dispose(); }
 });
 

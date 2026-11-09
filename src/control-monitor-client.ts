@@ -186,8 +186,10 @@ function decodeBlock(value: unknown): UiTimelineBlock | null {
   if (b.type === "message") {
     if (!["session", "live"].includes(String(b.source)) || !["user", "assistant", "custom"].includes(String(b.role)) || !string(b.text) ||
       !["streaming", "complete", "error"].includes(String(b.lifecycle)) || (b.delivery !== undefined && !["prompt", "steer", "followUp"].includes(String(b.delivery))) ||
-      (b.customType !== undefined && !string(b.customType))) return null;
+      (b.customType !== undefined && !string(b.customType)) ||
+      (b.errorMessage !== undefined && (!string(b.errorMessage) || b.errorMessage.length > 2_000 || b.role !== "assistant" || b.lifecycle !== "error"))) return null;
     return { type: "message", ...base, source: b.source, role: b.role, text: b.text, lifecycle: b.lifecycle,
+      ...(b.errorMessage === undefined ? {} : { errorMessage: b.errorMessage }),
       ...(b.delivery === undefined ? {} : { delivery: b.delivery }), ...(b.customType === undefined ? {} : { customType: b.customType }) } as UiTimelineBlock;
   }
   if (b.type === "runtime") {

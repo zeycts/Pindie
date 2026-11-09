@@ -1422,6 +1422,52 @@ test("aborting the current assistant removes only that live block", () => {
   }]);
 });
 
+test("terminal error diagnostics agree across live, persisted and repeated reconciliation", () => {
+  for (const content of [[], [{ type: "text", text: "" }], [{ type: "text", text: "  " }], [{ type: "thinking", thinking: "hidden" }],
+    [{ type: "text", text: "partial" }], [{ type: "text", text: "one" }, { type: "text", text: "two" }]]) {
+    const message = { ...assistantMessage(content, "error"), errorMessage: "429 quota exhausted; token=private-token" };
+    const entry = messageEntry("persisted-error", message);
+    let projection = createProjection(input());
+    projection = reduceProjectionEvent(projection, event({ type: "message_start", message: assistantMessage([]) }));
+    projection = reduceProjectionEvent(projection, event({ type: "message_end", message }));
+    const live = messageBlocks(projection);
+    assert.equal(live.length, 1);
+    assert.equal(live[0]?.lifecycle, "error");
+    assert.equal(live[0]?.errorMessage, "429 quota exhausted; token=[REDACTED]");
+    const appended = event({ type: "entry_appended", entry });
+    projection = reduceProjectionEvent(projection, appended);
+    const once = messageBlocks(projection);
+    projection = reduceProjectionEvent(projection, appended);
+    assert.deepEqual(messageBlocks(projection), once);
+    const historical = projectSessionHistory([entry]).filter((block) => block.type === "message");
+    assert.deepEqual(once, historical);
+    assert.equal(once.filter((block) => block.errorMessage !== undefined).length, 1);
+    assert.ok(!JSON.stringify(projection).includes("private-token"));
+  }
+});
+
+test("an empty error end retains partial text without exposing diagnostics during streaming", () => {
+  let projection = createProjection(input());
+  const message = { ...assistantMessage([{ type: "text", text: "Partial answer" }]), errorMessage: "token=private-token" };
+  projection = reduceProjectionEvent(projection, event({ type: "message_start", message }));
+  assert.equal(messageBlocks(projection)[0]?.errorMessage, undefined);
+  projection = reduceProjectionEvent(projection, event({ type: "message_end", message: { ...message, content: [], stopReason: "error" } }));
+  assert.equal(messageBlocks(projection)[0]?.text, "Partial answer");
+  assert.equal(messageBlocks(projection)[0]?.errorMessage, "token=[REDACTED]");
+});
+
+test("repeated multi-part error reconciliation preserves older live messages", () => {
+  let projection = createProjection(input());
+  projection = reduceProjectionEvent(projection, event({ type: "message_end", message: assistantMessage([{ type: "text", text: "Older reply" }], "stop") }));
+  const message = { ...assistantMessage([{ type: "text", text: "one" }, { type: "text", text: "two" }], "error"), errorMessage: "network timeout" };
+  projection = reduceProjectionEvent(projection, event({ type: "message_end", message }));
+  const appended = event({ type: "entry_appended", entry: messageEntry("error", message) });
+  projection = reduceProjectionEvent(projection, appended);
+  projection = reduceProjectionEvent(projection, appended);
+  assert.deepEqual(messageBlocks(projection).map((block) => block.text), ["Older reply", "one", "two"]);
+  assert.equal(messageBlocks(projection).filter((block) => block.errorMessage !== undefined).length, 1);
+});
+
 test("assistant error history remains visible after the stream ends", () => {
   let projection = createProjection(input());
   projection = reduceProjectionEvent(projection, event({

@@ -116,6 +116,15 @@ test("pinned Streamable HTTP monitor adapter verifies 13-tool service and decode
     const timeline = await monitor.readTimeline(50);
     assert.equal(timeline.timeline.length, 1);
     assert.equal(timeline.timeline[0]?.type, "runtime");
+    displayBlock = { type: "message", id: "e", source: "session", role: "assistant", text: "", lifecycle: "error", errorMessage: "429 quota exhausted", defaultDisplayMode: "preview", rawDiagnostic: "discard" };
+    const errorBlock = (await monitor.readTimeline()).timeline[0]!;
+    assert.equal(errorBlock.type, "message");
+    if (errorBlock.type === "message") assert.equal(errorBlock.errorMessage, "429 quota exhausted");
+    assert.equal("rawDiagnostic" in errorBlock, false);
+    for (const errorMessage of [42, "x".repeat(2001)]) {
+      displayBlock = { ...(displayBlock as object), errorMessage };
+      await assert.rejects(monitor.readTimeline(), /Incompatible/);
+    }
     displayBlock = { type: "work", kind: "observation", id: "r", title: "Reading", lifecycle: "complete", defaultDisplayMode: "compact", items: [
       { toolCallId: "r", toolName: "read", label: "Reading a", input: { path: "a", offset: 2, secret: "discard" }, lifecycle: "complete", result: { isError: false, summary: "safe", textContent: "safe", details: null } },
     ] };

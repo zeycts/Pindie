@@ -73,7 +73,7 @@ export interface PindieControlSnapshot {
   };
   /** Latest visible assistant text or successful semantic Task completion, in timeline order. */
   readonly latestAssistant: (
-    | { readonly entryId: string; readonly text: string; readonly lifecycle: "streaming" | "complete" | "error"; readonly source: "assistant" }
+    | { readonly entryId: string; readonly text: string; readonly lifecycle: "streaming" | "complete" | "error"; readonly errorMessage?: string; readonly source: "assistant" }
     | { readonly entryId: string; readonly text: string; readonly lifecycle: "complete"; readonly source: "task_completion" }
   ) | null;
 }
@@ -1118,6 +1118,7 @@ export class PindieControlClient {
             entryId: latestReport.id,
             text: latestReport.text,
             lifecycle: latestReport.lifecycle,
+            ...(latestReport.errorMessage === undefined ? {} : { errorMessage: latestReport.errorMessage }),
             source: "assistant",
           }
         : latestReport?.type === "semantic" && latestReport.category === "completion"
@@ -1153,7 +1154,7 @@ function controlFingerprint(
 
 function timelineObservationFingerprint(timeline: readonly UiTimelineBlock[]): string {
   return JSON.stringify(timeline.slice(-MEANINGFUL_TIMELINE_FINGERPRINT_BLOCKS).map((block) => {
-    if (block.type === "message") return [block.type, block.id, block.role, block.lifecycle];
+    if (block.type === "message") return [block.type, block.id, block.role, block.lifecycle, block.errorMessage];
     if (block.type === "work") {
       return block.kind === "observation"
         ? [block.type, block.kind, block.items.map(({ toolCallId, lifecycle }) => [toolCallId, lifecycle])]
