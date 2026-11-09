@@ -1433,19 +1433,47 @@ an idle, queue-empty Session (`src/quota-resume-supervisor.ts:95–106`), so the
 resume message is never one of those.
 
 Control therefore associates the currently active Run when it sees the resume
-message, **and** records the named failed predecessor Runs so a resume message
-observed before `agent_start` (the alternate ordering) is applied on the next
-`agent_start`. Every dispatch whose last Run is one of those failed predecessors
-is continued together, so `runIds` lists the chain in order and `runId` stays the
-first Run. Independent new dispatches are still attached in the same
-`agent_start`; the two cases are evaluated together.
+message, **and** records the anchor so a resume message observed before
+`agent_start` (the alternate ordering) is applied on the next `agent_start`.
+Every dispatch whose last Run is that anchor's Run is continued together, so
+`runIds` lists the chain in order and `runId` stays the first Run. Independent
+new dispatches are still attached in the same `agent_start`; the two cases are
+evaluated together.
 
-A reported quota wait is **not** an authorization signal: it only keeps a failed
-dispatch from being pruned and readable before the hidden message arrives. It is
-not cleared when the wait is cleared, because Supervisor clears the wait
-immediately before sending the message; it ends only when the resume message
-associates a successor Run or when a new user `prompt` supersedes the recovery.
-An unrelated prompt during the wait therefore cannot inherit the old dispatch.
+Continuation is keyed by Pi's own persisted identity, never by error text or
+recency. At a settled, non-aborted terminal error, Control records the persisted
+Session entry id of that Run's terminal assistant message (one branch read, only
+for that case; successful and aborted Runs stay branch-free). Pindie's quota plan
+is already validated against exactly that persisted entry, and the Supervisor
+re-validates the same `anchorEntryId` against the branch before waking. The
+waiting status (`QuotaResumeWaitingStatus.anchorEntryId`) and the hidden
+`pindie-quota-resume` message (`details.anchorEntryId`) therefore carry that
+identity, and Control continues only dispatches whose last Run is the anchor Run.
+Several accepted inputs consumed by one failed Run continue together; an
+unrelated errored Run — including one with a different quota error — stays
+`error` with its own `runIds` and output. Aborted Runs are never eligible, and a
+resume signal without a validated anchor continues nothing.
+
+A reported quota wait is **not** an authorization signal: it only keeps the
+anchored failed dispatch from being pruned and readable before the hidden message
+arrives, and it is scoped to that single incident. The Supervisor publishes the
+whole lifecycle through the same control channel:
+
+| Phase | Meaning |
+| --- | --- |
+| `waiting` | reset scheduled; the anchored dispatch is protected and `waiting` |
+| `wake_started` | lease detached immediately before the hidden message; protection retained across the gap |
+| `cancelled` | explicit cancel, disable toggle, plan replacement or Host disposal |
+| `invalidated` | Session, model or anchor evidence changed at wake time |
+| `wake_failed` | the hidden message threw or its promise rejected |
+
+Terminal phases release protection, leaving the dispatch factually `error` (never
+`complete`) so settlement waits can finish. A late send rejection may only
+publish `wake_failed` while its own wake generation still owns the lease, so it
+can never overwrite a newer incident's waiting state. `null` status keeps the
+protection (the gap is normally reported as `wake_started` instead). A new user
+`prompt` never inherits, and never releases, another incident's anchored
+dispatch.
 
 Run output is read from Control's own live projection, not from
 `entry_appended`: Pi 1.5 emits that event for custom, boundary, context-edit and
@@ -1472,7 +1500,7 @@ One derived state per dispatch, reusing existing Control/lifecycle vocabulary:
 | `accepted` | recorded; not yet attached to a Run and not observed in Pi's queue |
 | `queued` | Pi's authoritative queue still holds this delivery |
 | `running` | attached to an active Run that is working |
-| `waiting` | attached Run is active but a Human Gate or quota wait is current |
+| `waiting` | attached Run is active but a Human Gate or quota wait is current, or the anchored quota incident is waiting/being resumed |
 | `complete` | last Run settled with a recorded terminal assistant completion |
 | `error` | last Run settled with a terminal assistant error (sanitized diagnostic) |
 | `cancelled` | last Run aborted, or input Pi never consumed before settlement |
@@ -1513,8 +1541,10 @@ also settles and must be interpreted from its dispatch record
 (`state`, `runId`, `runIds`, `output.entryIds`, `output.lifecycle`, optional
 `output.errorMessage`). `settled` is not returned while any dispatch is `waiting`
 for a pending quota recovery: such a wait times out normally instead of implying
-success. Timeout remains a normal, non-dispatching result and never re-sends
-input.
+success. Terminal recovery abandonment (`cancelled`, `invalidated`,
+`wake_failed`) releases that protection, so the dispatch reports its factual
+`error` and the wait can settle; `wake_started` and `null` do not. Timeout
+remains a normal, non-dispatching result and never re-sends input.
 
 `pindie_wait` has **no** `dispatchId` input. Its boundary is the dispatch set
 present at invocation: those records are pinned for the duration of that call, so

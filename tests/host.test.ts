@@ -26,6 +26,7 @@ import {
 import {
   getQuotaResumePublisher,
   getQuotaResumeStatusObserver,
+  isQuotaResumeWaiting,
 } from "../src/quota-resume-control.ts";
 import type { QuotaResumePlan } from "../src/quota-resume-incident.ts";
 import { getQuotaFallbackController } from "../src/quota-fallback-control.ts";
@@ -588,13 +589,77 @@ test("Host wires Supervisor waiting status through wake to hidden resume", async
       modelId: "gpt-5-codex", detectedAt: now, resumeAt: now + 1000,
     };
     publisher({ type: "schedule", plan });
-    assert.deepEqual(observer.getSnapshot(), { sessionId: "session-1", resumeAt: now + 1000 });
+    const waiting = { sessionId: "session-1", resumeAt: now + 1000, anchorEntryId: "quota", phase: "waiting" };
+    const wakeStarted = { ...waiting, phase: "wake_started" };
+    assert.deepEqual(observer.getSnapshot(), waiting);
     callbacks[0]!();
-    assert.deepEqual(observed, [{ sessionId: "session-1", resumeAt: now + 1000 }, null]);
-    assert.deepEqual(seamChanges, [{ sessionId: "session-1", resumeAt: now + 1000 }, null]);
+    // The wait is cleared before the message: the gap is explicit, not null.
+    assert.deepEqual(observed, [waiting, wakeStarted]);
+    assert.deepEqual(seamChanges, [waiting, wakeStarted]);
+    // Only the waiting phase blocks switching/settlement; the wake gap does not.
+    assert.equal(isQuotaResumeWaiting(waiting), true);
+    assert.equal(isQuotaResumeWaiting(wakeStarted), false);
+    assert.equal(isQuotaResumeWaiting(observer.getSnapshot()), false);
     assert.equal(sends.length, 1);
-    assert.equal(sends[0]!.waitingAtSend, null);
+    // The wait is already cleared when the hidden message is sent, and the
+    // message carries the validated anchor for Control's correlation.
+    assert.deepEqual(sends[0]!.waitingAtSend, wakeStarted);
+    assert.equal((sends[0]!.args[0] as { display?: boolean }).display, false);
+    assert.deepEqual((sends[0]!.args[0] as { details?: unknown }).details, {
+      anchorEntryId: "quota",
+      sessionId: "session-1",
+    });
     assert.deepEqual((sends[0]!.args[1] as object), { triggerTurn: true });
+  } finally {
+    await host.dispose();
+  }
+});
+
+test("Host cancel publishes the anchored incident's cancelled phase", async () => {
+  const now = 1_700_000_000_000;
+  const quotaEntry = {
+    type: "message", id: "quota", parentId: null, timestamp: new Date(now).toISOString(),
+    message: {
+      role: "assistant", content: [], provider: "openai-codex", model: "gpt-5-codex",
+      usage: {}, stopReason: "error", errorMessage: "The usage limit has been reached", timestamp: now,
+    },
+  } as any;
+  const session = {
+    sessionId: "session-1",
+    model: { provider: "openai-codex", id: "gpt-5-codex" },
+    isStreaming: false,
+    isCompacting: false,
+    pendingMessageCount: 0,
+    sessionManager: { getBranch: () => [quotaEntry] },
+    sendCustomMessage: () => Promise.resolve(),
+  } as unknown as AgentSession;
+  const host = await createPindieHost({
+    sessionManager: SessionManager.inMemory("/tmp/pindie-host-project"),
+    quotaResume: { now: () => now, schedule: () => () => undefined },
+    dependencies: {
+      createAgentSessionRuntime: async () => ({ session, diagnostics: [], dispose: async () => undefined } as unknown as AgentSessionRuntime),
+      createInteractiveMode: () => ({ run: async () => {} }),
+    },
+  });
+  try {
+    const observer = getQuotaResumeStatusObserver()!;
+    const observed: unknown[] = [];
+    observer.subscribe((status) => observed.push(status));
+    getQuotaResumePublisher()!({ type: "schedule", plan: {
+      sessionId: "session-1", anchorEntryId: "quota", provider: "openai-codex",
+      modelId: "gpt-5-codex", detectedAt: now, resumeAt: now + 1000,
+    } });
+    // Disabling Auto Resume publishes an explicit cancel for this Session.
+    getQuotaResumePublisher()!({ type: "cancel", sessionId: "session-1" });
+    assert.deepEqual(observed.map((status) => (status as { phase?: string } | null)?.phase), ["waiting", "cancelled"]);
+    assert.equal(isQuotaResumeWaiting(observed[0] as never), true);
+    assert.equal(isQuotaResumeWaiting(observed[1] as never), false);
+    assert.deepEqual(observed.at(-1), {
+      sessionId: "session-1",
+      resumeAt: now + 1000,
+      anchorEntryId: "quota",
+      phase: "cancelled",
+    });
   } finally {
     await host.dispose();
   }
@@ -628,7 +693,13 @@ test("Host disposal publishes final null before releasing the quota bridge", asy
     modelId: "gpt-5-codex", detectedAt: now, resumeAt: now + 1000,
   } });
   await host.dispose();
-  assert.deepEqual(observed.at(-1), null);
+  // Disposal sequence: explicit cancellation for the active incident, then a
+  // cleared status, and only then the bridge lease is released.
+  assert.deepEqual(observed, [
+    { sessionId: "session-1", resumeAt: now + 1000, anchorEntryId: "quota", phase: "waiting" },
+    { sessionId: "session-1", resumeAt: now + 1000, anchorEntryId: "quota", phase: "cancelled" },
+    null,
+  ]);
   assert.equal(observer.getSnapshot(), null);
   assert.equal(getQuotaResumeStatusObserver(), null);
 });

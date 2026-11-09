@@ -27,7 +27,7 @@ import {
   type SubscriptionUsageRefreshOptions,
   type SubscriptionUsageSnapshot,
 } from "./subscription-usage.ts";
-import type { QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
+import { isQuotaResumeWaiting, type QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
 import type { SemanticDerivationResult } from "./semantics.ts";
 
 const PINDIE_STATUS_ID = "pindie-status";
@@ -96,6 +96,13 @@ export interface PindiePresentationSnapshot {
   readonly semantic: SemanticDerivationResult;
   readonly status: PindieStatusSnapshot;
   readonly quotaResumeWaiting: QuotaResumeWaitingStatus | null;
+  /**
+   * Latest quota-recovery lifecycle signal, including phases that are not a
+   * wait (`wake_started`, terminal abandonments). Control consumes this to
+   * release dispatch protection; waiting-gated behavior uses
+   * `quotaResumeWaiting` only.
+   */
+  readonly quotaResumeEvent?: QuotaResumeWaitingStatus | null;
   readonly projectRoot: string | null;
 }
 
@@ -150,6 +157,7 @@ export class PresentationIntegration {
   private statusContextGeneration = 0;
   private watchStatusScope: object | null = null;
   private quotaResumeWaiting: QuotaResumeWaitingStatus | null = null;
+  private quotaRecoveryEvent: QuotaResumeWaitingStatus | null = null;
   private notifiedQuotaWaitingKey: string | null = null;
   private activityLingerTimer: ReturnType<typeof setTimeout> | null = null;
   private activityLingerGeneration = 0;
@@ -207,6 +215,7 @@ export class PresentationIntegration {
         subscriptionUsage: snapshotSubscriptionUsage(this.subscriptionUsageMonitor.snapshot),
       },
       quotaResumeWaiting,
+      quotaResumeEvent: this.quotaRecoveryEventFor(ctx),
       projectRoot: this.getProjectRoot(),
     };
   }
@@ -245,14 +254,28 @@ export class PresentationIntegration {
     ctx: ExtensionContext | null,
   ): QuotaResumeWaitingStatus | null {
     const waiting = this.quotaResumeWaiting;
-    if (waiting === null || ctx === null) return null;
+    if (!isQuotaResumeWaiting(waiting) || ctx === null) return null;
     try {
       if (waiting.sessionId !== ctx.sessionManager.getSessionId()) return null;
     } catch {
       // A stale or otherwise unavailable context has no safe Session identity.
       return null;
     }
-    return { sessionId: waiting.sessionId, resumeAt: waiting.resumeAt };
+    return { ...waiting };
+  }
+
+  private quotaRecoveryEventFor(
+    ctx: ExtensionContext | null,
+  ): QuotaResumeWaitingStatus | null {
+    const event = this.quotaRecoveryEvent;
+    if (event === null || ctx === null) return null;
+    try {
+      if (event.sessionId !== ctx.sessionManager.getSessionId()) return null;
+    } catch {
+      // A stale or otherwise unavailable context has no safe Session identity.
+      return null;
+    }
+    return { ...event };
   }
 
   setStatusContext(ctx: ExtensionContext | null): void {
@@ -262,13 +285,16 @@ export class PresentationIntegration {
   }
 
   setQuotaResumeWaiting(status: QuotaResumeWaitingStatus | null): void {
-    if (
-      this.quotaResumeWaiting?.sessionId === status?.sessionId &&
-      this.quotaResumeWaiting?.resumeAt === status?.resumeAt
-    ) return;
+    if (sameQuotaStatus(this.quotaResumeWaiting, status)) return;
     this.quotaResumeWaiting = status;
     this.notifiedQuotaWaitingKey = null;
     this.notifyQuotaWaitingBestEffort();
+    this.refreshStatus();
+  }
+
+  setQuotaResumeEvent(status: QuotaResumeWaitingStatus | null): void {
+    if (sameQuotaStatus(this.quotaRecoveryEvent, status)) return;
+    this.quotaRecoveryEvent = status;
     this.refreshStatus();
   }
 
@@ -467,4 +493,14 @@ export class PresentationIntegration {
       // Status presentation must not alter semantic or runtime behavior.
     }
   }
+}
+
+function sameQuotaStatus(
+  left: QuotaResumeWaitingStatus | null,
+  right: QuotaResumeWaitingStatus | null,
+): boolean {
+  return left?.sessionId === right?.sessionId &&
+    left?.resumeAt === right?.resumeAt &&
+    left?.anchorEntryId === right?.anchorEntryId &&
+    left?.phase === right?.phase;
 }

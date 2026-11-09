@@ -8,6 +8,10 @@ import type {
 
 import { classifyHumanSignal } from "./human-signal.ts";
 import { PINDIE_QUOTA_RESUME_TYPE } from "./quota-resume-supervisor.ts";
+import {
+  quotaResumePhase,
+  type QuotaResumeWaitingStatus,
+} from "./quota-resume-control.ts";
 import { PiRuntimeAdapter } from "./pi-runtime.ts";
 import type {
   PindiePresentationReader,
@@ -263,6 +267,12 @@ interface RunRecord {
   errorMessage?: string;
   settled: boolean;
   aborted: boolean;
+  /**
+   * Persisted Pi entry of this Run's terminal assistant message, read from the
+   * Session branch at settlement. Quota-incident correlation compares this
+   * identity with Pindie's validated `anchorEntryId`; error text is never used.
+   */
+  terminalEntryId?: string;
 }
 
 /** Terminal history retained for read-back; nonterminal dispatches are never evicted. */
@@ -301,8 +311,11 @@ export class PindieControlClient {
   private readonly runs = new Map<string, RunRecord>();
   private nextRunSequence = 1;
   private activeRunId: string | null = null;
-  /** Failed predecessor Runs named by an observed Pindie quota-resume message. */
-  private quotaResumeRunIds = new Set<string>();
+  /**
+   * Incident anchors observed on a resume message before its successor Run
+   * started; applied at the next `agent_start`.
+   */
+  private pendingQuotaAnchors = new Set<string>();
   private readonly waiters = new Set<ControlWaiter>();
   private started = false;
   private disposed = false;
@@ -918,10 +931,6 @@ export class PindieControlClient {
       awaitingQuotaRecovery: false,
       pins: 0,
     };
-    if (delivery === "prompt") {
-      // New user work supersedes a pending quota recovery for older dispatches.
-      for (const previous of this.records) previous.awaitingQuotaRecovery = false;
-    }
     this.records = [...this.records, record];
     // Evict terminal history only; an accepted dispatch is never silently lost.
     this.pruneDispatchRecords();
@@ -1032,22 +1041,26 @@ export class PindieControlClient {
       for (const record of this.records) {
         if (record.runIds.length === 0) record.runIds = [runId];
       }
-      // An already-observed quota-resume marker continues eligible failed work in
-      // this Run too; both cases are evaluated, never mutually exclusive.
-      if (this.quotaResumeRunIds.size > 0) this.associateQuotaResume(runId);
+      // An already-observed resume anchor continues exactly its incident's failed
+      // work in this Run too; both cases are evaluated, never mutually exclusive.
+      for (const anchor of [...this.pendingQuotaAnchors]) this.associateQuotaResume(runId, anchor);
       this.pruneRuns();
       return;
     }
     if (event.type === "message_start" && isQuotaResumeMessage(event.message)) {
-      // Pindie Auto Resume delivers a hidden custom message that starts the
-      // successor Run; Pi emits agent_start before this message_start.
-      const eligible = new Set<string>();
-      for (const record of this.records) {
-        const previous = this.runs.get(record.runIds.at(-1) ?? "");
-        if (previous?.settled === true && previous.lifecycle === "error") eligible.add(previous.runId);
+      // Pindie Auto Resume delivers a hidden custom message that carries the
+      // validated incident anchor. Without it nothing may be continued.
+      const anchor = quotaAnchorFromMessage(event.message);
+      if (anchor === null) {
+        // An unattributable resume signal continues nothing; releasing avoids a
+        // wait that could never settle. The dispatch stays factually `error`.
+        this.releaseQuotaProtection(undefined);
+        return;
       }
-      this.quotaResumeRunIds = eligible;
-      if (this.activeRunId !== null) this.associateQuotaResume(this.activeRunId);
+      // Pi emits agent_start before this message_start; the reverse ordering is
+      // applied by the pending-anchor path at the next agent_start.
+      if (this.activeRunId !== null) this.associateQuotaResume(this.activeRunId, anchor);
+      else this.pendingQuotaAnchors.add(anchor);
       return;
     }
     const run = this.activeRunId === null ? undefined : this.runs.get(this.activeRunId);
@@ -1060,6 +1073,11 @@ export class PindieControlClient {
         this.captureRunOutput(run);
         run.settled = true;
         run.aborted = event.aborted === true;
+        // Only a recorded, non-aborted terminal error can be a quota-incident
+        // anchor; successful and aborted Runs stay branch-free here.
+        if (run.lifecycle === "error" && !run.aborted) {
+          run.terminalEntryId = this.latestPersistedAssistantEntryId();
+        }
       }
       // Input Pi never consumed cannot be reported as Run output: input with no
       // Run at settlement, or steer/followUp still in Pi's queue when it ended.
@@ -1185,32 +1203,73 @@ export class PindieControlClient {
   }
 
   /**
-   * Continue every dispatch of the failed predecessor Runs named by an observed
-   * quota-resume message. Independent dispatches are never affected.
+   * Continue every dispatch whose failed Run is the exact incident anchor named
+   * by a quota-resume signal. Unrelated errored Runs are never affected.
    */
-  private associateQuotaResume(runId: string): void {
+  private associateQuotaResume(runId: string, anchorEntryId: string): void {
     for (const record of this.records) {
       const previousRunId = record.runIds.at(-1);
-      if (previousRunId === undefined || !this.quotaResumeRunIds.has(previousRunId)) continue;
-      if (record.runIds.includes(runId)) continue;
+      if (previousRunId === undefined || record.runIds.includes(runId)) continue;
       const previous = this.runs.get(previousRunId);
-      if (previous === undefined || !previous.settled || previous.lifecycle !== "error") continue;
+      if (previous === undefined || !previous.settled || previous.aborted) continue;
+      if (previous.lifecycle !== "error" || previous.terminalEntryId !== anchorEntryId) continue;
       record.runIds = [...record.runIds, runId];
       record.awaitingQuotaRecovery = false;
     }
-    this.quotaResumeRunIds = new Set<string>();
+    this.pendingQuotaAnchors.delete(anchorEntryId);
   }
 
   /**
-   * A reported quota wait protects a failed dispatch from pruning and keeps its
-   * state readable. It does not authorize successor association on its own.
+   * Apply one quota-recovery lifecycle signal to the dispatch ledger.
+   *
+   * `waiting` protects only dispatches of the anchored incident Run; `null`
+   * (the gap before a resume message) changes nothing; terminal abandonments
+   * release protection so the failed dispatch stays `error` and waits settle.
    */
-  private noteQuotaRecovery(quotaWaiting: boolean): void {
-    if (!quotaWaiting) return;
-    for (const record of this.records) {
-      const run = this.runs.get(record.runIds.at(-1) ?? "");
-      if (run?.settled === true && run.lifecycle === "error") record.awaitingQuotaRecovery = true;
+  private noteQuotaRecovery(status: QuotaResumeWaitingStatus | null): void {
+    if (status === null) return;
+    const phase = quotaResumePhase(status);
+    const anchor = status.anchorEntryId;
+    if (phase === "waiting") {
+      // Without a validated anchor there is nothing safe to protect.
+      if (anchor === undefined) return;
+      for (const record of this.records) {
+        const run = this.runs.get(record.runIds.at(-1) ?? "");
+        if (run?.settled === true && !run.aborted && run.lifecycle === "error" &&
+          run.terminalEntryId === anchor) record.awaitingQuotaRecovery = true;
+      }
+      return;
     }
+    // `wake_started` is the intentional gap before the hidden message.
+    if (phase === "wake_started") return;
+    this.releaseQuotaProtection(anchor);
+  }
+
+  /** Release protection for one anchor, or every protected record when unknown. */
+  private releaseQuotaProtection(anchorEntryId: string | undefined): void {
+    for (const record of this.records) {
+      if (!record.awaitingQuotaRecovery) continue;
+      const run = this.runs.get(record.runIds.at(-1) ?? "");
+      if (anchorEntryId === undefined || run?.terminalEntryId === anchorEntryId) {
+        record.awaitingQuotaRecovery = false;
+      }
+    }
+    if (anchorEntryId !== undefined) this.pendingQuotaAnchors.delete(anchorEntryId);
+  }
+
+  /** The persisted identity of the Run's terminal assistant message, if any. */
+  private latestPersistedAssistantEntryId(): string | undefined {
+    try {
+      const branch = this.runtime.getActiveSessionBranch();
+      for (let index = branch.length - 1; index >= 0; index -= 1) {
+        const entry = branch[index];
+        if (entry?.type !== "message" || entry.message.role !== "assistant") continue;
+        return entry.id;
+      }
+    } catch {
+      // Identity is best effort: without it no dispatch is continued.
+    }
+    return undefined;
   }
 
   private waitReason(
@@ -1347,6 +1406,7 @@ export class PindieControlClient {
     this.records = [];
     this.runs.clear();
     this.activeRunId = null;
+    this.pendingQuotaAnchors = new Set<string>();
   }
 
   private async rebindSession(): Promise<void> {
@@ -1361,7 +1421,7 @@ export class PindieControlClient {
     this.runs.clear();
     this.nextRunSequence = 1;
     this.activeRunId = null;
-    this.quotaResumeRunIds = new Set<string>();
+    this.pendingQuotaAnchors = new Set<string>();
     const generation = ++this.nextBindingGeneration;
     // Do not expose a lease until Pi's extension session_start has finished.
     // The same lifecycle callback handles initial bootstrap and native replacement.
@@ -1473,8 +1533,9 @@ export class PindieControlClient {
       this.projection,
       this.projectionFactsInput(binding, presentation),
     );
-    // Protection must be current before dispatch states are derived.
-    this.noteQuotaRecovery(presentation?.quotaResumeWaiting !== null && presentation?.quotaResumeWaiting !== undefined);
+    // Protection must be current before dispatch states are derived. The full
+    // lifecycle signal is used; the wait-only field cannot express abandonment.
+    this.noteQuotaRecovery(presentation?.quotaResumeEvent ?? presentation?.quotaResumeWaiting ?? null);
     const next = this.project(binding, presentation, this.projection);
     const fingerprint = `${controlFingerprint(next)}\u0000${timelineObservationFingerprint(this.projection.timeline)}`;
 
@@ -1632,6 +1693,15 @@ function timelineObservationFingerprint(timeline: readonly UiTimelineBlock[]): s
 function isQuotaResumeMessage(message: unknown): boolean {
   const candidate = message as { readonly role?: unknown; readonly customType?: unknown } | null;
   return candidate?.role === "custom" && candidate.customType === PINDIE_QUOTA_RESUME_TYPE;
+}
+
+/** The incident anchor Pindie attached to its validated resume signal. */
+function quotaAnchorFromMessage(message: unknown): string | null {
+  const candidate = message as {
+    readonly details?: { readonly anchorEntryId?: unknown } | null;
+  } | null;
+  const anchor = candidate?.details?.anchorEntryId;
+  return typeof anchor === "string" && anchor.trim() !== "" ? anchor : null;
 }
 
 function errorMessage(error: unknown): string {
