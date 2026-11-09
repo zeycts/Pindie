@@ -14,7 +14,9 @@ export function sanitizeAssistantError(value: unknown): string {
     .replace(/\b(Bearer|Basic)\s+[^\s"',;}]+/giu, "$1 [REDACTED]")
     // Bare key/auth names are sensitive only in query parameters, not prose
     // such as "auth: invalid" or "key: missing" that explains the failure.
-    .replace(/([?&](?:key|auth)=)[^\s&#"'<>]*/giu, "$1[REDACTED]")
+    // Consume balanced wrappers before the unquoted form so a leading quote
+    // cannot produce an empty match that leaves the credential behind.
+    .replace(/([?&](?:key|auth)=)(?:"[^"\r\n]*"|'[^'\r\n]*'|<[^>\r\n]*>|[^\s&#"'<>]*)/giu, "$1[REDACTED]")
     .replace(/(["']?(?:authorization|proxy-authorization|x-goog-api-key|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|token|secret|password|signature|cookie|set-cookie)["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s&,;\n}]+)/giu, "$1[REDACTED]")
     .replace(/\b(?:sk|pk)-[a-z0-9_-]{12,}/giu, "[REDACTED]")
     // Recognizable provider prefixes, not arbitrary long identifiers. These

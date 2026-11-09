@@ -46,6 +46,29 @@ test("bare key/auth query parameters and provider headers redact only credential
   assert.equal(sanitizeAssistantError(useful), useful);
 });
 
+test("key/auth query redaction consumes entire unquoted, quoted and angle-wrapped values", () => {
+  for (const name of ["key", "auth", "KEY", "AUTH"]) {
+    for (const [open, close] of [["", ""], ['"', '"'], ["'", "'"], ["<", ">"]]) {
+      for (const queryPrefix of ["?", "?region=test&"]) {
+        const prefix = `HTTP 401 auth failed https://example.test/${queryPrefix}${name}=`;
+        const suffix = "&retry=2&mode=safe#details 429 quota exhausted; network timeout";
+        assert.equal(sanitizeAssistantError(`${prefix}${open}private-value${close}${suffix}`),
+          `${prefix}[REDACTED]${suffix}`);
+        // The complete credential must be removed before applying the limit.
+        const bounded = sanitizeAssistantError(`${"x".repeat(1900)} ${prefix}${open}${"private-value".repeat(100)}${close}${suffix}`);
+        assert.ok(bounded.length <= ASSISTANT_ERROR_LIMIT);
+        assert.ok(!bounded.includes("private-value"));
+        assert.match(bounded, /\[REDACTED\]&retry=2/u);
+      }
+      if (open) {
+        assert.equal(sanitizeAssistantError(`https://example.test/?${name}=${open}private value${close}&retry=2 network timeout`),
+          `https://example.test/?${name}=[REDACTED]&retry=2 network timeout`);
+      }
+    }
+  }
+  assert.equal(sanitizeAssistantError("auth: invalid; key: missing"), "auth: invalid; key: missing");
+});
+
 test("common bare Google, GitHub and Slack token formats are redacted without erasing failure context", () => {
   const tokens = [
     `AIza${"A".repeat(35)}`, `AIza${"A".repeat(34)}-`, `AIza${"A".repeat(34)}_`,
