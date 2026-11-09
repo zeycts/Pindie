@@ -76,7 +76,7 @@ test("MCP preserves the complete bounded Control snapshot and report discriminan
       semantic: { ...base.semantic, taskStatus: "waiting_human", blockers: ["Need approval"], questions: ["Merge?"],
         humanGate: { key: "human-gate:1", kind: "approval", question: "Merge?", options: ["Yes", "No"] } },
       recovery: { quotaWaiting: { sessionId: "session-1", resumeAt: 12345 } },
-      latestAssistant: { entryId: "error-reply", text: "Could not complete.", lifecycle: "error", source: "assistant" },
+      latestAssistant: { entryId: "error-reply", text: "", lifecycle: "error", source: "assistant", errorMessage: "429 quota exhausted; token=[REDACTED]" },
     } satisfies PindieControlSnapshot;
     current = gated;
     assert.deepEqual((await wire.peer.callTool({ name: "pindie_observe", arguments: {} })).structuredContent?.control, gated);

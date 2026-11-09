@@ -205,7 +205,7 @@ interface PindieControlSnapshot {
   };
 
   latestAssistant: (
-    | { entryId: string; text: string; lifecycle: "streaming" | "complete" | "error"; source: "assistant" }
+    | { entryId: string; text: string; lifecycle: "streaming" | "complete" | "error"; errorMessage?: string; source: "assistant" }
     | { entryId: string; text: string; lifecycle: "complete"; source: "task_completion" }
   ) | null;
 }
@@ -214,6 +214,8 @@ interface PindieControlSnapshot {
 The current MCP adapter serializes this bounded internal snapshot under `control` in the active-project observation; it does not reduce or transform nested fields. `project.root`, `executionConfig.model`, `executionConfig.reasoningMode`, `runtime.activity`, `semantic.taskStatus`, `semantic.verificationStatus`, `semantic.verificationProgress`, `semantic.humanGate`, `semantic.unavailableReason`, `recovery.quotaWaiting`, and `latestAssistant` can be null. The no-active-project observation has no `control` field. This is a control contract, not a requirement to serialize the complete TUI projection. After automatic thinking switching retirement, `reasoningMode` remains `"manual"` when Presentation is enabled and `null` when unavailable/disabled for backward-compatible snapshot shape. It is not a policy authority or configurable mode; `thinkingLevel` is the native effective level, and safe-idle fixed configuration is not blocked by this legacy field.
 
 The implemented `latestAssistant` report field selects the latest visible assistant message or successful semantic Task completion in projected timeline order. Its `source` distinguishes `assistant` from `task_completion`; a completion uses the bounded semantic summary and completion block ID with `lifecycle: "complete"`, not a fabricated Pi assistant message. Failed completion blocks are not completion reports. Ordinary assistant replies (including errors) retain their own lifecycle and take precedence when later in the timeline.
+
+Terminal assistant errors remain visible even with empty, empty-text or thinking-only content. Their optional `errorMessage` is a separate presentation-only diagnostic (at most 2,000 UTF-16 code units), never substituted for assistant-authored `text`. The projection strips terminal controls and redacts recognized credential/header/query forms before truncating; absent or blank diagnostics use a generic failure message. This is defensive redaction, not a guarantee that arbitrary provider prose contains no sensitive information. Session messages are not rewritten. History and live entry reconciliation retain one diagnostic per message (on the final text block for multi-part content), without duplicate blocks on repeated entry delivery. Terminal error identity/lifecycle/diagnostic changes are meaningful Control revision boundaries; streaming text alone remains non-waking. Watch renders an explicit assistant-error label and the diagnostic. Normal/aborted messages and Task, Verification, Human Gate and quota-recovery semantics are unchanged.
 
 The snapshot must not expose hidden reasoning, raw tool results, raw tool-call payloads, credentials, arbitrary files, or complete terminal output.
 

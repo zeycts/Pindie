@@ -4,6 +4,7 @@ import type {
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 
+import { sanitizeAssistantError } from "./assistant-error.ts";
 import {
   classifyToolPresentation,
   createObservationBlock,
@@ -143,6 +144,8 @@ export interface UiMessageBlock {
   readonly source: "session" | "live";
   readonly role: "user" | "assistant" | "custom";
   readonly text: string;
+  /** Sanitized presentation-only diagnostic for terminal assistant errors. */
+  readonly errorMessage?: string;
   readonly lifecycle: "streaming" | "complete" | "error";
   readonly defaultDisplayMode: UiDisplayMode;
   /** Local delivery provenance for ephemeral user input echoes. */
@@ -256,6 +259,7 @@ interface MessageLike {
   readonly role?: unknown;
   readonly content?: unknown;
   readonly stopReason?: unknown;
+  readonly errorMessage?: unknown;
   readonly display?: unknown;
   readonly customType?: unknown;
 }
@@ -295,6 +299,7 @@ function projectMessage(
   source: UiMessageBlock["source"],
   options: {
     readonly allowEmpty?: boolean;
+    readonly includeDiagnostic?: boolean;
     readonly customType?: string;
   } = {},
 ): UiMessageBlock | null {
@@ -306,7 +311,8 @@ function projectMessage(
   if (role === "assistant" && message.stopReason === "aborted") return null;
 
   const text = messageText(message);
-  if (!text && !options.allowEmpty) return null;
+  const terminalError = role === "assistant" && message.stopReason === "error";
+  if (!text && !options.allowEmpty && !terminalError) return null;
   const lifecycle = message.stopReason === "error" ? "error" : "complete";
   return {
     type: "message",
@@ -315,6 +321,8 @@ function projectMessage(
     role,
     text,
     lifecycle,
+    ...(terminalError && options.includeDiagnostic !== false
+      ? { errorMessage: sanitizeAssistantError(message.errorMessage) } : {}),
     defaultDisplayMode: role === "user" ? "compact" : "preview",
     ...(options.customType === undefined ? {} : { customType: options.customType }),
   };
@@ -777,7 +785,7 @@ function assistantContentParts(
 })[] {
   if (!Array.isArray(message.content)) {
     const text = visibleText(message.content);
-    return text.length === 0 ? [] : [{ kind: "text", text }];
+    return text.trim().length === 0 && message.stopReason !== "error" ? [] : [{ kind: "text", text }];
   }
   const parts: Array<
     { readonly kind: "text"; readonly text: string } | {
@@ -792,9 +800,12 @@ function assistantContentParts(
       continue;
     }
     const source = record(part);
-    if (source?.type === "text" && typeof source.text === "string" && source.text.length > 0) {
+    if (source?.type === "text" && typeof source.text === "string" && source.text.trim().length > 0) {
       parts.push({ kind: "text", text: source.text });
     }
+  }
+  if (message.stopReason === "error" && !parts.some((part) => part.kind === "text" && part.text.trim())) {
+    return [...parts.filter((part) => part.kind !== "text"), { kind: "text", text: "" }];
   }
   return parts;
 }
@@ -811,6 +822,7 @@ function appendPersistedMessage(
       ? []
       : [{ kind: "text" as const, text: messageText(message) }];
   let next = state;
+  const lastTextPart = [...parts].reverse().find((part) => part.kind === "text");
   let textSequence = 0;
   for (const part of parts) {
     if (part.kind === "tool") {
@@ -821,7 +833,7 @@ function appendPersistedMessage(
       textSequence === 0 ? id : `${id}:text:${textSequence}`,
       { ...message, content: part.text },
       "session",
-      { customType },
+      { customType, includeDiagnostic: part === lastTextPart },
     );
     textSequence += 1;
     if (textBlock === null) continue;
@@ -1305,7 +1317,8 @@ function reconcilePersistedAssistant(
   const matchingIndex = next.text === ""
     ? -1
     : findLatestLiveAssistantIndex(timeline, next.text);
-  const candidateIndex = matchingIndex >= 0
+  const alreadyPersisted = timeline.some((block) => block.type === "message" && block.source === "session" && block.id === next.id);
+  const candidateIndex = alreadyPersisted ? -1 : matchingIndex >= 0
     ? matchingIndex
     : findLatestLiveAssistantIndex(timeline);
   const candidate = candidateIndex < 0 ? undefined : timeline[candidateIndex];
@@ -1370,6 +1383,7 @@ function projectLiveAssistant(
     role: "assistant",
     text,
     lifecycle,
+    ...(lifecycle === "error" ? { errorMessage: sanitizeAssistantError(message.errorMessage) } : {}),
     defaultDisplayMode: "preview",
   };
 }
@@ -1417,9 +1431,9 @@ function reduceMessageEvent(
     : "streaming";
   const activeIndex = findLiveAssistantIndex(activeState.timeline, activeId);
 
-  // Thinking-only partials do not create an empty human-facing MessageBlock.
-  // A normal/error end still finalizes any visible text already received.
-  if (!text) {
+  // Invisible partials stay hidden; terminal errors are visible even without
+  // text. Empty ends preserve any visible text already received.
+  if (!text && !(lifecycle === "error" && activeIndex < 0)) {
     if (event.type !== "message_end" || activeIndex < 0) {
       return event.type === "message_end" ? clearActiveLiveAssistant(activeState) : activeState;
     }
@@ -1428,6 +1442,7 @@ function reduceMessageEvent(
     const finalized: UiMessageBlock = {
       ...existing,
       lifecycle,
+      ...(lifecycle === "error" ? { errorMessage: sanitizeAssistantError(message.errorMessage) } : {}),
       defaultDisplayMode: "preview",
     };
     return clearActiveLiveAssistant({
@@ -1551,6 +1566,7 @@ function reduceEntryAppended(
 
     if (message.role === "assistant") {
       const parts = assistantContentParts(message);
+      const lastTextPart = [...parts].reverse().find((part) => part.kind === "text");
       let nextState = state;
       let visibleMessageCount = 0;
       let toolCallCount = 0;
@@ -1578,11 +1594,14 @@ function reduceEntryAppended(
           textSequence === 0 ? entry.id : `${entry.id}:text:${textSequence}`,
           { ...message, content: part.text },
           "session",
+          { includeDiagnostic: part === lastTextPart },
         );
         textSequence += 1;
         if (block === null) continue;
         visibleMessageCount += 1;
-        const reconciliation = reconcilePersistedAssistant(nextState.timeline, block);
+        const reconciliation = visibleMessageCount === 1
+          ? reconcilePersistedAssistant(nextState.timeline, block)
+          : { timeline: replaceOrAppendBlock(nextState.timeline, block), replacedLiveId: null };
         const liveAssistant = reconciliation.replacedLiveId === nextState.liveAssistant.activeId
           ? { ...nextState.liveAssistant, activeId: null }
           : nextState.liveAssistant;

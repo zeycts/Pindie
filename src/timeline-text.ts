@@ -45,6 +45,12 @@ function formatMessageBlock(
   block: UiMessageBlock,
   displayMode: UiDisplayMode = block.defaultDisplayMode,
 ): string {
+  if (block.role === "assistant" && block.lifecycle === "error") {
+    const diagnostic = block.errorMessage ?? (block.text ? "" : "Assistant request failed (no diagnostic available).");
+    return displayMode === "compact"
+      ? `✕ assistant error · ${compactPreview(diagnostic || block.text)}`
+      : `✕ assistant error\n${[block.text, diagnostic].filter(Boolean).join("\n")}`;
+  }
   const role = block.role === "user"
     ? `user${block.delivery === undefined ? "" : ` · ${block.delivery}`}`
     : block.role;

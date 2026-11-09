@@ -29,6 +29,18 @@ test("shared timeline formatting retains message density and runtime details wit
   assert.equal(formatBlock(runtime, "compact"), "· Waiting");
 });
 
+test("terminal assistant errors visibly distinguish authored text and diagnostics at every density", () => {
+  for (const text of ["", "Partial answer"]) {
+    const block: UiTimelineBlock = { type: "message", id: "e", source: "session", role: "assistant", text, lifecycle: "error", errorMessage: "429 quota exhausted", defaultDisplayMode: "preview" };
+    for (const mode of ["compact", "preview", "full"] as const) {
+      const rendered = formatBlock(block, mode);
+      assert.match(rendered, /✕ assistant error/u);
+      assert.match(rendered, /429 quota exhausted/u);
+      if (mode !== "compact" && text) assert.match(rendered, /Partial answer/u);
+    }
+  }
+});
+
 test("shared work formatting retains bounded command tails and observation failures", () => {
   const command: UiTimelineBlock = { type: "work", kind: "command", id: "cmd", toolCallId: "cmd", toolName: "bash", lifecycle: "complete", title: "Run tests", input: { command: "pnpm test" }, result: { isError: false, summary: "first\nsecond\nthird", details: null }, defaultDisplayMode: "preview" };
   assert.equal(formatBlock(command), "✓ Run tests\n  pnpm test\n  second\n  third");
