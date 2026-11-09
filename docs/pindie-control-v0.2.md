@@ -1399,15 +1399,53 @@ it. `dispatchId` is the same epoch-scoped id as the Control delivery echo
 block, and is never reused inside a Session epoch. A Session replacement,
 rebind, restart or Host disposal discards the ledger: ids and outcomes are
 epoch-scoped, never persisted, and never a second event store. The ledger keeps
-at most four recent dispatches, oldest first, in `snapshot.dispatches`.
+at most four recent **terminal** dispatches, oldest first, in
+`snapshot.dispatches`; nonterminal dispatches are never evicted, and a waiting
+call pins its invocation-time records, so the list can temporarily exceed four.
+More than 32 simultaneously nonterminal dispatches is refused before delivery
+with `dispatch_backlog_full` rather than silently losing accepted work.
 
 ### 23.2 Run correlation
 
 Pi's public `agent_start` event carries no identifier, so Control assigns a
 derived `runId` (`<sessionId>:run:<n>`) when it observes the Run start.
 `steer`/`followUp` are consumed inside the current Run and therefore attach to
-its `runId`; an idle `prompt` stays unattached (`runId: null`) until the Run it
-starts emits `agent_start`.
+it; an idle `prompt` stays unattached until the Run it starts emits
+`agent_start`. A Session bound while Pi is already **streaming** missed that
+`agent_start`: Control adopts the running Run with its currently streaming
+assistant block as the output start, so busy input is still attributed. A merely
+non-idle Session (Pi compaction, no Run) adopts nothing and leaves new busy
+dispatches unattached until a real `agent_start`.
+
+One logical dispatch may span Runs. Pindie Auto Resume wakes failed work with a
+hidden `pindie-quota-resume` custom message (`sendCustomMessage(..., {triggerTurn:
+true})`), which Pi surfaces as an ordinary native `message_start`/`message_end`
+for a `role: "custom"` message.
+
+Verified order for that path in pinned Pi 1.5.0: `sendCustomMessage()` with
+`triggerTurn` while idle calls `_startRun({messageType: "custom", ...})`
+(`core/agent-session.js:1883–1888`); the run's starting message is emitted by the
+agent loop **after** `agent_start` (`pi-agent-core` `agent-loop.js:55–60`), so the
+resume `message_start` follows `agent_start`. `_flushPendingCustomMessages()`
+before `onStarted()` only flushes messages queued with `triggerTurn: false`
+(`core/agent-session.js:1911–1919`), and Supervisor runtime validation requires
+an idle, queue-empty Session (`src/quota-resume-supervisor.ts:95–106`), so the
+resume message is never one of those.
+
+Control therefore associates the currently active Run when it sees the resume
+message, **and** records the named failed predecessor Runs so a resume message
+observed before `agent_start` (the alternate ordering) is applied on the next
+`agent_start`. Every dispatch whose last Run is one of those failed predecessors
+is continued together, so `runIds` lists the chain in order and `runId` stays the
+first Run. Independent new dispatches are still attached in the same
+`agent_start`; the two cases are evaluated together.
+
+A reported quota wait is **not** an authorization signal: it only keeps a failed
+dispatch from being pruned and readable before the hidden message arrives. It is
+not cleared when the wait is cleared, because Supervisor clears the wait
+immediately before sending the message; it ends only when the resume message
+associates a successor Run or when a new user `prompt` supersedes the recovery.
+An unrelated prompt during the wait therefore cannot inherit the old dispatch.
 
 Run output is read from Control's own live projection, not from
 `entry_appended`: Pi 1.5 emits that event for custom, boundary, context-edit and
@@ -1435,14 +1473,20 @@ One derived state per dispatch, reusing existing Control/lifecycle vocabulary:
 | `queued` | Pi's authoritative queue still holds this delivery |
 | `running` | attached to an active Run that is working |
 | `waiting` | attached Run is active but a Human Gate or quota wait is current |
-| `complete` | Run settled with recorded assistant output |
-| `error` | Run settled with a terminal assistant error (sanitized diagnostic) |
-| `cancelled` | Run aborted, or input Pi never consumed before settlement |
-| `no_result` | Run settled with no recorded assistant output |
+| `complete` | last Run settled with a recorded terminal assistant completion |
+| `error` | last Run settled with a terminal assistant error (sanitized diagnostic) |
+| `cancelled` | last Run aborted, or input Pi never consumed before settlement |
+| `no_result` | last Run settled without a recorded terminal assistant completion |
 
-`complete` is not Task completion or verified success. `no_result` exists so a
-lost or unpersisted result is never reported as success; it is not a claim that
-the Run failed.
+States and `output` describe the **last** Run in `runIds`; `output.entryIds`
+aggregates the whole chain in order.
+
+`complete` requires a recorded terminal lifecycle, which is derived from the
+native `message_end` for that Run; assistant blocks that never reached a
+terminal lifecycle are `no_result`, not success. `complete` is not Task
+completion or verified success. `no_result` exists so a lost, unterminated or
+unpersisted result is never reported as success; it is not a claim that the Run
+failed.
 
 `queued` reads Pi's authoritative queue snapshot. Pi 1.5 enqueues steer text in
 `steering` and followUp text in `followUp`, and when a user message is consumed
@@ -1466,9 +1510,11 @@ queue when the Run settles, is discarded before consumption.
 `snapshot`. The awaited outcome is read from `snapshot.dispatches`; `settled`
 still means runtime settlement only, so a failed, cancelled or output-less Run
 also settles and must be interpreted from its dispatch record
-(`state`, `runId`, `output.entryIds`, `output.lifecycle`, optional
-`output.errorMessage`). Timeout remains a normal, non-dispatching result and
-never re-sends input.
+(`state`, `runId`, `runIds`, `output.entryIds`, `output.lifecycle`, optional
+`output.errorMessage`). `settled` is not returned while any dispatch is `waiting`
+for a pending quota recovery: such a wait times out normally instead of implying
+success. Timeout remains a normal, non-dispatching result and never re-sends
+input.
 
 `pindie_wait` has **no** `dispatchId` input. Its boundary is the dispatch set
 present at invocation: those records are pinned for the duration of that call, so

@@ -31,6 +31,8 @@ interface FakeSessionControl {
   readonly branchReads: () => number;
   start(): void;
   settle(): void;
+  /** Pi is non-idle but not streaming: compaction, not an Agent Run. */
+  compacting(): void;
   emit(event: AgentSessionEvent): void;
 }
 
@@ -158,6 +160,10 @@ function fakeSession(
       idle = true;
       streaming = false;
       listener?.({ type: "agent_settled" } as AgentSessionEvent);
+    },
+    compacting: () => {
+      idle = false;
+      streaming = false;
     },
     emit: (event) => listener?.(event),
   };
@@ -1056,10 +1062,26 @@ test("Control Human Gate response waits for the same prompt preflight acceptance
       .then((result) => { completed = true; return result; });
     await Promise.resolve();
     assert.equal(completed, false);
+    // The dispatch exists before Pi's preflight can start the Run.
+    const pending = control.observe().dispatches;
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0]?.delivery, "prompt");
+    assert.equal(pending[0]?.state, "accepted");
+    assert.equal(pending[0]?.runId, null);
     accept("started");
     session.start();
-    assert.equal((await response).delivery, "prompt");
+    const accepted = await response;
+    assert.equal(accepted.delivery, "prompt");
+    assert.equal(accepted.dispatch.dispatchId, pending[0]?.dispatchId);
+    assert.equal(accepted.dispatch.runId, "session-1:run:1");
+    // The answered Gate is still current in this fixture, so the active Run is waiting.
+    assert.equal(accepted.dispatch.state, "waiting");
     assert.equal(control.observe().runtime.idle, false);
+
+    emitAssistant(session, "Approved and applied.");
+    session.settle();
+    assert.equal(latestDispatch(control.observe()).state, "complete");
+    assert.deepEqual(latestDispatch(control.observe()).output?.entryIds, ["live:session-1:assistant:1"]);
   } finally {
     control.dispose();
   }
@@ -1979,28 +2001,107 @@ test("terminal error, lost output and abort are never reported as dispatch succe
   } finally { control.dispose(); }
 });
 
-test("wait timeout reports current dispatch state without dispatching again", async () => {
-  const session = fakeSession("timeout-session", []);
+test("a settled Run without terminal assistant completion is no_result, not complete", async () => {
+  const session = fakeSession("unterminated-session", []);
   const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
     current: () => ({ snapshot: () => presentationFor(activeState()) }),
   });
   await control.start();
   try {
-    const accepted = await control.input({ lease: control.observe().lease, text: "Long work" });
+    await control.input({ lease: control.observe().lease, text: "Streamed work" });
     session.start();
-    const result = await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 });
-    assert.equal(result.reason, "timeout");
-    assert.equal(session.prompts.length, 1);
-    assert.equal(session.steers.length, 0);
-    assert.equal(session.followUps.length, 0);
-    assert.equal(result.snapshot?.dispatches.length, 1);
-    assert.equal(result.snapshot?.dispatches[0]?.dispatchId, accepted.dispatch.dispatchId);
-    assert.equal(result.snapshot?.dispatches[0]?.state, "running");
+    // Streaming text without message_end leaves no recorded terminal lifecycle.
+    session.emit({
+      type: "message_start",
+      message: { role: "assistant", content: [{ type: "text", text: "partial" }] },
+    } as AgentSessionEvent);
+    session.settle();
+    const dispatch = latestDispatch(control.observe());
+    assert.equal(dispatch.state, "no_result");
+    assert.equal(dispatch.output?.lifecycle, null);
+    assert.deepEqual(dispatch.output?.entryIds, ["live:unterminated-session:assistant:1"]);
   } finally { control.dispose(); }
 });
 
-test("wait pins its invocation-time dispatch and reports its outcome despite newer dispatches", async () => {
-  const session = fakeSession("pinned-session", []);
+test("a followUp still queued when the Run settles is cancelled, not completed", async () => {
+  const session = fakeSession("unconsumed-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const prompt = await control.input({ lease: control.observe().lease, text: "Main work" });
+    session.start();
+    const queued = await control.input({ lease: control.observe().lease, text: "Later work", timing: "after_current_run" });
+    session.emit({
+      type: "queue_update",
+      steering: [],
+      followUp: ["Later work"],
+    } as AgentSessionEvent);
+    assert.equal(latestDispatch(control.observe()).state, "queued");
+
+    emitAssistant(session, "Main answer.");
+    session.settle();
+    const dispatches = control.observe().dispatches;
+    assert.equal(dispatches[0]?.dispatchId, prompt.dispatch.dispatchId);
+    assert.equal(dispatches[0]?.state, "complete");
+    assert.equal(dispatches[1]?.dispatchId, queued.dispatch.dispatchId);
+    assert.equal(dispatches[1]?.state, "cancelled");
+  } finally { control.dispose(); }
+});
+
+test("binding to an already compacting Session does not adopt a phantom Run", async () => {
+  const session = fakeSession("compacting-session", []);
+  session.compacting();
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const steer = await control.input({ lease: control.observe().lease, text: "guidance", timing: "now" });
+    assert.equal(steer.dispatch.delivery, "steer");
+    // No Run was adopted, so the dispatch stays unattached until a real agent_start.
+    assert.deepEqual(steer.dispatch.runIds, []);
+    assert.equal(steer.dispatch.runId, null);
+    assert.ok(["accepted", "queued"].includes(steer.dispatch.state));
+
+    session.start();
+    const attached = latestDispatch(control.observe());
+    assert.deepEqual(attached.runIds, ["compacting-session:run:1"]);
+    assert.equal(attached.state, "running");
+  } finally { control.dispose(); }
+});
+
+test("binding to an already streaming Session adopts the current Run for busy input", async () => {
+  const session = fakeSession("adopted-session", []);
+  // The native Run starts before Control binds, so agent_start is missed.
+  session.start();
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const steer = await control.input({ lease: control.observe().lease, text: "mid-run guidance", timing: "now" });
+    assert.equal(steer.dispatch.delivery, "steer");
+    assert.deepEqual(steer.dispatch.runIds, ["adopted-session:run:1"]);
+    assert.equal(steer.dispatch.runId, "adopted-session:run:1");
+
+    session.emit({ type: "queue_update", steering: ["mid-run guidance"], followUp: [] } as AgentSessionEvent);
+    assert.equal(latestDispatch(control.observe()).state, "queued");
+    session.queue.steering.length = 0;
+    session.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
+    assert.equal(latestDispatch(control.observe()).state, "running");
+
+    emitAssistant(session, "Applied mid-run.");
+    session.settle();
+    const settled = latestDispatch(control.observe());
+    assert.equal(settled.state, "complete");
+    assert.deepEqual(settled.output?.entryIds, ["live:adopted-session:assistant:1"]);
+  } finally { control.dispose(); }
+});
+
+test("a pinned dispatch keeps its Run and output past the Run retention window", async () => {
+  const session = fakeSession("retained-session", []);
   let presentation = presentationFor(activeState());
   const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
     current: () => ({ snapshot: () => presentation }),
@@ -2009,38 +2110,295 @@ test("wait pins its invocation-time dispatch and reports its outcome despite new
   try {
     const accepted = await control.input({ lease: control.observe().lease, text: "First work" });
     session.start();
-    const waiting = control.wait({ lease: control.observe().lease, until: "human_gate", timeoutSeconds: 3 });
-    const newer: string[] = [];
-    for (const text of ["second", "third", "fourth", "fifth"]) {
-      newer.push((await control.input({ lease: control.observe().lease, text, timing: "after_current_run" })).dispatch.dispatchId);
-    }
-    // Pinned: the invocation-time dispatch survives ledger pressure while waiting.
-    assert.equal(control.observe().dispatches.length, 5);
-    // Pi still holds all four followUps, so ending the Run discards them.
-    session.emit({
-      type: "queue_update",
-      steering: [],
-      followUp: ["second", "third", "fourth", "fifth"],
-    } as AgentSessionEvent);
-
-    emitAssistant(session, "First work done.");
+    emitAssistant(session, "First answer.");
     session.settle();
+
+    const waiting = control.wait({ lease: control.observe().lease, until: "human_gate", timeoutSeconds: 3 });
+    for (let index = 0; index < 9; index += 1) {
+      await control.input({ lease: control.observe().lease, text: `Later work ${index}` });
+      session.start();
+      emitAssistant(session, `Later answer ${index}.`);
+      session.settle();
+    }
+    // Ten Runs occurred; only the pinned dispatch's Run must still be resolvable.
+    assert.equal(control.observe().dispatches[0]?.dispatchId, accepted.dispatch.dispatchId);
+    assert.equal(control.observe().dispatches[0]?.state, "complete");
+    assert.deepEqual(control.observe().dispatches[0]?.output?.entryIds, ["live:retained-session:assistant:1"]);
+
     presentation = presentationFor(activeState({ kind: "approval", question: "Approve?" }));
     session.emit({ type: "agent_end", willRetry: false } as AgentSessionEvent);
-
     const result = await waiting;
     assert.equal(result.reason, "human_gate");
-    const dispatched = result.snapshot?.dispatches ?? [];
-    assert.equal(dispatched.length, 5);
-    // The earlier wait still reports its captured dispatch and its terminal outcome.
-    assert.equal(dispatched[0]?.dispatchId, accepted.dispatch.dispatchId);
-    assert.equal(dispatched[0]?.state, "complete");
-    assert.equal(dispatched[0]?.runId, "pinned-session:run:1");
-    assert.deepEqual(newer, dispatched.slice(1).map(({ dispatchId }) => dispatchId));
-    assert.deepEqual(dispatched.slice(1).map(({ state }) => state), ["cancelled", "cancelled", "cancelled", "cancelled"]);
-    assert.equal(dispatched[0]?.output?.entryIds.at(0), "live:pinned-session:assistant:1");
-    // Pins are released: the bounded ledger resumes evicting oldest first.
-    assert.equal(control.observe().dispatches.length, 4);
-    assert.ok(!control.observe().dispatches.some(({ dispatchId }) => dispatchId === accepted.dispatch.dispatchId));
+    const retained = result.snapshot?.dispatches.find(({ dispatchId }) => dispatchId === accepted.dispatch.dispatchId);
+    assert.ok(retained !== undefined);
+    assert.deepEqual(retained.runIds, ["retained-session:run:1"]);
+    assert.equal(retained.state, "complete");
+    assert.deepEqual(retained.output?.entryIds, ["live:retained-session:assistant:1"]);
+  } finally { control.dispose(); }
+});
+
+test("pending dispatches are never evicted and the backlog fails closed", async () => {
+  const session = fakeSession("backlog-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    await control.input({ lease: control.observe().lease, text: "Main work" });
+    session.start();
+    const ids: string[] = [];
+    for (let index = 0; index < 6; index += 1) {
+      ids.push((await control.input({
+        lease: control.observe().lease,
+        text: `Pending work ${index}`,
+        timing: "after_current_run",
+      })).dispatch.dispatchId);
+    }
+    // More pending dispatches than the terminal-history bound are all retained.
+    assert.equal(control.observe().dispatches.length, 7);
+    assert.deepEqual(control.observe().dispatches.slice(1).map(({ dispatchId }) => dispatchId), ids);
+
+    let delivered = 6;
+    while (true) {
+      try {
+        await control.input({
+          lease: control.observe().lease,
+          text: `Overflow work ${delivered}`,
+          timing: "after_current_run",
+        });
+      } catch (error) {
+        assert.ok(error instanceof PindieControlError);
+        assert.equal(error.code, "dispatch_backlog_full");
+        break;
+      }
+      delivered += 1;
+      assert.ok(delivered <= 31, "backlog bound must fail closed at 32 pending dispatches");
+    }
+    // 32 pending dispatches total (one prompt plus 31 queued followUps).
+    assert.equal(delivered, 31);
+    // Denial happens before delivery: Pi never received the rejected input.
+    assert.equal(session.followUps.length, 31);
+    assert.equal(control.observe().dispatches.length, 32);
+  } finally { control.dispose(); }
+});
+
+test("every dispatch of a failed Run continues through an observed quota recovery", async () => {
+  const session = fakeSession("quota-session", []);
+  let presentation = presentationFor(activeState());
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentation }),
+  });
+  await control.start();
+  try {
+    const prompt = await control.input({ lease: control.observe().lease, text: "Quota-bound work" });
+    session.start();
+    const steer = await control.input({ lease: control.observe().lease, text: "Also check logs", timing: "now" });
+    const followUp = await control.input({ lease: control.observe().lease, text: "Then summarize", timing: "after_current_run" });
+    session.emit({
+      type: "queue_update",
+      steering: ["Also check logs"],
+      followUp: ["Then summarize"],
+    } as AgentSessionEvent);
+    // Both guidance messages are consumed by the same Run before it fails.
+    session.queue.steering.length = 0;
+    session.queue.followUp.length = 0;
+    session.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
+    emitAssistant(session, "", { stopReason: "error", errorMessage: "429 quota exceeded" });
+    session.settle();
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["error", "error", "error"]);
+    assert.deepEqual(control.observe().dispatches.map(({ runIds }) => runIds), [
+      ["quota-session:run:1"],
+      ["quota-session:run:1"],
+      ["quota-session:run:1"],
+    ]);
+
+    // Pindie reports the quota wait; it protects the failed dispatches.
+    presentation = presentationFor(activeState(), { quotaResumeWaiting: { sessionId: "quota-session", resumeAt: 4321 } });
+    assert.equal(control.observe().recovery.quotaWaiting?.sessionId, "quota-session");
+    presentation = presentationFor(activeState());
+    // Auto Resume starts the successor Run (agent_start precedes its message).
+    session.start();
+    // Only the real hidden resume message authorizes continuation.
+    session.emit({
+      type: "message_start",
+      message: { role: "custom", customType: "pindie-quota-resume", content: [], display: false },
+    } as AgentSessionEvent);
+    let dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches.map(({ state }) => state), ["running", "running", "running"]);
+    assert.deepEqual(dispatches.map(({ runIds }) => runIds), [
+      ["quota-session:run:1", "quota-session:run:2"],
+      ["quota-session:run:1", "quota-session:run:2"],
+      ["quota-session:run:1", "quota-session:run:2"],
+    ]);
+    assert.deepEqual(dispatches.map(({ runId }) => runId), ["quota-session:run:1", "quota-session:run:1", "quota-session:run:1"]);
+
+    emitAssistant(session, "Recovered and finished.");
+    session.settle();
+    dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches.map(({ state }) => state), ["complete", "complete", "complete"]);
+    assert.deepEqual(dispatches.map(({ dispatchId }) => dispatchId), [
+      prompt.dispatch.dispatchId,
+      steer.dispatch.dispatchId,
+      followUp.dispatch.dispatchId,
+    ]);
+    for (const dispatch of dispatches) {
+      assert.deepEqual(dispatch.output?.entryIds, [
+        "live:quota-session:assistant:1",
+        "live:quota-session:assistant:2",
+      ]);
+    }
+
+    // A later Run after recorded success is not retroactively absorbed.
+    session.start();
+    emitAssistant(session, "Unrelated follow-up.");
+    session.settle();
+    assert.deepEqual(latestDispatch(control.observe()).runIds, ["quota-session:run:1", "quota-session:run:2"]);
+  } finally { control.dispose(); }
+});
+
+test("the wait-clear to resume-message gap keeps failed work waiting, not settled", async () => {
+  const session = fakeSession("gap-session", []);
+  let presentation = presentationFor(activeState());
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentation }),
+  });
+  await control.start();
+  try {
+    await control.input({ lease: control.observe().lease, text: "Quota-bound work" });
+    session.start();
+    emitAssistant(session, "", { stopReason: "error", errorMessage: "429 quota exceeded" });
+    session.settle();
+
+    // Supervisor publishes the wait, then clears it immediately before the
+    // hidden resume message: the clear must not erase the protection.
+    presentation = presentationFor(activeState(), { quotaResumeWaiting: { sessionId: "gap-session", resumeAt: 1234 } });
+    assert.equal(latestDispatch(control.observe()).state, "waiting");
+    presentation = presentationFor(activeState());
+    assert.equal(latestDispatch(control.observe()).state, "waiting");
+    assert.equal((await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 })).reason, "timeout");
+
+    // Supervisor wakes the work: Pi starts the Run, then emits the resume message.
+    session.start();
+    assert.equal(latestDispatch(control.observe()).state, "waiting");
+    session.emit({
+      type: "message_start",
+      message: { role: "custom", customType: "pindie-quota-resume", content: [], display: false },
+    } as AgentSessionEvent);
+    session.emit({
+      type: "message_end",
+      message: { role: "custom", customType: "pindie-quota-resume", content: [], display: false },
+    } as AgentSessionEvent);
+    const resumed = latestDispatch(control.observe());
+    assert.deepEqual(resumed.runIds, ["gap-session:run:1", "gap-session:run:2"]);
+    assert.equal(resumed.state, "running");
+
+    emitAssistant(session, "Recovered.");
+    session.settle();
+    assert.equal(latestDispatch(control.observe()).state, "complete");
+    assert.equal((await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 })).reason, "settled");
+  } finally { control.dispose(); }
+});
+
+test("a resume message observed before agent_start still continues the failed Run", async () => {
+  const session = fakeSession("early-resume-session", []);
+  let presentation = presentationFor(activeState());
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentation }),
+  });
+  await control.start();
+  try {
+    await control.input({ lease: control.observe().lease, text: "Quota-bound work" });
+    session.start();
+    emitAssistant(session, "", { stopReason: "error", errorMessage: "429 quota exceeded" });
+    session.settle();
+    presentation = presentationFor(activeState(), { quotaResumeWaiting: { sessionId: "early-resume-session", resumeAt: 55 } });
+    control.observe();
+    presentation = presentationFor(activeState());
+
+    // Alternate ordering (queued custom message): the message precedes the Run.
+    session.emit({
+      type: "message_start",
+      message: { role: "custom", customType: "pindie-quota-resume", content: [], display: false },
+    } as AgentSessionEvent);
+    session.start();
+    const resumed = latestDispatch(control.observe());
+    assert.deepEqual(resumed.runIds, ["early-resume-session:run:1", "early-resume-session:run:2"]);
+    assert.equal(resumed.state, "running");
+  } finally { control.dispose(); }
+});
+
+test("a quota wait alone never authorizes continuation of a failed dispatch", async () => {
+  const session = fakeSession("no-resume-session", []);
+  let presentation = presentationFor(activeState());
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentation }),
+  });
+  await control.start();
+  try {
+    const failed = await control.input({ lease: control.observe().lease, text: "Quota-bound work" });
+    session.start();
+    emitAssistant(session, "", { stopReason: "error", errorMessage: "429 quota exceeded" });
+    session.settle();
+    assert.equal(latestDispatch(control.observe()).state, "error");
+
+    presentation = presentationFor(activeState(), { quotaResumeWaiting: { sessionId: "no-resume-session", resumeAt: 9999 } });
+    // The reported wait keeps failed work readable and unsettled, not successful.
+    assert.equal(latestDispatch(control.observe()).state, "waiting");
+    assert.equal((await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 })).reason, "timeout");
+    presentation = presentationFor(activeState());
+    // The user dispatches unrelated work instead of Auto Resume waking the Run.
+    const independent = await control.input({ lease: control.observe().lease, text: "Independent work" });
+    session.start();
+    let dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches[0]?.runIds, ["no-resume-session:run:1"]);
+    assert.equal(dispatches[0]?.state, "error");
+    assert.deepEqual(dispatches[1]?.runIds, ["no-resume-session:run:2"]);
+
+    emitAssistant(session, "Independent answer.");
+    session.settle();
+    // A hidden resume message with no eligible failed predecessor changes nothing.
+    session.emit({
+      type: "message_start",
+      message: { role: "custom", customType: "pindie-quota-resume", content: [], display: false },
+    } as AgentSessionEvent);
+    dispatches = control.observe().dispatches;
+    assert.equal(dispatches[0]?.dispatchId, failed.dispatch.dispatchId);
+    assert.deepEqual(dispatches[0]?.runIds, ["no-resume-session:run:1"]);
+    assert.equal(dispatches[1]?.dispatchId, independent.dispatch.dispatchId);
+    assert.deepEqual(dispatches[1]?.runIds, ["no-resume-session:run:2"]);
+    assert.equal(dispatches[1]?.state, "complete");
+  } finally { control.dispose(); }
+});
+
+test("an unrelated prompt after a terminal error does not inherit the failed dispatch", async () => {
+  const session = fakeSession("independent-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const failed = await control.input({ lease: control.observe().lease, text: "Failing work" });
+    session.start();
+    emitAssistant(session, "", { stopReason: "error", errorMessage: "boom" });
+    session.settle();
+    assert.equal(latestDispatch(control.observe()).state, "error");
+
+    const independent = await control.input({ lease: control.observe().lease, text: "Independent work" });
+    session.start();
+    const dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches[0]?.runIds, ["independent-session:run:1"]);
+    assert.equal(dispatches[0]?.dispatchId, failed.dispatch.dispatchId);
+    assert.equal(dispatches[0]?.state, "error");
+    assert.deepEqual(dispatches[1]?.runIds, ["independent-session:run:2"]);
+    assert.equal(dispatches[1]?.dispatchId, independent.dispatch.dispatchId);
+    assert.equal(dispatches[1]?.state, "running");
+
+    // An unsolicited Run without a dispatch or quota signal is not attributed either.
+    emitAssistant(session, "Independent answer.");
+    session.settle();
+    session.start();
+    emitAssistant(session, "Host continuation.");
+    session.settle();
+    assert.deepEqual(control.observe().dispatches[1]?.runIds, ["independent-session:run:2"]);
   } finally { control.dispose(); }
 });
