@@ -1383,3 +1383,103 @@ local read-only control:watch monitor
 ```
 
 Further observability/control features must be driven by real failures after these slices.
+
+## 23. Dispatch lifecycle (Phase 2)
+
+Status: **implemented Slice 1 (correlation), extended by later Phase 2 slices.**
+Phase 1 terminal-error projection is unchanged; this section adds lifecycle
+identity, not new authority.
+
+### 23.1 Dispatch identity
+
+Every accepted `pindie_input` (and `pindie_respond`) creates one runtime-only
+dispatch record before Pi can start the Run, so a native `agent_start` can attach
+it. `dispatchId` is the same epoch-scoped id as the Control delivery echo
+(`live:<sessionId>:control:<n>`), is retained on the reconciled user timeline
+block, and is never reused inside a Session epoch. A Session replacement,
+rebind, restart or Host disposal discards the ledger: ids and outcomes are
+epoch-scoped, never persisted, and never a second event store. The ledger keeps
+at most four recent dispatches, oldest first, in `snapshot.dispatches`.
+
+### 23.2 Run correlation
+
+Pi's public `agent_start` event carries no identifier, so Control assigns a
+derived `runId` (`<sessionId>:run:<n>`) when it observes the Run start.
+`steer`/`followUp` are consumed inside the current Run and therefore attach to
+its `runId`; an idle `prompt` stays unattached (`runId: null`) until the Run it
+starts emits `agent_start`.
+
+Run output is read from Control's own live projection, not from
+`entry_appended`: Pi 1.5 emits that event for custom, boundary, context-edit and
+cache-warmer entries, **not** for regular assistant messages (those are persisted
+on `message_end` without an event). Control records the assistant
+`UiMessageBlock` IDs appended after the Run's `agent_start` offset and the last
+block's lifecycle, so `output.entryIds` are exactly the epoch-scoped timeline
+block IDs a caller reads back from `pindie_read_timeline`
+(`latestAssistant.entryId` uses the same identity). A live epoch therefore uses
+`live:<sessionId>:assistant:<n>` IDs; after a Session epoch rebuild the ledger is
+discarded, so no cross-epoch ID is claimed. A multi-part assistant message is one
+projected block while streaming; persisted rebuilds may split it into
+`<entryId>` / `<entryId>:text:<n>` blocks, which is why output IDs are
+epoch-scoped. Retried Runs keep every persisted attempt block and take the last
+as the terminal lifecycle. Outputs are the Run's recorded assistant output, not
+text authored solely in response to one input.
+
+### 23.3 Unified state
+
+One derived state per dispatch, reusing existing Control/lifecycle vocabulary:
+
+| State | Meaning |
+| --- | --- |
+| `accepted` | recorded; not yet attached to a Run and not observed in Pi's queue |
+| `queued` | Pi's authoritative queue still holds this delivery |
+| `running` | attached to an active Run that is working |
+| `waiting` | attached Run is active but a Human Gate or quota wait is current |
+| `complete` | Run settled with recorded assistant output |
+| `error` | Run settled with a terminal assistant error (sanitized diagnostic) |
+| `cancelled` | Run aborted, or input Pi never consumed before settlement |
+| `no_result` | Run settled with no recorded assistant output |
+
+`complete` is not Task completion or verified success. `no_result` exists so a
+lost or unpersisted result is never reported as success; it is not a claim that
+the Run failed.
+
+`queued` reads Pi's authoritative queue snapshot. Pi 1.5 enqueues steer text in
+`steering` and followUp text in `followUp`, and when a user message is consumed
+it removes the **first** match from `steering`, else the first from `followUp`.
+Each queue is therefore an independent FIFO list and steering wins when the same
+text sits in both, so identical repeated texts keep distinct dispatch IDs while
+only the newest still-queued occurrences remain `queued`. This is a reading of
+the same queue Pi and the delivery echo reconcile against, not a second queue
+model. Idle prompts are never reported as queued (Control prompts only when idle),
+and while queue contents are unknown the state falls back to Run attachment
+rather than guessing.
+
+Input Pi never consumed is `cancelled`, and is never reported as `complete`: a
+record that is unattached at settlement, or still present in Pi's authoritative
+queue when the Run settles, is discarded before consumption.
+
+### 23.4 Read boundaries
+
+`pindie_wait` result semantics are unchanged in shape: `reason`
+(`changed|settled|human_gate|timeout|binding_changed`) plus the resulting
+`snapshot`. The awaited outcome is read from `snapshot.dispatches`; `settled`
+still means runtime settlement only, so a failed, cancelled or output-less Run
+also settles and must be interpreted from its dispatch record
+(`state`, `runId`, `output.entryIds`, `output.lifecycle`, optional
+`output.errorMessage`). Timeout remains a normal, non-dispatching result and
+never re-sends input.
+
+`pindie_wait` has **no** `dispatchId` input. Its boundary is the dispatch set
+present at invocation: those records are pinned for the duration of that call, so
+the bounded ledger cannot evict them and a newer, unrelated dispatch cannot
+silently replace them. Newer dispatches are appended after the pinned ones;
+callers identify their own dispatch by the `dispatchId` returned from
+`pindie_input`/`pindie_respond`. This is deliberately **not** per-dispatch
+waiting: there is no wait-for-this-dispatch condition, and a caller that needs
+one must compare the returned `dispatches` itself. Pins are released when the
+wait resolves, after which the ledger returns to its four-record bound, oldest
+first.
+
+No new tool, no input-schema change and no persisted dispatch store are added;
+the monitor's exact read-only surface and `{}` requests are unchanged.

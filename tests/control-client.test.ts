@@ -1678,3 +1678,369 @@ test("Control configure changes explicit model/thinking only at a safe idle boun
     control.dispose();
   }
 });
+
+/**
+ * Native assistant turn: message_start → message_update → message_end, the same
+ * public events Pi emits (regular messages are persisted without entry_appended).
+ */
+function emitAssistant(
+  session: FakeSessionControl,
+  text: string,
+  options: { readonly stopReason?: string; readonly errorMessage?: string } = {},
+): void {
+  session.emit({ type: "message_start", message: { role: "assistant", content: [] } } as AgentSessionEvent);
+  if (text !== "") {
+    session.emit({
+      type: "message_update",
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    } as AgentSessionEvent);
+  }
+  session.emit({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: text === "" ? [] : [{ type: "text", text }],
+      stopReason: options.stopReason ?? "stop",
+      ...(options.errorMessage === undefined ? {} : { errorMessage: options.errorMessage }),
+    },
+  } as AgentSessionEvent);
+}
+
+function latestDispatch(snapshot: { dispatches: readonly { dispatchId: string }[] }) {
+  return snapshot.dispatches.at(-1)!;
+}
+
+test("accepted dispatch keeps one identity across Run start, native output and settlement", async () => {
+  const session = fakeSession("dispatch-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const before = control.observe();
+    assert.deepEqual(before.dispatches, []);
+
+    const accepted = await control.input({ lease: before.lease, text: "Implement the slice" });
+    assert.equal(accepted.dispatch.dispatchId, "live:dispatch-session:control:1");
+    assert.equal(accepted.dispatch.delivery, "prompt");
+    // Pi accepted the prompt; the Run itself has not started yet.
+    assert.equal(accepted.dispatch.state, "accepted");
+    assert.equal(accepted.dispatch.runId, null);
+    assert.equal(accepted.dispatch.output, null);
+    assert.equal(accepted.dispatch.acceptedRevision, before.revision);
+
+    session.start();
+    const running = latestDispatch(control.observe());
+    assert.equal(running.dispatchId, accepted.dispatch.dispatchId);
+    assert.equal(running.state, "running");
+    assert.equal(running.runId, "dispatch-session:run:1");
+
+    emitAssistant(session, "Implemented.");
+    const streaming = latestDispatch(control.observe());
+    assert.equal(streaming.state, "running");
+    assert.deepEqual(streaming.output, { entryIds: ["live:dispatch-session:assistant:1"], lifecycle: "complete" });
+
+    session.settle();
+    const settled = control.observe();
+    assert.equal(latestDispatch(settled).state, "complete");
+    assert.deepEqual(latestDispatch(settled).output, {
+      entryIds: ["live:dispatch-session:assistant:1"],
+      lifecycle: "complete",
+    });
+
+    const timeline = control.readTimeline().timeline;
+    const delivered = timeline.find((block) => block.type === "message" && block.role === "user");
+    assert.equal(delivered?.type === "message" ? delivered.id : null, accepted.dispatch.dispatchId);
+    assert.equal(delivered?.type === "message" ? delivered.dispatchId : null, accepted.dispatch.dispatchId);
+    assert.equal(delivered?.type === "message" ? delivered.delivery : null, "prompt");
+  } finally { control.dispose(); }
+});
+
+test("repeated identical inputs and separate Runs keep distinct dispatch identities and outputs", async () => {
+  const session = fakeSession("repeat-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const first = await control.input({ lease: control.observe().lease, text: "Continue" });
+    session.start();
+    emitAssistant(session, "First run.");
+    session.settle();
+
+    const second = await control.input({ lease: control.observe().lease, text: "Continue" });
+    session.start();
+    emitAssistant(session, "Second run.");
+    session.settle();
+
+    assert.notEqual(first.dispatch.dispatchId, second.dispatch.dispatchId);
+    assert.equal(second.dispatch.dispatchId, "live:repeat-session:control:2");
+    const dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches.map(({ state }) => state), ["complete", "complete"]);
+    assert.deepEqual(dispatches.map(({ runId }) => runId), ["repeat-session:run:1", "repeat-session:run:2"]);
+    assert.deepEqual(dispatches.map(({ output }) => output?.entryIds), [
+      ["live:repeat-session:assistant:1"],
+      ["live:repeat-session:assistant:2"],
+    ]);
+  } finally { control.dispose(); }
+});
+
+test("busy steer attaches to the current Run and reports queue consumption", async () => {
+  const session = fakeSession("busy-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const prompt = await control.input({ lease: control.observe().lease, text: "Main work" });
+    session.start();
+
+    const steer = await control.input({ lease: control.observe().lease, text: "Also check logs", timing: "now" });
+    assert.equal(steer.dispatch.delivery, "steer");
+    assert.equal(steer.dispatch.runId, "busy-session:run:1");
+    session.emit({ type: "queue_update", steering: ["Also check logs"], followUp: [] } as AgentSessionEvent);
+    assert.equal(latestDispatch(control.observe()).state, "queued");
+
+    session.queue.steering.length = 0;
+    session.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
+    assert.equal(latestDispatch(control.observe()).state, "running");
+
+    emitAssistant(session, "Checked.");
+    session.settle();
+    const dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches.map(({ dispatchId }) => dispatchId), [prompt.dispatch.dispatchId, steer.dispatch.dispatchId]);
+    assert.deepEqual(dispatches.map(({ runId }) => runId), ["busy-session:run:1", "busy-session:run:1"]);
+    assert.deepEqual(dispatches.map(({ state }) => state), ["complete", "complete"]);
+    assert.deepEqual(dispatches.map(({ output }) => output?.entryIds), [
+      ["live:busy-session:assistant:1"],
+      ["live:busy-session:assistant:1"],
+    ]);
+  } finally { control.dispose(); }
+});
+
+test("identical queued steer texts keep distinct identities as each is consumed", async () => {
+  const session = fakeSession("identical-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    await control.input({ lease: control.observe().lease, text: "Main work" });
+    session.start();
+    const first = await control.input({ lease: control.observe().lease, text: "Check the logs", timing: "now" });
+    const second = await control.input({ lease: control.observe().lease, text: "Check the logs", timing: "now" });
+    assert.notEqual(first.dispatch.dispatchId, second.dispatch.dispatchId);
+    assert.equal(first.dispatch.runId, "identical-session:run:1");
+    assert.equal(second.dispatch.runId, "identical-session:run:1");
+
+    session.emit({
+      type: "queue_update",
+      steering: ["Check the logs", "Check the logs"],
+      followUp: [],
+    } as AgentSessionEvent);
+    let dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches.map(({ state }) => state), ["running", "queued", "queued"]);
+
+    // Pi removes the first matching queued text: the earlier dispatch is consumed.
+    session.queue.steering.length = 1;
+    session.emit({ type: "queue_update", steering: ["Check the logs"], followUp: [] } as AgentSessionEvent);
+    dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches.map(({ state }) => state), ["running", "running", "queued"]);
+    assert.deepEqual(dispatches.map(({ dispatchId }) => dispatchId), [
+      dispatches[0]!.dispatchId,
+      first.dispatch.dispatchId,
+      second.dispatch.dispatchId,
+    ]);
+
+    session.queue.steering.length = 0;
+    session.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["running", "running", "running"]);
+
+    emitAssistant(session, "Checked both.");
+    session.settle();
+    dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches.map(({ state }) => state), ["complete", "complete", "complete"]);
+    assert.equal(new Set(dispatches.map(({ dispatchId }) => dispatchId)).size, 3);
+    assert.deepEqual(dispatches.map(({ runId }) => runId), [
+      "identical-session:run:1",
+      "identical-session:run:1",
+      "identical-session:run:1",
+    ]);
+  } finally { control.dispose(); }
+});
+
+test("identical queued followUp texts keep distinct identities as each is consumed", async () => {
+  const session = fakeSession("identical-followup-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    await control.input({ lease: control.observe().lease, text: "Main work" });
+    session.start();
+    const first = await control.input({ lease: control.observe().lease, text: "Check the logs", timing: "after_current_run" });
+    const second = await control.input({ lease: control.observe().lease, text: "Check the logs", timing: "after_current_run" });
+    assert.equal(first.dispatch.delivery, "followUp");
+    assert.equal(second.dispatch.delivery, "followUp");
+    assert.notEqual(first.dispatch.dispatchId, second.dispatch.dispatchId);
+
+    session.emit({
+      type: "queue_update",
+      steering: [],
+      followUp: ["Check the logs", "Check the logs"],
+    } as AgentSessionEvent);
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["running", "queued", "queued"]);
+
+    // Pi removes the first matching followUp text.
+    session.queue.followUp.length = 1;
+    session.emit({ type: "queue_update", steering: [], followUp: ["Check the logs"] } as AgentSessionEvent);
+    let dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches.map(({ state }) => state), ["running", "running", "queued"]);
+    assert.deepEqual(dispatches.map(({ dispatchId }) => dispatchId), [
+      dispatches[0]!.dispatchId,
+      first.dispatch.dispatchId,
+      second.dispatch.dispatchId,
+    ]);
+
+    session.queue.followUp.length = 0;
+    session.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["running", "running", "running"]);
+
+    emitAssistant(session, "Checked both later.");
+    session.settle();
+    dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches.map(({ state }) => state), ["complete", "complete", "complete"]);
+    assert.equal(new Set(dispatches.map(({ dispatchId }) => dispatchId)).size, 3);
+  } finally { control.dispose(); }
+});
+
+test("the same text queued as steer and followUp consumes the steering entry first", async () => {
+  const session = fakeSession("mixed-queue-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    await control.input({ lease: control.observe().lease, text: "Main work" });
+    session.start();
+    const steer = await control.input({ lease: control.observe().lease, text: "Same text", timing: "now" });
+    const followUp = await control.input({ lease: control.observe().lease, text: "Same text", timing: "after_current_run" });
+    assert.notEqual(steer.dispatch.dispatchId, followUp.dispatch.dispatchId);
+
+    session.emit({
+      type: "queue_update",
+      steering: ["Same text"],
+      followUp: ["Same text"],
+    } as AgentSessionEvent);
+    let dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches.map(({ state }) => state), ["running", "queued", "queued"]);
+
+    // Pi checks the steering queue first, so the steer delivery is consumed.
+    session.queue.steering.length = 0;
+    session.emit({ type: "queue_update", steering: [], followUp: ["Same text"] } as AgentSessionEvent);
+    dispatches = control.observe().dispatches;
+    assert.deepEqual(dispatches.map(({ state }) => state), ["running", "running", "queued"]);
+    assert.equal(dispatches[1]?.dispatchId, steer.dispatch.dispatchId);
+    assert.equal(dispatches[2]?.dispatchId, followUp.dispatch.dispatchId);
+
+    session.queue.followUp.length = 0;
+    session.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["running", "running", "running"]);
+  } finally { control.dispose(); }
+});
+
+test("terminal error, lost output and abort are never reported as dispatch success", async () => {
+  const session = fakeSession("terminal-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    await control.input({ lease: control.observe().lease, text: "Failing work" });
+    session.start();
+    emitAssistant(session, "", { stopReason: "error", errorMessage: "401 auth failed token=secret-value" });
+    session.settle();
+    const failed = latestDispatch(control.observe());
+    assert.equal(failed.state, "error");
+    assert.equal(failed.output?.lifecycle, "error");
+    assert.deepEqual(failed.output?.entryIds, ["live:terminal-session:assistant:1"]);
+    assert.equal(failed.output?.errorMessage, "401 auth failed token=[REDACTED]");
+    assert.ok(!JSON.stringify(control.observe()).includes("secret-value"));
+
+    await control.input({ lease: control.observe().lease, text: "Silent work" });
+    session.start();
+    session.settle();
+    assert.equal(latestDispatch(control.observe()).state, "no_result");
+
+    await control.input({ lease: control.observe().lease, text: "Aborted work" });
+    session.start();
+    session.emit({ type: "agent_settled", aborted: true } as AgentSessionEvent);
+    assert.equal(latestDispatch(control.observe()).state, "cancelled");
+  } finally { control.dispose(); }
+});
+
+test("wait timeout reports current dispatch state without dispatching again", async () => {
+  const session = fakeSession("timeout-session", []);
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const accepted = await control.input({ lease: control.observe().lease, text: "Long work" });
+    session.start();
+    const result = await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 });
+    assert.equal(result.reason, "timeout");
+    assert.equal(session.prompts.length, 1);
+    assert.equal(session.steers.length, 0);
+    assert.equal(session.followUps.length, 0);
+    assert.equal(result.snapshot?.dispatches.length, 1);
+    assert.equal(result.snapshot?.dispatches[0]?.dispatchId, accepted.dispatch.dispatchId);
+    assert.equal(result.snapshot?.dispatches[0]?.state, "running");
+  } finally { control.dispose(); }
+});
+
+test("wait pins its invocation-time dispatch and reports its outcome despite newer dispatches", async () => {
+  const session = fakeSession("pinned-session", []);
+  let presentation = presentationFor(activeState());
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentation }),
+  });
+  await control.start();
+  try {
+    const accepted = await control.input({ lease: control.observe().lease, text: "First work" });
+    session.start();
+    const waiting = control.wait({ lease: control.observe().lease, until: "human_gate", timeoutSeconds: 3 });
+    const newer: string[] = [];
+    for (const text of ["second", "third", "fourth", "fifth"]) {
+      newer.push((await control.input({ lease: control.observe().lease, text, timing: "after_current_run" })).dispatch.dispatchId);
+    }
+    // Pinned: the invocation-time dispatch survives ledger pressure while waiting.
+    assert.equal(control.observe().dispatches.length, 5);
+    // Pi still holds all four followUps, so ending the Run discards them.
+    session.emit({
+      type: "queue_update",
+      steering: [],
+      followUp: ["second", "third", "fourth", "fifth"],
+    } as AgentSessionEvent);
+
+    emitAssistant(session, "First work done.");
+    session.settle();
+    presentation = presentationFor(activeState({ kind: "approval", question: "Approve?" }));
+    session.emit({ type: "agent_end", willRetry: false } as AgentSessionEvent);
+
+    const result = await waiting;
+    assert.equal(result.reason, "human_gate");
+    const dispatched = result.snapshot?.dispatches ?? [];
+    assert.equal(dispatched.length, 5);
+    // The earlier wait still reports its captured dispatch and its terminal outcome.
+    assert.equal(dispatched[0]?.dispatchId, accepted.dispatch.dispatchId);
+    assert.equal(dispatched[0]?.state, "complete");
+    assert.equal(dispatched[0]?.runId, "pinned-session:run:1");
+    assert.deepEqual(newer, dispatched.slice(1).map(({ dispatchId }) => dispatchId));
+    assert.deepEqual(dispatched.slice(1).map(({ state }) => state), ["cancelled", "cancelled", "cancelled", "cancelled"]);
+    assert.equal(dispatched[0]?.output?.entryIds.at(0), "live:pinned-session:assistant:1");
+    // Pins are released: the bounded ledger resumes evicting oldest first.
+    assert.equal(control.observe().dispatches.length, 4);
+    assert.ok(!control.observe().dispatches.some(({ dispatchId }) => dispatchId === accepted.dispatch.dispatchId));
+  } finally { control.dispose(); }
+});

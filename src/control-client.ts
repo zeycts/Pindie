@@ -20,6 +20,7 @@ import {
   type PindieUiProjection,
   type PindieUiProjectionFactsInput,
   type PindieUiProjectionInput,
+  type UiMessageBlock,
   type UiTimelineBlock,
 } from "./ui-projection.ts";
 
@@ -52,6 +53,8 @@ export interface PindieControlSnapshot {
     readonly automaticWorkSettled: boolean;
     readonly activity: PindieUiProjection["status"]["activity"];
   };
+  /** Bounded runtime-only dispatches, oldest first; empty after a Session epoch change. */
+  readonly dispatches: readonly PindieControlDispatch[];
   readonly semantic: {
     readonly authority: PindieUiProjection["status"]["semanticAuthority"];
     readonly taskStatus: PindieUiProjection["status"]["taskStatus"];
@@ -122,6 +125,38 @@ export interface PindieControlDeliveryResult {
   readonly snapshot: PindieControlSnapshot;
 }
 
+/**
+ * Runtime-only dispatch correlation: one accepted Control input, the native Pi
+ * Run that consumed it, and that Run's recorded assistant output entry IDs.
+ * Nothing here is persisted; a Session epoch discards the ledger.
+ */
+export type PindieControlDispatchState =
+  | "accepted"
+  | "queued"
+  | "running"
+  | "waiting"
+  | "complete"
+  | "error"
+  | "cancelled"
+  | "no_result";
+
+export interface PindieControlDispatch {
+  readonly dispatchId: string;
+  readonly delivery: PindieControlDelivery;
+  readonly state: PindieControlDispatchState;
+  readonly runId: string | null;
+  readonly acceptedRevision: number;
+  readonly output: {
+    readonly entryIds: readonly string[];
+    readonly lifecycle: "complete" | "error" | null;
+    readonly errorMessage?: string;
+  } | null;
+}
+
+export interface PindieControlInputResult extends PindieControlDeliveryResult {
+  readonly dispatch: PindieControlDispatch;
+}
+
 export interface PindieControlStopResult {
   readonly stopped: boolean;
   readonly cleared: {
@@ -189,8 +224,36 @@ interface ControlWaiter {
   readonly until: PindieControlWaitUntil;
   readonly afterRevision?: number;
   readonly resolve: (result: PindieControlWaitResult) => void;
+  readonly releasePins: () => void;
   timer: ReturnType<typeof setTimeout>;
 }
+
+interface DispatchRecord {
+  readonly dispatchId: string;
+  readonly delivery: PindieControlDelivery;
+  /** Same string reference as the projected delivery text; never re-serialized. */
+  readonly text: string;
+  readonly acceptedRevision: number;
+  runId: string | null;
+  /** Input Pi never consumed: unattached at settlement, or still queued then. */
+  discardedBeforeConsumption: boolean;
+  /** Waiters pin their invocation-time dispatches so a bounded ledger cannot drop them. */
+  pins: number;
+}
+
+interface RunRecord {
+  readonly runId: string;
+  /** Timeline index at agent_start; the Run's outputs are the assistant blocks after it. */
+  readonly timelineOffset: number;
+  outputIds: string[];
+  lifecycle: "complete" | "error" | null;
+  errorMessage?: string;
+  settled: boolean;
+  aborted: boolean;
+}
+
+const MAX_DISPATCH_RECORDS = 4;
+const MAX_RUN_RECORDS = 8;
 
 const DEFAULT_WAIT_TIMEOUT_SECONDS = 20;
 const MAX_WAIT_TIMEOUT_SECONDS = 30;
@@ -218,6 +281,12 @@ export class PindieControlClient {
   private currentSnapshot: PindieControlSnapshot | null = null;
   private projection: PindieUiProjection | null = null;
   private nextDeliverySequence = 1;
+  private records: DispatchRecord[] = [];
+  private readonly runs = new Map<string, RunRecord>();
+  private nextRunSequence = 1;
+  private activeRunId: string | null = null;
+  /** Last authoritative queue reading; null while Pi's queue contents are unknown. */
+  private lastQueuedIds: Set<string> | null = null;
   private readonly waiters = new Set<ControlWaiter>();
   private started = false;
   private disposed = false;
@@ -304,12 +373,16 @@ export class PindieControlClient {
     const immediate = this.waitReason(request.until, request.afterRevision, snapshot);
     if (immediate !== null) return Promise.resolve({ reason: immediate, snapshot });
 
+    // Pin the invocation-time dispatches so their outcome cannot be silently
+    // replaced by a newer dispatch while this wait is outstanding.
+    const releasePins = this.pinDispatches();
     return new Promise((resolve) => {
       const waiter: ControlWaiter = {
         binding,
         until: request.until,
         ...(request.afterRevision === undefined ? {} : { afterRevision: request.afterRevision }),
         resolve,
+        releasePins,
         timer: setTimeout(() => {
           let current = this.currentSnapshot;
           try {
@@ -352,7 +425,7 @@ export class PindieControlClient {
     readonly text: string;
     readonly timing?: PindieControlInputTiming;
     readonly sessionName?: string;
-  }): Promise<PindieControlDeliveryResult> {
+  }): Promise<PindieControlInputResult> {
     const binding = this.requireLease(request.lease);
     const text = request.text.trim();
     if (!text) {
@@ -378,6 +451,8 @@ export class PindieControlClient {
       } catch { /* Unavailable native metadata must not affect prompt delivery. */ }
     }
 
+    // Identity exists before Pi can start the Run so agent_start can attach it.
+    const accepted = this.beginDispatch(text, delivery, snapshot.revision);
     try {
       if (delivery === "prompt") {
         await this.launchPrompt(text, nameStartedPrompt);
@@ -391,8 +466,9 @@ export class PindieControlClient {
         this.requireSameBinding(binding);
         this.requireQueuedDelivery(disposition);
       }
-      this.appendDelivery(text, delivery);
+      this.appendDelivery(text, delivery, accepted.dispatchId);
     } catch (error) {
+      this.abandonDispatch(accepted);
       if (error instanceof PindieControlError) throw error;
       throw new PindieControlError(
         "delivery_failed",
@@ -401,14 +477,23 @@ export class PindieControlClient {
       );
     }
 
-    return { delivery, snapshot: this.observe() };
+    const after = this.observe();
+    const dispatch = after.dispatches.find((candidate) => candidate.dispatchId === accepted.dispatchId);
+    if (dispatch === undefined) {
+      throw new PindieControlError(
+        "delivery_failed",
+        "Pindie Control lost the accepted dispatch identity.",
+        after,
+      );
+    }
+    return { delivery, dispatch, snapshot: after };
   }
 
   async respond(request: {
     readonly lease: string;
     readonly gateKey: string;
     readonly response: string;
-  }): Promise<PindieControlDeliveryResult> {
+  }): Promise<PindieControlInputResult> {
     const binding = this.requireLease(request.lease);
     const response = request.response.trim();
     if (!response) {
@@ -433,11 +518,14 @@ export class PindieControlClient {
     }
     this.requireSafeIdle(snapshot);
 
+    // A Gate response is an accepted user input for the Run it starts.
+    const accepted = this.beginDispatch(response, "prompt", snapshot.revision);
     try {
       await this.launchPrompt(response);
       this.requireSameBinding(binding);
-      this.appendDelivery(response, "prompt");
+      this.appendDelivery(response, "prompt", accepted.dispatchId);
     } catch (error) {
+      this.abandonDispatch(accepted);
       if (error instanceof PindieControlError) throw error;
       throw new PindieControlError(
         "delivery_failed",
@@ -446,7 +534,12 @@ export class PindieControlClient {
       );
     }
 
-    return { delivery: "prompt", snapshot: this.observe() };
+    const after = this.observe();
+    const dispatch = after.dispatches.find((candidate) => candidate.dispatchId === accepted.dispatchId);
+    if (dispatch === undefined) {
+      throw new PindieControlError("delivery_failed", "Pindie Control lost the accepted dispatch identity.", after);
+    }
+    return { delivery: "prompt", dispatch, snapshot: after };
   }
 
   async stop(request: { readonly lease: string }): Promise<PindieControlStopResult> {
@@ -770,15 +863,212 @@ export class PindieControlClient {
     }
   }
 
-  private appendDelivery(text: string, delivery: PindieControlDelivery): void {
+  private appendDelivery(text: string, delivery: PindieControlDelivery, dispatchId: string): void {
     const binding = this.requireActiveBinding();
     if (this.projection === null) throw new Error("Pindie Control live projection is unavailable.");
     this.projection = appendUserDelivery(this.projection, {
-      id: `live:${binding.sessionId}:control:${this.nextDeliverySequence++}`,
+      id: dispatchId,
       text,
       delivery,
+      dispatchId,
     });
     this.refresh();
+  }
+
+  private beginDispatch(
+    text: string,
+    delivery: PindieControlDelivery,
+    acceptedRevision: number,
+  ): DispatchRecord {
+    const binding = this.requireActiveBinding();
+    const record: DispatchRecord = {
+      dispatchId: `live:${binding.sessionId}:control:${this.nextDeliverySequence++}`,
+      delivery,
+      text,
+      acceptedRevision,
+      // steer/followUp are consumed inside the current Run; an idle prompt
+      // stays unattached until the Run it starts emits agent_start.
+      runId: this.activeRunId,
+      discardedBeforeConsumption: false,
+      pins: 0,
+    };
+    this.records = [...this.records, record];
+    // Evict oldest unpinned records only; a waiter keeps its boundary visible.
+    this.pruneDispatchRecords();
+    return record;
+  }
+
+  private pruneDispatchRecords(): void {
+    const pinned = this.records.filter((record) => record.pins > 0).length;
+    while (this.records.length > MAX_DISPATCH_RECORDS + pinned) {
+      const index = this.records.findIndex((record) => record.pins === 0);
+      if (index < 0) return;
+      this.records = this.records.filter((_record, candidateIndex) => candidateIndex !== index);
+    }
+  }
+
+  private abandonDispatch(record: DispatchRecord): void {
+    this.records = this.records.filter((candidate) => candidate !== record);
+  }
+
+  /**
+   * Which dispatches Pi's authoritative queue still holds.
+   *
+   * Pi 1.5 enqueues steer text in `steering` and followUp text in `followUp`,
+   * and on a consumed user message removes the **first** match from `steering`,
+   * else the first from `followUp`. Both queues therefore behave as independent
+   * FIFO lists, with steering preferred when the same text sits in both. Reading
+   * that from Pi's own queue snapshot is not a second queue model, and an idle
+   * prompt is never treated as queued because Control only prompts when idle.
+   */
+  private unconsumedDispatchIds(projection: PindieUiProjection): Set<string> | null {
+    const queue = projection.queue;
+    if (queue.state !== "authoritative") return null;
+    const queued = new Set<string>();
+    const queues = [
+      ["steer", queue.steering],
+      ["followUp", queue.followUp],
+    ] as const;
+    for (const [delivery, contents] of queues) {
+      if (contents === null) continue;
+      const remaining = new Map<string, number>();
+      for (const text of contents) remaining.set(text, (remaining.get(text) ?? 0) + 1);
+      const byText = new Map<string, DispatchRecord[]>();
+      for (const record of this.records) {
+        if (record.delivery !== delivery) continue;
+        const group = byText.get(record.text);
+        if (group === undefined) byText.set(record.text, [record]);
+        else group.push(record);
+      }
+      for (const [text, group] of byText) {
+        const count = remaining.get(text) ?? 0;
+        if (count <= 0) continue;
+        // Pi removes the first matching text, so the newest occurrences remain.
+        for (const record of group.slice(-count)) queued.add(record.dispatchId);
+      }
+    }
+    return queued;
+  }
+
+  /** Pin invocation-time dispatches for the duration of one wait call. */
+  private pinDispatches(): () => void {
+    const pinned = [...this.records];
+    for (const record of pinned) record.pins += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      for (const record of pinned) record.pins = Math.max(0, record.pins - 1);
+      this.pruneDispatchRecords();
+    };
+  }
+
+  /**
+   * Runtime-only dispatch/Run correlation from public Pi events.
+   *
+   * Regular assistant messages are persisted without `entry_appended`, which
+   * Pi 1.5 emits only for custom/boundary/context-edit entries. Run output is
+   * therefore read from Control's own live projection: the assistant blocks
+   * appended after `agent_start`, using their existing epoch-scoped block IDs.
+   *
+   * A ledger failure must never perturb the Run; the caller isolates this call.
+   */
+  private recordDispatchEvent(event: AgentSessionEvent): void {
+    if (event.type === "agent_start") {
+      const binding = this.binding;
+      if (binding === null) return;
+      const runId = `${binding.sessionId}:run:${this.nextRunSequence++}`;
+      this.runs.set(runId, {
+        runId,
+        timelineOffset: this.projection?.timeline.length ?? 0,
+        outputIds: [],
+        lifecycle: null,
+        settled: false,
+        aborted: false,
+      });
+      this.activeRunId = runId;
+      for (const record of this.records) {
+        if (record.runId === null) record.runId = runId;
+      }
+      this.pruneRuns();
+      return;
+    }
+    const run = this.activeRunId === null ? undefined : this.runs.get(this.activeRunId);
+    if (event.type === "message_end") {
+      if (run !== undefined) this.captureRunOutput(run);
+      return;
+    }
+    if (event.type === "agent_settled") {
+      if (run !== undefined) {
+        this.captureRunOutput(run);
+        run.settled = true;
+        run.aborted = event.aborted === true;
+      }
+      // Input Pi never consumed cannot be reported as Run output: unattached
+      // input, or steer/followUp still sitting in Pi's queue when the Run ends.
+      for (const record of this.records) {
+        if (record.runId === null || this.lastQueuedIds?.has(record.dispatchId)) {
+          record.discardedBeforeConsumption = true;
+        }
+      }
+      this.activeRunId = null;
+    }
+  }
+
+  private captureRunOutput(run: RunRecord): void {
+    if (this.projection === null) return;
+    const blocks = this.projection.timeline.slice(run.timelineOffset)
+      .filter((block): block is UiMessageBlock => block.type === "message" && block.role === "assistant");
+    run.outputIds = blocks.map((block) => block.id);
+    const terminal = blocks.at(-1);
+    if (terminal === undefined) {
+      run.lifecycle = null;
+      run.errorMessage = undefined;
+      return;
+    }
+    run.lifecycle = terminal.lifecycle === "streaming" ? null : terminal.lifecycle;
+    run.errorMessage = terminal.errorMessage;
+  }
+
+  private pruneRuns(): void {
+    if (this.runs.size <= MAX_RUN_RECORDS) return;
+    for (const [runId, run] of this.runs) {
+      if (this.runs.size <= MAX_RUN_RECORDS) break;
+      if (run.settled) this.runs.delete(runId);
+    }
+  }
+
+  private projectDispatch(
+    record: DispatchRecord,
+    unconsumed: Set<string> | null,
+    gateActive: boolean,
+    quotaWaiting: boolean,
+  ): PindieControlDispatch {
+    const run = record.runId === null ? undefined : this.runs.get(record.runId);
+    // Unknown queue contents fall back to Run attachment rather than guessing.
+    const queued = unconsumed === null ? false : unconsumed.has(record.dispatchId);
+    let state: PindieControlDispatchState;
+    if (record.discardedBeforeConsumption) state = "cancelled";
+    else if (run === undefined) state = queued ? "queued" : "accepted";
+    else if (!run.settled) state = gateActive || quotaWaiting ? "waiting" : queued ? "queued" : "running";
+    else if (run.aborted) state = "cancelled";
+    else if (run.lifecycle === "error") state = "error";
+    else if (run.outputIds.length > 0) state = "complete";
+    else state = "no_result";
+    return {
+      dispatchId: record.dispatchId,
+      delivery: record.delivery,
+      state,
+      runId: record.runId,
+      acceptedRevision: record.acceptedRevision,
+      output: run === undefined || (run.outputIds.length === 0 && run.lifecycle === null)
+        ? null
+        : {
+            entryIds: [...run.outputIds],
+            lifecycle: run.lifecycle,
+            ...(run.errorMessage === undefined ? {} : { errorMessage: run.errorMessage }),
+          },
+    };
   }
 
   private waitReason(
@@ -808,6 +1098,7 @@ export class PindieControlClient {
   private resolveWaiter(waiter: ControlWaiter, result: PindieControlWaitResult): void {
     if (!this.waiters.delete(waiter)) return;
     clearTimeout(waiter.timer);
+    waiter.releasePins();
     waiter.resolve(result);
   }
 
@@ -910,6 +1201,10 @@ export class PindieControlClient {
     this.projection = null;
     this.currentSnapshot = null;
     this.automaticWorkSettled = false;
+    this.records = [];
+    this.runs.clear();
+    this.activeRunId = null;
+    this.lastQueuedIds = null;
   }
 
   private async rebindSession(): Promise<void> {
@@ -920,6 +1215,11 @@ export class PindieControlClient {
     this.currentSnapshot = null;
     this.automaticWorkSettled = false;
     this.nextDeliverySequence = 1;
+    this.records = [];
+    this.runs.clear();
+    this.nextRunSequence = 1;
+    this.activeRunId = null;
+    this.lastQueuedIds = null;
     const generation = ++this.nextBindingGeneration;
     // Do not expose a lease until Pi's extension session_start has finished.
     // The same lifecycle callback handles initial bootstrap and native replacement.
@@ -970,6 +1270,13 @@ export class PindieControlClient {
     try {
       if (this.projection === null) return;
       this.projection = reduceProjectionEvent(this.projection, event);
+      // Dispatch bookkeeping reads the updated live projection; a ledger
+      // failure must never skip the projection refresh below.
+      try {
+        this.recordDispatchEvent(event);
+      } catch {
+        // A subsequent explicit observation still reports current runtime facts.
+      }
       this.refresh();
     } catch {
       // A subsequent explicit observation can retry current facts without
@@ -1078,6 +1385,17 @@ export class PindieControlClient {
         automaticWorkSettled: this.automaticWorkSettled,
         activity: projection.status.activity,
       },
+      dispatches: (() => {
+        const unconsumed = this.unconsumedDispatchIds(projection);
+        // Remember the latest authoritative queue reading for settlement checks.
+        this.lastQueuedIds = unconsumed;
+        return this.records.map((record) => this.projectDispatch(
+          record,
+          unconsumed,
+          signal?.kind === "human-gate",
+          presentation?.quotaResumeWaiting !== null && presentation?.quotaResumeWaiting !== undefined,
+        ));
+      })(),
       semantic: {
         authority: projection.status.semanticAuthority,
         taskStatus: projection.status.taskStatus,

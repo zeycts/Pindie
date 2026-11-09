@@ -150,6 +150,8 @@ export interface UiMessageBlock {
   readonly defaultDisplayMode: UiDisplayMode;
   /** Local delivery provenance for ephemeral user input echoes. */
   readonly delivery?: UiUserDelivery;
+  /** Control dispatch identity retained across persistence reconciliation. */
+  readonly dispatchId?: string;
   readonly customType?: string;
 }
 
@@ -1284,7 +1286,11 @@ function reconcilePersistedUser(
   const candidate = candidateIndex < 0 ? undefined : timeline[candidateIndex];
   const replacement: UiMessageBlock = candidate !== undefined && isLiveUser(candidate) &&
       candidate.delivery !== undefined
-    ? { ...next, delivery: candidate.delivery }
+    ? {
+        ...next,
+        delivery: candidate.delivery,
+        ...(candidate.dispatchId === undefined ? {} : { dispatchId: candidate.dispatchId }),
+      }
     : next;
   const reconciled: UiTimelineBlock[] = [];
   let inserted = false;
@@ -1737,6 +1743,7 @@ export function appendUserDelivery(
     readonly id: string;
     readonly text: string;
     readonly delivery: UiUserDelivery;
+    readonly dispatchId?: string;
   },
 ): PindieUiProjection {
   return {
@@ -1753,6 +1760,7 @@ export function appendUserDelivery(
         lifecycle: "complete",
         defaultDisplayMode: "compact",
         delivery: input.delivery,
+        ...(input.dispatchId === undefined ? {} : { dispatchId: input.dispatchId }),
       },
     ],
   };
