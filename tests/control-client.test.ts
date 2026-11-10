@@ -15,6 +15,8 @@ import {
   PindieControlError,
 } from "../src/control-client.ts";
 import { PiRuntimeAdapter } from "../src/pi-runtime.ts";
+import { QuotaResumeSupervisor } from "../src/quota-resume-supervisor.ts";
+import { isQuotaResumeWaiting } from "../src/quota-resume-control.ts";
 import {
   PresentationIntegration,
   type PindiePresentationSnapshot,
@@ -2534,6 +2536,122 @@ test("a resume message observed before agent_start still continues the failed Ru
     const resumed = latestDispatch(control.observe());
     assert.deepEqual(resumed.runIds, ["early-resume-session:run:1", "early-resume-session:run:2"]);
     assert.equal(resumed.state, "running");
+  } finally { control.dispose(); }
+});
+
+test("quota plan replacement reconciles protection through headless Presentation without intermediate reads", async () => {
+  const sessionId = "replacement-session";
+  const session = fakeSession(sessionId, []);
+  const presentation = createHeadlessPresentation();
+  presentation.setStatusContext(headlessContext(sessionId));
+  const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+  const control = new PindieControlClient(runtime, {
+    current: () => ({ snapshot: () => presentation.snapshot() }),
+  });
+  const phases: string[] = [];
+  const timers: Array<() => void> = [];
+  let rejectWake!: (error: Error) => void;
+  // Deterministic send fixture: hold before any native successor/message event.
+  session.session.sendCustomMessage = () => new Promise<void>((_resolve, reject) => { rejectWake = reject; });
+  const supervisor = new QuotaResumeSupervisor(runtime, {
+    now: () => 1000,
+    schedule: (_delay, callback) => { timers.push(callback); return () => undefined; },
+    logger: () => undefined,
+    onWaitingChange: (status) => {
+      phases.push(`${status?.anchorEntryId}:${status?.phase}`);
+      // Same projection as Extension wiring, with no Control read in between.
+      presentation.setQuotaResumeEvent(status);
+      presentation.setQuotaResumeWaiting(isQuotaResumeWaiting(status) ? status : null);
+    },
+  });
+  const plan = (anchorEntryId: string) => ({
+    sessionId, anchorEntryId, provider: "openai-codex" as const,
+    modelId: "gpt-6-sol", detectedAt: 1000, resumeAt: 2000,
+  });
+  await control.start();
+  try {
+    await control.input({ lease: control.observe().lease, text: "A" });
+    session.start();
+    failRun(session, "anchor-A", "The usage limit has been reached");
+    await control.input({ lease: control.observe().lease, text: "B" });
+    session.start();
+    failRun(session, "anchor-B", "The usage limit has been reached");
+    const failed = control.observe().dispatches;
+    assert.equal(supervisor.request(plan("anchor-A")), true);
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["waiting", "error"]);
+
+    // request() synchronously publishes A cancelled, then B waiting. Presentation
+    // exposes only B's latest status; Control must not need to see A's event.
+    assert.equal(supervisor.request(plan("anchor-B")), true);
+    assert.deepEqual(phases, ["anchor-A:waiting", "anchor-A:cancelled", "anchor-B:waiting"]);
+    assert.equal(presentation.snapshot().quotaResumeEvent?.anchorEntryId, "anchor-B");
+    const replaced = control.observe().dispatches;
+    assert.deepEqual(replaced.map(({ state }) => state), ["error", "waiting"]);
+    assert.deepEqual(replaced.map(({ runIds, output }) => ({ runIds, output })),
+      failed.map(({ runIds, output }) => ({ runIds, output })));
+
+    supervisor.cancel(sessionId);
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["error", "error"]);
+    assert.equal((await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 })).reason, "settled");
+
+    // A replacement can itself be cancelled before any Control observation.
+    assert.equal(supervisor.request(plan("anchor-A")), true);
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["waiting", "error"]);
+    assert.equal(supervisor.request(plan("anchor-B")), true);
+    supervisor.cancel(sessionId);
+    assert.equal(presentation.snapshot().quotaResumeEvent?.anchorEntryId, "anchor-B");
+    assert.equal(presentation.snapshot().quotaResumeEvent?.phase, "cancelled");
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["error", "error"]);
+    assert.equal((await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 })).reason, "settled");
+
+    // Once B replaces A, its protection must survive the wake-started gap.
+    assert.equal(supervisor.request(plan("anchor-A")), true);
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["waiting", "error"]);
+    assert.equal(supervisor.request(plan("anchor-B")), true);
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["error", "waiting"]);
+    timers.at(-1)!();
+    assert.equal(presentation.snapshot().quotaResumeEvent?.phase, "wake_started");
+    assert.equal(presentation.snapshot().quotaResumeWaiting, null);
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["error", "waiting"]);
+    assert.equal((await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 })).reason, "timeout");
+
+    // A wrong-Session plan cannot supersede B or release its gap protection.
+    assert.equal(supervisor.request({ ...plan("anchor-A"), sessionId: "other-session" }), false);
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["error", "waiting"]);
+    rejectWake(new Error("mock wake rejected"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(presentation.snapshot().quotaResumeEvent?.phase, "wake_failed");
+    assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["error", "error"]);
+    assert.equal((await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 })).reason, "settled");
+    assert.deepEqual(control.observe().dispatches.map(({ runIds, output }) => ({ runIds, output })),
+      failed.map(({ runIds, output }) => ({ runIds, output })));
+  } finally {
+    supervisor.dispose();
+    control.dispose();
+  }
+});
+
+test("foreign or unanchored quota status cannot replace current incident protection", async () => {
+  const session = fakeSession("scope-session", []);
+  let presentation = presentationFor(activeState());
+  const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
+    current: () => ({ snapshot: () => presentation }),
+  });
+  await control.start();
+  try {
+    await control.input({ lease: control.observe().lease, text: "Quota work" });
+    session.start();
+    failRun(session, "anchor", "The usage limit has been reached");
+    presentation = quotaPresentation(activeState(), quotaStatus("scope-session", "anchor"));
+    assert.equal(latestDispatch(control.observe()).state, "waiting");
+    for (const phase of ["waiting", "wake_started", "cancelled"] as const) {
+      presentation = quotaPresentation(activeState(), quotaStatus("other-session", "anchor", phase));
+      assert.equal(latestDispatch(control.observe()).state, "waiting");
+    }
+    presentation = quotaPresentation(activeState(), { sessionId: "scope-session", resumeAt: 2000 });
+    assert.equal(latestDispatch(control.observe()).state, "waiting");
+    presentation = quotaPresentation(activeState(), quotaStatus("scope-session", "anchor", "cancelled"));
+    assert.equal(latestDispatch(control.observe()).state, "error");
   } finally { control.dispose(); }
 });
 

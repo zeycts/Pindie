@@ -1472,6 +1472,17 @@ readable when Presentation output is disabled (the headless Control path) while
 still producing no status-bar or notification output, and they are dropped when
 the current native Session context is cleared.
 
+The Supervisor owns only one current quota incident. Control reconciles quota
+protection against its current anchored lifecycle snapshot: a new incident
+supersedes protection for the old one, without changing either Run's identity,
+output or factual error, even if the replacement itself is already terminal.
+This does not require observing intermediate publications (plan replacement
+synchronously publishes old `cancelled`, then new
+`waiting`, and Presentation retains only the latest status). `wake_started`
+retains protection for the same incident; foreign-Session or unanchored waiting
+statuses cannot supersede it. No status history or additional persistent state is
+needed.
+
 Terminal phases release protection, leaving the dispatch factually `error` (never
 `complete`) so settlement waits can finish. A late send rejection may only
 publish `wake_failed` while its own wake generation still owns the lease, so it

@@ -1222,26 +1222,37 @@ export class PindieControlClient {
   /**
    * Apply one quota-recovery lifecycle signal to the dispatch ledger.
    *
-   * `waiting` protects only dispatches of the anchored incident Run; `null`
-   * (the gap before a resume message) changes nothing; terminal abandonments
-   * release protection so the failed dispatch stays `error` and waits settle.
+   * The Supervisor owns one current incident. Any current anchored phase
+   * supersedes an older incident, even if the snapshot overwrote its cancellation.
+   * `waiting` protects the anchored Run; `wake_started` retains its protection.
+   * `null` changes nothing; terminal abandonment releases its own protection.
    */
   private noteQuotaRecovery(status: QuotaResumeWaitingStatus | null): void {
-    if (status === null) return;
+    if (status === null || status.sessionId !== this.binding?.sessionId) return;
     const phase = quotaResumePhase(status);
     const anchor = status.anchorEntryId;
-    if (phase === "waiting") {
-      // Without a validated anchor there is nothing safe to protect.
-      if (anchor === undefined) return;
+    if (anchor !== undefined && anchor.trim() !== "") {
+      // Reconcile only existing quota protection, not error outcomes or Run IDs.
+      // The new incident may even be cancelled before Control observes it: its
+      // current terminal status still supersedes the previous incident's wait.
       for (const record of this.records) {
+        if (!record.awaitingQuotaRecovery) continue;
         const run = this.runs.get(record.runIds.at(-1) ?? "");
-        if (run?.settled === true && !run.aborted && run.lifecycle === "error" &&
-          run.terminalEntryId === anchor) record.awaitingQuotaRecovery = true;
+        if (run?.terminalEntryId !== anchor) record.awaitingQuotaRecovery = false;
+      }
+    }
+    if (phase === "waiting" || phase === "wake_started") {
+      // An unanchored legacy status cannot identify or replace an incident.
+      if (anchor === undefined || anchor.trim() === "") return;
+      if (phase === "waiting") {
+        for (const record of this.records) {
+          const run = this.runs.get(record.runIds.at(-1) ?? "");
+          if (run?.settled === true && !run.aborted && run.lifecycle === "error" &&
+            run.terminalEntryId === anchor) record.awaitingQuotaRecovery = true;
+        }
       }
       return;
     }
-    // `wake_started` is the intentional gap before the hidden message.
-    if (phase === "wake_started") return;
     this.releaseQuotaProtection(anchor);
   }
 
