@@ -262,7 +262,7 @@ interface DispatchRecord {
   /** Factual native execution rejection; no provider prose retained. */
   executionRejected?: boolean;
   executionPending?: boolean;
-  /** Native preflight/queue acknowledgement or an observed native queue entry. */
+  /** Native preflight/queue acknowledgement; matching queue text alone proves no acceptance. */
   deliveryConfirmed: boolean;
   /**
    * A reported quota wait keeps a failed dispatch from being pruned. It never
@@ -510,13 +510,13 @@ export class PindieControlClient {
         refused = disposition === "handled";
         this.requireSameBinding(binding);
         this.requireQueuedDelivery(disposition);
-        accepted.deliveryConfirmed = true;
+        this.confirmQueuedDelivery(accepted);
       } else {
         const disposition = await this.runtime.followUp(text);
         refused = disposition === "handled";
         this.requireSameBinding(binding);
         this.requireQueuedDelivery(disposition);
-        accepted.deliveryConfirmed = true;
+        this.confirmQueuedDelivery(accepted);
       }
       this.appendDelivery(text, delivery, accepted.dispatchId);
     } catch (error) {
@@ -1015,7 +1015,10 @@ export class PindieControlClient {
       for (const text of contents) remaining.set(text, (remaining.get(text) ?? 0) + 1);
       const byText = new Map<string, DispatchRecord[]>();
       for (const record of this.records) {
-        if (record.delivery !== delivery) continue;
+        // Unacknowledged attempts may never have entered Pi's queue. Including
+        // them would steal an older identical delivery's occurrence and can
+        // falsely report that acknowledged input as consumed at settlement.
+        if (record.delivery !== delivery || !record.deliveryConfirmed) continue;
         const group = byText.get(record.text);
         if (group === undefined) byText.set(record.text, [record]);
         else group.push(record);
@@ -1054,12 +1057,6 @@ export class PindieControlClient {
    * A ledger failure must never perturb the Run; the caller isolates this call.
    */
   private recordDispatchEvent(event: AgentSessionEvent): void {
-    if (event.type === "queue_update" && this.projection !== null) {
-      const queued = this.unconsumedDispatchIds(this.projection);
-      for (const record of this.records) {
-        if (queued?.has(record.dispatchId)) record.deliveryConfirmed = true;
-      }
-    }
     if (event.type === "agent_start") {
       const binding = this.binding;
       if (binding === null) return;
@@ -1360,6 +1357,17 @@ export class PindieControlClient {
 
   private resolveAllWaiters(result: PindieControlWaitResult): void {
     for (const waiter of [...this.waiters]) this.resolveWaiter(waiter, result);
+  }
+
+  private confirmQueuedDelivery(record: DispatchRecord): void {
+    record.deliveryConfirmed = true;
+    const runId = record.runIds.at(-1);
+    // Settlement may beat the acknowledgement continuation. Such input is
+    // still unconsumed if Pi's authoritative queue holds it after settlement.
+    if (runId !== undefined && this.runs.get(runId)?.settled && this.projection !== null &&
+      this.unconsumedDispatchIds(this.projection)?.has(record.dispatchId)) {
+      record.discardedBeforeConsumption = true;
+    }
   }
 
   private requireQueuedDelivery(disposition: Awaited<ReturnType<PiRuntimeAdapter["steer"]>>): void {

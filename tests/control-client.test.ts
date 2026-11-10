@@ -981,7 +981,7 @@ test("S2 accepted prompt identity survives a post-delivery acknowledgement proje
   } finally { control.dispose(); }
 });
 
-test("S2 native queued delivery followed by rejection retains its dispatch for reconciliation", async () => {
+test("S2 native queued delivery followed by rejection retains uncertainty without inferring acceptance from text", async () => {
   const session = fakeSession("queued-ack-session", []);
   const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
   const control = new PindieControlClient(runtime, {
@@ -1003,7 +1003,7 @@ test("S2 native queued delivery followed by rejection retains its dispatch for r
     assert.equal(session.steers.length, 1);
     const dispatches = control.observe().dispatches;
     assert.equal(dispatches.length, 2, "queued work must not disappear from the dispatch ledger on ambiguous rejection");
-    assert.equal(dispatches[1]?.state, "queued");
+    assert.equal(dispatches[1]?.state, "running", "queue text without native acknowledgement cannot confirm this invocation");
     assert.equal(result.receipt?.dispatchId, dispatches[1]?.dispatchId);
     assert.notEqual(dispatches[0]?.dispatchId, dispatches[1]?.dispatchId);
     const timedOut = await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 });
@@ -1013,7 +1013,7 @@ test("S2 native queued delivery followed by rejection retains its dispatch for r
     session.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
     emitAssistant(session, "Guidance consumed.");
     session.settle();
-    assert.equal((await control.wait({ lease: control.observe().lease, until: "settled" })).snapshot?.dispatches[1]?.state, "complete");
+    assert.equal((await control.wait({ lease: control.observe().lease, until: "settled" })).snapshot?.dispatches[1]?.state, "no_result");
     assert.equal(session.steers.length, 1);
   } finally { control.dispose(); }
 });
@@ -1125,6 +1125,83 @@ test("S2 successful native promise closes the settlement window without redispat
     assert.equal(result.snapshot?.dispatches[0]?.state, "complete");
     assert.equal(result.snapshot?.dispatches[0]?.dispatchId, input.dispatch.dispatchId);
     assert.equal(session.prompts.length, 1);
+  } finally { control.dispose(); }
+});
+
+test("S2 ambiguous identical delivery cannot borrow queue confirmation or hide an unconsumed acknowledged input", async () => {
+  for (const timing of ["now", "after_current_run"] as const) {
+    for (const leaveAcknowledgedQueued of [false, true]) {
+      const session = fakeSession("identical-uncertain-session", []);
+      const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+      const control = new PindieControlClient(runtime, {
+        current: () => ({ snapshot: () => presentationFor(activeState()) }),
+      });
+      await control.start();
+      try {
+        const lease = control.observe().lease;
+        await control.input({ lease, text: "Main work" });
+        session.start();
+        const acknowledged = await control.input({ lease, text: "Check logs", timing });
+        // B is a distinct intentional input, but its native call rejects before enqueue.
+        if (timing === "now") runtime.steer = async () => { throw new Error("mock reject before enqueue"); };
+        else runtime.followUp = async () => { throw new Error("mock reject before enqueue"); };
+        const uncertain = await control.input({ lease, text: "Check logs", timing }).catch((error: unknown) => error);
+        assert.ok(uncertain instanceof PindieControlError);
+        assert.equal(uncertain.code, "delivery_uncertain");
+        assert.notEqual(uncertain.receipt?.dispatchId, acknowledged.dispatch.dispatchId);
+        const other = await control.input({ lease, text: "Unrelated guidance", timing: timing === "now" ? "after_current_run" : "now" });
+        // Native enqueues emit full snapshots: the old occurrence belongs to A, not B.
+        session.emit({ type: "queue_update", steering: [...session.queue.steering], followUp: [...session.queue.followUp] } as AgentSessionEvent);
+        const afterUnrelatedUpdate = control.observe();
+        const ownQueue = timing === "now" ? session.queue.steering : session.queue.followUp;
+        const otherQueue = timing === "now" ? session.queue.followUp : session.queue.steering;
+        if (!leaveAcknowledgedQueued) ownQueue.length = 0;
+        otherQueue.length = 0;
+        session.emit({ type: "queue_update", steering: [...session.queue.steering], followUp: [...session.queue.followUp] } as AgentSessionEvent);
+        emitAssistant(session, "Consumed native work complete.");
+        session.settle();
+        const settled = control.observe();
+        const byId = (id: string | undefined) => settled.dispatches.find((record) => record.dispatchId === id);
+        assert.equal(byId(uncertain.receipt?.dispatchId)?.state, "no_result", "B must not inherit A's queue acceptance and false completion");
+        assert.equal(byId(acknowledged.dispatch.dispatchId)?.state, leaveAcknowledgedQueued ? "cancelled" : "complete", "B must not steal A's still-queued occurrence");
+        assert.equal(byId(other.dispatch.dispatchId)?.state, "complete");
+        assert.equal(afterUnrelatedUpdate.dispatches.find(({ dispatchId }) => dispatchId === acknowledged.dispatch.dispatchId)?.state, "queued");
+        assert.equal(afterUnrelatedUpdate.dispatches.find(({ dispatchId }) => dispatchId === uncertain.receipt?.dispatchId)?.state, "running");
+        assert.equal(settled.dispatches.length, 4);
+        assert.equal(new Set(settled.dispatches.map(({ dispatchId }) => dispatchId)).size, 4);
+      } finally { control.dispose(); }
+    }
+  }
+});
+
+test("S2 queue acknowledgement arriving after settlement cannot complete unconsumed input", async () => {
+  const session = fakeSession("late-queue-ack-session", []);
+  const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+  let acknowledge!: () => void;
+  runtime.steer = (text) => {
+    session.queue.steering.push(text);
+    session.emit({ type: "queue_update", steering: [...session.queue.steering], followUp: [] } as AgentSessionEvent);
+    return new Promise<void>((resolve) => { acknowledge = resolve; });
+  };
+  const control = new PindieControlClient(runtime, {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const lease = control.observe().lease;
+    await control.input({ lease, text: "Main work" });
+    session.start();
+    const pending = control.input({ lease, text: "Never consumed" });
+    emitAssistant(session, "Main work complete.");
+    session.settle();
+    acknowledge();
+    const delivered = await pending;
+    assert.equal(delivered.dispatch.state, "cancelled");
+    assert.deepEqual(session.queue.steering, ["Never consumed"]);
+    session.queue.steering.length = 0;
+    session.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
+    assert.equal(latestDispatch(control.observe()).state, "cancelled", "later queue clearing must not revive unconsumed input as complete");
+    assert.equal(control.observe().dispatches[0]?.state, "complete");
   } finally { control.dispose(); }
 });
 

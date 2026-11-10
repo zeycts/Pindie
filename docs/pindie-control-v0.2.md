@@ -1549,7 +1549,9 @@ assistant projection, so an earlier recorded `complete` output may coexist
 with dispatch state `error`. The dispatch state, not an earlier text block,
 is authoritative for this execution outcome; Task/Verification remain separate.
 
-`queued` reads Pi's authoritative queue snapshot. Pi 1.5 enqueues steer text in
+`queued` reads Pi's authoritative queue snapshot for natively acknowledged
+dispatches only; matching text never promotes an unconfirmed attempt to accepted
+delivery. Pi 1.5 enqueues steer text in
 `steering` and followUp text in `followUp`, and when a user message is consumed
 it removes the **first** match from `steering`, else the first from `followUp`.
 Each queue is therefore an independent FIFO list and steering wins when the same
@@ -1609,11 +1611,20 @@ snapshot when available, and an additive receipt:
 ```
 
 The receipt is acknowledgement/provenance, not execution success or a promise
-that Pi accepted the input. Observed native queue entries confirm queued delivery
-even if its acknowledgement later rejects. Without preflight, queue acknowledgement
-or observed queue evidence, an ambiguous busy delivery cannot inherit a completed
-Run's success: it settles as `no_result`. Queue evidence is read from native
-snapshots, not a second queue. After an in-flight binding change the error keeps
+that Pi accepted the input. Only native prompt preflight or a successful native
+queue acknowledgement confirms delivery. A full native queue snapshot contains
+text, not invocation identities: an older identical input, local input or an
+unrelated queue update cannot prove that this invocation was accepted. Without
+native acknowledgement, an ambiguous busy delivery cannot inherit a completed
+Run's success: it settles as `no_result`, even if matching text was observed in
+the queue. Acknowledged dispatches alone participate in the FIFO/text mapping;
+unconfirmed attempts cannot steal an older acknowledged dispatch's occurrence.
+This intentionally favors retained uncertainty over false acceptance/completion
+when an acknowledgement was lost after a real enqueue. If acknowledgement arrives
+after its Run settled and the acknowledged input is still queued, it remains
+`cancelled` even after later queue clearing; late acknowledgement cannot revive
+unconsumed work as complete. Queue positions are read from native snapshots,
+not a second queue. After an in-flight binding change the error keeps
 `stale_control_lease` and includes the old dispatch receipt with the same no-resend
 guidance; it never attaches that identity to the replacement Session.
 
