@@ -1386,7 +1386,7 @@ Further observability/control features must be driven by real failures after the
 
 ## 23. Dispatch lifecycle (Phase 2)
 
-Status: **implemented Slice 1 (correlation), extended by later Phase 2 slices.**
+Status: **implemented Slices 1–2 (correlation, terminal propagation and no-duplicate hardening).**
 Phase 1 terminal-error projection is unchanged; this section adds lifecycle
 identity, not new authority.
 
@@ -1517,10 +1517,10 @@ One derived state per dispatch, reusing existing Control/lifecycle vocabulary:
 | `queued` | Pi's authoritative queue still holds this delivery |
 | `running` | attached to an active Run that is working |
 | `waiting` | attached Run is active but a Human Gate or quota wait is current, or the anchored quota incident is waiting/being resumed |
-| `complete` | last Run settled with a recorded terminal assistant completion |
-| `error` | last Run settled with a terminal assistant error (sanitized diagnostic) |
+| `complete` | last Run settled with a recorded terminal assistant completion and no pending/rejected Control prompt execution promise |
+| `error` | terminal assistant error (sanitized diagnostic), or factual rejection of the native prompt execution promise |
 | `cancelled` | last Run aborted, or input Pi never consumed before settlement |
-| `no_result` | last Run settled without a recorded terminal assistant completion |
+| `no_result` | last Run settled without a recorded terminal assistant completion, or delivery to it remained unconfirmed |
 
 States and `output` describe the **last** Run in `runIds`; `output.entryIds`
 aggregates the whole chain in order.
@@ -1531,6 +1531,23 @@ terminal lifecycle are `no_result`, not success. `complete` is not Task
 completion or verified success. `no_result` exists so a lost, unterminated or
 unpersisted result is never reported as success; it is not a claim that the Run
 failed.
+
+Pi emits `agent_settled` in `_startRun`'s `finally`, before the native prompt
+promise resolves or rejects. Control retains that promise's pending/rejected
+fact in its runtime-only ledger. Until it settles, the dispatch remains
+`running` (or an already factual error/cancellation), and
+`runtime.automaticWorkSettled` is false. A rejected execution is `error`,
+including rejection after a recorded assistant completion, and every dispatch
+attached to that exact Run shares the failure. An unattached rejected prompt
+remains `error` and cannot attach to a later unrelated Run. Native runtime
+settlement is still required for `wait(until=settled)`; rejection alone never
+invents a native settlement event.
+
+Control does not create synthetic assistant messages or copy promise error
+prose into diagnostics. `output` and `latestAssistant` remain factual recorded
+assistant projection, so an earlier recorded `complete` output may coexist
+with dispatch state `error`. The dispatch state, not an earlier text block,
+is authoritative for this execution outcome; Task/Verification remain separate.
 
 `queued` reads Pi's authoritative queue snapshot. Pi 1.5 enqueues steer text in
 `steering` and followUp text in `followUp`, and when a user message is consumed
@@ -1572,6 +1589,48 @@ waiting: there is no wait-for-this-dispatch condition, and a caller that needs
 one must compare the returned `dispatches` itself. Pins are released when the
 wait resolves, after which the ledger returns to its four-record bound, oldest
 first.
+
+### 23.5 Acknowledgement uncertainty and safe retries
+
+A known native preflight refusal or extension `handled` disposition still
+returns `delivery_failed`, removes the unaccepted dispatch and adds no delivery
+echo. An error after prompt acceptance, a rejected steer/followUp acknowledgement,
+or failure to build the delivery result is **not** proof of non-delivery. Control
+retains the dispatch identity instead of abandoning potentially executed work,
+and returns an MCP error result with `code: delivery_uncertain`, a bounded
+snapshot when available, and an additive receipt:
+
+```json
+{
+  "dispatchId": "live:<sessionId>:control:<n>",
+  "delivery": "prompt",
+  "nextAction": "wait_observe_do_not_resend"
+}
+```
+
+The receipt is acknowledgement/provenance, not execution success or a promise
+that Pi accepted the input. Observed native queue entries confirm queued delivery
+even if its acknowledgement later rejects. Without preflight, queue acknowledgement
+or observed queue evidence, an ambiguous busy delivery cannot inherit a completed
+Run's success: it settles as `no_result`. Queue evidence is read from native
+snapshots, not a second queue. After an in-flight binding change the error keeps
+`stale_control_lease` and includes the old dispatch receipt with the same no-resend
+guidance; it never attaches that identity to the replacement Session.
+
+Safe normal flow: retain the input receipt, call `pindie_wait` with the current
+lease/revision, inspect that dispatch's state in the returned Session-global
+snapshot, then read its `output.entryIds` through `pindie_read_timeline` or inspect
+`pindie_observe`. Timeout is progress-only: retry **wait**, never input. A failed,
+cancelled or `no_result` dispatch is not success. A current Gate or binding change
+can interrupt any wait mode; re-observe rather than blindly resending.
+
+There is no client idempotency key and no content-based deduplication. Identical
+explicitly resent input is a distinct dispatch and may execute again. Transport
+loss may discard the entire acknowledgement; a Host restart/rebind may also
+remove the runtime-only ledger. A missing receipt is not proof of non-delivery,
+and Control cannot promise exactly-once execution across those boundaries. Observe
+and reconcile available native results before considering new user-authorized
+input; never automatically replay a lost/uncertain input or Gate answer.
 
 No new tool, no input-schema change and no persisted dispatch store are added;
 the monitor's exact read-only surface and `{}` requests are unchanged.

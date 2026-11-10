@@ -938,6 +938,251 @@ test("Control prompt input waits for preflight acceptance and cannot settle befo
   }
 });
 
+test("S2 accepted prompt identity survives a post-delivery acknowledgement projection failure", async () => {
+  const session = fakeSession("ack-session", []);
+  const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+  let failAcknowledgement = 0;
+  const control = new PindieControlClient(runtime, {
+    current: () => ({ snapshot: () => {
+      if (failAcknowledgement > 0) {
+        failAcknowledgement -= 1;
+        throw new Error("mock acknowledgement projection unavailable");
+      }
+      return presentationFor(activeState());
+    } }),
+  });
+  runtime.prompt = async (text, options) => {
+    session.prompts.push(text);
+    options!.preflightResult!("started");
+    session.start();
+    // Fail the promise-settlement refresh and then the delivery acknowledgement.
+    failAcknowledgement = 2;
+  };
+  await control.start();
+  try {
+    const result = await control.input({ lease: control.observe().lease, text: "Execute once" }).catch((error: unknown) => error);
+    assert.ok(result instanceof PindieControlError);
+    assert.equal(result.code, "delivery_uncertain");
+    assert.equal(result.receipt?.nextAction, "wait_observe_do_not_resend");
+    assert.equal(session.prompts.length, 1);
+    const dispatches = control.observe().dispatches;
+    assert.equal(dispatches.length, 1, "already-delivered work must stay identifiable after acknowledgement failure");
+    assert.deepEqual(dispatches[0]?.runIds, ["ack-session:run:1"]);
+    assert.equal(result.receipt?.dispatchId, dispatches[0]?.dispatchId);
+    const waiting = control.wait({ lease: control.observe().lease, until: "settled" });
+    emitAssistant(session, "Executed once.");
+    session.settle();
+    const settled = await waiting;
+    assert.equal(settled.reason, "settled");
+    assert.equal(settled.snapshot?.dispatches[0]?.state, "complete");
+    const outputIds = settled.snapshot!.dispatches[0]!.output!.entryIds;
+    assert.deepEqual(control.readTimeline().timeline.filter((entry) => outputIds.includes(entry.id)).map((entry) => entry.type === "message" ? entry.text : ""), ["Executed once."]);
+    assert.equal(session.prompts.length, 1);
+  } finally { control.dispose(); }
+});
+
+test("S2 native queued delivery followed by rejection retains its dispatch for reconciliation", async () => {
+  const session = fakeSession("queued-ack-session", []);
+  const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+  const control = new PindieControlClient(runtime, {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  runtime.steer = async (text) => {
+    session.steers.push(text);
+    session.queue.steering.push(text);
+    session.emit({ type: "queue_update", steering: [...session.queue.steering], followUp: [] } as AgentSessionEvent);
+    throw new Error("mock native acknowledgement lost after enqueue");
+  };
+  await control.start();
+  try {
+    await control.input({ lease: control.observe().lease, text: "Primary work" });
+    session.start();
+    const result = await control.input({ lease: control.observe().lease, text: "Guidance once" }).catch((error: unknown) => error);
+    assert.ok(result instanceof PindieControlError);
+    assert.equal(result.code, "delivery_uncertain");
+    assert.equal(session.steers.length, 1);
+    const dispatches = control.observe().dispatches;
+    assert.equal(dispatches.length, 2, "queued work must not disappear from the dispatch ledger on ambiguous rejection");
+    assert.equal(dispatches[1]?.state, "queued");
+    assert.equal(result.receipt?.dispatchId, dispatches[1]?.dispatchId);
+    assert.notEqual(dispatches[0]?.dispatchId, dispatches[1]?.dispatchId);
+    const timedOut = await control.wait({ lease: control.observe().lease, until: "settled", timeoutSeconds: 1 });
+    assert.equal(timedOut.reason, "timeout");
+    assert.equal(session.steers.length, 1, "wait timeout must never resend guidance");
+    session.queue.steering.length = 0;
+    session.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
+    emitAssistant(session, "Guidance consumed.");
+    session.settle();
+    assert.equal((await control.wait({ lease: control.observe().lease, until: "settled" })).snapshot?.dispatches[1]?.state, "complete");
+    assert.equal(session.steers.length, 1);
+  } finally { control.dispose(); }
+});
+
+test("S2 rejected native execution cannot become success even after a recorded completion", async () => {
+  for (const recordedOutput of [false, true]) {
+    const session = fakeSession("rejected-run", []);
+    const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+    let rejectRun!: (error: Error) => void;
+    runtime.prompt = (text, options) => {
+      session.prompts.push(text);
+      options!.preflightResult!("started");
+      session.start();
+      return new Promise<void>((_resolve, reject) => { rejectRun = reject; });
+    };
+    const control = new PindieControlClient(runtime, {
+      current: () => ({ snapshot: () => presentationFor(activeState()) }),
+    });
+    await control.start();
+    try {
+      const input = await control.input({ lease: control.observe().lease, text: "Execute once" });
+      const guidance = await control.input({ lease: input.snapshot.lease, text: "Guidance" });
+      session.queue.steering.length = 0;
+      session.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
+      if (recordedOutput) emitAssistant(session, "Recorded before execution failed.");
+      const waiting = control.wait({ lease: input.snapshot.lease, until: "settled" });
+      let returned = false;
+      void waiting.then(() => { returned = true; });
+      // Native _startRun emits agent_settled in finally before its promise rejects.
+      session.settle();
+      await Promise.resolve();
+      assert.equal(returned, false);
+      assert.equal(control.observe().runtime.automaticWorkSettled, false);
+      assert.deepEqual(control.observe().dispatches.map(({ state }) => state), ["running", "running"]);
+      rejectRun(new Error("mock process failure token=never-project-this"));
+      const result = await waiting;
+      assert.equal(result.reason, "settled");
+      assert.deepEqual(result.snapshot!.dispatches.map(({ state }) => state), ["error", "error"]);
+      assert.deepEqual(result.snapshot!.dispatches.map(({ dispatchId }) => dispatchId), [input.dispatch.dispatchId, guidance.dispatch.dispatchId]);
+      assert.ok(!JSON.stringify(result).includes("never-project-this"));
+      assert.equal(session.prompts.length, 1);
+      assert.equal(control.readTimeline().timeline.filter((entry) => entry.type === "message" && entry.role === "assistant").length, recordedOutput ? 1 : 0);
+    } finally { control.dispose(); }
+  }
+});
+
+test("S2 rejected prompt without agent_start stays failed and never attaches to later work", async () => {
+  const session = fakeSession("unstarted-run", []);
+  const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+  let rejectRun!: (error: Error) => void;
+  runtime.prompt = (text, options) => {
+    session.prompts.push(text);
+    options!.preflightResult!("started");
+    return new Promise<void>((_resolve, reject) => { rejectRun = reject; });
+  };
+  const control = new PindieControlClient(runtime, {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const input = await control.input({ lease: control.observe().lease, text: "Fails before Run start" });
+    session.settle();
+    rejectRun(new Error("mock start failure"));
+    await Promise.resolve();
+    const result = await control.wait({ lease: input.snapshot.lease, until: "settled" });
+    assert.equal(latestDispatch(result.snapshot!).state, "error");
+    assert.equal(latestDispatch(result.snapshot!).runId, null);
+    runtime.prompt = async (text, options) => {
+      session.prompts.push(text);
+      options!.preflightResult!("started");
+      session.start();
+    };
+    await control.input({ lease: input.snapshot.lease, text: "New explicitly authorized work" });
+    emitAssistant(session, "New work complete.");
+    session.settle();
+    const records = control.observe().dispatches;
+    assert.deepEqual(records.map(({ state }) => state), ["error", "complete"]);
+    assert.equal(records[0]?.dispatchId, input.dispatch.dispatchId);
+    assert.deepEqual(records[0]?.runIds, []);
+    assert.equal(records[0]?.output, null);
+    assert.equal(session.prompts.length, 2);
+  } finally { control.dispose(); }
+});
+
+test("S2 successful native promise closes the settlement window without redispatch", async () => {
+  const session = fakeSession("resolved-run", []);
+  const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+  let resolveRun!: () => void;
+  runtime.prompt = (text, options) => {
+    session.prompts.push(text);
+    options!.preflightResult!("started");
+    session.start();
+    return new Promise<void>((resolve) => { resolveRun = resolve; });
+  };
+  const control = new PindieControlClient(runtime, {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const input = await control.input({ lease: control.observe().lease, text: "Execute once" });
+    emitAssistant(session, "Recorded completion.");
+    const waiting = control.wait({ lease: input.snapshot.lease, until: "settled" });
+    session.settle();
+    assert.equal(latestDispatch(control.observe()).state, "running");
+    resolveRun();
+    const result = await waiting;
+    assert.equal(result.reason, "settled");
+    assert.equal(result.snapshot?.runtime.automaticWorkSettled, true);
+    assert.equal(result.snapshot?.dispatches[0]?.state, "complete");
+    assert.equal(result.snapshot?.dispatches[0]?.dispatchId, input.dispatch.dispatchId);
+    assert.equal(session.prompts.length, 1);
+  } finally { control.dispose(); }
+});
+
+test("S2 unconfirmed queued delivery never inherits the current Run's success", async () => {
+  const session = fakeSession("unconfirmed-session", []);
+  const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+  runtime.followUp = async () => { throw new Error("mock acknowledgement loss without queue evidence"); };
+  const control = new PindieControlClient(runtime, {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    await control.input({ lease: control.observe().lease, text: "Main work" });
+    session.start();
+    const error = await control.input({ lease: control.observe().lease, text: "Possibly not delivered", timing: "after_current_run" }).catch((error: unknown) => error);
+    assert.ok(error instanceof PindieControlError);
+    assert.equal(error.code, "delivery_uncertain");
+    emitAssistant(session, "Main work complete.");
+    session.settle();
+    const result = await control.wait({ lease: control.observe().lease, until: "settled" });
+    assert.deepEqual(result.snapshot!.dispatches.map(({ state }) => state), ["complete", "no_result"]);
+    assert.equal(result.snapshot!.dispatches[1]?.dispatchId, error.receipt?.dispatchId);
+  } finally { control.dispose(); }
+});
+
+test("S2 Gate response keeps its receipt after native acceptance and acknowledgement failure", async () => {
+  const session = fakeSession("gate-ack-session", []);
+  const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
+  let failAcknowledgement = 0;
+  const control = new PindieControlClient(runtime, {
+    current: () => ({ snapshot: () => {
+      if (failAcknowledgement > 0) {
+        failAcknowledgement -= 1;
+        throw new Error("mock Gate acknowledgement failure");
+      }
+      return presentationFor(activeState({ kind: "approval", question: "Proceed?" }));
+    } }),
+  });
+  runtime.prompt = async (text, options) => {
+    session.prompts.push(text);
+    options!.preflightResult!("started");
+    session.start();
+    failAcknowledgement = 2;
+  };
+  await control.start();
+  try {
+    const snapshot = control.observe();
+    const error = await control.respond({ lease: snapshot.lease, gateKey: snapshot.semantic.humanGate!.key, response: "Approve" }).catch((error: unknown) => error);
+    assert.ok(error instanceof PindieControlError);
+    assert.equal(error.code, "delivery_uncertain");
+    assert.equal(control.observe().dispatches[0]?.dispatchId, error.receipt?.dispatchId);
+    emitAssistant(session, "Approval received.");
+    session.settle();
+    assert.equal(control.observe().dispatches[0]?.state, "complete");
+    assert.deepEqual(session.prompts, ["Approve"]);
+  } finally { control.dispose(); }
+});
+
 test("Control Pi 0.99 handled dispositions never fabricate prompt or queued timeline deliveries", async () => {
   const session = fakeSession("session-1", branchEntries());
   const runtime = new PiRuntimeAdapter(fakeNativeRuntime(session).runtime);
@@ -1655,7 +1900,7 @@ test("Control echoes successful prompt, steer and followUp deliveries once and r
     assert.equal(matches[0]?.source, "session");
 
     (session.session as unknown as { steer: () => Promise<void> }).steer = () => { throw new Error("failed synchronously"); };
-    await assert.rejects(control.input({ lease, text: "must not echo" }), (error: unknown) => error instanceof PindieControlError && error.code === "delivery_failed");
+    await assert.rejects(control.input({ lease, text: "must not echo" }), (error: unknown) => error instanceof PindieControlError && error.code === "delivery_uncertain" && error.receipt?.nextAction === "wait_observe_do_not_resend");
     assert.equal(control.readTimeline().timeline.some((block) => block.type === "message" && block.text === "must not echo"), false);
   } finally { control.dispose(); }
 });
@@ -2103,16 +2348,24 @@ test("terminal error, lost output and abort are never reported as dispatch succe
     assert.deepEqual(failed.output?.entryIds, ["live:terminal-session:assistant:1"]);
     assert.equal(failed.output?.errorMessage, "401 auth failed token=[REDACTED]");
     assert.ok(!JSON.stringify(control.observe()).includes("secret-value"));
+    const failedWait = await control.wait({ lease: control.observe().lease, until: "settled" });
+    assert.equal(failedWait.reason, "settled");
+    assert.equal(latestDispatch(failedWait.snapshot!).state, "error");
+    const errorBlock = control.readTimeline().timeline.find((entry) => entry.id === failed.output?.entryIds[0]);
+    assert.equal(errorBlock?.type === "message" ? errorBlock.errorMessage : null, failed.output?.errorMessage);
 
     await control.input({ lease: control.observe().lease, text: "Silent work" });
     session.start();
     session.settle();
     assert.equal(latestDispatch(control.observe()).state, "no_result");
+    assert.equal(latestDispatch((await control.wait({ lease: control.observe().lease, until: "settled" })).snapshot!).state, "no_result");
 
     await control.input({ lease: control.observe().lease, text: "Aborted work" });
     session.start();
     session.emit({ type: "agent_settled", aborted: true } as AgentSessionEvent);
+    session.settle();
     assert.equal(latestDispatch(control.observe()).state, "cancelled");
+    assert.equal(latestDispatch((await control.wait({ lease: control.observe().lease, until: "settled" })).snapshot!).state, "cancelled");
   } finally { control.dispose(); }
 });
 
