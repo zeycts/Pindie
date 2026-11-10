@@ -27,7 +27,7 @@ import {
   type SubscriptionUsageRefreshOptions,
   type SubscriptionUsageSnapshot,
 } from "./subscription-usage.ts";
-import type { QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
+import { isQuotaResumeWaiting, type QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
 import type { SemanticDerivationResult } from "./semantics.ts";
 
 const PINDIE_STATUS_ID = "pindie-status";
@@ -96,6 +96,13 @@ export interface PindiePresentationSnapshot {
   readonly semantic: SemanticDerivationResult;
   readonly status: PindieStatusSnapshot;
   readonly quotaResumeWaiting: QuotaResumeWaitingStatus | null;
+  /**
+   * Latest quota-recovery lifecycle signal, including phases that are not a
+   * wait (`wake_started`, terminal abandonments). Control consumes this to
+   * release dispatch protection; waiting-gated behavior uses
+   * `quotaResumeWaiting` only.
+   */
+  readonly quotaResumeEvent?: QuotaResumeWaitingStatus | null;
   readonly projectRoot: string | null;
 }
 
@@ -147,9 +154,16 @@ export class PresentationIntegration {
     timer: ReturnType<typeof setTimeout>,
   ) => void;
   private statusContext: ExtensionContext | null = null;
+  /**
+   * Current native Session identity, cached even when Presentation UI is
+   * disabled. Headless Control must still session-scope quota recovery facts;
+   * this never enables status-bar or notification output.
+   */
+  private quotaScopeSessionId: string | null = null;
   private statusContextGeneration = 0;
   private watchStatusScope: object | null = null;
   private quotaResumeWaiting: QuotaResumeWaitingStatus | null = null;
+  private quotaRecoveryEvent: QuotaResumeWaitingStatus | null = null;
   private notifiedQuotaWaitingKey: string | null = null;
   private activityLingerTimer: ReturnType<typeof setTimeout> | null = null;
   private activityLingerGeneration = 0;
@@ -190,7 +204,7 @@ export class PresentationIntegration {
   }
 
   private readSnapshot(ctx: ExtensionContext | null): PindiePresentationSnapshot {
-    const quotaResumeWaiting = this.quotaWaitingFor(ctx);
+    const quotaResumeWaiting = this.quotaWaitingFor();
     return {
       semantic: this.getSemanticSnapshot(),
       status: {
@@ -207,6 +221,7 @@ export class PresentationIntegration {
         subscriptionUsage: snapshotSubscriptionUsage(this.subscriptionUsageMonitor.snapshot),
       },
       quotaResumeWaiting,
+      quotaResumeEvent: this.quotaRecoveryEventFor(),
       projectRoot: this.getProjectRoot(),
     };
   }
@@ -241,34 +256,38 @@ export class PresentationIntegration {
     }
   }
 
-  private quotaWaitingFor(
-    ctx: ExtensionContext | null,
-  ): QuotaResumeWaitingStatus | null {
+  private quotaWaitingFor(): QuotaResumeWaitingStatus | null {
     const waiting = this.quotaResumeWaiting;
-    if (waiting === null || ctx === null) return null;
-    try {
-      if (waiting.sessionId !== ctx.sessionManager.getSessionId()) return null;
-    } catch {
-      // A stale or otherwise unavailable context has no safe Session identity.
-      return null;
-    }
-    return { sessionId: waiting.sessionId, resumeAt: waiting.resumeAt };
+    if (!isQuotaResumeWaiting(waiting)) return null;
+    if (this.quotaScopeSessionId === null || waiting.sessionId !== this.quotaScopeSessionId) return null;
+    return { ...waiting };
+  }
+
+  private quotaRecoveryEventFor(): QuotaResumeWaitingStatus | null {
+    const event = this.quotaRecoveryEvent;
+    if (event === null) return null;
+    if (this.quotaScopeSessionId === null || event.sessionId !== this.quotaScopeSessionId) return null;
+    return { ...event };
   }
 
   setStatusContext(ctx: ExtensionContext | null): void {
     this.statusContext = this.uiEnabled ? ctx : null;
+    this.quotaScopeSessionId = currentSessionId(ctx);
     this.statusContextGeneration += 1;
     this.notifyQuotaWaitingBestEffort();
   }
 
   setQuotaResumeWaiting(status: QuotaResumeWaitingStatus | null): void {
-    if (
-      this.quotaResumeWaiting?.sessionId === status?.sessionId &&
-      this.quotaResumeWaiting?.resumeAt === status?.resumeAt
-    ) return;
+    if (sameQuotaStatus(this.quotaResumeWaiting, status)) return;
     this.quotaResumeWaiting = status;
     this.notifiedQuotaWaitingKey = null;
     this.notifyQuotaWaitingBestEffort();
+    this.refreshStatus();
+  }
+
+  setQuotaResumeEvent(status: QuotaResumeWaitingStatus | null): void {
+    if (sameQuotaStatus(this.quotaRecoveryEvent, status)) return;
+    this.quotaRecoveryEvent = status;
     this.refreshStatus();
   }
 
@@ -435,14 +454,14 @@ export class PresentationIntegration {
     return this.runCost.finish(entries);
   }
 
-  private quotaWaitingMatches(ctx: ExtensionContext): boolean {
-    return this.quotaWaitingFor(ctx) !== null;
+  private quotaWaitingMatches(): boolean {
+    return this.quotaWaitingFor() !== null;
   }
 
   private notifyQuotaWaitingBestEffort(): void {
     const ctx = this.statusContext;
     const waiting = this.quotaResumeWaiting;
-    if (!this.uiEnabled || !ctx?.hasUI || waiting === null || !this.quotaWaitingMatches(ctx)) return;
+    if (!this.uiEnabled || !ctx?.hasUI || waiting === null || !this.quotaWaitingMatches()) return;
     const key = `${waiting.sessionId}\0${waiting.resumeAt}`;
     if (this.notifiedQuotaWaitingKey === key) return;
     this.notifiedQuotaWaitingKey = key;
@@ -466,5 +485,27 @@ export class PresentationIntegration {
     } catch {
       // Status presentation must not alter semantic or runtime behavior.
     }
+  }
+}
+
+function sameQuotaStatus(
+  left: QuotaResumeWaitingStatus | null,
+  right: QuotaResumeWaitingStatus | null,
+): boolean {
+  return left?.sessionId === right?.sessionId &&
+    left?.resumeAt === right?.resumeAt &&
+    left?.anchorEntryId === right?.anchorEntryId &&
+    left?.phase === right?.phase;
+}
+
+/** Native Session identity of the current context, or null when unavailable. */
+function currentSessionId(ctx: ExtensionContext | null): string | null {
+  if (ctx === null) return null;
+  try {
+    const sessionId = ctx.sessionManager.getSessionId();
+    return typeof sessionId === "string" && sessionId !== "" ? sessionId : null;
+  } catch {
+    // A stale or otherwise unavailable context has no safe Session identity.
+    return null;
   }
 }

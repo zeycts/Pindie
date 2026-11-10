@@ -1,6 +1,6 @@
 import { findCodexQuotaIncidentAtAnchor, type QuotaResumePlan } from "./quota-resume-incident.ts";
 import { PiRuntimeAdapter } from "./pi-runtime.ts";
-import type { QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
+import type { QuotaResumePhase, QuotaResumeWaitingStatus } from "./quota-resume-control.ts";
 
 export const PINDIE_QUOTA_RESUME_TYPE = "pindie-quota-resume";
 export const PINDIE_QUOTA_RESUME_MESSAGE = `<PINDIE_QUOTA_RESUME>
@@ -57,7 +57,8 @@ export class QuotaResumeSupervisor {
     if (this.disposed || !this.validPlan(plan) || !this.matchesCurrentRuntime(plan)) return false;
     if (this.lease?.plan.sessionId === plan.sessionId && this.lease.plan.anchorEntryId === plan.anchorEntryId) return true;
 
-    this.clearLease();
+    // A replaced plan abandons the previous incident explicitly.
+    this.clearLease("cancelled");
     const generation = ++this.generation;
     let cancelTimer: () => void;
     try {
@@ -67,17 +68,17 @@ export class QuotaResumeSupervisor {
       return false;
     }
     this.lease = { generation, plan, cancelTimer };
-    this.publishWaiting({ sessionId: plan.sessionId, resumeAt: plan.resumeAt });
+    this.publishPhase(plan, "waiting");
     return true;
   }
 
   cancel(sessionId: string): void {
-    if (this.lease?.plan.sessionId === sessionId) this.clearLease();
+    if (this.lease?.plan.sessionId === sessionId) this.clearLease("cancelled");
   }
 
   dispose(): void {
     this.disposed = true;
-    this.clearLease();
+    this.clearLease("cancelled");
   }
 
   private validPlan(plan: QuotaResumePlan): boolean {
@@ -110,31 +111,49 @@ export class QuotaResumeSupervisor {
     const lease = this.lease;
     if (this.disposed || lease === null || lease.generation !== generation) return;
     if (!this.matchesCurrentRuntime(lease.plan)) {
-      this.clearLease();
+      // Session, model or anchor evidence changed: this incident is abandoned.
+      this.clearLease("invalidated");
       return;
     }
 
+    const plan = lease.plan;
+    // The wait is cleared immediately before the message, so publish the gap as
+    // `wake_started` rather than dropping the signal entirely.
     this.detachLease();
+    // A late send failure may only speak for this wake while nothing newer
+    // (next plan, cancel, dispose) has taken over the lease generation.
+    const wakeGeneration = this.generation;
     let resumed: Promise<void>;
     try {
       resumed = this.runtime.sendCustomMessage(
-        { customType: PINDIE_QUOTA_RESUME_TYPE, content: PINDIE_QUOTA_RESUME_MESSAGE, display: false },
+        {
+          customType: PINDIE_QUOTA_RESUME_TYPE,
+          content: PINDIE_QUOTA_RESUME_MESSAGE,
+          display: false,
+          // The anchor travels with the signal so Control can continue exactly
+          // the dispatches of this incident, without error-text inference.
+          details: { anchorEntryId: plan.anchorEntryId, sessionId: plan.sessionId },
+        },
         { triggerTurn: true },
       );
     } catch (error) {
+      if (this.generation === wakeGeneration) this.publishPhase(plan, "wake_failed");
       this.report(`Quota resume message failed: ${errorMessage(error)}`);
       return;
     }
-    void resumed.catch((error: unknown) => this.report(`Quota resume message failed: ${errorMessage(error)}`));
+    void resumed.catch((error: unknown) => {
+      if (this.generation === wakeGeneration) this.publishPhase(plan, "wake_failed");
+      this.report(`Quota resume message failed: ${errorMessage(error)}`);
+    });
   }
 
-  private clearLease(): void {
+  private clearLease(phase: QuotaResumePhase): void {
     const lease = this.lease;
     this.lease = null;
     ++this.generation;
     if (lease) {
       lease.cancelTimer();
-      this.publishWaiting(null);
+      this.publishPhase(lease.plan, phase);
     }
   }
 
@@ -142,10 +161,19 @@ export class QuotaResumeSupervisor {
     const lease = this.lease;
     this.lease = null;
     ++this.generation;
-    if (lease) this.publishWaiting(null);
+    if (lease) this.publishPhase(lease.plan, "wake_started");
   }
 
-  private publishWaiting(status: QuotaResumeWaitingStatus | null): void {
+  private publishPhase(plan: QuotaResumePlan, phase: QuotaResumePhase): void {
+    this.publish({
+      sessionId: plan.sessionId,
+      resumeAt: plan.resumeAt,
+      anchorEntryId: plan.anchorEntryId,
+      phase,
+    });
+  }
+
+  private publish(status: QuotaResumeWaitingStatus | null): void {
     try { this.onWaitingChange(status); } catch { /* Runtime status is best effort. */ }
   }
 

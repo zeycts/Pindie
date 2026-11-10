@@ -4,9 +4,43 @@ export type QuotaResumeControlEvent =
   | { readonly type: "schedule"; readonly plan: QuotaResumePlan }
   | { readonly type: "cancel"; readonly sessionId: string };
 
+/**
+ * Lifecycle phase of one Codex quota incident.
+ *
+ * `waiting` is the only phase that blocks switching/settlement. `wake_started`
+ * is the deliberate gap between clearing the wait and the hidden resume message;
+ * the failed dispatch stays protected across it. `cancelled`, `invalidated` and
+ * `wake_failed` are terminal abandonments and release that protection.
+ */
+export type QuotaResumePhase = "waiting" | "wake_started" | "cancelled" | "invalidated" | "wake_failed";
+
 export interface QuotaResumeWaitingStatus {
   readonly sessionId: string;
   readonly resumeAt: number;
+  /**
+   * Persisted Pi assistant-error entry that is the incident anchor. Dispatch
+   * correlation uses this identity only; it is never inferred from error text.
+   */
+  readonly anchorEntryId?: string;
+  /** Absent means the legacy `waiting` phase. */
+  readonly phase?: QuotaResumePhase;
+}
+
+export function quotaResumePhase(status: QuotaResumeWaitingStatus): QuotaResumePhase {
+  return status.phase ?? "waiting";
+}
+
+/** Only the waiting phase blocks Session switching and settlement. */
+export function isQuotaResumeWaiting(
+  status: QuotaResumeWaitingStatus | null,
+): status is QuotaResumeWaitingStatus {
+  return status !== null && quotaResumePhase(status) === "waiting";
+}
+
+/** Terminal abandonment: no successor Run will continue the incident. */
+export function isQuotaResumeAbandoned(status: QuotaResumeWaitingStatus): boolean {
+  const phase = quotaResumePhase(status);
+  return phase === "cancelled" || phase === "invalidated" || phase === "wake_failed";
 }
 
 export type QuotaResumeReceiver = (event: QuotaResumeControlEvent) => unknown;

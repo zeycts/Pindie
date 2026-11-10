@@ -326,6 +326,43 @@ test("matching authoritative waiting renders and notifies exactly once", () => {
   assert.doesNotMatch(ui.statuses.at(-1) ?? "", /waiting · quota/);
 });
 
+test("recovery lifecycle phases surface for Control without gating as waiting", () => {
+  const presentation = createPresentation();
+  const ui = uiContext("session");
+  presentation.setStatusContext(ui.ctx);
+  const waiting = {
+    sessionId: "session",
+    resumeAt: 123,
+    anchorEntryId: "entry-anchor",
+    phase: "waiting" as const,
+  };
+  presentation.setQuotaResumeWaiting(waiting);
+  presentation.setQuotaResumeEvent(waiting);
+  let snapshot = presentation.snapshot();
+  assert.equal(snapshot.status.quotaResumeWaiting, true);
+  assert.deepEqual(snapshot.quotaResumeEvent, waiting);
+
+  // The deliberate gap before the hidden message is not a wait, but remains
+  // visible to Control so protection is retained.
+  presentation.setQuotaResumeEvent({ ...waiting, phase: "wake_started" });
+  presentation.setQuotaResumeWaiting(null);
+  snapshot = presentation.snapshot();
+  assert.equal(snapshot.status.quotaResumeWaiting, false);
+  assert.equal(snapshot.quotaResumeWaiting, null);
+  assert.deepEqual(snapshot.quotaResumeEvent, { ...waiting, phase: "wake_started" });
+  assert.deepEqual(ui.notifications.length, 1);
+  assert.doesNotMatch(ui.statuses.at(-1) ?? "", /waiting · quota/);
+
+  // Terminal abandonment is Control-only and idempotent.
+  presentation.setQuotaResumeEvent({ ...waiting, phase: "cancelled" });
+  presentation.setQuotaResumeEvent({ ...waiting, phase: "cancelled" });
+  assert.deepEqual(presentation.snapshot().quotaResumeEvent, { ...waiting, phase: "cancelled" });
+
+  // Another Session's signal is not exposed.
+  presentation.setQuotaResumeEvent({ ...waiting, sessionId: "other", phase: "wake_failed" });
+  assert.equal(presentation.snapshot().quotaResumeEvent, null);
+});
+
 test("other-Session waiting neither renders nor notifies", () => {
   const presentation = createPresentation();
   const ui = uiContext("current");
@@ -344,6 +381,39 @@ test("presentation-disabled waiting produces no status or notification", () => {
   const ui = uiContext("session");
   presentation.setStatusContext(ui.ctx);
   presentation.setQuotaResumeWaiting({ sessionId: "session", resumeAt: 123 });
+  assert.deepEqual(ui.statuses, []);
+  assert.deepEqual(ui.notifications, []);
+});
+
+test("headless Presentation still session-scopes quota facts for Control without UI output", () => {
+  const presentation = createPresentation({ uiEnabled: false });
+  const ui = uiContext("session");
+  presentation.setStatusContext(ui.ctx);
+  const waiting = { sessionId: "session", resumeAt: 123, anchorEntryId: "entry-anchor", phase: "waiting" as const };
+  presentation.setQuotaResumeWaiting(waiting);
+  presentation.setQuotaResumeEvent(waiting);
+  let snapshot = presentation.snapshot();
+  // Headless Control needs these facts; no status bar or notification may appear.
+  assert.deepEqual(snapshot.quotaResumeWaiting, waiting);
+  assert.deepEqual(snapshot.quotaResumeEvent, waiting);
+  assert.equal(snapshot.status.quotaResumeWaiting, true);
+  assert.deepEqual(ui.statuses, []);
+  assert.deepEqual(ui.notifications, []);
+
+  // Terminal abandonment and the wake gap remain visible; other Sessions do not leak.
+  presentation.setQuotaResumeWaiting(null);
+  presentation.setQuotaResumeEvent({ ...waiting, phase: "cancelled" });
+  snapshot = presentation.snapshot();
+  assert.equal(snapshot.quotaResumeWaiting, null);
+  assert.deepEqual(snapshot.quotaResumeEvent, { ...waiting, phase: "cancelled" });
+  presentation.setQuotaResumeEvent({ ...waiting, sessionId: "other", phase: "wake_failed" });
+  assert.equal(presentation.snapshot().quotaResumeEvent, null);
+
+  // Losing the native context clears the cached Session scope.
+  presentation.setStatusContext(null);
+  presentation.setQuotaResumeEvent(waiting);
+  assert.equal(presentation.snapshot().quotaResumeEvent, null);
+  assert.equal(presentation.snapshot().quotaResumeWaiting, null);
   assert.deepEqual(ui.statuses, []);
   assert.deepEqual(ui.notifications, []);
 });

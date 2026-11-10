@@ -95,6 +95,8 @@ import { registerQuotaFallbackIntegration, type QuotaFallbackPreferenceStore } f
 import {
   getQuotaResumePublisher,
   getQuotaResumeStatusObserver,
+  isQuotaResumeWaiting,
+  type QuotaResumeWaitingStatus,
 } from "./quota-resume-control.ts";
 import {
   buildCodexQuotaRecoveryFacts,
@@ -298,10 +300,14 @@ function registerComposedPindieExtension(
   const presentationReader: PindiePresentationReader = {
     snapshot: () => presentation.snapshot(),
   };
-  let releaseQuotaStatusObserver = quotaResumeStatusObserver?.subscribe((status) => {
-    presentation.setQuotaResumeWaiting(status);
-  }) ?? null;
-  presentation.setQuotaResumeWaiting(quotaResumeStatusObserver?.getSnapshot() ?? null);
+  // Waiting-gated behavior uses `quotaResumeWaiting` (waiting phase only); the
+  // full lifecycle signal is exposed for Control's dispatch protection.
+  const applyQuotaRecoveryStatus = (status: QuotaResumeWaitingStatus | null): void => {
+    presentation.setQuotaResumeEvent(status);
+    presentation.setQuotaResumeWaiting(isQuotaResumeWaiting(status) ? status : null);
+  };
+  let releaseQuotaStatusObserver = quotaResumeStatusObserver?.subscribe(applyQuotaRecoveryStatus) ?? null;
+  applyQuotaRecoveryStatus(quotaResumeStatusObserver?.getSnapshot() ?? null);
   const cancelQuotaResume = (ctx: ExtensionContext): void => {
     ++quotaPlanningGeneration;
     if (quotaResumePublisher === null) return;
@@ -443,7 +449,8 @@ function registerComposedPindieExtension(
         isIdle,
         automaticWorkSettled: false,
         pendingMessageCount,
-        quotaResumeWaiting: quotaResumeStatusObserver?.getSnapshot()?.sessionId === live.sessionId,
+        quotaResumeWaiting: isQuotaResumeWaiting(quotaResumeStatusObserver?.getSnapshot() ?? null) &&
+          quotaResumeStatusObserver?.getSnapshot()?.sessionId === live.sessionId,
       });
       if (signal?.external === "attention") {
         void remote.humanSignal(signal);
@@ -685,6 +692,7 @@ function registerComposedPindieExtension(
     releaseQuotaStatusObserver?.();
     releaseQuotaStatusObserver = null;
     presentation.setQuotaResumeWaiting(null);
+    presentation.setQuotaResumeEvent(null);
     let nativeSessionId: string | null = null;
     try {
       nativeSessionId = ctx.sessionManager.getSessionId();

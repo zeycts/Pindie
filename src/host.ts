@@ -267,8 +267,13 @@ export async function createPindieHost(options: PindieHostOptions = {}): Promise
   const releaseHostControl = async (): Promise<void> => {
     quotaFallbackSupervisor?.dispose();
     quotaFallbackSupervisor = undefined;
+    // Disposal first publishes any active incident's terminal phase so Control
+    // can observe abandonment, then explicitly clears the observable status
+    // before the bridge lease is released (never a terminal event into a
+    // disposed bridge).
     quotaResumeSupervisor?.dispose();
     quotaResumeSupervisor = undefined;
+    quotaBridgeLease?.publishWaitingStatus(null);
     quotaBridgeLease?.release();
     quotaBridgeLease = undefined;
     releaseFallbackBridge?.();

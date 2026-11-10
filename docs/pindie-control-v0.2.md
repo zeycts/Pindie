@@ -1383,3 +1383,195 @@ local read-only control:watch monitor
 ```
 
 Further observability/control features must be driven by real failures after these slices.
+
+## 23. Dispatch lifecycle (Phase 2)
+
+Status: **implemented Slice 1 (correlation), extended by later Phase 2 slices.**
+Phase 1 terminal-error projection is unchanged; this section adds lifecycle
+identity, not new authority.
+
+### 23.1 Dispatch identity
+
+Every accepted `pindie_input` (and `pindie_respond`) creates one runtime-only
+dispatch record before Pi can start the Run, so a native `agent_start` can attach
+it. `dispatchId` is the same epoch-scoped id as the Control delivery echo
+(`live:<sessionId>:control:<n>`), is retained on the reconciled user timeline
+block, and is never reused inside a Session epoch. A Session replacement,
+rebind, restart or Host disposal discards the ledger: ids and outcomes are
+epoch-scoped, never persisted, and never a second event store. The ledger keeps
+at most four recent **terminal** dispatches, oldest first, in
+`snapshot.dispatches`; nonterminal dispatches are never evicted, and a waiting
+call pins its invocation-time records, so the list can temporarily exceed four.
+More than 32 simultaneously nonterminal dispatches is refused before delivery
+with `dispatch_backlog_full` rather than silently losing accepted work.
+
+### 23.2 Run correlation
+
+Pi's public `agent_start` event carries no identifier, so Control assigns a
+derived `runId` (`<sessionId>:run:<n>`) when it observes the Run start.
+`steer`/`followUp` are consumed inside the current Run and therefore attach to
+it; an idle `prompt` stays unattached until the Run it starts emits
+`agent_start`. A Session bound while Pi is already **streaming** missed that
+`agent_start`: Control adopts the running Run with its currently streaming
+assistant block as the output start, so busy input is still attributed. A merely
+non-idle Session (Pi compaction, no Run) adopts nothing and leaves new busy
+dispatches unattached until a real `agent_start`.
+
+One logical dispatch may span Runs. Pindie Auto Resume wakes failed work with a
+hidden `pindie-quota-resume` custom message (`sendCustomMessage(..., {triggerTurn:
+true})`), which Pi surfaces as an ordinary native `message_start`/`message_end`
+for a `role: "custom"` message.
+
+Verified order for that path in pinned Pi 1.5.0: `sendCustomMessage()` with
+`triggerTurn` while idle calls `_startRun({messageType: "custom", ...})`
+(`core/agent-session.js:1883–1888`); the run's starting message is emitted by the
+agent loop **after** `agent_start` (`pi-agent-core` `agent-loop.js:55–60`), so the
+resume `message_start` follows `agent_start`. `_flushPendingCustomMessages()`
+before `onStarted()` only flushes messages queued with `triggerTurn: false`
+(`core/agent-session.js:1911–1919`), and Supervisor runtime validation requires
+an idle, queue-empty Session (`src/quota-resume-supervisor.ts:95–106`), so the
+resume message is never one of those.
+
+Control therefore associates the currently active Run when it sees the resume
+message, **and** records the anchor so a resume message observed before
+`agent_start` (the alternate ordering) is applied on the next `agent_start`.
+Every dispatch whose last Run is that anchor's Run is continued together, so
+`runIds` lists the chain in order and `runId` stays the first Run. Independent
+new dispatches are still attached in the same `agent_start`; the two cases are
+evaluated together.
+
+Continuation is keyed by Pi's own persisted identity, never by error text or
+recency. At a settled, non-aborted terminal error, Control records the persisted
+Session entry id of that Run's terminal assistant message (one branch read, only
+for that case; successful and aborted Runs stay branch-free). Pindie's quota plan
+is already validated against exactly that persisted entry, and the Supervisor
+re-validates the same `anchorEntryId` against the branch before waking. The
+waiting status (`QuotaResumeWaitingStatus.anchorEntryId`) and the hidden
+`pindie-quota-resume` message (`details.anchorEntryId`) therefore carry that
+identity, and Control continues only dispatches whose last Run is the anchor Run.
+Several accepted inputs consumed by one failed Run continue together; an
+unrelated errored Run — including one with a different quota error — stays
+`error` with its own `runIds` and output. Aborted Runs are never eligible, and a
+resume signal without a validated anchor continues nothing.
+
+A reported quota wait is **not** an authorization signal: it only keeps the
+anchored failed dispatch from being pruned and readable before the hidden message
+arrives, and it is scoped to that single incident. The Supervisor publishes the
+whole lifecycle through the same control channel:
+
+| Phase | Meaning |
+| --- | --- |
+| `waiting` | reset scheduled; the anchored dispatch is protected and `waiting` |
+| `wake_started` | lease detached immediately before the hidden message; protection retained across the gap |
+| `cancelled` | explicit cancel, disable toggle, plan replacement or Host disposal |
+| `invalidated` | Session, model or anchor evidence changed at wake time |
+| `wake_failed` | the hidden message threw or its promise rejected |
+
+These lifecycle facts are session-scoped Presentation data, not UI: they stay
+readable when Presentation output is disabled (the headless Control path) while
+still producing no status-bar or notification output, and they are dropped when
+the current native Session context is cleared.
+
+The Supervisor owns only one current quota incident. Control reconciles quota
+protection against its current anchored lifecycle snapshot: a new incident
+supersedes protection for the old one, without changing either Run's identity,
+output or factual error, even if the replacement itself is already terminal.
+This does not require observing intermediate publications (plan replacement
+synchronously publishes old `cancelled`, then new
+`waiting`, and Presentation retains only the latest status). `wake_started`
+retains protection for the same incident; foreign-Session or unanchored waiting
+statuses cannot supersede it. No status history or additional persistent state is
+needed.
+
+Terminal phases release protection, leaving the dispatch factually `error` (never
+`complete`) so settlement waits can finish. A late send rejection may only
+publish `wake_failed` while its own wake generation still owns the lease, so it
+can never overwrite a newer incident's waiting state. `null` status keeps the
+protection (the gap is normally reported as `wake_started` instead). A new user
+`prompt` never inherits, and never releases, another incident's anchored
+dispatch.
+
+Run output is read from Control's own live projection, not from
+`entry_appended`: Pi 1.5 emits that event for custom, boundary, context-edit and
+cache-warmer entries, **not** for regular assistant messages (those are persisted
+on `message_end` without an event). Control records the assistant
+`UiMessageBlock` IDs appended after the Run's `agent_start` offset and the last
+block's lifecycle, so `output.entryIds` are exactly the epoch-scoped timeline
+block IDs a caller reads back from `pindie_read_timeline`
+(`latestAssistant.entryId` uses the same identity). A live epoch therefore uses
+`live:<sessionId>:assistant:<n>` IDs; after a Session epoch rebuild the ledger is
+discarded, so no cross-epoch ID is claimed. A multi-part assistant message is one
+projected block while streaming; persisted rebuilds may split it into
+`<entryId>` / `<entryId>:text:<n>` blocks, which is why output IDs are
+epoch-scoped. Retried Runs keep every persisted attempt block and take the last
+as the terminal lifecycle. Outputs are the Run's recorded assistant output, not
+text authored solely in response to one input.
+
+### 23.3 Unified state
+
+One derived state per dispatch, reusing existing Control/lifecycle vocabulary:
+
+| State | Meaning |
+| --- | --- |
+| `accepted` | recorded; not yet attached to a Run and not observed in Pi's queue |
+| `queued` | Pi's authoritative queue still holds this delivery |
+| `running` | attached to an active Run that is working |
+| `waiting` | attached Run is active but a Human Gate or quota wait is current, or the anchored quota incident is waiting/being resumed |
+| `complete` | last Run settled with a recorded terminal assistant completion |
+| `error` | last Run settled with a terminal assistant error (sanitized diagnostic) |
+| `cancelled` | last Run aborted, or input Pi never consumed before settlement |
+| `no_result` | last Run settled without a recorded terminal assistant completion |
+
+States and `output` describe the **last** Run in `runIds`; `output.entryIds`
+aggregates the whole chain in order.
+
+`complete` requires a recorded terminal lifecycle, which is derived from the
+native `message_end` for that Run; assistant blocks that never reached a
+terminal lifecycle are `no_result`, not success. `complete` is not Task
+completion or verified success. `no_result` exists so a lost, unterminated or
+unpersisted result is never reported as success; it is not a claim that the Run
+failed.
+
+`queued` reads Pi's authoritative queue snapshot. Pi 1.5 enqueues steer text in
+`steering` and followUp text in `followUp`, and when a user message is consumed
+it removes the **first** match from `steering`, else the first from `followUp`.
+Each queue is therefore an independent FIFO list and steering wins when the same
+text sits in both, so identical repeated texts keep distinct dispatch IDs while
+only the newest still-queued occurrences remain `queued`. This is a reading of
+the same queue Pi and the delivery echo reconcile against, not a second queue
+model. Idle prompts are never reported as queued (Control prompts only when idle),
+and while queue contents are unknown the state falls back to Run attachment
+rather than guessing.
+
+Input Pi never consumed is `cancelled`, and is never reported as `complete`: a
+record that is unattached at settlement, or still present in Pi's authoritative
+queue when the Run settles, is discarded before consumption.
+
+### 23.4 Read boundaries
+
+`pindie_wait` result semantics are unchanged in shape: `reason`
+(`changed|settled|human_gate|timeout|binding_changed`) plus the resulting
+`snapshot`. The awaited outcome is read from `snapshot.dispatches`; `settled`
+still means runtime settlement only, so a failed, cancelled or output-less Run
+also settles and must be interpreted from its dispatch record
+(`state`, `runId`, `runIds`, `output.entryIds`, `output.lifecycle`, optional
+`output.errorMessage`). `settled` is not returned while any dispatch is `waiting`
+for a pending quota recovery: such a wait times out normally instead of implying
+success. Terminal recovery abandonment (`cancelled`, `invalidated`,
+`wake_failed`) releases that protection, so the dispatch reports its factual
+`error` and the wait can settle; `wake_started` and `null` do not. Timeout
+remains a normal, non-dispatching result and never re-sends input.
+
+`pindie_wait` has **no** `dispatchId` input. Its boundary is the dispatch set
+present at invocation: those records are pinned for the duration of that call, so
+the bounded ledger cannot evict them and a newer, unrelated dispatch cannot
+silently replace them. Newer dispatches are appended after the pinned ones;
+callers identify their own dispatch by the `dispatchId` returned from
+`pindie_input`/`pindie_respond`. This is deliberately **not** per-dispatch
+waiting: there is no wait-for-this-dispatch condition, and a caller that needs
+one must compare the returned `dispatches` itself. Pins are released when the
+wait resolves, after which the ledger returns to its four-record bound, oldest
+first.
+
+No new tool, no input-schema change and no persisted dispatch store are added;
+the monitor's exact read-only surface and `{}` requests are unchanged.
