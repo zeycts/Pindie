@@ -1386,7 +1386,7 @@ Further observability/control features must be driven by real failures after the
 
 ## 23. Dispatch lifecycle (Phase 2)
 
-Status: **implemented Slices 1–2 (correlation, terminal propagation and no-duplicate hardening).**
+Status: **implemented Slices 1–2 (correlation, terminal propagation and uncertain delivery).**
 Phase 1 terminal-error projection is unchanged; this section adds lifecycle
 identity, not new authority.
 
@@ -1631,6 +1631,69 @@ remove the runtime-only ledger. A missing receipt is not proof of non-delivery,
 and Control cannot promise exactly-once execution across those boundaries. Observe
 and reconcile available native results before considering new user-authorized
 input; never automatically replay a lost/uncertain input or Gate answer.
+
+### 23.6 Exact-once boundary audit (S2)
+
+These are different failure boundaries, not interchangeable retries:
+
+| Boundary | What the caller knows | Safe next action |
+| --- | --- | --- |
+| `pindie_wait` returns `reason: timeout` after an acknowledged input | The caller already has the input's `dispatchId`; only the read timed out | Repeat read-only wait/observe with the current lease/revision, retaining that identity; never resend input |
+| An input/response returns `delivery_uncertain` | Control detected an in-process acknowledgement failure and the error response delivered its receipt | Observe/wait using `receipt.dispatchId`; do not resend the input or Gate answer |
+| Client/MCP transport timeout loses the **entire** `pindie_input` or `pindie_respond` response | Native dispatch may already have happened, but **no receipt or dispatchId may have reached the caller** | Reconnect and observe/read the active project's current Session; do not replay the mutation |
+
+The last case cannot be repaired by a receipt inside the lost response. In
+`src/control-mcp.ts`, both mutation schemas have no caller-supplied key; handlers
+accept only tool arguments and forward them to ControlClient. The installed MCP
+SDK does expose the JSON-RPC ID through the optional handler context
+`ctx.mcpReq.id`, but Pindie's callbacks do not consume that context. Its client
+Protocol allocates a fresh incrementing JSON-RPC ID for each request;
+`callTool` does not offer an original-request-ID override. `relatedRequestId`
+is correlation for a related request, not reuse of the outgoing request ID.
+Even a custom client manually reusing an ID would not gain deduplication:
+Pindie has no request-ID-to-dispatch reservation or replay contract.
+
+`src/control-mcp-process.ts` creates the actual HTTP entry using
+`createMcpHandler(() => createPindieControlMcpServer(workspace), ...)` and the
+Node `toNodeHandler` adapter. The shared workspace owns the live ControlClient;
+a new HTTP/MCP exchange is not a new native Session, nor is it a durable result
+replay service. No application idempotency or response-replay store is configured.
+Transport cancellation/disconnection is not proof that native work was cancelled
+or rolled back: these tool callbacks do not wire request cancellation to native
+abort. Lease validation checks binding authority, not whether text was previously
+submitted; revisions likewise are not input deduplication keys.
+
+**Recovery when the whole response is lost:** reconnect, use `pindie_observe` to
+confirm project/Session/lease, inspect the retained `dispatches`, and read the
+bounded timeline for native user delivery and assistant output. If a dispatch
+can be reliably identified, retain its identity and continue read-only wait/read.
+Text matches and recency alone cannot uniquely identify an input when repeated
+or concurrent inputs exist. The bounded ledger/timeline, rebind or restart can
+also make reconciliation inconclusive. In that case report **delivery unknown**
+to the human and request a decision before any new input; do not assert
+non-delivery, failure, success or safe replay. A new user-authorized attempt may
+duplicate earlier execution. Do not stop/reset the Session as an implicit retry.
+
+**Decision:** S2 prevents Control/wait from automatically redispatching and
+preserves detected acknowledgement uncertainty; it does **not** guarantee no
+duplicate execution after a caller resends an input whose response was lost.
+Caller-supplied idempotency is not necessary for that bounded, no-automatic-replay
+S2 contract and is not implemented. It **would** be necessary for the stronger
+requirement of safely retrying the mutation itself after losing its response.
+
+The minimal stronger contract would add a bounded caller-generated
+`idempotencyKey` to both mutation schemas. Reserve `(lease, key)` atomically
+**before** native delivery; same key plus identical operation/payload returns
+its original identity/outcome (or its in-flight receipt), never dispatches again;
+same key with changed operation/payload fails closed. Different keys preserve
+intentional repeated identical inputs as distinct dispatches. Optional keys
+would protect only callers supplying them, not every invocation. Reservation
+retention/backpressure and expiration must be explicit: evicting a key and then
+accepting its retry permits duplicates. A runtime-only reservation can at most
+guarantee at-most-once native submission within its documented binding/retention
+scope. Restart-spanning protection needs a durable recovery/atomicity design;
+keys alone do not prove exactly-once execution or external side effects. Those
+schema/storage/retention tradeoffs are outside S2's unchanged-schema contract.
 
 No new tool, no input-schema change and no persisted dispatch store are added;
 the monitor's exact read-only surface and `{}` requests are unchanged.
