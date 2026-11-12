@@ -101,6 +101,7 @@ export type PindieControlErrorCode =
   | "unsafe_runtime_state"
   | "model_unavailable"
   | "delivery_failed"
+  | "delivery_uncertain"
   | "session_not_found"
   | "session_ambiguous"
   | "session_switch_unsafe"
@@ -110,16 +111,27 @@ export type PindieControlErrorCode =
 export class PindieControlError extends Error {
   readonly code: PindieControlErrorCode;
   readonly snapshot: PindieControlSnapshot | null;
+  readonly receipt?: {
+    readonly dispatchId: string;
+    readonly delivery: PindieControlDelivery;
+    readonly nextAction: "wait_observe_do_not_resend";
+  };
 
   constructor(
     code: PindieControlErrorCode,
     message: string,
     snapshot: PindieControlSnapshot | null = null,
+    receipt?: {
+      readonly dispatchId: string;
+      readonly delivery: PindieControlDelivery;
+      readonly nextAction: "wait_observe_do_not_resend";
+    },
   ) {
     super(message);
     this.name = "PindieControlError";
     this.code = code;
     this.snapshot = snapshot;
+    this.receipt = receipt;
   }
 }
 
@@ -247,6 +259,11 @@ interface DispatchRecord {
   runIds: string[];
   /** Input Pi never consumed: unattached at settlement, or still queued then. */
   discardedBeforeConsumption: boolean;
+  /** Factual native execution rejection; no provider prose retained. */
+  executionRejected?: boolean;
+  executionPending?: boolean;
+  /** Native preflight/queue acknowledgement; matching queue text alone proves no acceptance. */
+  deliveryConfirmed: boolean;
   /**
    * A reported quota wait keeps a failed dispatch from being pruned. It never
    * authorizes successor association by itself.
@@ -267,6 +284,7 @@ interface RunRecord {
   errorMessage?: string;
   settled: boolean;
   aborted: boolean;
+  executionRejected?: boolean;
   /**
    * Persisted Pi entry of this Run's terminal assistant message, read from the
    * Session branch at settlement. Quota-incident correlation compares this
@@ -482,40 +500,34 @@ export class PindieControlClient {
 
     // Identity exists before Pi can start the Run so agent_start can attach it.
     const accepted = this.beginDispatch(text, delivery, snapshot.revision);
+    let refused = false;
     try {
       if (delivery === "prompt") {
-        await this.launchPrompt(text, nameStartedPrompt);
+        await this.launchPrompt(text, accepted, () => { refused = true; }, nameStartedPrompt);
         this.requireSameBinding(binding);
       } else if (delivery === "steer") {
         const disposition = await this.runtime.steer(text);
+        refused = disposition === "handled";
         this.requireSameBinding(binding);
         this.requireQueuedDelivery(disposition);
+        this.confirmQueuedDelivery(accepted);
       } else {
         const disposition = await this.runtime.followUp(text);
+        refused = disposition === "handled";
         this.requireSameBinding(binding);
         this.requireQueuedDelivery(disposition);
+        this.confirmQueuedDelivery(accepted);
       }
       this.appendDelivery(text, delivery, accepted.dispatchId);
     } catch (error) {
-      this.abandonDispatch(accepted);
-      if (error instanceof PindieControlError) throw error;
-      throw new PindieControlError(
-        "delivery_failed",
-        `Pindie Control could not deliver input: ${errorMessage(error)}`,
-        this.safeSnapshot(),
-      );
+      if (refused) {
+        this.abandonDispatch(accepted);
+        throw error;
+      }
+      throw this.uncertainDelivery(accepted, error);
     }
 
-    const after = this.observe();
-    const dispatch = after.dispatches.find((candidate) => candidate.dispatchId === accepted.dispatchId);
-    if (dispatch === undefined) {
-      throw new PindieControlError(
-        "delivery_failed",
-        "Pindie Control lost the accepted dispatch identity.",
-        after,
-      );
-    }
-    return { delivery, dispatch, snapshot: after };
+    return this.deliveryResult(accepted);
   }
 
   async respond(request: {
@@ -549,26 +561,20 @@ export class PindieControlClient {
 
     // A Gate response is an accepted user input for the Run it starts.
     const accepted = this.beginDispatch(response, "prompt", snapshot.revision);
+    let refused = false;
     try {
-      await this.launchPrompt(response);
+      await this.launchPrompt(response, accepted, () => { refused = true; });
       this.requireSameBinding(binding);
       this.appendDelivery(response, "prompt", accepted.dispatchId);
     } catch (error) {
-      this.abandonDispatch(accepted);
-      if (error instanceof PindieControlError) throw error;
-      throw new PindieControlError(
-        "delivery_failed",
-        `Pindie Control could not deliver the Human Gate response: ${errorMessage(error)}`,
-        this.safeSnapshot(),
-      );
+      if (refused) {
+        this.abandonDispatch(accepted);
+        throw error;
+      }
+      throw this.uncertainDelivery(accepted, error);
     }
 
-    const after = this.observe();
-    const dispatch = after.dispatches.find((candidate) => candidate.dispatchId === accepted.dispatchId);
-    if (dispatch === undefined) {
-      throw new PindieControlError("delivery_failed", "Pindie Control lost the accepted dispatch identity.", after);
-    }
-    return { delivery: "prompt", dispatch, snapshot: after };
+    return this.deliveryResult(accepted);
   }
 
   async stop(request: { readonly lease: string }): Promise<PindieControlStopResult> {
@@ -928,6 +934,7 @@ export class PindieControlClient {
       // stays unattached until the Run it starts emits agent_start.
       runIds: this.activeRunId === null ? [] : [this.activeRunId],
       discardedBeforeConsumption: false,
+      deliveryConfirmed: false,
       awaitingQuotaRecovery: false,
       pins: 0,
     };
@@ -939,12 +946,17 @@ export class PindieControlClient {
 
   /** A dispatch is terminal once its last Run settled (or Pi never consumed it). */
   private dispatchTerminal(record: DispatchRecord): boolean {
-    if (record.discardedBeforeConsumption) return true;
+    if (record.executionPending) return false;
+    if (record.discardedBeforeConsumption || record.executionRejected) return true;
     // A reported quota wait protects a failed dispatch until it is continued.
     if (record.awaitingQuotaRecovery) return false;
     const lastRunId = record.runIds.at(-1);
     if (lastRunId === undefined) return false;
-    return this.runs.get(lastRunId)?.settled === true;
+    return this.runs.get(lastRunId)?.settled === true && !this.runExecutionPending(lastRunId);
+  }
+
+  private runExecutionPending(runId: string): boolean {
+    return this.records.some((record) => record.executionPending && record.runIds[0] === runId);
   }
 
   private pruneDispatchRecords(): void {
@@ -954,6 +966,25 @@ export class PindieControlClient {
       if (index < 0) return;
       this.records = this.records.filter((_record, candidateIndex) => candidateIndex !== index);
     }
+  }
+
+  private deliveryResult(record: DispatchRecord): PindieControlInputResult {
+    try {
+      const snapshot = this.observe();
+      const dispatch = snapshot.dispatches.find((entry) => entry.dispatchId === record.dispatchId);
+      if (dispatch !== undefined) return { delivery: record.delivery, dispatch, snapshot };
+    } catch { /* Delivery already happened: never invite a blind resend. */ }
+    throw this.uncertainDelivery(record);
+  }
+
+  private uncertainDelivery(record: DispatchRecord, cause?: unknown): PindieControlError {
+    return new PindieControlError(
+      cause instanceof PindieControlError && cause.code === "stale_control_lease"
+        ? "stale_control_lease" : "delivery_uncertain",
+      "Native delivery may already have occurred. Wait and observe this dispatch; do not resend the input. A new input is a new dispatch, not a retry.",
+      this.safeSnapshot(),
+      { dispatchId: record.dispatchId, delivery: record.delivery, nextAction: "wait_observe_do_not_resend" },
+    );
   }
 
   private abandonDispatch(record: DispatchRecord): void {
@@ -984,7 +1015,10 @@ export class PindieControlClient {
       for (const text of contents) remaining.set(text, (remaining.get(text) ?? 0) + 1);
       const byText = new Map<string, DispatchRecord[]>();
       for (const record of this.records) {
-        if (record.delivery !== delivery) continue;
+        // Unacknowledged attempts may never have entered Pi's queue. Including
+        // them would steal an older identical delivery's occurrence and can
+        // falsely report that acknowledged input as consumed at settlement.
+        if (record.delivery !== delivery || !record.deliveryConfirmed) continue;
         const group = byText.get(record.text);
         if (group === undefined) byText.set(record.text, [record]);
         else group.push(record);
@@ -1039,7 +1073,9 @@ export class PindieControlClient {
       this.activeRunId = runId;
       // Independent new dispatches attach to this Run.
       for (const record of this.records) {
-        if (record.runIds.length === 0) record.runIds = [runId];
+        if (record.runIds.length === 0 && !record.discardedBeforeConsumption && !record.executionRejected) {
+          record.runIds = [runId];
+        }
       }
       // An already-observed resume anchor continues exactly its incident's failed
       // work in this Run too; both cases are evaluated, never mutually exclusive.
@@ -1172,13 +1208,17 @@ export class PindieControlClient {
     // Unknown queue contents fall back to Run attachment rather than guessing.
     const queued = unconsumed === null ? false : unconsumed.has(record.dispatchId);
     let state: PindieControlDispatchState;
-    if (record.discardedBeforeConsumption) state = "cancelled";
+    if (record.executionRejected) state = "error";
+    else if (record.discardedBeforeConsumption) state = "cancelled";
     // A reported quota wait keeps failed work readable and unsettled, even
     // though its predecessor Run has already settled.
     else if (record.awaitingQuotaRecovery) state = "waiting";
     else if (run === undefined) state = queued ? "queued" : "accepted";
+    else if (run.executionRejected && !run.aborted) state = "error";
     else if (!run.settled) state = gateActive || quotaWaiting ? "waiting" : queued ? "queued" : "running";
     else if (run.aborted) state = "cancelled";
+    else if (this.runExecutionPending(run.runId)) state = "running";
+    else if (!record.deliveryConfirmed) state = "no_result";
     else if (run.lifecycle === "error") state = "error";
     // Only a recorded terminal completion counts; blocks without one are not
     // success. This requires message_end capture, not mere streaming text.
@@ -1319,16 +1359,33 @@ export class PindieControlClient {
     for (const waiter of [...this.waiters]) this.resolveWaiter(waiter, result);
   }
 
+  private confirmQueuedDelivery(record: DispatchRecord): void {
+    record.deliveryConfirmed = true;
+    const runId = record.runIds.at(-1);
+    // Settlement may beat the acknowledgement continuation. Such input is
+    // still unconsumed if Pi's authoritative queue holds it after settlement.
+    if (runId !== undefined && this.runs.get(runId)?.settled && this.projection !== null &&
+      this.unconsumedDispatchIds(this.projection)?.has(record.dispatchId)) {
+      record.discardedBeforeConsumption = true;
+    }
+  }
+
   private requireQueuedDelivery(disposition: Awaited<ReturnType<PiRuntimeAdapter["steer"]>>): void {
     if (disposition === "handled") {
       throw new PindieControlError("delivery_failed", "Pi consumed the input without queuing it.", this.safeSnapshot());
     }
   }
 
-  private async launchPrompt(text: string, nameStartedPrompt?: () => void): Promise<void> {
+  private async launchPrompt(
+    text: string,
+    record: DispatchRecord,
+    onRefused: () => void,
+    nameStartedPrompt?: () => void,
+  ): Promise<void> {
     const binding = this.binding;
     let reportPreflight!: (accepted: boolean) => void;
     let preflightReported = false;
+    let acceptedByPi = false;
     const preflight = new Promise<boolean>((resolve) => {
       reportPreflight = (accepted) => {
         if (preflightReported) return;
@@ -1338,12 +1395,16 @@ export class PindieControlClient {
     });
 
     let pending: Promise<void>;
+    record.executionPending = true;
     try {
       pending = this.runtime.prompt(text, {
         // Pi 0.99 distinguishes extension-consumed input from an actual run/queue.
         preflightResult: (disposition) => {
           if (preflightReported) return;
           const accepted = disposition === "started" || disposition === "queued";
+          acceptedByPi = accepted;
+          record.deliveryConfirmed = accepted;
+          if (!accepted) onRefused();
           // Preflight precedes agent_start. Close the settled window before
           // naming can emit a native session_info_changed event.
           if (accepted && this.binding === binding) this.automaticWorkSettled = false;
@@ -1363,23 +1424,34 @@ export class PindieControlClient {
         },
       } satisfies PromptOptions);
     } catch (error) {
+      record.executionPending = false;
+      if (!acceptedByPi) onRefused();
+      else if (this.binding === binding) this.recordExecutionRejection(record);
       throw new PindieControlError(
         "delivery_failed",
         `Pindie prompt delivery failed: ${errorMessage(error)}`,
         this.safeSnapshot(),
       );
     }
-    void pending.catch((error) => {
-      reportPreflight(false);
-      // Pi owns the Agent Run and persists visible failure in Session history.
-      // Control must not turn a rejected Run Promise into a second result store.
+    const finish = (rejected: boolean) => {
+      record.executionPending = false;
+      if (rejected) {
+        reportPreflight(false);
+        if (!acceptedByPi) onRefused();
+        else if (this.binding === binding) {
+          // A recorded completion cannot override a rejected execution promise.
+          this.recordExecutionRejection(record);
+        }
+      }
+      // Pi owns diagnostics/history; retain only the runtime rejection fact.
+      if (this.binding !== binding) return;
       try {
         this.refresh();
       } catch {
         // A later explicit observation can recover current facts.
       }
-      return error;
-    });
+    };
+    void pending.then(() => finish(false), () => finish(true));
 
     if (!await preflight) {
       throw new PindieControlError(
@@ -1388,6 +1460,17 @@ export class PindieControlClient {
         this.safeSnapshot(),
       );
     }
+  }
+
+  private recordExecutionRejection(record: DispatchRecord): void {
+    const runId = record.runIds[0];
+    const run = runId === undefined ? undefined : this.runs.get(runId);
+    if (run === undefined) record.executionRejected = true;
+    else run.executionRejected = true;
+  }
+
+  private get workSettled(): boolean {
+    return this.automaticWorkSettled && !this.records.some((record) => record.executionPending);
   }
 
   private safeSnapshot(): PindieControlSnapshot | null {
@@ -1513,7 +1596,7 @@ export class PindieControlClient {
         model: this.runtime.getActiveSessionModelIdentity(),
         thinkingLevel: this.runtime.getActiveSessionThinkingLevel(),
         runtime: this.runtime.getActiveSessionFacts(),
-        automaticWorkSettled: this.automaticWorkSettled,
+        automaticWorkSettled: this.workSettled,
       },
     };
   }
@@ -1578,7 +1661,7 @@ export class PindieControlClient {
           taskStatus: projection.status.taskStatus,
           task,
           isIdle: projection.status.isIdle,
-          automaticWorkSettled: this.automaticWorkSettled,
+          automaticWorkSettled: this.workSettled,
           pendingMessageCount: projection.status.pendingMessageCount,
           quotaResumeWaiting: presentation.quotaResumeWaiting !== null,
         });
@@ -1602,7 +1685,7 @@ export class PindieControlClient {
         streaming: projection.status.isStreaming,
         compacting: projection.status.isCompacting,
         pendingMessageCount: projection.status.pendingMessageCount,
-        automaticWorkSettled: this.automaticWorkSettled,
+        automaticWorkSettled: this.workSettled,
         activity: projection.status.activity,
       },
       dispatches: (() => {

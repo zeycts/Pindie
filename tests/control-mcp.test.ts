@@ -36,6 +36,34 @@ async function linked(workspace: PindieControlWorkspace) {
   return { peer, close: async () => { await peer.close(); await server.close(); } };
 }
 
+test("MCP preserves uncertain delivery receipts and read-only retry guidance without changing the tool surface", async () => {
+  const { root, cleanup } = await fixture();
+  const snapshot = safe("live", { dispatches: [] });
+  const receipt = { dispatchId: "live:session:control:1", delivery: "prompt", nextAction: "wait_observe_do_not_resend" } as const;
+  const fail = () => { throw new PindieControlError("delivery_uncertain", "Wait and observe; do not resend.", snapshot, receipt); };
+  const workspace = await PindieControlWorkspace.create({ workspaceRoot: root,
+    createHost: async () => ({ dispose: async () => {} }) as PindieHost,
+    createClient: () => asClient({ start: async () => {}, dispose: () => {}, observe: () => snapshot, input: fail, respond: fail }),
+  });
+  const wire = await linked(workspace);
+  try {
+    await wire.peer.callTool({ name: "pindie_open_project", arguments: { project: "Pindie" } });
+    for (const [name, args] of [
+      ["pindie_input", { lease: "live", text: "Work" }],
+      ["pindie_respond", { lease: "live", gateKey: "gate", response: "Approve" }],
+    ] as const) {
+      const result = await wire.peer.callTool({ name, arguments: args });
+      assert.equal(result.isError, true);
+      assert.deepEqual(result.structuredContent, { code: "delivery_uncertain", message: "Wait and observe; do not resend.", snapshot, receipt });
+      assert.deepEqual(JSON.parse((result.content as { text: string }[])[0]!.text), result.structuredContent);
+    }
+    const { tools } = await wire.peer.listTools();
+    assert.equal(tools.length, 13);
+    assert.match(tools.find(({ name }) => name === "pindie_input")!.description!, /do not resend/);
+    assert.match(tools.find(({ name }) => name === "pindie_wait")!.description!, /never resend input/);
+  } finally { await wire.close(); await workspace.close(); await cleanup(); }
+});
+
 test("MCP preserves the complete bounded Control snapshot and report discriminants", async () => {
   const { root, cleanup } = await fixture();
   const base = {

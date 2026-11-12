@@ -1386,7 +1386,7 @@ Further observability/control features must be driven by real failures after the
 
 ## 23. Dispatch lifecycle (Phase 2)
 
-Status: **implemented Slice 1 (correlation), extended by later Phase 2 slices.**
+Status: **implemented Slices 1–2 (correlation, terminal propagation and uncertain delivery).**
 Phase 1 terminal-error projection is unchanged; this section adds lifecycle
 identity, not new authority.
 
@@ -1517,10 +1517,10 @@ One derived state per dispatch, reusing existing Control/lifecycle vocabulary:
 | `queued` | Pi's authoritative queue still holds this delivery |
 | `running` | attached to an active Run that is working |
 | `waiting` | attached Run is active but a Human Gate or quota wait is current, or the anchored quota incident is waiting/being resumed |
-| `complete` | last Run settled with a recorded terminal assistant completion |
-| `error` | last Run settled with a terminal assistant error (sanitized diagnostic) |
+| `complete` | last Run settled with a recorded terminal assistant completion and no pending/rejected Control prompt execution promise |
+| `error` | terminal assistant error (sanitized diagnostic), or factual rejection of the native prompt execution promise |
 | `cancelled` | last Run aborted, or input Pi never consumed before settlement |
-| `no_result` | last Run settled without a recorded terminal assistant completion |
+| `no_result` | last Run settled without a recorded terminal assistant completion, or delivery to it remained unconfirmed |
 
 States and `output` describe the **last** Run in `runIds`; `output.entryIds`
 aggregates the whole chain in order.
@@ -1532,7 +1532,26 @@ completion or verified success. `no_result` exists so a lost, unterminated or
 unpersisted result is never reported as success; it is not a claim that the Run
 failed.
 
-`queued` reads Pi's authoritative queue snapshot. Pi 1.5 enqueues steer text in
+Pi emits `agent_settled` in `_startRun`'s `finally`, before the native prompt
+promise resolves or rejects. Control retains that promise's pending/rejected
+fact in its runtime-only ledger. Until it settles, the dispatch remains
+`running` (or an already factual error/cancellation), and
+`runtime.automaticWorkSettled` is false. A rejected execution is `error`,
+including rejection after a recorded assistant completion, and every dispatch
+attached to that exact Run shares the failure. An unattached rejected prompt
+remains `error` and cannot attach to a later unrelated Run. Native runtime
+settlement is still required for `wait(until=settled)`; rejection alone never
+invents a native settlement event.
+
+Control does not create synthetic assistant messages or copy promise error
+prose into diagnostics. `output` and `latestAssistant` remain factual recorded
+assistant projection, so an earlier recorded `complete` output may coexist
+with dispatch state `error`. The dispatch state, not an earlier text block,
+is authoritative for this execution outcome; Task/Verification remain separate.
+
+`queued` reads Pi's authoritative queue snapshot for natively acknowledged
+dispatches only; matching text never promotes an unconfirmed attempt to accepted
+delivery. Pi 1.5 enqueues steer text in
 `steering` and followUp text in `followUp`, and when a user message is consumed
 it removes the **first** match from `steering`, else the first from `followUp`.
 Each queue is therefore an independent FIFO list and steering wins when the same
@@ -1572,6 +1591,120 @@ waiting: there is no wait-for-this-dispatch condition, and a caller that needs
 one must compare the returned `dispatches` itself. Pins are released when the
 wait resolves, after which the ledger returns to its four-record bound, oldest
 first.
+
+### 23.5 Acknowledgement uncertainty and safe retries
+
+A known native preflight refusal or extension `handled` disposition still
+returns `delivery_failed`, removes the unaccepted dispatch and adds no delivery
+echo. An error after prompt acceptance, a rejected steer/followUp acknowledgement,
+or failure to build the delivery result is **not** proof of non-delivery. Control
+retains the dispatch identity instead of abandoning potentially executed work,
+and returns an MCP error result with `code: delivery_uncertain`, a bounded
+snapshot when available, and an additive receipt:
+
+```json
+{
+  "dispatchId": "live:<sessionId>:control:<n>",
+  "delivery": "prompt",
+  "nextAction": "wait_observe_do_not_resend"
+}
+```
+
+The receipt is acknowledgement/provenance, not execution success or a promise
+that Pi accepted the input. Only native prompt preflight or a successful native
+queue acknowledgement confirms delivery. A full native queue snapshot contains
+text, not invocation identities: an older identical input, local input or an
+unrelated queue update cannot prove that this invocation was accepted. Without
+native acknowledgement, an ambiguous busy delivery cannot inherit a completed
+Run's success: it settles as `no_result`, even if matching text was observed in
+the queue. Acknowledged dispatches alone participate in the FIFO/text mapping;
+unconfirmed attempts cannot steal an older acknowledged dispatch's occurrence.
+This intentionally favors retained uncertainty over false acceptance/completion
+when an acknowledgement was lost after a real enqueue. If acknowledgement arrives
+after its Run settled and the acknowledged input is still queued, it remains
+`cancelled` even after later queue clearing; late acknowledgement cannot revive
+unconsumed work as complete. Queue positions are read from native snapshots,
+not a second queue. After an in-flight binding change the error keeps
+`stale_control_lease` and includes the old dispatch receipt with the same no-resend
+guidance; it never attaches that identity to the replacement Session.
+
+Safe normal flow: retain the input receipt, call `pindie_wait` with the current
+lease/revision, inspect that dispatch's state in the returned Session-global
+snapshot, then read its `output.entryIds` through `pindie_read_timeline` or inspect
+`pindie_observe`. Timeout is progress-only: retry **wait**, never input. A failed,
+cancelled or `no_result` dispatch is not success. A current Gate or binding change
+can interrupt any wait mode; re-observe rather than blindly resending.
+
+There is no client idempotency key and no content-based deduplication. Identical
+explicitly resent input is a distinct dispatch and may execute again. Transport
+loss may discard the entire acknowledgement; a Host restart/rebind may also
+remove the runtime-only ledger. A missing receipt is not proof of non-delivery,
+and Control cannot promise exactly-once execution across those boundaries. Observe
+and reconcile available native results before considering new user-authorized
+input; never automatically replay a lost/uncertain input or Gate answer.
+
+### 23.6 Exact-once boundary audit (S2)
+
+These are different failure boundaries, not interchangeable retries:
+
+| Boundary | What the caller knows | Safe next action |
+| --- | --- | --- |
+| `pindie_wait` returns `reason: timeout` after an acknowledged input | The caller already has the input's `dispatchId`; only the read timed out | Repeat read-only wait/observe with the current lease/revision, retaining that identity; never resend input |
+| An input/response returns `delivery_uncertain` | Control detected an in-process acknowledgement failure and the error response delivered its receipt | Observe/wait using `receipt.dispatchId`; do not resend the input or Gate answer |
+| Client/MCP transport timeout loses the **entire** `pindie_input` or `pindie_respond` response | Native dispatch may already have happened, but **no receipt or dispatchId may have reached the caller** | Reconnect and observe/read the active project's current Session; do not replay the mutation |
+
+The last case cannot be repaired by a receipt inside the lost response. In
+`src/control-mcp.ts`, both mutation schemas have no caller-supplied key; handlers
+accept only tool arguments and forward them to ControlClient. The installed MCP
+SDK does expose the JSON-RPC ID through the optional handler context
+`ctx.mcpReq.id`, but Pindie's callbacks do not consume that context. Its client
+Protocol allocates a fresh incrementing JSON-RPC ID for each request;
+`callTool` does not offer an original-request-ID override. `relatedRequestId`
+is correlation for a related request, not reuse of the outgoing request ID.
+Even a custom client manually reusing an ID would not gain deduplication:
+Pindie has no request-ID-to-dispatch reservation or replay contract.
+
+`src/control-mcp-process.ts` creates the actual HTTP entry using
+`createMcpHandler(() => createPindieControlMcpServer(workspace), ...)` and the
+Node `toNodeHandler` adapter. The shared workspace owns the live ControlClient;
+a new HTTP/MCP exchange is not a new native Session, nor is it a durable result
+replay service. No application idempotency or response-replay store is configured.
+Transport cancellation/disconnection is not proof that native work was cancelled
+or rolled back: these tool callbacks do not wire request cancellation to native
+abort. Lease validation checks binding authority, not whether text was previously
+submitted; revisions likewise are not input deduplication keys.
+
+**Recovery when the whole response is lost:** reconnect, use `pindie_observe` to
+confirm project/Session/lease, inspect the retained `dispatches`, and read the
+bounded timeline for native user delivery and assistant output. If a dispatch
+can be reliably identified, retain its identity and continue read-only wait/read.
+Text matches and recency alone cannot uniquely identify an input when repeated
+or concurrent inputs exist. The bounded ledger/timeline, rebind or restart can
+also make reconciliation inconclusive. In that case report **delivery unknown**
+to the human and request a decision before any new input; do not assert
+non-delivery, failure, success or safe replay. A new user-authorized attempt may
+duplicate earlier execution. Do not stop/reset the Session as an implicit retry.
+
+**Decision:** S2 prevents Control/wait from automatically redispatching and
+preserves detected acknowledgement uncertainty; it does **not** guarantee no
+duplicate execution after a caller resends an input whose response was lost.
+Caller-supplied idempotency is not necessary for that bounded, no-automatic-replay
+S2 contract and is not implemented. It **would** be necessary for the stronger
+requirement of safely retrying the mutation itself after losing its response.
+
+The minimal stronger contract would add a bounded caller-generated
+`idempotencyKey` to both mutation schemas. Reserve `(lease, key)` atomically
+**before** native delivery; same key plus identical operation/payload returns
+its original identity/outcome (or its in-flight receipt), never dispatches again;
+same key with changed operation/payload fails closed. Different keys preserve
+intentional repeated identical inputs as distinct dispatches. Optional keys
+would protect only callers supplying them, not every invocation. Reservation
+retention/backpressure and expiration must be explicit: evicting a key and then
+accepting its retry permits duplicates. A runtime-only reservation can at most
+guarantee at-most-once native submission within its documented binding/retention
+scope. Restart-spanning protection needs a durable recovery/atomicity design;
+keys alone do not prove exactly-once execution or external side effects. Those
+schema/storage/retention tradeoffs are outside S2's unchanged-schema contract.
 
 No new tool, no input-schema change and no persisted dispatch store are added;
 the monitor's exact read-only surface and `{}` requests are unchanged.
