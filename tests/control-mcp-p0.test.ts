@@ -307,3 +307,121 @@ test("P0 HTTP/native Pi: acknowledged busy input is queued then shares the consu
     assert.equal(terminal.snapshot.semantic.taskStatus, "active"); assert.equal(terminal.snapshot.semantic.verificationStatus, "pending");
   } finally { release.release(); await f.close(); }
 });
+
+// P1 adds only missing real-transport/native-event boundaries. Existing mocked
+// Control tests remain the evidence for deliberately impossible/lost events.
+test("P1 HTTP/native Pi: a continuation error supersedes an earlier complete block without completing the Task", { timeout: 30_000 }, async () => {
+  const f = await fixture();
+  const continuationReady = barrier(), releaseContinuation = barrier();
+  try {
+    const before = await f.open();
+    f.faux.setResponses([
+      fauxAssistantMessage("First block is complete, not the Run"),
+      async () => {
+        continuationReady.release(); await releaseContinuation.promise;
+        return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fixture invalid request token=p1-private" });
+      },
+    ]);
+    const receipt = await f.ok<PindieControlInputResult>("input", { lease: before.lease, text: "Read-only error fixture" });
+    await f.endReached.promise;
+    const first = (await f.observe()).dispatches[0]!;
+    assert.equal(first.state, "running"); assert.equal(first.output?.lifecycle, "complete");
+    f.releaseEnd.release(); await continuationReady.promise;
+    const continued = await f.observe();
+    assert.equal(continued.dispatches[0]!.runId, first.runId);
+    assert.equal(continued.dispatches[0]!.state, "running");
+    const timeout = await f.ok<{ reason: string }>("wait", { lease: before.lease, until: "settled", timeoutSeconds: 1 });
+    assert.equal(timeout.reason, "timeout"); assert.equal(f.faux.state.callCount, 2);
+    releaseContinuation.release();
+    const terminal = await f.ok<{ reason: string; snapshot: PindieControlSnapshot }>("wait", { lease: before.lease, until: "settled", timeoutSeconds: 5 });
+    assert.equal(terminal.reason, "settled");
+    const dispatch = terminal.snapshot.dispatches[0]!;
+    assert.equal(dispatch.dispatchId, receipt.dispatch.dispatchId);
+    assert.equal(dispatch.state, "error"); assert.equal(dispatch.output?.lifecycle, "error");
+    assert.deepEqual(dispatch.runIds, first.runIds); assert.equal(dispatch.output.entryIds.length, 2);
+    assert.equal(dispatch.output.errorMessage, "Fixture invalid request token=[REDACTED]");
+    assert.deepEqual(durableMeaning(terminal.snapshot), durableMeaning(before));
+    assert.equal(terminal.snapshot.runtime.idle, true); assert.equal(terminal.snapshot.runtime.automaticWorkSettled, true);
+    const timeline = await f.ok<{ timeline: UiTimelineBlock[] }>("read_timeline", { limit: 50 });
+    for (const id of dispatch.output.entryIds) assert.ok(timeline.timeline.some((block) => block.id === id));
+    assert.ok(!JSON.stringify({ terminal, timeline }).includes("p1-private"));
+    assert.equal(f.faux.state.callCount, 2); assert.equal(terminal.snapshot.dispatches.length, 1);
+    assert.deepEqual(f.events.filter((type) => ["agent_start", "agent_end", "agent_settled"].includes(type)),
+      ["agent_start", "agent_end", "agent_start", "agent_end", "agent_settled"]);
+  } finally { releaseContinuation.release(); await f.close(); }
+});
+
+test("P1 HTTP/native Pi: stop cancels running and identical queued inputs; fresh Session rejects old lease without replay", { timeout: 30_000 }, async () => {
+  const f = await fixture(); const ready = barrier(), aborted = barrier();
+  try {
+    const before = await f.open();
+    f.faux.setResponses([async (_context, options) => {
+      ready.release();
+      if (!options?.signal?.aborted) await new Promise<void>((resolve) => {
+        options!.signal!.addEventListener("abort", () => { aborted.release(); resolve(); }, { once: true });
+      });
+      return fauxAssistantMessage("Never delivered as a successful answer");
+    }]);
+    const main = await f.ok<PindieControlInputResult>("input", { lease: before.lease, text: "Cancellable work" });
+    await ready.promise;
+    const steer = await f.ok<PindieControlInputResult>("input", { lease: before.lease, text: "identical guidance" });
+    const follow = await f.ok<PindieControlInputResult>("input", { lease: before.lease, text: "identical guidance", timing: "after_current_run" });
+    assert.equal(steer.delivery, "steer"); assert.equal(follow.delivery, "followUp");
+    assert.equal(steer.dispatch.state, "queued"); assert.equal(follow.dispatch.state, "queued");
+    assert.notEqual(steer.dispatch.dispatchId, follow.dispatch.dispatchId);
+    const busyFresh = await f.call("fresh_session", { lease: before.lease });
+    assert.equal(busyFresh.isError, true); assert.equal(busyFresh.structuredContent?.code, "unsafe_runtime_state");
+    assert.equal((await f.observe()).runtime.pendingMessageCount, 2);
+    f.releaseEnd.release();
+    const stopped = await f.ok<{ stopped: boolean; cleared: { steering: number; followUp: number }; snapshot: PindieControlSnapshot }>("stop", { lease: before.lease });
+    await aborted.promise;
+    assert.equal(stopped.stopped, true); assert.deepEqual(stopped.cleared, { steering: 1, followUp: 1 });
+    assert.deepEqual(stopped.snapshot.dispatches.map((d) => d.dispatchId), [main.dispatch.dispatchId, steer.dispatch.dispatchId, follow.dispatch.dispatchId]);
+    assert.deepEqual(stopped.snapshot.dispatches.map((d) => d.state), ["cancelled", "cancelled", "cancelled"]);
+    assert.deepEqual(durableMeaning(stopped.snapshot), durableMeaning(before));
+    assert.equal(stopped.snapshot.runtime.pendingMessageCount, 0); assert.equal(f.faux.state.callCount, 1);
+    const settled = await f.ok<{ reason: string; snapshot: PindieControlSnapshot }>("wait", { lease: before.lease, until: "settled", timeoutSeconds: 1 });
+    assert.equal(settled.reason, "settled"); assert.equal(settled.snapshot.dispatches[0]!.state, "cancelled");
+    const fresh = await f.ok<{ cancelled: boolean; snapshot: PindieControlSnapshot }>("fresh_session", { lease: before.lease });
+    assert.equal(fresh.cancelled, false); assert.notEqual(fresh.snapshot.lease, before.lease);
+    assert.notEqual(fresh.snapshot.session.id, before.session.id); assert.deepEqual(fresh.snapshot.dispatches, []);
+    for (const [name, args] of [["input", { text: "Do not deliver" }], ["wait", { until: "settled", timeoutSeconds: 1 }], ["stop", {}]] as const) {
+      const stale = await f.call(name, { lease: before.lease, ...args });
+      assert.equal(stale.isError, true); assert.equal(stale.structuredContent?.code, "stale_control_lease");
+    }
+    assert.equal(f.faux.state.callCount, 1); assert.deepEqual((await f.observe()).dispatches, []);
+  } finally { f.releaseEnd.release(); await f.close(); }
+});
+
+test("P1 HTTP/native Pi: identical steer and followUp remain distinct through real queue consumption", { timeout: 30_000 }, async () => {
+  const f = await fixture(true); const ready = barrier(), release = barrier(), steerReady = barrier(), releaseSteer = barrier();
+  try {
+    const before = await f.open();
+    f.faux.setResponses([
+      async () => { ready.release(); await release.promise; return fauxAssistantMessage("Initial output"); },
+      async () => { steerReady.release(); await releaseSteer.promise; return fauxAssistantMessage("Steer output"); },
+      fauxAssistantMessage("Follow-up output"),
+    ]);
+    await f.ok<PindieControlInputResult>("input", { lease: before.lease, text: "Initial work" }); await ready.promise;
+    const steer = await f.ok<PindieControlInputResult>("input", { lease: before.lease, text: "same text" });
+    const follow = await f.ok<PindieControlInputResult>("input", { lease: before.lease, text: "same text", timing: "after_current_run" });
+    release.release(); await steerReady.promise;
+    const consuming = await f.observe();
+    assert.equal(consuming.dispatches.find((d) => d.dispatchId === steer.dispatch.dispatchId)!.state, "running");
+    assert.equal(consuming.dispatches.find((d) => d.dispatchId === follow.dispatch.dispatchId)!.state, "queued");
+    assert.equal(consuming.runtime.pendingMessageCount, 1);
+    releaseSteer.release(); await f.endReached.promise; f.releaseEnd.release();
+    const terminal = await f.ok<{ reason: string; snapshot: PindieControlSnapshot }>("wait", { lease: before.lease, until: "settled", timeoutSeconds: 5 });
+    assert.equal(terminal.reason, "settled");
+    assert.deepEqual(terminal.snapshot.dispatches.map((d) => d.state), ["complete", "complete", "complete"]);
+    assert.equal(new Set(terminal.snapshot.dispatches.map((d) => d.dispatchId)).size, 3);
+    assert.equal(new Set(terminal.snapshot.dispatches.map((d) => d.runId)).size, 1);
+    assert.equal(f.faux.state.callCount, 3);
+    assert.deepEqual(durableMeaning(terminal.snapshot), durableMeaning(before));
+    const timeline = await f.ok<{ timeline: UiTimelineBlock[] }>("read_timeline", { limit: 50 });
+    for (const receipt of [steer, follow]) {
+      const matches = timeline.timeline.filter((block) => block.id === receipt.dispatch.dispatchId);
+      assert.equal(matches.length, 1);
+    }
+  } finally { release.release(); releaseSteer.release(); await f.close(); }
+});
