@@ -1417,6 +1417,15 @@ assistant block as the output start, so busy input is still attributed. A merely
 non-idle Session (Pi compaction, no Run) adopts nothing and leaves new busy
 dispatches unattached until a real `agent_start`.
 
+Native boundary continuation can emit `agent_start → agent_end → agent_start →
+agent_end → agent_settled` within **one** Session Run. Until `agent_settled`,
+repeated starts retain the same derived `runId` and output window; they do not
+orphan earlier dispatches or imply settlement at `agent_end`. The real HTTP /
+Host / pinned Pi regression in `tests/control-mcp-p0.test.ts` covers this with
+an active Task, alongside a done/passed Task without continuation. This is
+separate from quota recovery after a settled Run, which uses the anchored chain
+below.
+
 One logical dispatch may span Runs. Pindie Auto Resume wakes failed work with a
 hidden `pindie-quota-resume` custom message (`sendCustomMessage(..., {triggerTurn:
 true})`), which Pi surfaces as an ordinary native `message_start`/`message_end`
