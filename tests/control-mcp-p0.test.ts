@@ -133,7 +133,7 @@ test("P0 HTTP: all 13 contracts reject invalid parameters and preserve no-projec
     const input = schemas.find((x: { name: string }) => x.name === "pindie_input").inputSchema;
     assert.deepEqual(input.properties.sessionName, { type: "string", minLength: 1, maxLength: 512 });
     const observe = schemas.find((x: { name: string }) => x.name === "pindie_observe").inputSchema;
-    assert.deepEqual(observe.properties.view, { type: "string", enum: ["snapshot", "models", "efficiency"] });
+    assert.deepEqual(observe.properties.view, { type: "string", enum: ["snapshot", "models", "efficiency", "quota"] });
     delete input.properties.sessionName; delete observe.properties.view;
     assert.deepEqual(schemas, baseline);
 
@@ -156,6 +156,8 @@ test("P0 HTTP: all 13 contracts reject invalid parameters and preserve no-projec
       }
     }
     assert.equal((await f.ok<{ state: string }>("observe")).state, "no_active_project");
+    const noQuotaProject = await f.call("observe", { view: "quota" });
+    assert.equal(noQuotaProject.isError, true); assert.equal(noQuotaProject.structuredContent?.code, "no_active_project");
     assert.equal((await f.ok<{ activeProject: null }>("list_projects")).activeProject, null);
     for (const name of ["input", "respond", "stop", "fresh_session", "configure", "list_sessions", "switch_session", "read_timeline", "wait"]) {
       const result = await f.call(name, args[name]);
@@ -176,7 +178,7 @@ test("P0 HTTP: all 13 contracts reject invalid parameters and preserve no-projec
       assert.deepEqual(JSON.parse((result.content as { text: string }[])[0]!.text), result.structuredContent);
     }
     for (const [name, data] of [
-      ["observe", { view: "quota" }], ["input", { text: "work", timing: "later" }],
+      ["observe", { view: "unsupported" }], ["input", { text: "work", timing: "later" }],
       ["input", { text: "work", sessionName: "x".repeat(513) }],
       ["configure", { model: { provider: "p", modelId: "m", unknown: true } }],
       ["configure", { thinkingLevel: "automatic" }], ["list_sessions", { offset: -1 }],
@@ -197,7 +199,13 @@ test("P0 HTTP: all 13 contracts reject invalid parameters and preserve no-projec
     assert.equal(missing.structuredContent?.code, "session_not_found");
     assert.deepEqual((await f.observe()).dispatches, []);
     assert.deepEqual((await f.observe()).executionConfig, before.executionConfig);
-    assert.equal(f.faux.state.callCount, 0); // Rejections never invoke even the local provider.
+    const quota = await f.ok<{ subscription: { status: string; fiveHour: null; weekly: null }; monitor: { freshness: string } }>("observe", { view: "quota" });
+    assert.equal(quota.subscription.status, "unknown");
+    assert.equal(quota.subscription.fiveHour, null); assert.equal(quota.subscription.weekly, null);
+    assert.equal(quota.monitor.freshness, "unavailable");
+    assert.deepEqual(await f.observe(), before); // Optional quota read changes no revision, authority or execution.
+    assert.equal((await f.call("observe", { view: "quota", lease: before.lease })).isError, true);
+    assert.equal(f.faux.state.callCount, 0); // Rejections and quota reads never invoke even the local provider.
   } finally { await f.close(); }
 });
 

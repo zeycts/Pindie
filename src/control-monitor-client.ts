@@ -72,7 +72,8 @@ export function verifyMonitorToolSurface(tools: readonly MonitorAdvertisedTool[]
     const hasModelView = name === "pindie_observe" && properties !== null && Object.hasOwn(properties, "view");
     const propertyNames = Object.keys(properties ?? {}).filter((key) => !hasModelView || key !== "view");
     if (hasModelView && !validEnumSchema(properties!.view, ["snapshot", "models"]) &&
-      !validEnumSchema(properties!.view, ["snapshot", "models", "efficiency"])) fail();
+      !validEnumSchema(properties!.view, ["snapshot", "models", "efficiency"]) &&
+      !validEnumSchema(properties!.view, ["snapshot", "models", "efficiency", "quota"])) fail();
     if (!tool || annotations?.readOnlyHint !== true || annotations.destructiveHint !== false || annotations.openWorldHint !== false ||
       !properties || propertyNames.sort().join("\\0") !== [...surface.properties].sort().join("\\0") ||
       required.slice().sort().join("\\0") !== [...surface.required].sort().join("\\0") || schema?.additionalProperties !== false ||
