@@ -40,6 +40,8 @@ test("monitor accepts old observation or exact optional read-only views, rejecti
   verifyMonitorToolSurface(extended);
   extended[0]!.inputSchema.properties = { view: { type: "string", enum: ["snapshot", "models", "efficiency"] } };
   verifyMonitorToolSurface(extended);
+  extended[0]!.inputSchema.properties = { view: { type: "string", enum: ["snapshot", "models", "efficiency", "quota"] } };
+  verifyMonitorToolSurface(extended);
   extended[0]!.inputSchema.required = ["view"];
   assert.throws(() => verifyMonitorToolSurface(extended), /Incompatible/);
   extended[0]!.inputSchema.required = [];

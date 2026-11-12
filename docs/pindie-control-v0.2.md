@@ -6,7 +6,7 @@ Current service: `PINDIE_WORKSPACE_ROOT`, zero or one active Host, explicit proj
 
 ### Optional model registry view
 
-`pindie_observe` accepts optional `view: "snapshot" | "models" | "efficiency"` (default
+`pindie_observe` accepts optional `view: "snapshot" | "models" | "efficiency" | "quota"` (default
 `"snapshot"`). The models view is project-scoped, read-only and lease-free;
 without an active project it returns `no_active_project`. It returns the current
 Pi available-registry snapshot through the Control client/runtime adapter, not a
@@ -26,6 +26,19 @@ scan, new subscription or background sampling. Snapshot defaults and the 13-tool
 surface remain unchanged. Watch accepts only the exact known optional view
 schemas and still sends `{}`; it adds no efficiency panel or control capability.
 See [Phase 3 baseline and comparison guide](control-efficiency-phase3.md).
+
+### Optional quota boundary view
+
+`pindie_observe({view: "quota"})` is project-scoped, lease-free and read-only.
+It explicitly reports **unknown** active-account 5h/weekly quota: the existing
+legacy `openai-codex` monitor has no verified active-account provenance, and it
+is not a usage source for Pi's current `openai` Sign in with ChatGPT path.
+The view reports only cached monitor fetch time/age and a Session-scoped quota
+recovery phase; it does not transfer percentages/reset dates to the active model,
+resolve auth, fetch usage, change recovery policy or dispatch work. Cache `fresh`
+is not provider health. Cancellation/wake is not proof of quota restoration.
+Snapshot defaults and 13 tools remain unchanged; old servers may reject this
+new optional view. See [quota source/freshness audit and manual acceptance](control-quota-observation.md).
 
 ## 1. Why v0.2 exists
 

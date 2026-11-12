@@ -294,6 +294,25 @@ test("requires an actually exhausted standard window", async () => {
   }), null);
 });
 
+test("display rounding must not turn near-exhaustion into a recovery incident", async () => {
+  for (const usedPercent of [99.5, 99.6, 99.99]) {
+    const plan = await buildQuotaResumePlan({
+      enabled: true, ctx: planningContext(), branch: quotaBranch(), now: () => NOW,
+      monitor: monitorFor(usageSnapshot({ fiveUsedPercent: usedPercent, fiveResetsAt: NOW + 5_000 })),
+    });
+    assert.equal(plan, null, `${usedPercent}% used is not exhausted`);
+  }
+});
+
+test("a rounded five-hour display cannot postpone the actually exhausted weekly recovery", async () => {
+  const plan = await buildQuotaResumePlan({
+    enabled: true, ctx: planningContext(), branch: quotaBranch(), now: () => NOW,
+    monitor: monitorFor(usageSnapshot({ fiveUsedPercent: 99.6, fiveResetsAt: NOW + 90_000,
+      weeklyUsedPercent: 100, weeklyResetsAt: NOW + 5_000 })),
+  });
+  assert.equal(plan?.resumeAt, NOW + 5_000 + QUOTA_RESET_GRACE_MS);
+});
+
 test("requires both recognized standard windows", async () => {
   for (const options of [
     { includeFive: false, weeklyResetsAt: NOW + 5_000 },

@@ -4,7 +4,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import {
-  getRemainingPercent,
   selectFiveHourWindow,
   selectWeeklyWindow,
   SubscriptionUsageMonitor,
@@ -121,7 +120,9 @@ function deriveResumeAt(
   if (fiveHour === null || weekly === null) return null;
 
   const exhausted = [fiveHour, weekly].filter((window) =>
-    getRemainingPercent(window.usedPercent) === 0,
+    // UI remaining-percent rounding is not evidence of exhaustion (99.6% is
+    // still below the limit). Only finite, unrounded usage can confirm it.
+    Number.isFinite(window.usedPercent) && window.usedPercent >= 100,
   );
   if (exhausted.length === 0) return null;
 

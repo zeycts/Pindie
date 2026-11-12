@@ -7,6 +7,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { classifyHumanSignal } from "./human-signal.ts";
+import { projectControlQuota } from "./control-quota.ts";
 import { PINDIE_QUOTA_RESUME_TYPE } from "./quota-resume-supervisor.ts";
 import {
   quotaResumePhase,
@@ -459,6 +460,23 @@ export class PindieControlClient {
     return { ...efficiency, duration,
       durationSource: "Existing Presentation consumption from Core RunTimer / Host TaskMetricsTracker; active Run time, not Task wall time. Process-local; resets on restart/manual Session replacement. Only the available scope is returned; null if unavailable.",
     };
+  }
+
+  /** Cached facts only: never resolve credentials or refresh usage from Control. */
+  readQuota() {
+    const snapshot = this.observe();
+    let monitorFetchedAt: number | null = null;
+    let recoveryEvent = snapshot.recovery.quotaWaiting;
+    try {
+      const presentation = this.presentation.current()?.snapshot();
+      monitorFetchedAt = presentation?.status.subscriptionUsage?.fetchedAt ?? null;
+      // A separately read stale/foreign event must not erase the current
+      // snapshot's valid wait. Same-Session wake/cancel still takes precedence.
+      const event = presentation?.quotaResumeEvent;
+      if (event?.sessionId === snapshot.session.id) recoveryEvent = event;
+    } catch { /* Missing optional telemetry is unknown, never healthy. */ }
+    return projectControlQuota({ sessionId: snapshot.session.id, model: snapshot.executionConfig.model,
+      monitorFetchedAt, recoveryEvent });
   }
 
   /** Availability means membership in Pi's current registry snapshot, not provider health. */
