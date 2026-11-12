@@ -45,6 +45,22 @@ test("mocked incident phases, reset dates and fallback never certify exhausted o
   assert.equal(projectControlQuota({ ...base, recoveryEvent: { sessionId: "session", resumeAt: now } }, now).recovery?.phase, "waiting");
 });
 
+test("Control quota retains current waiting unless a same-Session lifecycle event supersedes it", () => {
+  const waiting = { sessionId: "session", phase: "waiting", resumeAt: now + 30_000, anchorEntryId: "current" };
+  const snapshot = { session: { id: "session" }, executionConfig: { model: base.model }, recovery: { quotaWaiting: waiting } };
+  const read = (event: unknown) => PindieControlClient.prototype.readQuota.call({
+    observe: () => snapshot,
+    presentation: { current: () => ({ snapshot: () => ({ status: {}, quotaResumeEvent: event }) }) },
+  } as unknown as PindieControlClient);
+  for (const event of [null, { sessionId: "old-session", phase: "cancelled", resumeAt: now, anchorEntryId: "old" }]) {
+    assert.deepEqual(read(event).recovery, { phase: "waiting", resumeAt: waiting.resumeAt, anchorEntryId: "current" });
+  }
+  // A current cancellation/wake must still beat the earlier waiting snapshot.
+  for (const phase of ["cancelled", "wake_started"] as const) {
+    assert.deepEqual(read({ ...waiting, phase }).recovery, { phase, resumeAt: waiting.resumeAt, anchorEntryId: "current" });
+  }
+});
+
 test("Control quota uses only existing safe observation and cached timestamps, not auth, percentages or raw payloads", () => {
   const snapshot = { session: { id: "session" }, executionConfig: { model: base.model }, recovery: { quotaWaiting: null } };
   const read = (presentation: unknown) => PindieControlClient.prototype.readQuota.call({

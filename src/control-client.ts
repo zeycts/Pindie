@@ -470,7 +470,10 @@ export class PindieControlClient {
     try {
       const presentation = this.presentation.current()?.snapshot();
       monitorFetchedAt = presentation?.status.subscriptionUsage?.fetchedAt ?? null;
-      recoveryEvent = presentation?.quotaResumeEvent ?? recoveryEvent;
+      // A separately read stale/foreign event must not erase the current
+      // snapshot's valid wait. Same-Session wake/cancel still takes precedence.
+      const event = presentation?.quotaResumeEvent;
+      if (event?.sessionId === snapshot.session.id) recoveryEvent = event;
     } catch { /* Missing optional telemetry is unknown, never healthy. */ }
     return projectControlQuota({ sessionId: snapshot.session.id, model: snapshot.executionConfig.model,
       monitorFetchedAt, recoveryEvent });

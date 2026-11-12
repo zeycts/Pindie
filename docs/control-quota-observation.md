@@ -53,7 +53,14 @@ is read-only, needs no lease, and never fetches usage or resolves credentials.
 - `recovery`: Session-scoped observed incident phase, scheduled `resumeAt` and
   optional anchor. `waiting`, `wake_started`, `cancelled`, `invalidated`,
   `wake_failed` are lifecycle facts, not quota measurements. An expired scheduled
-  time is not proof access has recovered. Foreign-Session events are omitted.
+  time is not proof access has recovered. A same-Session lifecycle event takes
+  precedence over the earlier waiting snapshot; a foreign/null event cannot erase
+  a valid current wait. The stock PresentationIntegration filters events by its
+  status-context Session and Control checks native binding at refresh/rebind.
+  No production rebind failure was reproduced. The read boundary nevertheless
+  reads Presentation separately: an injected/stale reader conflict reproduced a
+  hidden wait in a unit test. It is now guarded at selection, not only discarded
+  later in the projector. Rebind/supervisor ownership is unchanged.
 
 This is intentionally a visibility-of-unknown improvement, **not** a live quota
 meter. A fresh legacy snapshot, a fallback model, a complete Run or absence of
