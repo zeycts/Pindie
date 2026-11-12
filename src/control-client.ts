@@ -1060,17 +1060,22 @@ export class PindieControlClient {
     if (event.type === "agent_start") {
       const binding = this.binding;
       if (binding === null) return;
-      const runId = `${binding.sessionId}:run:${this.nextRunSequence++}`;
-      this.runs.set(runId, {
-        runId,
-        timelineOffset: this.projection?.timeline.length ?? 0,
-        adopted: false,
-        outputIds: [],
-        lifecycle: null,
-        settled: false,
-        aborted: false,
-      });
-      this.activeRunId = runId;
+      // Native boundary continuation emits another agent_start inside the
+      // same Session Run, with only one agent_settled after all continuations.
+      // Keep its identity/output window until that authoritative settlement.
+      const runId = this.activeRunId ?? `${binding.sessionId}:run:${this.nextRunSequence++}`;
+      if (this.activeRunId === null) {
+        this.runs.set(runId, {
+          runId,
+          timelineOffset: this.projection?.timeline.length ?? 0,
+          adopted: false,
+          outputIds: [],
+          lifecycle: null,
+          settled: false,
+          aborted: false,
+        });
+        this.activeRunId = runId;
+      }
       // Independent new dispatches attach to this Run.
       for (const record of this.records) {
         if (record.runIds.length === 0 && !record.discardedBeforeConsumption && !record.executionRejected) {
