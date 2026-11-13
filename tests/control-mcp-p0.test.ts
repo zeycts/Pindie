@@ -38,7 +38,7 @@ function taskState(completed: boolean): PindieState {
  * Only provider responses and an extension agent_end barrier are controlled.
  * All storage/auth/preferences are fixture-local; no production port/provider.
  */
-async function fixture(completed = false) {
+async function fixture(completed = false, provider = "p0-fixture") {
   const root = await mkdtemp(join(tmpdir(), "pindie-mcp-p0-"));
   const workspaceRoot = join(root, "workspace");
   const project = join(workspaceRoot, "project");
@@ -52,7 +52,7 @@ async function fixture(completed = false) {
   let host: PindieHost | undefined;
   let handle: Awaited<ReturnType<typeof startControlMcpProcess>> | undefined;
   const peer = new Client({ name: "p0-regression", version: "1" });
-  const faux = fauxProvider({ provider: "p0-fixture" });
+  const faux = fauxProvider({ provider });
   try {
     await mkdir(project, { recursive: true });
     await mkdir(agentDir);
@@ -99,6 +99,7 @@ async function fixture(completed = false) {
   };
   const observe = async () => (await ok<{ control: PindieControlSnapshot }>("observe")).control;
   return { root, project, peer, faux, events, endReached, releaseEnd, call, ok, observe,
+    disableRetry: () => host!.runtime.activeSession.setAutoRetryEnabled(false),
     open: async () => { await ok("open_project", { project: "project" }); return observe(); },
     close: async () => {
       releaseEnd.release();
@@ -348,6 +349,9 @@ test("P1 HTTP/native Pi: a continuation error supersedes an earlier complete blo
     assert.equal(dispatch.state, "error"); assert.equal(dispatch.output?.lifecycle, "error");
     assert.deepEqual(dispatch.runIds, first.runIds); assert.equal(dispatch.output.entryIds.length, 2);
     assert.equal(dispatch.output.errorMessage, "Fixture invalid request token=[REDACTED]");
+    assert.equal(dispatch.output.failure?.category, "unknown");
+    assert.equal(dispatch.output.failure?.provider, "p0-fixture");
+    assert.deepEqual(terminal.snapshot.latestAssistant?.lifecycle === "error" && terminal.snapshot.latestAssistant.failure, dispatch.output.failure);
     assert.deepEqual(durableMeaning(terminal.snapshot), durableMeaning(before));
     assert.equal(terminal.snapshot.runtime.idle, true); assert.equal(terminal.snapshot.runtime.automaticWorkSettled, true);
     const timeline = await f.ok<{ timeline: UiTimelineBlock[] }>("read_timeline", { limit: 50 });
@@ -386,6 +390,7 @@ test("P1 HTTP/native Pi: stop cancels running and identical queued inputs; fresh
     assert.equal(stopped.stopped, true); assert.deepEqual(stopped.cleared, { steering: 1, followUp: 1 });
     assert.deepEqual(stopped.snapshot.dispatches.map((d) => d.dispatchId), [main.dispatch.dispatchId, steer.dispatch.dispatchId, follow.dispatch.dispatchId]);
     assert.deepEqual(stopped.snapshot.dispatches.map((d) => d.state), ["cancelled", "cancelled", "cancelled"]);
+    assert.ok(stopped.snapshot.dispatches.every((d) => d.output?.failure === undefined));
     assert.deepEqual(durableMeaning(stopped.snapshot), durableMeaning(before));
     assert.equal(stopped.snapshot.runtime.pendingMessageCount, 0); assert.equal(f.faux.state.callCount, 1);
     const settled = await f.ok<{ reason: string; snapshot: PindieControlSnapshot }>("wait", { lease: before.lease, until: "settled", timeoutSeconds: 1 });
@@ -432,4 +437,76 @@ test("P1 HTTP/native Pi: identical steer and followUp remain distinct through re
       assert.equal(matches.length, 1);
     }
   } finally { release.release(); releaseSteer.release(); await f.close(); }
+});
+
+
+test("P3 HTTP/native Pi: final failure evidence is scoped, unverified and never quota telemetry", { timeout: 60_000 }, async () => {
+  const f = await fixture(true, "openai");
+  try {
+    const before = await f.open();
+    f.disableRetry(); // Fixture-local settings only: classify the final failed attempt, not a recovered retry.
+    f.releaseEnd.release();
+    const cases = [
+      ["subscription_sharing_usage_limit_exceeded", "subscription_limit"],
+      ["subscription_sharing_workplace_individual_usage_limit_exceeded", "subscription_limit"],
+      ["OpenAI API error (429): rate_limit_exceeded", "rate_limit"],
+      ["insufficient_quota", "billing_or_quota"],
+      ["OpenAI API error (401): invalid credentials", "authentication"],
+      ["OpenAI API error (403): forbidden", "permission"],
+      ["ECONNRESET", "network_or_upstream"],
+      ["ambiguous quota timeout permission prose", "unknown"],
+    ];
+    for (const [diagnostic, category] of cases) {
+      f.faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: diagnostic! })]);
+      const receipt = await f.ok<PindieControlInputResult>("input", { lease: before.lease, text: "identical input" });
+      const terminal = await f.ok<{ reason: string; snapshot: PindieControlSnapshot }>("wait", { lease: before.lease, until: "settled", timeoutSeconds: 5 });
+      assert.equal(terminal.reason, "settled");
+      const latest = terminal.snapshot.latestAssistant as unknown as { failure?: Record<string, unknown> };
+      assert.equal(latest.failure?.category, category);
+      assert.equal(latest.failure?.provider, "openai");
+      assert.equal(latest.failure?.confidence, "unverified");
+      assert.equal(latest.failure?.evidenceKind, "assistant_error_message");
+      assert.equal(typeof latest.failure?.observedAt, "number");
+      const dispatch = terminal.snapshot.dispatches.find(d => d.dispatchId === receipt.dispatch.dispatchId)!;
+      assert.equal(dispatch.state, "error");
+      assert.deepEqual((dispatch.output as unknown as { failure: unknown }).failure, latest.failure);
+      const timeline = await f.ok<{ timeline: (UiTimelineBlock & { failure?: unknown })[] }>("read_timeline", { limit: 50 });
+      assert.deepEqual(timeline.timeline.find(b => b.id === dispatch.output!.entryIds.at(-1))?.failure, latest.failure);
+      assert.deepEqual(durableMeaning(terminal.snapshot), durableMeaning(before));
+      const quota = await f.ok<{ subscription: { status: string; fiveHour: null; weekly: null } }>("observe", { view: "quota" });
+      assert.equal(quota.subscription.status, "unknown"); assert.equal(quota.subscription.fiveHour, null); assert.equal(quota.subscription.weekly, null);
+    }
+    f.faux.setResponses([fauxAssistantMessage("successful next Run")]);
+    await f.ok("input", { lease: before.lease, text: "identical input" });
+    const success = await f.ok<{ snapshot: PindieControlSnapshot }>("wait", { lease: before.lease, until: "settled", timeoutSeconds: 5 });
+    assert.equal((success.snapshot.latestAssistant as unknown as { failure?: unknown }).failure, undefined);
+    const fresh = await f.ok<{ snapshot: PindieControlSnapshot }>("fresh_session", { lease: before.lease });
+    assert.equal(fresh.snapshot.latestAssistant, null);
+    assert.deepEqual(fresh.snapshot.dispatches, []);
+    assert.equal(f.faux.state.callCount, cases.length + 1);
+  } finally { await f.close(); }
+});
+
+test("P3 HTTP/native Pi: transient retry errors are not final failure evidence", { timeout: 30_000 }, async () => {
+  const f = await fixture(true, "openai");
+  const retried = barrier(), release = barrier();
+  try {
+    const before = await f.open(); f.releaseEnd.release();
+    f.faux.setResponses([
+      fauxAssistantMessage([], { stopReason: "error", errorMessage: "OpenAI API error (429): rate_limit_exceeded" }),
+      async () => { retried.release(); await release.promise; return fauxAssistantMessage("retry recovered"); },
+    ]);
+    await f.ok("input", { lease: before.lease, text: "Retry only in isolated faux provider" });
+    await retried.promise;
+    const during = await f.observe();
+    assert.equal((during.latestAssistant as { failure?: unknown } | null)?.failure, undefined);
+    assert.ok(during.dispatches.every(d => d.output?.failure === undefined));
+    release.release();
+    const terminal = await f.ok<{ snapshot: PindieControlSnapshot }>("wait", { lease: before.lease, until: "settled", timeoutSeconds: 5 });
+    assert.equal(terminal.snapshot.dispatches[0]?.state, "complete");
+    assert.equal(terminal.snapshot.dispatches[0]?.output?.failure, undefined);
+    const timeline = await f.ok<{ timeline: UiTimelineBlock[] }>("read_timeline", { limit: 50 });
+    assert.ok(timeline.timeline.every(b => b.type !== "message" || b.failure === undefined));
+    assert.equal(f.faux.state.callCount, 2);
+  } finally { release.release(); await f.close(); }
 });

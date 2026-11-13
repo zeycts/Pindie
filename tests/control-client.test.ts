@@ -2069,6 +2069,37 @@ test("empty terminal errors wake meaningful_change with sanitized diagnostics", 
   } finally { control.dispose(); }
 });
 
+test("final failure evidence does not survive model transfer or same-ID Session rebind; abort has none", async () => {
+  const first = fakeSession("failure-epoch", []);
+  const native = fakeNativeRuntime(first);
+  const control = new PindieControlClient(new PiRuntimeAdapter(native.runtime), {
+    current: () => ({ snapshot: () => presentationFor(activeState()) }),
+  });
+  await control.start();
+  try {
+    const error = { role: "assistant", provider: "openai-codex", model: "gpt-6-sol", content: [], stopReason: "error", errorMessage: "insufficient_quota" };
+    first.start(); first.emit({ type: "message_end", message: error } as unknown as AgentSessionEvent);
+    assert.equal((control.observe().latestAssistant as { failure?: unknown })?.failure, undefined);
+    first.settle();
+    const original = control.observe();
+    assert.equal(original.latestAssistant?.source === "assistant" && original.latestAssistant.failure?.category, "billing_or_quota");
+    const timeline = control.readTimeline();
+    assert.deepEqual(control.readTimeline(), timeline, "observation timestamp is stable across reads");
+    await control.configure({ lease: original.lease, model: { provider: "openai-codex", modelId: "gpt-6-luna" } });
+    assert.equal((control.observe().latestAssistant as { failure?: unknown })?.failure, undefined);
+    await control.configure({ lease: original.lease, model: { provider: "openai-codex", modelId: "gpt-6-sol" } });
+    assert.equal((control.observe().latestAssistant as { failure?: unknown })?.failure, undefined, "returning to a model must not revive old failure");
+    assert.ok(control.readTimeline().timeline.some(b => b.type === "message" && b.failure !== undefined), "historical evidence retains its actual message identity");
+    const replacement = fakeSession("failure-epoch", []);
+    await native.replace(replacement);
+    assert.equal(control.observe().latestAssistant, null);
+    replacement.start(); replacement.emit({ type: "message_end", message: error } as unknown as AgentSessionEvent);
+    replacement.emit({ type: "agent_settled", aborted: true } as AgentSessionEvent);
+    assert.equal((control.observe().latestAssistant as { failure?: unknown })?.failure, undefined);
+    assert.ok(control.readTimeline().timeline.every(b => b.type !== "message" || b.failure === undefined));
+  } finally { control.dispose(); }
+});
+
 test("Control disposal resolves pending waiters without retaining timers", async () => {
   const session = fakeSession("dispose-session", []);
   const control = new PindieControlClient(new PiRuntimeAdapter(fakeNativeRuntime(session).runtime), {
