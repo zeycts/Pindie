@@ -166,7 +166,7 @@ export class PindieControlWorkspace {
         if ((error as NodeJS.ErrnoException).code === "EEXIST") {
           throw new PindieWorkspaceError("project_exists", "Project already exists.");
         }
-        throw new PindieWorkspaceError("project_create_failed", `Could not create project: ${error instanceof Error ? error.message : String(error)}`);
+        throw new PindieWorkspaceError("project_create_failed", "Could not create project.");
       }
       return this.activate(name, target);
     });
@@ -179,8 +179,8 @@ export class PindieControlWorkspace {
         this.slot = null;
         try {
           try { old.client.dispose(); } finally { await old.host.dispose(); }
-        } catch (error) {
-          throw new PindieWorkspaceError("project_open_failed", `Could not dispose the previous project: ${error instanceof Error ? error.message : String(error)}`);
+        } catch {
+          throw new PindieWorkspaceError("project_open_failed", "Could not dispose the previous project.");
         }
       }
       let host: PindieHost | undefined;
@@ -198,10 +198,10 @@ export class PindieControlWorkspace {
         const control = client.observe();
         this.slot = { name, host, client };
         return { state: "active_project", workspaceRoot: this.workspaceRoot, activeProject: name, control };
-      } catch (error) {
+      } catch {
         try { client?.dispose(); } catch { /* Preserve bootstrap failure. */ }
         try { if (host) await host.dispose(); } catch { /* Preserve bootstrap failure. */ }
-        throw new PindieWorkspaceError("project_open_failed", `Could not open project: ${error instanceof Error ? error.message : String(error)}`);
+        throw new PindieWorkspaceError("project_open_failed", "Could not open project.");
       }
   }
 

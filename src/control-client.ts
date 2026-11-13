@@ -819,7 +819,7 @@ export class PindieControlClient {
       if (!this.runtime.isActiveSessionModelAvailable(provider, modelId)) {
         throw new PindieControlError(
           "model_unavailable",
-          `Pindie model is unavailable: ${provider}/${modelId}`,
+          "The requested model is unavailable in the active registry.",
           snapshot,
         );
       }
@@ -1485,13 +1485,13 @@ export class PindieControlClient {
           reportPreflight(accepted);
         },
       } satisfies PromptOptions);
-    } catch (error) {
+    } catch {
       record.executionPending = false;
       if (!acceptedByPi) onRefused();
       else if (this.binding === binding) this.recordExecutionRejection(record);
       throw new PindieControlError(
         "delivery_failed",
-        `Pindie prompt delivery failed: ${errorMessage(error)}`,
+        "Pindie prompt delivery failed. Observe before taking further action; do not automatically resend input.",
         this.safeSnapshot(),
       );
     }
@@ -1859,10 +1859,6 @@ function quotaAnchorFromMessage(message: unknown): string | null {
   } | null;
   const anchor = candidate?.details?.anchorEntryId;
   return typeof anchor === "string" && anchor.trim() !== "" ? anchor : null;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 const sessionTextSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });

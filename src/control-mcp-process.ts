@@ -5,6 +5,7 @@ import { localhostHostValidation, localhostOriginValidation, toNodeHandler } fro
 import { createMcpHandler } from "@modelcontextprotocol/server";
 
 import { createPindieControlMcpServer } from "./control-mcp.ts";
+import { handleControlMcpHttp, logControlMcpFailure } from "./control-mcp-errors.ts";
 import { PindieControlWorkspace, type PindieControlWorkspaceOptions, resolveControlWorkspaceRoot } from "./control-workspace.ts";
 
 export { resolveControlWorkspaceRoot };
@@ -37,7 +38,7 @@ export async function startControlMcpProcess(options: ControlMcpProcessOptions):
         res.writeHead(404).end();
         return;
       }
-      void nodeHandler(req, res);
+      void handleControlMcpHttp(nodeHandler, req, res);
     });
     const listener = server;
     await new Promise<void>((resolve, reject) => {
@@ -70,11 +71,11 @@ async function main(): Promise<void> {
   const port = process.env.PINDIE_CONTROL_PORT === undefined ? 8765 : Number(process.env.PINDIE_CONTROL_PORT);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PINDIE_CONTROL_PORT must be a valid TCP port.");
   const processHandle = await startControlMcpProcess({ workspaceRoot, port });
-  const shutdown = () => { void processHandle.close().catch((error: unknown) => console.error(error)); };
+  const shutdown = () => { void processHandle.close().catch(() => logControlMcpFailure("shutdown")); };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error: unknown) => { console.error(error); process.exitCode = 1; });
+  main().catch(() => { logControlMcpFailure("startup"); process.exitCode = 1; });
 }

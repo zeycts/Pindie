@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 
-import { PindieControlError } from "./control-client.ts";
-import { PindieWorkspaceError, type PindieControlWorkspace } from "./control-workspace.ts";
+import { publicControlMcpError } from "./control-mcp-errors.ts";
+import type { PindieControlWorkspace } from "./control-workspace.ts";
 
 // Current tools use at most eight object members, including nested model identity.
 // Bound traversal before schema validation, including unknown nested input.
@@ -20,10 +20,7 @@ async function invoke(action: () => Promise<unknown> | unknown) {
     const result = await action();
     return { content: [{ type: "text" as const, text: JSON.stringify(result) }], structuredContent: result as Record<string, unknown> };
   } catch (error) {
-    if (!(error instanceof PindieControlError) && !(error instanceof PindieWorkspaceError)) throw error;
-    const result = error instanceof PindieControlError
-      ? { code: error.code, message: error.message, snapshot: error.snapshot, ...(error.receipt === undefined ? {} : { receipt: error.receipt }) }
-      : { code: error.code, message: error.message };
+    const result = publicControlMcpError(error);
     return { isError: true, content: [{ type: "text" as const, text: JSON.stringify(result) }], structuredContent: result };
   }
 }

@@ -93,7 +93,7 @@ test("MCP preserves the complete bounded Control snapshot and report discriminan
     assert.deepEqual(open.structuredContent, { state: "active_project", workspaceRoot: root, activeProject: "Pindie", control: base });
     const stale = await wire.peer.callTool({ name: "pindie_input", arguments: { lease: "old", text: "hello" } });
     assert.equal(stale.isError, true);
-    assert.deepEqual(stale.structuredContent, { code: "stale_control_lease", message: "Observe again", snapshot: base });
+    assert.deepEqual(stale.structuredContent, { code: "stale_control_lease", message: "Pindie Control lease is stale. Observe the current Session before retrying.", snapshot: base });
 
     const assistant = { ...base, latestAssistant: { entryId: "reply", text: "Still working", lifecycle: "streaming", source: "assistant" } } satisfies PindieControlSnapshot;
     current = assistant;
@@ -333,7 +333,7 @@ test("MCP delegates six scoped operations after open; stale lease remains struct
     assert.equal((opened.structuredContent?.control as { lease: string }).lease, "current");
     assert.equal((await invoke("observe", {})).structuredContent?.activeProject, "Pindie");
     const stale = await invoke("input", { lease: "old", text: "hi", timing: "after_current_run" });
-    assert.deepEqual(stale.structuredContent, { code: "stale_control_lease", message: "Observe again", snapshot });
+    assert.deepEqual(stale.structuredContent, { code: "stale_control_lease", message: "Pindie Control lease is stale. Observe the current Session before retrying.", snapshot });
     await invoke("input", { lease: "live", text: "work", sessionName: "Pindie Control · Session Identity" });
     const count = calls.length;
     for (const sessionName of [42, "", "x".repeat(513)]) {

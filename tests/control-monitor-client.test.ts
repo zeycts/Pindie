@@ -152,7 +152,9 @@ test("pinned Streamable HTTP monitor adapter verifies 13-tool service and decode
     toolError = new PindieControlError("unexpected_code" as PindieControlErrorCode, "Unknown");
     await assert.rejects(monitor.wait(waitRequest), /Incompatible Pindie Control service/);
     toolError = new PindieControlError("stale_control_lease", "");
-    await assert.rejects(monitor.wait(waitRequest), /Incompatible Pindie Control service/);
+    // MCP now replaces even blank domain messages with its reviewed static vocabulary.
+    await assert.rejects(monitor.wait(waitRequest), (error: unknown) => error instanceof MonitorControlError &&
+      error.code === "stale_control_lease" && error.message === "Pindie Control lease is stale. Observe the current Session before retrying.");
     toolError = new Error("unstructured failure");
     await assert.rejects(monitor.wait(waitRequest), /Incompatible Pindie Control service/);
     toolError = null;

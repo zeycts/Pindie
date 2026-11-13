@@ -132,7 +132,7 @@ test("bootstrap failure is structured, cleans up and leaves no active slot; conc
     const opening = workspace.openProject("A");
     const observing = workspace.observe();
     release();
-    await assert.rejects(opening, (error: { code: string; message: string }) => error.code === "project_open_failed" && error.message.includes("session_start failed"));
+    await assert.rejects(opening, (error: { code: string; message: string }) => error.code === "project_open_failed" && error.message === "Could not open project.");
     assert.equal((await observing).state, "no_active_project");
     assert.deepEqual([live, disposed, clientDisposed], [0, 1, 1]);
     fail = false;
