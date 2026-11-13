@@ -4,7 +4,7 @@ import type {
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 
-import { sanitizeAssistantError } from "./assistant-error.ts";
+import { sanitizeAssistantError, type ProviderFailureEvidence } from "./assistant-error.ts";
 import {
   classifyToolPresentation,
   createObservationBlock,
@@ -146,6 +146,8 @@ export interface UiMessageBlock {
   readonly text: string;
   /** Sanitized presentation-only diagnostic for terminal assistant errors. */
   readonly errorMessage?: string;
+  /** Control-only final-Run evidence; absent from raw/history projections after rebind. */
+  readonly failure?: ProviderFailureEvidence;
   readonly lifecycle: "streaming" | "complete" | "error";
   readonly defaultDisplayMode: UiDisplayMode;
   /** Local delivery provenance for ephemeral user input echoes. */

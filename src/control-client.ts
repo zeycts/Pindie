@@ -6,6 +6,7 @@ import type {
   PromptOptions,
 } from "@earendil-works/pi-coding-agent";
 
+import { projectProviderFailure, type ProviderFailureEvidence } from "./assistant-error.ts";
 import { classifyHumanSignal } from "./human-signal.ts";
 import { projectControlQuota } from "./control-quota.ts";
 import { PINDIE_QUOTA_RESUME_TYPE } from "./quota-resume-supervisor.ts";
@@ -82,7 +83,7 @@ export interface PindieControlSnapshot {
   };
   /** Latest visible assistant text or successful semantic Task completion, in timeline order. */
   readonly latestAssistant: (
-    | { readonly entryId: string; readonly text: string; readonly lifecycle: "streaming" | "complete" | "error"; readonly errorMessage?: string; readonly source: "assistant" }
+    | { readonly entryId: string; readonly text: string; readonly lifecycle: "streaming" | "complete" | "error"; readonly errorMessage?: string; readonly failure?: ProviderFailureEvidence; readonly source: "assistant" }
     | { readonly entryId: string; readonly text: string; readonly lifecycle: "complete"; readonly source: "task_completion" }
   ) | null;
 }
@@ -172,6 +173,7 @@ export interface PindieControlDispatch {
     readonly entryIds: readonly string[];
     readonly lifecycle: "complete" | "error" | null;
     readonly errorMessage?: string;
+    readonly failure?: ProviderFailureEvidence;
   } | null;
 }
 
@@ -283,6 +285,8 @@ interface RunRecord {
   outputIds: string[];
   lifecycle: "complete" | "error" | null;
   errorMessage?: string;
+  failureCandidate?: { readonly entryId: string; readonly evidence: ProviderFailureEvidence };
+  currentFailureInvalidated?: boolean;
   settled: boolean;
   aborted: boolean;
   executionRejected?: boolean;
@@ -391,7 +395,10 @@ export class PindieControlClient {
       sessionId: snapshot.session.id,
       revision: snapshot.revision,
       hasMoreBefore: timeline.length > count,
-      timeline: timeline.slice(-count),
+      timeline: timeline.slice(-count).map((block) => {
+        const failure = block.type === "message" ? this.failureForBlock(block.id) : undefined;
+        return failure === undefined ? block : { ...block, failure };
+      }),
     };
   }
 
@@ -1124,7 +1131,12 @@ export class PindieControlClient {
     }
     const run = this.activeRunId === null ? undefined : this.runs.get(this.activeRunId);
     if (event.type === "message_end") {
-      if (run !== undefined) this.captureRunOutput(run);
+      if (run !== undefined) {
+        this.captureRunOutput(run);
+        const evidence = projectProviderFailure(event.message, Date.now());
+        const entryId = run.outputIds.at(-1);
+        run.failureCandidate = evidence !== undefined && entryId !== undefined ? { entryId, evidence } : undefined;
+      }
       return;
     }
     if (event.type === "agent_settled") {
@@ -1203,6 +1215,31 @@ export class PindieControlClient {
     run.errorMessage = terminal.errorMessage;
   }
 
+  /** Runtime-only evidence; never reconstruct final-Run claims from historical prose at rebind. */
+  private failureForBlock(entryId: string): ProviderFailureEvidence | undefined {
+    for (const run of this.runs.values()) {
+      if (!run.settled || run.aborted || run.lifecycle !== "error" || this.runExecutionPending(run.runId) ||
+        run.failureCandidate?.entryId !== entryId || run.outputIds.at(-1) !== entryId) continue;
+      const deliveries = this.records.filter((record) => record.runIds.includes(run.runId));
+      if (deliveries.length > 0 && !deliveries.some((record) => record.deliveryConfirmed)) continue;
+      return run.failureCandidate.evidence;
+    }
+    return undefined;
+  }
+
+  private currentFailure(entryId: string): ProviderFailureEvidence | undefined {
+    if (this.activeRunId !== null) return undefined;
+    const latestRun = [...this.runs.values()].at(-1);
+    if (latestRun?.outputIds.at(-1) !== entryId || latestRun.currentFailureInvalidated) return undefined;
+    const failure = this.failureForBlock(entryId);
+    const model = this.runtime.getActiveSessionModelIdentity();
+    if (failure !== undefined && (failure.provider !== model?.provider || failure.model !== model?.modelId)) {
+      latestRun.currentFailureInvalidated = true;
+      return undefined;
+    }
+    return failure;
+  }
+
   private pruneRuns(): void {
     if (this.runs.size <= MAX_RUN_RECORDS) return;
     const referenced = new Set<string>();
@@ -1261,6 +1298,8 @@ export class PindieControlClient {
             entryIds: outputIds,
             lifecycle: run.lifecycle,
             ...(run.errorMessage === undefined ? {} : { errorMessage: run.errorMessage }),
+            ...(state === "error" && run.outputIds.at(-1) !== undefined && this.failureForBlock(run.outputIds.at(-1)!) !== undefined
+              ? { failure: this.failureForBlock(run.outputIds.at(-1)!) } : {}),
           },
     };
   }
@@ -1761,6 +1800,7 @@ export class PindieControlClient {
             text: latestReport.text,
             lifecycle: latestReport.lifecycle,
             ...(latestReport.errorMessage === undefined ? {} : { errorMessage: latestReport.errorMessage }),
+            ...(this.currentFailure(latestReport.id) === undefined ? {} : { failure: this.currentFailure(latestReport.id) }),
             source: "assistant",
           }
         : latestReport?.type === "semantic" && latestReport.category === "completion"

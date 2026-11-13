@@ -1,4 +1,50 @@
 /** Presentation-only diagnostics; never changes persisted Session messages. */
+export interface ProviderFailureEvidence {
+  readonly category: "subscription_limit" | "rate_limit" | "billing_or_quota" | "authentication" | "permission" | "network_or_upstream" | "unknown";
+  readonly provider: string;
+  readonly model: string;
+  /** Local observation of the terminal message, not provider/server time. */
+  readonly observedAt: number;
+  readonly evidenceKind: "assistant_error_message";
+  readonly confidence: "unverified";
+  readonly condition: "message_signature" | "unclassified";
+  /** Allowlisted message signature, NOT an authenticated response code. */
+  readonly code: string | null;
+}
+
+/** No HTTP/auth/usage reads. The caller must gate publication on final Run settlement. */
+export function projectProviderFailure(message: {
+  readonly role?: unknown; readonly stopReason?: unknown; readonly provider?: unknown;
+  readonly model?: unknown; readonly errorMessage?: unknown;
+}, observedAt: number): ProviderFailureEvidence | undefined {
+  if (message.role !== "assistant" || message.stopReason !== "error" || !Number.isFinite(observedAt)) return undefined;
+  const identity = (value: unknown): string | null => typeof value === "string" &&
+    /^[a-zA-Z0-9][a-zA-Z0-9._/\-]{0,159}$/u.test(value) ? value : null;
+  const provider = identity(message.provider), model = identity(message.model);
+  if (provider === null || model === null) return undefined; // No reliable actual-message identity.
+  // Classify only the sanitized bounded diagnostic; never copy arbitrary codes, bodies or URLs.
+  const text = sanitizeAssistantError(message.errorMessage);
+  const signature = (code: string): boolean => new RegExp(`(?<![\\w])${code}(?![\\w])`, "u").test(text);
+  let category: ProviderFailureEvidence["category"] = "unknown";
+  let code: string | null = null;
+  if (provider === "openai") {
+    code = ["subscription_sharing_usage_limit_exceeded", "subscription_sharing_workplace_individual_usage_limit_exceeded"].find(signature) ?? null;
+    if (code !== null) category = "subscription_limit";
+  }
+  if (code === null) {
+    if (signature("insufficient_quota")) { code = "insufficient_quota"; category = "billing_or_quota"; }
+    else if (signature("rate_limit_exceeded")) { code = "rate_limit_exceeded"; category = "rate_limit"; }
+    // Pi's normalized OpenAI error prefix is evidence of a message signature only.
+    // Do not manufacture a numeric HTTP status or a verified credential failure.
+    else if (provider === "openai" && /^OpenAI API error \(401\):/u.test(text)) category = "authentication";
+    else if (provider === "openai" && /^OpenAI API error \(403\):/u.test(text)) category = "permission";
+    else if (["ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"].some(signature) ||
+      (provider === "openai" && /^OpenAI API error \(50[0234]\):/u.test(text))) category = "network_or_upstream";
+  }
+  return { category, provider, model, observedAt, evidenceKind: "assistant_error_message",
+    confidence: "unverified", condition: category === "unknown" ? "unclassified" : "message_signature", code };
+}
+
 export const ASSISTANT_ERROR_LIMIT = 2_000;
 
 export function sanitizeAssistantError(value: unknown): string {

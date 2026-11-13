@@ -89,3 +89,24 @@ test("common bare Google, GitHub and Slack token formats are redacted without er
   const ordinary = "Google auth failed; GitHub quota exhausted; Slack network timeout; AIza-short ghp-short xoxb-short";
   assert.equal(sanitizeAssistantError(ordinary), ordinary);
 });
+
+test("failure signatures remain unverified, bounded and separate from HTTP/auth/quota truth", async () => {
+  const { projectProviderFailure } = await import("../src/assistant-error.ts");
+  const message = { role: "assistant", stopReason: "error", provider: "openai", model: "actual-model" };
+  const result = projectProviderFailure({ ...message, errorMessage: "subscription_sharing_usage_limit_exceeded" }, 100)!;
+  assert.deepEqual(result, { category: "subscription_limit", provider: "openai", model: "actual-model", observedAt: 100,
+    evidenceKind: "assistant_error_message", confidence: "unverified", condition: "message_signature", code: "subscription_sharing_usage_limit_exceeded" });
+  for (const stopReason of ["pending", "stop", "aborted", "length", "toolUse"]) {
+    assert.equal(projectProviderFailure({ ...message, stopReason }, 100), undefined);
+  }
+  assert.equal(projectProviderFailure({ ...message, role: "user" }, 100), undefined);
+  assert.equal(projectProviderFailure(message, NaN), undefined);
+  for (const text of ["quota exhausted", "timeout", "401 permission", "rate_limit_exceeded_suffix", "prefix_subscription_sharing_usage_limit_exceeded",
+    "token=subscription_sharing_usage_limit_exceeded", "sk-subscription_sharing_usage_limit_exceeded"]) {
+    assert.equal(projectProviderFailure({ ...message, errorMessage: text }, 100)?.category, "unknown", text);
+  }
+  assert.equal(projectProviderFailure({ ...message, provider: "openai-codex", errorMessage: "subscription_sharing_usage_limit_exceeded" }, 100)?.category, "unknown");
+  const unsafe = projectProviderFailure({ ...message, provider: "https://private.invalid/auth", model: "token=private", errorMessage: "{raw: secret} Authorization: private" }, 100);
+  assert.equal(unsafe, undefined, "missing or unsafe actual-message identity fails closed");
+  assert.ok(!("httpStatus" in result) && !("authMode" in result) && !("fiveHour" in result) && !("resumeAt" in result));
+});
